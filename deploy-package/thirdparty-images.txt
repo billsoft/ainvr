@@ -1,0 +1,7 @@
+# 公共镜像清单（发布包与安装的唯一真值源）
+# 格式：<镜像引用> <镜像 ID 或 ->
+# 镜像 ID 取 `docker image inspect --format '{{.Id}}'`，docker save/load 后保持不变；
+# 写 - 表示不锁定 ID。compose 里只写 tag，由 thirdparty_images.py 在构建和安装后校验 ID。
+postgres:16-alpine -
+mongo:7.0 -
+ossrs/srs:7.0.162 sha256:b2e0b41791f332e192b3480f97b56c9d6513b8a082874d5b54f3475b241b9028

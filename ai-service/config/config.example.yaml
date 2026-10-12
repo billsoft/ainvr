@@ -1,0 +1,56 @@
+# AI 微服务配置示例
+# 复制为 config.yaml 后修改
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  log_level: info
+  api_key: null                  # 设置后启用 X-API-Key 鉴权
+
+channels:
+  - id: cam01
+    name: "测试摄像头"
+    enabled: true
+
+    stream:
+      url: "rtmp://127.0.0.1:1935/live/phase6_test"
+      protocol: auto              # rtmp / flv / auto
+      watchdog_timeout_seconds: 5
+      reconnect:
+        enabled: true
+        initial_delay: 1
+        max_delay: 60
+        backoff_factor: 2
+
+    inference_fps: 5              # 0 = 跟源流帧率；时间戳调度均匀丢帧
+    max_consecutive_failures: 10
+
+    model:
+      name: yolo26m
+      # S100P 示例契约。HBM 必须先完成 nash-m 编译、精度验证和实际加载。
+      adapter: yolo26_bpu
+      path: models/yolo26m.hbm
+      input_size: [640, 640]      # [h, w]，必须为 stride 的整数倍
+      stride: 32
+      provider: bpu               # bpu 使用 HBM；cpu 使用 ONNX
+      engine_cache: data/model_cache/
+      class_names: null           # null = 内置 COCO 80 类
+
+    preprocess:
+      letterbox: true
+      padding_color: [114, 114, 114]
+      interpolation: bilinear     # nearest / bilinear / bicubic / area / lanczos4
+      # normalize/mean/std/rgb_order 属于模型输入契约:整组不写时按模型族默认
+      # (YOLO 系 0/255 RGB,SCRFD 127.5/128 RGB);写了任意一项即以配置为准。
+      normalize: true
+      mean: [0.0, 0.0, 0.0]
+      std: [255.0, 255.0, 255.0]
+      rgb_order: true
+
+    postprocess:
+      conf_threshold: 0.25
+      iou_threshold: 0.45         # 仅传统模式使用
+      max_detections: 300
+
+    result_buffer:
+      max_frames: 30

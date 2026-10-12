@@ -1,0 +1,31 @@
+[Unit]
+Description=AINVR camera input supervisor
+After=network-online.target docker.service ainvr-license.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sunrise
+Group=sunrise
+WorkingDirectory=/home/sunrise/ainvr
+EnvironmentFile=/etc/ainvr-ingest/service.env
+EnvironmentFile=/etc/ainvr-license/recorder.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/sunrise/ainvr/ingest-service/main.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+KillMode=control-group
+Nice=5
+CPUQuota=200%
+MemoryMax=768M
+TasksMax=128
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

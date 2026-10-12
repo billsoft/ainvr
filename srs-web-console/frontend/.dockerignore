@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.env*
+data
+logs
+secrets
+*.key
+*.pem
+*.local

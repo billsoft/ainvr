@@ -156,3 +156,7 @@ native/gdc_erp_probe.c 生成 bin、提交共享缓冲、取回完成帧并统�
 映射、bin、NV12、参考图、结果保存在 results/。支持相机中心、半径、FOV 和
 鱼眼径向模型参数；当前定量结果使用理想合成鱼眼，实际镜头需提供标定参数。
 完整半球的圆边缘与极点差异、4K 吞吐量与 8K 限制见 [FISHEYE-ERP.md](FISHEYE-ERP.md)。
+
+## HBM compilation and performance
+
+See [S100P HBM compilation and optimization](../docs/S100P-HBM-COMPILATION.md) for the O0 validation → saved BC → O2 workflow, GPEN 92.749 inference FPS / 75.247 warm archive FPS evidence, and the separate accuracy and real-channel acceptance requirements.

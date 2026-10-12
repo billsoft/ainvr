@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+    color-scheme: light;
+  }
+  body {
+    @apply bg-surface-page text-ink font-sans text-sm;
+  }
+  :where(button, a, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid #1677ff;
+    outline-offset: 3px;
+  }
+  button:disabled { cursor: not-allowed; }
+  input, select, textarea { font-variant-numeric: tabular-nums; }
+  /* 全局滚动条（科技蓝点缀） */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-ink-faint/40;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-faint/60;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+}
+
+@layer components {
+  .page-title { @apply text-xl font-semibold leading-7 text-ink; }
+  .page-description { @apply mt-1 text-sm leading-6 text-ink-subtle; }
+  .form-input { @apply w-full rounded-base border border-line bg-surface px-3 py-2 text-sm text-ink focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20; }
+  .ui-panel { @apply rounded-panel border border-line bg-surface; }
+  /* 通用按钮（与配置页其他按钮同一外观）；未定义时按钮会显示成普通文字 */
+  .btn-primary { @apply inline-flex items-center justify-center gap-1.5 rounded-base bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50; }
+  .btn-secondary { @apply inline-flex items-center justify-center gap-1.5 rounded-base border border-line bg-surface px-4 py-2 text-sm font-medium text-ink shadow-sm transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50; }
+}
+
+@layer utilities {
+  /* 隐藏原生滚动条但保留滚动能力（时间轴横向滚动用） */
+  .timeline-scroll {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .timeline-scroll::-webkit-scrollbar {
+    display: none;
+  }
+}

@@ -1,0 +1,18 @@
+# Supply per-device credentials from the factory; this example cannot grant.
+host: 127.0.0.1
+port: 8001
+uds_path: /run/ainvr-license/license.sock
+machine_code: REPLACE_WITH_V2_BOARD_CODE
+device_key: REPLACE_WITH_PER_DEVICE_64_HEX
+admin_api_key: REPLACE_WITH_RANDOM_MANAGEMENT_CREDENTIAL
+installation_path: /var/lib/ainvr-license-identity/identity.json
+# migration_file: /etc/ainvr-license/migration.lic  # one-time signed v2 migration only
+state:
+  primary: /var/lib/ainvr-license/state.dat
+  replica2: /var/lib/ainvr-license/recovery-1.dat
+  replica3: /var/lib/ainvr-license/recovery-2.dat
+signal_keys:
+  ai-service: REPLACE_WITH_PER_DEVICE_CONSUMER_KEY
+  recorder: REPLACE_WITH_PER_DEVICE_CONSUMER_KEY
+  console-backend: REPLACE_WITH_PER_DEVICE_CONSUMER_KEY
+  enforcer: REPLACE_WITH_PER_DEVICE_CONSUMER_KEY

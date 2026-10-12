@@ -1,0 +1,11 @@
+# AINVR native original-snapshot renderer
+
+`SnapshotRenderer::RenderOriginal` connects configuration, detection geometry, native image preprocessing and JPEG encoding. It returns exact crop geometry, JPEG bytes, render/encoder backend names and explicit fallback reasons. Disabled snapshots or invalid detections return nullopt; invalid configuration and unrecoverable processing failures throw for the caller to handle without silently dropping work.
+
+Build target: ainvr_snapshot. New build dependency: libjpeg development headers/library (Ubuntu libjpeg-dev); the board already provides libjpeg-turbo 2.1.2 through this API. No package installation was necessary. The object is constructed and used on one worker thread and reuses its preprocessor and last JPU encoder configuration.
+
+Dedicated JPEG hardware is preferred for even visible dimensions >=18. Odd/small crops keep their exact field of view and dimensions and use CPU libjpeg after rendering. JPU runtime failure also records the error and attempts CPU JPEG; fault injection for this branch remains pending. This is an explicit CPU encoding fallback, not a claim that JPEG compression is implemented on GLES. GPU rendering and GDC/PYM priority are provided by ImagePreprocessor; ordinary ROI acceleration with PYM remains pending.
+
+Evidence: test/results/snapshot-renderer-20261011-175937-574565/summary.json. Run python3 test/ai_port/verify_snapshot_renderer.py. Six cases reuse one renderer across ordinary/ERP/ordinary changes. 80x80 and ERP 74x80 use JPU; 21x19, 1x1 and 2x2 use CPU JPEG. FFprobe checks dimensions, FFmpeg decodes without errors and all pixels match the uniform grayscale source within two levels. Disabled snapshots, invalid detections and invalid quality are checked. This test complements the separate ROI spatial-ramp and ERP/color tests; uniform pixels alone do not prove projection geometry. All 20 existing CTest groups pass (test/results/renderer-ctest.log).
+
+This resolves the odd/tiny JPEG gap described in earlier geometry/ROI notes. Still pending: reference interpolation quality, PYM ROI, brightness/restoration, original/enhanced pairing, channel integration and durable archive delivery. The API intentionally produces the original crop; callers must implement enhancement configuration in the subsequent stage before claiming complete snapshot support.

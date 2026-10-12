@@ -1,0 +1,44 @@
+# Historical reference only. Current production rollback is not supported.
+echo "Archived Python-v1 cutover script; do not use on current production." >&2
+exit 1
+
+#!/bin/bash
+# 回滚 ai-service.service 到 v1(Python)。仅在 C++ 版出现无法当场修复的问题时使用。
+#
+# 当前目录布局(2026-09-24 起):
+#   /home/sunrise/ainvr/ai-service      C++ 版(生产)
+#   /home/sunrise/ainvr/ai-service_bak  v1 Python 版(只读对照副本)
+# 回滚后:
+#   /home/sunrise/ainvr/ai-service      v1 Python 版
+#   /home/sunrise/ainvr/ai-service_cpp  C++ 版(原样保留,便于排查后切回)
+# systemd unit / logrotate 从切换时留下的 *.v1bak 恢复。
+set -euo pipefail
+
+ROOT=/home/sunrise/ainvr
+echo "=== 回滚 ai-service.service 到 v1 (Python) ==="
+
+for f in /etc/systemd/system/ai-service.service.v1bak /var/backups/ainvr-ai-cutover/ai-service.logrotate.v1bak; do
+  if [ ! -f "$f" ]; then
+    echo "错误: 找不到 $f,无法恢复 v1 配置,中止(未做任何改动)" >&2
+    exit 1
+  fi
+done
+if [ ! -d "$ROOT/ai-service_bak" ] || [ ! -d "$ROOT/ai-service" ] || [ -e "$ROOT/ai-service_cpp" ]; then
+  echo "错误: 目录布局不符合预期(需要 ai-service/ 与 ai-service_bak/ 都存在且 ai-service_cpp/ 不存在),中止" >&2
+  exit 1
+fi
+
+sudo systemctl disable --now ai-service.service
+
+mv "$ROOT/ai-service" "$ROOT/ai-service_cpp"
+mv "$ROOT/ai-service_bak" "$ROOT/ai-service"
+echo "目录已切换: ai-service_bak -> ai-service,C++ 版保留在 ai-service_cpp"
+
+sudo cp /etc/systemd/system/ai-service.service.v1bak /etc/systemd/system/ai-service.service
+sudo cp /var/backups/ainvr-ai-cutover/ai-service.logrotate.v1bak /etc/logrotate.d/ai-service
+sudo systemctl daemon-reload
+sudo systemctl enable --now ai-service.service
+
+echo "=== 回滚完成,用以下命令核实: ==="
+echo "systemctl status ai-service.service"
+echo "curl -s http://127.0.0.1:8000/health"

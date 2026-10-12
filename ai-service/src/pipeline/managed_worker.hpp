@@ -1,0 +1,31 @@
+// Copyright AINVR. Control-plane contract; platform workers own hardware resources.
+#pragma once
+#include <functional>
+#include <memory>
+#include <set>
+#include <string>
+#include "../config/config.hpp"
+#include "../output/result_buffer.hpp"
+#include "snapshot_sink.hpp"
+namespace ai_service::pipeline {
+enum class ChannelState { kIdle, kStarting, kRunning, kError, kStopping, kReconnecting };
+std::string ToString(ChannelState state);
+class ChannelWorker {
+ public:
+  virtual ~ChannelWorker() = default;
+  virtual void Start() = 0;
+  // Check execution availability before persisting operator start intent.
+  virtual void ValidateStart() const {}
+  // Platform-specific snapshot resources; validates a proposed configuration
+  // before the controller persists an update to an executing channel.
+  virtual void ValidateSnapshotResources(const config::ChannelConfig&) const {}
+  virtual void Stop() = 0;
+  virtual ChannelState State() const = 0;
+  virtual void SetLicenseCheck(std::function<bool()> check) = 0;
+  virtual void SetSnapshotSink(std::shared_ptr<SnapshotSink> sink) = 0;
+  virtual std::shared_ptr<const config::ChannelConfig> Config() const = 0;
+  virtual void ApplyHotPatch(const config::ChannelConfig&, const std::set<std::string>&) = 0;
+  virtual nlohmann::json GetStats() const = 0;
+  virtual ResultBuffer& GetResultBuffer() = 0;
+};
+}

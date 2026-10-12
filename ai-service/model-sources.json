@@ -1,0 +1,15 @@
+{
+  "source_directory": "/mnt/ainvr-ssd/model-sources/ainvr-20261012/models",
+  "migration_manifest": "/mnt/ainvr-ssd/model-sources/ainvr-20261012/migration-manifest.json",
+  "runtime_directory": "/home/sunrise/ainvr/ai-service/models",
+  "priority_models": [
+    "yolo26x",
+    "yolo26x-face",
+    "gpen256"
+  ],
+  "runtime_formats": [
+    ".hbm",
+    ".hbm.ainvr.json"
+  ],
+  "open_vocabulary_runtime_verified": false
+}

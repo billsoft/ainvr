@@ -1,0 +1,4 @@
+# AINVR recorder: independent Python 3.10+ environment, no AI/CUDA dependency.
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+pydantic>=2.10,<3

@@ -1,0 +1,9 @@
+# AINVR native archive document
+
+The ainvr_archive_document target serializes an accepted snapshot into the reference Mongo BSON schema without OpenCV/CUDA or a live database. ArchiveDocumentInput contains a stable ObjectId/image_id, archive epoch, frame/detection metadata and independent processed/original JPEG payloads. The caller generates the ID once and retains it across retries.
+
+BuildArchiveDocument retains frame_pts_ns and archive_epoch as BSON int64 (including timestamps beyond double exact-integer precision), numeric timestamp as double, nullable unknown confidence/landmarks, optional prompt metadata, dimensions, JPEG binary subtype, enhancement flags and reserved embedding fields. It validates identity, finite detection values, JPEG envelopes and Mongo's 16 MiB document size limit. Envelope checks do not decode JPEGs or prove declared image dimensions; image validity remains the renderer/codec responsibility.
+
+Five unit cases check typed identity and metadata, byte-exact independent images, nullable semantics, invalid record rejection and document-size rejection. CMake build passed and all 21 CTest groups passed. Evidence: test/results/archive-document-build.log and test/results/archive-document-ctest.log. Tests live in ai-service/tests/unit/archive_document_test.cpp.
+
+This is the serialization foundation, not completed Mongo persistence. Next stages must durably stage accepted records, preserve IDs, use acknowledged journaled upsert, remove staging only after acknowledged commit, apply deletion epochs on replay and preserve bounded backpressure/accounting. Mongo outage/restart recovery has not been tested through this new module. The existing offline FrameResult timestamp defaults to zero and must be populated with a real capture/acceptance time before using this stricter archive builder; source media PTS remains a separate int64 field.

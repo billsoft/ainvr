@@ -1,0 +1,25 @@
+[Unit]
+Description=AINVR License Authority
+After=network.target
+[Service]
+Type=simple
+User=sunrise
+Group=sunrise
+ExecStart=@BIN@ --config /etc/ainvr-license/license-service.yaml
+StateDirectory=ainvr-license ainvr-license-identity
+StateDirectoryMode=0700
+RuntimeDirectory=ainvr-license
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+# ainvr may belong to docker for the separate enforcer; hide its default socket here.
+InaccessiblePaths=-/run/docker.sock
+ReadWritePaths=/var/lib/ainvr-license /var/lib/ainvr-license-identity /run/ainvr-license
+[Install]
+WantedBy=multi-user.target

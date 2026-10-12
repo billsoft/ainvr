@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境（本服务默认复用 ainvr conda；独立 venv 时忽略）
+.venv/
+venv/
+
+# pytest 缓存
+.pytest_cache/
+
+# 运行时数据（config.json 含 SMB 口令；segments.db 为运行期索引）
+data/
+
+# 日志
+*.log
+logs/

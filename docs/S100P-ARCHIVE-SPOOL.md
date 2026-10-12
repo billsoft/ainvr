@@ -1,0 +1,11 @@
+# AINVR durable prepared-record spool
+
+ArchiveSpool stores fully prepared BSON in a private single-owner directory. Stage validates matching ObjectId/image_id and BSON, writes a versioned envelope with SHA256, fsyncs the file, renames it to <id>.pending and fsyncs the directory before acknowledging. A newly created directory also syncs its parent. All record files use mode 0600 and a new directory uses 0700. The parent must already exist.
+
+A process lock prevents competing spool owners; methods are serialized. Identical ID/payload staging is idempotent, conflicting content is rejected. Byte/record capacity rejects new work without evicting older records; the caller must retain unconfirmed input and backpressure. Existing records above a newly lowered quota remain readable/deliverable. Capacity is a pending-record limit, not a filesystem free-space reserve policy.
+
+Recovery validates all committed records. Corruption is an error and the original file remains. Only <24 lowercase hex>.tmp files, which Stage never acknowledges, are cleaned as uncommitted writes. Deliver invokes a synchronous callback with owned BSON, then unlinks and syncs only after the callback returns. The callback contract requires journaled Mongo acknowledgement. Exceptions retain pending records. A crash between remote commit and local removal can replay the same ID; upsert identity must be retained.
+
+Six tests cover reopen/retry, byte and record quota, exclusive ownership, conflicting content, corrupted-file retention, malformed/path identities and SIGKILL after Stage acknowledgement. The killed writer's record is recovered with exact bytes. All 22 CTest groups passed. Final warning-clean target rebuild and six spool tests passed. Evidence: test/results/archive-spool-ctest.log, archive-spool-build-final.log and archive-spool-test-final.log.
+
+This is prepared-record durability only. It has not yet been wired to ArchiveMongo or channel workers. No power-cut, disk-full/fsync fault injection, deletion-epoch replay or acceptance-accounting claim is made. Preparation/encoding failures still need pre-encoding recovery material as in the reference contract; this BSON spool cannot preserve a record that has not been successfully prepared. Future channel acceptance must not be reported before its required recovery material is durable.

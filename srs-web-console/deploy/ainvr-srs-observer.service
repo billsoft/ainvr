@@ -1,0 +1,22 @@
+[Unit]
+Description=AINVR SRS read-only incident snapshots
+After=docker.service network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/ainvr/srs-observer.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=8
+Nice=10
+CPUQuota=15%
+MemoryMax=96M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=20
+
+[Install]
+WantedBy=multi-user.target

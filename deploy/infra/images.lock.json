@@ -1,0 +1,32 @@
+[
+  {
+    "image": "ossrs/srs:7.0.162",
+    "platform": "linux/arm64",
+    "source": "https://registry-1.docker.io",
+    "index_digest": "sha256:e8517a61abd0c0d0c793f0d3902d995bf11a1629b4a4ad2c81d36db58167d35a",
+    "manifest_digest": "sha256:d5467c3bb26cdeba33a415391944de59adacff155cdf9a1748ab86a6a7313318",
+    "image_id": "sha256:b2e0b41791f332e192b3480f97b56c9d6513b8a082874d5b54f3475b241b9028",
+    "archive": "ossrs-srs-7.0.162.tar.gz",
+    "archive_sha256": "81fca42109383a86e337cc50f6a27411b110c2ce57bd32df1a75a628bbf935cd"
+  },
+  {
+    "image": "postgres:16-alpine",
+    "platform": "linux/arm64",
+    "source": "https://registry-1.docker.io",
+    "index_digest": "sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea",
+    "manifest_digest": "sha256:2c942175a1255a9abe0366e48c1b401d9f50f835b04dfea13f111609b5530df7",
+    "image_id": "sha256:ef738a34a8651d11b2bace81c55c7e2187f786b484add6c83070884340074368",
+    "archive": "library-postgres-16-alpine.tar.gz",
+    "archive_sha256": "faf63d1a594cace8326bcc60ffb321c8ce9dbac8faf63d3ffccb4fe359d216e1"
+  },
+  {
+    "image": "mongo:7.0",
+    "platform": "linux/arm64",
+    "source": "https://registry-1.docker.io",
+    "index_digest": "sha256:1f995ad6fdb93244a1addab1b58f934a0bc2f5643c38e02f5e9d7f0c7d227a7b",
+    "manifest_digest": "sha256:63672ea7bd350b068f0c4369a7a9d0b40b3b322db1f70b4a138accabff104a38",
+    "image_id": "sha256:fd61624c38a6ddd1b3b8083edbec23b52b35ff1ff7ad78a74f76e77cfd5fad27",
+    "archive": "library-mongo-7.0.tar.gz",
+    "archive_sha256": "b2ef3613a567ed109b5679428eafd32cfdc38dca25787e5c3a4d8bec5575fcef"
+  }
+]

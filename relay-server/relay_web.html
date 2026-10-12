@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>远程协助中转管理</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<div id="gate" class="gate" hidden>
+  <form id="gate-form" class="gate-card" autocomplete="off">
+    <h1>远程协助中转管理</h1>
+    <p id="gate-hint" class="muted"></p>
+    <label id="code-row" hidden>初始化码<input id="gate-code" autocomplete="one-time-code" placeholder="例如 a1b2c3-d4e5f6-0a1b2c"></label>
+    <label>管理员密码<input id="gate-password" type="password" autocomplete="current-password"></label>
+    <label id="confirm-row" hidden>再次输入密码<input id="gate-confirm" type="password" autocomplete="new-password"></label>
+    <p id="gate-error" class="error" role="alert"></p>
+    <button id="gate-submit" class="primary" type="submit">登录</button>
+    <p class="muted small">页面不可用时，可在服务器上使用 <code>sudo relayctl</code> 完成全部操作。</p>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand">远程协助中转管理</div>
+    <div class="chips" id="chips"></div>
+    <div class="top-actions">
+      <span id="refreshed" class="muted small"></span>
+      <button id="btn-password" class="ghost">修改密码</button>
+      <button id="btn-logout" class="ghost">退出</button>
+    </div>
+  </header>
+  <main>
+    <div id="global-banner" class="banner danger" hidden>
+      <span id="global-text"></span>
+      <button id="btn-global-resume" class="primary">解除全部暂停</button>
+    </div>
+    <div id="error-banner" class="banner warn" hidden></div>
+    <div id="work-banner" class="banner ok" hidden>
+      <div id="work-text" class="work-text"></div>
+      <div class="actions">
+        <button id="btn-work-copy" class="primary">复制登录命令</button>
+        <button id="btn-work-clear" class="ghost">结束工作</button>
+      </div>
+    </div>
+    <section class="cards" id="cards"></section>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="devices">设备</button>
+      <button class="tab" data-tab="connections">在线连接</button>
+      <button class="tab" data-tab="audit">操作记录</button>
+    </nav>
+
+    <section id="tab-devices" class="panel">
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="搜索机器码或备注">
+        <div class="filters" id="filters">
+          <button class="chip-btn active" data-filter="all">全部</button>
+          <button class="chip-btn" data-filter="online">在线</button>
+          <button class="chip-btn" data-filter="offline">离线</button>
+          <button class="chip-btn" data-filter="suspended">已暂停</button>
+          <button class="chip-btn" data-filter="conflict">身份冲突</button>
+        </div>
+        <div class="spacer"></div>
+        <button id="btn-fleet" class="ghost">统一接入凭据</button>
+        <button id="btn-global-suspend" class="danger-btn">全部暂停</button>
+      </div>
+      <table class="grid">
+        <thead><tr><th>设备（机器码）</th><th>云端</th><th>在线</th><th>维护连接</th><th>今日流量</th><th class="right">操作</th></tr></thead>
+        <tbody id="devices-body"></tbody>
+      </table>
+      <p id="devices-empty" class="empty" hidden>还没有设备连上来。客户在设备「系统配置 → 远程协助」开启后，设备会按机器码出现在这里，无需开通。</p>
+    </section>
+
+    <section id="tab-connections" class="panel" hidden>
+      <p class="muted small">当前连到中转服务器的客户端：设备隧道与云端工作入口。身份按登录记录标注。</p>
+      <table class="grid">
+        <thead><tr><th>身份</th><th>公网 IP</th><th>主机名</th><th>连接时间</th><th class="right">操作</th></tr></thead>
+        <tbody id="conn-body"></tbody>
+      </table>
+      <p id="conn-empty" class="empty" hidden>当前没有在线连接。</p>
+    </section>
+
+    <section id="tab-audit" class="panel" hidden>
+      <table class="grid">
+        <thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>对象</th><th>原因 / 说明</th></tr></thead>
+        <tbody id="audit-body"></tbody>
+      </table>
+    </section>
+  </main>
+</div>
+
+<div id="modal" class="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h2 id="modal-title"></h2>
+    <div id="modal-body"></div>
+    <p id="modal-error" class="error" role="alert"></p>
+    <div class="modal-actions">
+      <button id="modal-cancel" class="ghost">取消</button>
+      <button id="modal-ok" class="primary">确定</button>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>

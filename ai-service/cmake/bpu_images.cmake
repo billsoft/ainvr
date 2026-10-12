@@ -1,0 +1,35 @@
+# Copyright AINVR. S100P image adapters do not link any CPU inference runtime.
+if(AINVR_S100P)
+  add_library(ainvr_bpu_images src/platform/bpu_image_input.cpp src/platform/bpu_image_runner.cpp
+    src/platform/bpu_prompt_engine.cpp)
+  target_link_libraries(ainvr_bpu_images PUBLIC ainvr_bpu ainvr_image_preprocessor)
+  add_executable(ainvr_bpu_image_probe ../test/ai_port/bpu_image_probe.cpp)
+  target_link_libraries(ainvr_bpu_image_probe PRIVATE ainvr_bpu_images ainvr_media_source ainvr_vpu)
+  set_target_properties(ainvr_bpu_image_probe PROPERTIES BUILD_RPATH /usr/hobot/lib)
+  add_library(ainvr_face_restore_gles src/platform/face_restore_gles.cpp)
+  target_include_directories(ainvr_face_restore_gles PUBLIC src ${OpenCV_INCLUDE_DIRS})
+  target_link_libraries(ainvr_face_restore_gles PUBLIC ainvr_gles ${OpenCV_LIBS})
+  # Keep the factory and its new implementation in the same archive. The mature
+  # snapshot queue/repository calls this original interface without a second pipeline.
+  target_sources(ainvr_reused_snapshot_store PRIVATE src/output/face_enhancer_bpu.cpp)
+  target_link_libraries(ainvr_reused_snapshot_store PUBLIC
+    ainvr_face_restore_gles ainvr_bpu_images OpenSSL::Crypto)
+  if(BUILD_TESTING)
+    add_executable(ainvr_calibration_capture ../test/model_conversion/calibration_capture.cpp)
+    target_link_libraries(ainvr_calibration_capture PRIVATE
+      ainvr_stream_source ainvr_image_preprocessor OpenSSL::Crypto)
+    set_target_properties(ainvr_calibration_capture PROPERTIES BUILD_RPATH /usr/hobot/lib)
+    add_executable(bpu_image_input_test ../test/ai_port/bpu_image_input_test.cpp)
+    target_link_libraries(bpu_image_input_test PRIVATE ainvr_bpu_images GTest::gtest_main)
+    add_test(NAME bpu_image_input COMMAND bpu_image_input_test)
+    add_executable(face_restore_test ../test/ai_port/face_restore_test.cpp)
+    target_link_libraries(face_restore_test PRIVATE ainvr_reused_snapshot_store GTest::gtest_main)
+    set_target_properties(face_restore_test PROPERTIES BUILD_RPATH /usr/hobot/lib)
+    add_test(NAME face_restore COMMAND face_restore_test)
+    add_executable(ainvr_gpen_archive_probe ../test/ai_port/gpen_archive_probe.cpp)
+    target_link_libraries(ainvr_gpen_archive_probe PRIVATE ainvr_reused_snapshot_store)
+    set_target_properties(ainvr_gpen_archive_probe PROPERTIES BUILD_RPATH /usr/hobot/lib)
+    set_tests_properties(face_restore PROPERTIES RUN_SERIAL TRUE TIMEOUT 120 LABELS "s100p;hardware")
+    target_compile_definitions(snapshot_hardware_archive_test PRIVATE AINVR_ARCHIVE_BPU_FACE_BACKEND=1)
+  endif()
+endif()

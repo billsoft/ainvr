@@ -1,0 +1,11 @@
+# AINVR native Mongo archive repository
+
+The ainvr_archive_mongo target supplies ArchiveMongo::Put/Get/Count using libmongoc client pooling. Put validates BSON and matching ObjectId/image_id, then replaces/upserts by _id with acknowledged journaled write concern (w=1, j=true, wtimeout=5000). The caller retains the serialized record on any exception and retries with the same identity. Driver error messages exposed by this module contain numeric domain/code only, not the connection URI. Pool lifetime must outlive concurrent callers.
+
+Timeouts are 5 seconds server selection/connect and 15 seconds socket I/O. This is a bounded individual-operation policy, not a total request deadline across multiple calls. Read-back returns owned BSON bytes; missing IDs return nullopt.
+
+Verification script: python3 test/ai_port/verify_archive_mongo.py. It reads the existing application password privately and targets a new test_archive_<timestamp> collection in ainvr_snapshots. It neither stops Mongo nor touches production snapshot collections. One test document remains in test_archive_20261011_181203_886565 for inspection. It contains the actual 16185-byte pedestrian JPEG from the real YOLO pipeline, stored independently in image and original_image fields.
+
+Evidence: test/results/archive-mongo-20261011_181203_886565/summary.json. Canonical BSON read-back matches every field/type and binary payload, including int64 PTS beyond double exact-integer precision. Repeated writes produce one record. Missing IDs and malformed BSON are checked. A separate localhost port-1 client reports failure in 5.0002 seconds; retrying the same payload through the reachable client still produces one record. This simulates unavailable delivery without stopping the deployed database; it does not test in-flight TCP loss, acknowledgement ambiguity or server restart. All 21 CTest groups also pass (test/results/archive-mongo-ctest.log).
+
+Pending integration: durable local staging before acceptance, replay after process crashes, deletion epochs/retention, original/enhanced processing, archive accounting/backpressure and actual channel-worker delivery. This repository alone must not be advertised as lossless end-to-end archive storage.

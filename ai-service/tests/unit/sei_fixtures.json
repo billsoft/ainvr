@@ -1,0 +1,1751 @@
+{
+  "sei_uuid_hex": "41494e56522d5345492d763100000001",
+  "sei_payload_type": 5,
+  "default_budget": 1024,
+  "cases": [
+    {
+      "name": "empty_detections",
+      "input": {
+        "channel_id": "cam01",
+        "pts_ns": 123456789,
+        "age_ms": 0.0,
+        "budget": 1024,
+        "detections": []
+      },
+      "payload_len": 0,
+      "payload_hex": "",
+      "nal_len": 0,
+      "nal_hex": "",
+      "roundtrip_ok": true
+    },
+    {
+      "name": "single_no_landmarks",
+      "input": {
+        "channel_id": "cam01",
+        "pts_ns": 123456789012,
+        "age_ms": 33.3,
+        "budget": 1024,
+        "detections": [
+          {
+            "class_id": 0,
+            "class_name": "person",
+            "confidence": 0.9234,
+            "bbox": [
+              450.0,
+              300.5,
+              120.25,
+              280.0
+            ],
+            "landmarks": null
+          }
+        ]
+      },
+      "payload_len": 119,
+      "payload_hex": "7b2276223a312c226368223a2263616d3031222c22707473223a3132333435363738393031322c226167655f6d73223a33332e332c22646574223a5b7b2263223a302c226e223a22706572736f6e222c2270223a302e393233342c2262223a5b3435302c3330302e352c3132302e322c3238305d7d5d7d",
+      "nal_len": 140,
+      "nal_hex": "06058741494e56522d5345492d763100000300017b2276223a312c226368223a2263616d3031222c22707473223a3132333435363738393031322c226167655f6d73223a33332e332c22646574223a5b7b2263223a302c226e223a22706572736f6e222c2270223a302e393233342c2262223a5b3435302c3330302e352c3132302e322c3238305d7d5d7d80",
+      "roundtrip_ok": true
+    },
+    {
+      "name": "multi_with_landmarks",
+      "input": {
+        "channel_id": "cam02",
+        "pts_ns": 987654321000,
+        "age_ms": 12.7,
+        "budget": 1024,
+        "detections": [
+          {
+            "class_id": 0,
+            "class_name": "face",
+            "confidence": 0.9812,
+            "bbox": [
+              100.0,
+              120.0,
+              80.0,
+              90.0
+            ],
+            "landmarks": [
+              [
+                120.1,
+                140.2
+              ],
+              [
+                160.3,
+                141.0
+              ],
+              [
+                140.0,
+                165.5
+              ],
+              [
+                122.0,
+                190.0
+              ],
+              [
+                158.0,
+                191.3
+              ]
+            ]
+          },
+          {
+            "class_id": 0,
+            "class_name": "face",
+            "confidence": 0.7345,
+            "bbox": [
+              400.0,
+              220.0,
+              70.0,
+              75.0
+            ],
+            "landmarks": [
+              [
+                410.0,
+                240.0
+              ],
+              [
+                450.0,
+                241.0
+              ],
+              [
+                430.0,
+                260.0
+              ],
+              [
+                415.0,
+                280.0
+              ],
+              [
+                448.0,
+                281.0
+              ]
+            ]
+          }
+        ]
+      },
+      "payload_len": 283,
+      "payload_hex": "7b2276223a312c226368223a2263616d3032222c22707473223a3938373635343332313030302c226167655f6d73223a31322e372c22646574223a5b7b2263223a302c226e223a2266616365222c2270223a302e393831322c2262223a5b3130302c3132302c38302c39305d2c226b223a5b5b3132302e312c3134302e325d2c5b3136302e332c3134315d2c5b3134302c3136352e355d2c5b3132322c3139305d2c5b3135382c3139312e335d5d7d2c7b2263223a302c226e223a2266616365222c2270223a302e373334352c2262223a5b3430302c3232302c37302c37355d2c226b223a5b5b3431302c3234305d2c5b3435302c3234315d2c5b3433302c3236305d2c5b3431352c3238305d2c5b3434382c3238315d5d7d5d7d",
+      "nal_len": 305,
+      "nal_hex": "0605ff2c41494e56522d5345492d763100000300017b2276223a312c226368223a2263616d3032222c22707473223a3938373635343332313030302c226167655f6d73223a31322e372c22646574223a5b7b2263223a302c226e223a2266616365222c2270223a302e393831322c2262223a5b3130302c3132302c38302c39305d2c226b223a5b5b3132302e312c3134302e325d2c5b3136302e332c3134315d2c5b3134302c3136352e355d2c5b3132322c3139305d2c5b3135382c3139312e335d5d7d2c7b2263223a302c226e223a2266616365222c2270223a302e373334352c2262223a5b3430302c3232302c37302c37355d2c226b223a5b5b3431302c3234305d2c5b3435302c3234315d2c5b3433302c3236305d2c5b3431352c3238305d2c5b3434382c3238315d5d7d5d7d80",
+      "roundtrip_ok": true
+    },
+    {
+      "name": "truncation_triggered",
+      "input": {
+        "channel_id": "cam03-very-long-channel-id-for-budget-pressure",
+        "pts_ns": 555666777888,
+        "age_ms": 250.4,
+        "budget": 1024,
+        "detections": [
+          {
+            "class_id": 0,
+            "class_name": "class_0",
+            "confidence": 0.99,
+            "bbox": [
+              0.0,
+              0.0,
+              40.0,
+              50.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 1,
+            "class_name": "class_1",
+            "confidence": 0.989,
+            "bbox": [
+              3.0,
+              2.0,
+              41.0,
+              51.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 2,
+            "class_name": "class_2",
+            "confidence": 0.988,
+            "bbox": [
+              6.0,
+              4.0,
+              42.0,
+              52.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 3,
+            "class_name": "class_3",
+            "confidence": 0.987,
+            "bbox": [
+              9.0,
+              6.0,
+              43.0,
+              53.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 4,
+            "class_name": "class_4",
+            "confidence": 0.986,
+            "bbox": [
+              12.0,
+              8.0,
+              44.0,
+              54.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 5,
+            "class_name": "class_5",
+            "confidence": 0.985,
+            "bbox": [
+              15.0,
+              10.0,
+              45.0,
+              55.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 6,
+            "class_name": "class_6",
+            "confidence": 0.984,
+            "bbox": [
+              18.0,
+              12.0,
+              46.0,
+              56.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 7,
+            "class_name": "class_7",
+            "confidence": 0.983,
+            "bbox": [
+              21.0,
+              14.0,
+              47.0,
+              57.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 8,
+            "class_name": "class_8",
+            "confidence": 0.982,
+            "bbox": [
+              24.0,
+              16.0,
+              48.0,
+              58.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 9,
+            "class_name": "class_9",
+            "confidence": 0.981,
+            "bbox": [
+              27.0,
+              18.0,
+              49.0,
+              59.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 10,
+            "class_name": "class_10",
+            "confidence": 0.98,
+            "bbox": [
+              30.0,
+              20.0,
+              50.0,
+              60.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 11,
+            "class_name": "class_11",
+            "confidence": 0.979,
+            "bbox": [
+              33.0,
+              22.0,
+              51.0,
+              61.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 12,
+            "class_name": "class_12",
+            "confidence": 0.978,
+            "bbox": [
+              36.0,
+              24.0,
+              52.0,
+              62.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 13,
+            "class_name": "class_13",
+            "confidence": 0.977,
+            "bbox": [
+              39.0,
+              26.0,
+              53.0,
+              63.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 14,
+            "class_name": "class_14",
+            "confidence": 0.976,
+            "bbox": [
+              42.0,
+              28.0,
+              54.0,
+              64.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 15,
+            "class_name": "class_15",
+            "confidence": 0.975,
+            "bbox": [
+              45.0,
+              30.0,
+              55.0,
+              65.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 16,
+            "class_name": "class_16",
+            "confidence": 0.974,
+            "bbox": [
+              48.0,
+              32.0,
+              56.0,
+              66.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 17,
+            "class_name": "class_17",
+            "confidence": 0.973,
+            "bbox": [
+              51.0,
+              34.0,
+              57.0,
+              67.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 18,
+            "class_name": "class_18",
+            "confidence": 0.972,
+            "bbox": [
+              54.0,
+              36.0,
+              58.0,
+              68.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 19,
+            "class_name": "class_19",
+            "confidence": 0.971,
+            "bbox": [
+              57.0,
+              38.0,
+              59.0,
+              69.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 20,
+            "class_name": "class_20",
+            "confidence": 0.97,
+            "bbox": [
+              60.0,
+              40.0,
+              60.0,
+              70.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 21,
+            "class_name": "class_21",
+            "confidence": 0.969,
+            "bbox": [
+              63.0,
+              42.0,
+              61.0,
+              71.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 22,
+            "class_name": "class_22",
+            "confidence": 0.968,
+            "bbox": [
+              66.0,
+              44.0,
+              62.0,
+              72.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 23,
+            "class_name": "class_23",
+            "confidence": 0.967,
+            "bbox": [
+              69.0,
+              46.0,
+              63.0,
+              73.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 24,
+            "class_name": "class_24",
+            "confidence": 0.966,
+            "bbox": [
+              72.0,
+              48.0,
+              64.0,
+              74.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 25,
+            "class_name": "class_25",
+            "confidence": 0.965,
+            "bbox": [
+              75.0,
+              50.0,
+              65.0,
+              75.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 26,
+            "class_name": "class_26",
+            "confidence": 0.964,
+            "bbox": [
+              78.0,
+              52.0,
+              66.0,
+              76.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 27,
+            "class_name": "class_27",
+            "confidence": 0.963,
+            "bbox": [
+              81.0,
+              54.0,
+              67.0,
+              77.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 28,
+            "class_name": "class_28",
+            "confidence": 0.962,
+            "bbox": [
+              84.0,
+              56.0,
+              68.0,
+              78.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 29,
+            "class_name": "class_29",
+            "confidence": 0.961,
+            "bbox": [
+              87.0,
+              58.0,
+              69.0,
+              79.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 30,
+            "class_name": "class_30",
+            "confidence": 0.96,
+            "bbox": [
+              90.0,
+              60.0,
+              70.0,
+              80.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 31,
+            "class_name": "class_31",
+            "confidence": 0.959,
+            "bbox": [
+              93.0,
+              62.0,
+              71.0,
+              81.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 32,
+            "class_name": "class_32",
+            "confidence": 0.958,
+            "bbox": [
+              96.0,
+              64.0,
+              72.0,
+              82.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 33,
+            "class_name": "class_33",
+            "confidence": 0.957,
+            "bbox": [
+              99.0,
+              66.0,
+              73.0,
+              83.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 34,
+            "class_name": "class_34",
+            "confidence": 0.956,
+            "bbox": [
+              102.0,
+              68.0,
+              74.0,
+              84.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 35,
+            "class_name": "class_35",
+            "confidence": 0.955,
+            "bbox": [
+              105.0,
+              70.0,
+              75.0,
+              85.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 36,
+            "class_name": "class_36",
+            "confidence": 0.954,
+            "bbox": [
+              108.0,
+              72.0,
+              76.0,
+              86.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 37,
+            "class_name": "class_37",
+            "confidence": 0.953,
+            "bbox": [
+              111.0,
+              74.0,
+              77.0,
+              87.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 38,
+            "class_name": "class_38",
+            "confidence": 0.952,
+            "bbox": [
+              114.0,
+              76.0,
+              78.0,
+              88.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 39,
+            "class_name": "class_39",
+            "confidence": 0.951,
+            "bbox": [
+              117.0,
+              78.0,
+              79.0,
+              89.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 40,
+            "class_name": "class_40",
+            "confidence": 0.95,
+            "bbox": [
+              120.0,
+              80.0,
+              80.0,
+              90.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 41,
+            "class_name": "class_41",
+            "confidence": 0.949,
+            "bbox": [
+              123.0,
+              82.0,
+              81.0,
+              91.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 42,
+            "class_name": "class_42",
+            "confidence": 0.948,
+            "bbox": [
+              126.0,
+              84.0,
+              82.0,
+              92.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 43,
+            "class_name": "class_43",
+            "confidence": 0.947,
+            "bbox": [
+              129.0,
+              86.0,
+              83.0,
+              93.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 44,
+            "class_name": "class_44",
+            "confidence": 0.946,
+            "bbox": [
+              132.0,
+              88.0,
+              84.0,
+              94.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 45,
+            "class_name": "class_45",
+            "confidence": 0.945,
+            "bbox": [
+              135.0,
+              90.0,
+              85.0,
+              95.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 46,
+            "class_name": "class_46",
+            "confidence": 0.944,
+            "bbox": [
+              138.0,
+              92.0,
+              86.0,
+              96.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 47,
+            "class_name": "class_47",
+            "confidence": 0.943,
+            "bbox": [
+              141.0,
+              94.0,
+              87.0,
+              97.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 48,
+            "class_name": "class_48",
+            "confidence": 0.942,
+            "bbox": [
+              144.0,
+              96.0,
+              88.0,
+              98.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 49,
+            "class_name": "class_49",
+            "confidence": 0.941,
+            "bbox": [
+              147.0,
+              98.0,
+              89.0,
+              99.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 50,
+            "class_name": "class_50",
+            "confidence": 0.94,
+            "bbox": [
+              150.0,
+              100.0,
+              90.0,
+              100.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 51,
+            "class_name": "class_51",
+            "confidence": 0.939,
+            "bbox": [
+              153.0,
+              102.0,
+              91.0,
+              101.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 52,
+            "class_name": "class_52",
+            "confidence": 0.938,
+            "bbox": [
+              156.0,
+              104.0,
+              92.0,
+              102.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 53,
+            "class_name": "class_53",
+            "confidence": 0.9369999999999999,
+            "bbox": [
+              159.0,
+              106.0,
+              93.0,
+              103.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 54,
+            "class_name": "class_54",
+            "confidence": 0.9359999999999999,
+            "bbox": [
+              162.0,
+              108.0,
+              94.0,
+              104.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 55,
+            "class_name": "class_55",
+            "confidence": 0.9349999999999999,
+            "bbox": [
+              165.0,
+              110.0,
+              95.0,
+              105.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 56,
+            "class_name": "class_56",
+            "confidence": 0.9339999999999999,
+            "bbox": [
+              168.0,
+              112.0,
+              96.0,
+              106.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 57,
+            "class_name": "class_57",
+            "confidence": 0.9329999999999999,
+            "bbox": [
+              171.0,
+              114.0,
+              97.0,
+              107.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 58,
+            "class_name": "class_58",
+            "confidence": 0.9319999999999999,
+            "bbox": [
+              174.0,
+              116.0,
+              98.0,
+              108.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 59,
+            "class_name": "class_59",
+            "confidence": 0.9309999999999999,
+            "bbox": [
+              177.0,
+              118.0,
+              99.0,
+              109.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 60,
+            "class_name": "class_60",
+            "confidence": 0.9299999999999999,
+            "bbox": [
+              180.0,
+              120.0,
+              100.0,
+              110.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 61,
+            "class_name": "class_61",
+            "confidence": 0.929,
+            "bbox": [
+              183.0,
+              122.0,
+              101.0,
+              111.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 62,
+            "class_name": "class_62",
+            "confidence": 0.9279999999999999,
+            "bbox": [
+              186.0,
+              124.0,
+              102.0,
+              112.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 63,
+            "class_name": "class_63",
+            "confidence": 0.927,
+            "bbox": [
+              189.0,
+              126.0,
+              103.0,
+              113.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 64,
+            "class_name": "class_64",
+            "confidence": 0.9259999999999999,
+            "bbox": [
+              192.0,
+              128.0,
+              104.0,
+              114.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 65,
+            "class_name": "class_65",
+            "confidence": 0.925,
+            "bbox": [
+              195.0,
+              130.0,
+              105.0,
+              115.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 66,
+            "class_name": "class_66",
+            "confidence": 0.9239999999999999,
+            "bbox": [
+              198.0,
+              132.0,
+              106.0,
+              116.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 67,
+            "class_name": "class_67",
+            "confidence": 0.923,
+            "bbox": [
+              201.0,
+              134.0,
+              107.0,
+              117.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 68,
+            "class_name": "class_68",
+            "confidence": 0.9219999999999999,
+            "bbox": [
+              204.0,
+              136.0,
+              108.0,
+              118.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 69,
+            "class_name": "class_69",
+            "confidence": 0.921,
+            "bbox": [
+              207.0,
+              138.0,
+              109.0,
+              119.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 70,
+            "class_name": "class_70",
+            "confidence": 0.9199999999999999,
+            "bbox": [
+              210.0,
+              140.0,
+              110.0,
+              120.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 71,
+            "class_name": "class_71",
+            "confidence": 0.919,
+            "bbox": [
+              213.0,
+              142.0,
+              111.0,
+              121.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 72,
+            "class_name": "class_72",
+            "confidence": 0.9179999999999999,
+            "bbox": [
+              216.0,
+              144.0,
+              112.0,
+              122.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 73,
+            "class_name": "class_73",
+            "confidence": 0.917,
+            "bbox": [
+              219.0,
+              146.0,
+              113.0,
+              123.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 74,
+            "class_name": "class_74",
+            "confidence": 0.916,
+            "bbox": [
+              222.0,
+              148.0,
+              114.0,
+              124.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 75,
+            "class_name": "class_75",
+            "confidence": 0.915,
+            "bbox": [
+              225.0,
+              150.0,
+              115.0,
+              125.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 76,
+            "class_name": "class_76",
+            "confidence": 0.914,
+            "bbox": [
+              228.0,
+              152.0,
+              116.0,
+              126.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 77,
+            "class_name": "class_77",
+            "confidence": 0.913,
+            "bbox": [
+              231.0,
+              154.0,
+              117.0,
+              127.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 78,
+            "class_name": "class_78",
+            "confidence": 0.912,
+            "bbox": [
+              234.0,
+              156.0,
+              118.0,
+              128.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 79,
+            "class_name": "class_79",
+            "confidence": 0.911,
+            "bbox": [
+              237.0,
+              158.0,
+              119.0,
+              129.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 0,
+            "class_name": "class_0",
+            "confidence": 0.91,
+            "bbox": [
+              240.0,
+              160.0,
+              120.0,
+              130.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 1,
+            "class_name": "class_1",
+            "confidence": 0.909,
+            "bbox": [
+              243.0,
+              162.0,
+              121.0,
+              131.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 2,
+            "class_name": "class_2",
+            "confidence": 0.908,
+            "bbox": [
+              246.0,
+              164.0,
+              122.0,
+              132.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 3,
+            "class_name": "class_3",
+            "confidence": 0.907,
+            "bbox": [
+              249.0,
+              166.0,
+              123.0,
+              133.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 4,
+            "class_name": "class_4",
+            "confidence": 0.906,
+            "bbox": [
+              252.0,
+              168.0,
+              124.0,
+              134.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 5,
+            "class_name": "class_5",
+            "confidence": 0.905,
+            "bbox": [
+              255.0,
+              170.0,
+              125.0,
+              135.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 6,
+            "class_name": "class_6",
+            "confidence": 0.904,
+            "bbox": [
+              258.0,
+              172.0,
+              126.0,
+              136.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 7,
+            "class_name": "class_7",
+            "confidence": 0.903,
+            "bbox": [
+              261.0,
+              174.0,
+              127.0,
+              137.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 8,
+            "class_name": "class_8",
+            "confidence": 0.902,
+            "bbox": [
+              264.0,
+              176.0,
+              128.0,
+              138.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 9,
+            "class_name": "class_9",
+            "confidence": 0.901,
+            "bbox": [
+              267.0,
+              178.0,
+              129.0,
+              139.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 10,
+            "class_name": "class_10",
+            "confidence": 0.9,
+            "bbox": [
+              270.0,
+              180.0,
+              130.0,
+              140.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 11,
+            "class_name": "class_11",
+            "confidence": 0.899,
+            "bbox": [
+              273.0,
+              182.0,
+              131.0,
+              141.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 12,
+            "class_name": "class_12",
+            "confidence": 0.898,
+            "bbox": [
+              276.0,
+              184.0,
+              132.0,
+              142.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 13,
+            "class_name": "class_13",
+            "confidence": 0.897,
+            "bbox": [
+              279.0,
+              186.0,
+              133.0,
+              143.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 14,
+            "class_name": "class_14",
+            "confidence": 0.896,
+            "bbox": [
+              282.0,
+              188.0,
+              134.0,
+              144.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 15,
+            "class_name": "class_15",
+            "confidence": 0.895,
+            "bbox": [
+              285.0,
+              190.0,
+              135.0,
+              145.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 16,
+            "class_name": "class_16",
+            "confidence": 0.894,
+            "bbox": [
+              288.0,
+              192.0,
+              136.0,
+              146.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 17,
+            "class_name": "class_17",
+            "confidence": 0.893,
+            "bbox": [
+              291.0,
+              194.0,
+              137.0,
+              147.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 18,
+            "class_name": "class_18",
+            "confidence": 0.892,
+            "bbox": [
+              294.0,
+              196.0,
+              138.0,
+              148.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 19,
+            "class_name": "class_19",
+            "confidence": 0.891,
+            "bbox": [
+              297.0,
+              198.0,
+              139.0,
+              149.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 20,
+            "class_name": "class_20",
+            "confidence": 0.89,
+            "bbox": [
+              300.0,
+              200.0,
+              140.0,
+              150.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 21,
+            "class_name": "class_21",
+            "confidence": 0.889,
+            "bbox": [
+              303.0,
+              202.0,
+              141.0,
+              151.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 22,
+            "class_name": "class_22",
+            "confidence": 0.888,
+            "bbox": [
+              306.0,
+              204.0,
+              142.0,
+              152.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 23,
+            "class_name": "class_23",
+            "confidence": 0.887,
+            "bbox": [
+              309.0,
+              206.0,
+              143.0,
+              153.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 24,
+            "class_name": "class_24",
+            "confidence": 0.886,
+            "bbox": [
+              312.0,
+              208.0,
+              144.0,
+              154.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 25,
+            "class_name": "class_25",
+            "confidence": 0.885,
+            "bbox": [
+              315.0,
+              210.0,
+              145.0,
+              155.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 26,
+            "class_name": "class_26",
+            "confidence": 0.884,
+            "bbox": [
+              318.0,
+              212.0,
+              146.0,
+              156.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 27,
+            "class_name": "class_27",
+            "confidence": 0.883,
+            "bbox": [
+              321.0,
+              214.0,
+              147.0,
+              157.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 28,
+            "class_name": "class_28",
+            "confidence": 0.882,
+            "bbox": [
+              324.0,
+              216.0,
+              148.0,
+              158.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 29,
+            "class_name": "class_29",
+            "confidence": 0.881,
+            "bbox": [
+              327.0,
+              218.0,
+              149.0,
+              159.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 30,
+            "class_name": "class_30",
+            "confidence": 0.88,
+            "bbox": [
+              330.0,
+              220.0,
+              150.0,
+              160.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 31,
+            "class_name": "class_31",
+            "confidence": 0.879,
+            "bbox": [
+              333.0,
+              222.0,
+              151.0,
+              161.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 32,
+            "class_name": "class_32",
+            "confidence": 0.878,
+            "bbox": [
+              336.0,
+              224.0,
+              152.0,
+              162.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 33,
+            "class_name": "class_33",
+            "confidence": 0.877,
+            "bbox": [
+              339.0,
+              226.0,
+              153.0,
+              163.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 34,
+            "class_name": "class_34",
+            "confidence": 0.876,
+            "bbox": [
+              342.0,
+              228.0,
+              154.0,
+              164.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 35,
+            "class_name": "class_35",
+            "confidence": 0.875,
+            "bbox": [
+              345.0,
+              230.0,
+              155.0,
+              165.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 36,
+            "class_name": "class_36",
+            "confidence": 0.874,
+            "bbox": [
+              348.0,
+              232.0,
+              156.0,
+              166.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 37,
+            "class_name": "class_37",
+            "confidence": 0.873,
+            "bbox": [
+              351.0,
+              234.0,
+              157.0,
+              167.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 38,
+            "class_name": "class_38",
+            "confidence": 0.872,
+            "bbox": [
+              354.0,
+              236.0,
+              158.0,
+              168.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 39,
+            "class_name": "class_39",
+            "confidence": 0.871,
+            "bbox": [
+              357.0,
+              238.0,
+              159.0,
+              169.0
+            ],
+            "landmarks": null
+          }
+        ]
+      },
+      "payload_len": 1008,
+      "payload_hex": "7b2276223a312c226368223a2263616d30332d766572792d6c6f6e672d6368616e6e656c2d69642d666f722d6275646765742d7072657373757265222c22707473223a3535353636363737373838382c226167655f6d73223a3235302e342c22646574223a5b7b2263223a302c226e223a22636c6173735f30222c2270223a302e39392c2262223a5b302c302c34302c35305d7d2c7b2263223a312c226e223a22636c6173735f31222c2270223a302e3938392c2262223a5b332c322c34312c35315d7d2c7b2263223a322c226e223a22636c6173735f32222c2270223a302e3938382c2262223a5b362c342c34322c35325d7d2c7b2263223a332c226e223a22636c6173735f33222c2270223a302e3938372c2262223a5b392c362c34332c35335d7d2c7b2263223a342c226e223a22636c6173735f34222c2270223a302e3938362c2262223a5b31322c382c34342c35345d7d2c7b2263223a352c226e223a22636c6173735f35222c2270223a302e3938352c2262223a5b31352c31302c34352c35355d7d2c7b2263223a362c226e223a22636c6173735f36222c2270223a302e3938342c2262223a5b31382c31322c34362c35365d7d2c7b2263223a372c226e223a22636c6173735f37222c2270223a302e3938332c2262223a5b32312c31342c34372c35375d7d2c7b2263223a382c226e223a22636c6173735f38222c2270223a302e3938322c2262223a5b32342c31362c34382c35385d7d2c7b2263223a392c226e223a22636c6173735f39222c2270223a302e3938312c2262223a5b32372c31382c34392c35395d7d2c7b2263223a31302c226e223a22636c6173735f3130222c2270223a302e39382c2262223a5b33302c32302c35302c36305d7d2c7b2263223a31312c226e223a22636c6173735f3131222c2270223a302e3937392c2262223a5b33332c32322c35312c36315d7d2c7b2263223a31322c226e223a22636c6173735f3132222c2270223a302e3937382c2262223a5b33362c32342c35322c36325d7d2c7b2263223a31332c226e223a22636c6173735f3133222c2270223a302e3937372c2262223a5b33392c32362c35332c36335d7d2c7b2263223a31342c226e223a22636c6173735f3134222c2270223a302e3937362c2262223a5b34322c32382c35342c36345d7d2c7b2263223a31352c226e223a22636c6173735f3135222c2270223a302e3937352c2262223a5b34352c33302c35352c36355d7d2c7b2263223a31362c226e223a22636c6173735f3136222c2270223a302e3937342c2262223a5b34382c33322c35362c36365d7d2c7b2263223a31372c226e223a22636c6173735f3137222c2270223a302e3937332c2262223a5b35312c33342c35372c36375d7d5d7d",
+      "nal_len": 1033,
+      "nal_hex": "0605ffffffff0441494e56522d5345492d763100000300017b2276223a312c226368223a2263616d30332d766572792d6c6f6e672d6368616e6e656c2d69642d666f722d6275646765742d7072657373757265222c22707473223a3535353636363737373838382c226167655f6d73223a3235302e342c22646574223a5b7b2263223a302c226e223a22636c6173735f30222c2270223a302e39392c2262223a5b302c302c34302c35305d7d2c7b2263223a312c226e223a22636c6173735f31222c2270223a302e3938392c2262223a5b332c322c34312c35315d7d2c7b2263223a322c226e223a22636c6173735f32222c2270223a302e3938382c2262223a5b362c342c34322c35325d7d2c7b2263223a332c226e223a22636c6173735f33222c2270223a302e3938372c2262223a5b392c362c34332c35335d7d2c7b2263223a342c226e223a22636c6173735f34222c2270223a302e3938362c2262223a5b31322c382c34342c35345d7d2c7b2263223a352c226e223a22636c6173735f35222c2270223a302e3938352c2262223a5b31352c31302c34352c35355d7d2c7b2263223a362c226e223a22636c6173735f36222c2270223a302e3938342c2262223a5b31382c31322c34362c35365d7d2c7b2263223a372c226e223a22636c6173735f37222c2270223a302e3938332c2262223a5b32312c31342c34372c35375d7d2c7b2263223a382c226e223a22636c6173735f38222c2270223a302e3938322c2262223a5b32342c31362c34382c35385d7d2c7b2263223a392c226e223a22636c6173735f39222c2270223a302e3938312c2262223a5b32372c31382c34392c35395d7d2c7b2263223a31302c226e223a22636c6173735f3130222c2270223a302e39382c2262223a5b33302c32302c35302c36305d7d2c7b2263223a31312c226e223a22636c6173735f3131222c2270223a302e3937392c2262223a5b33332c32322c35312c36315d7d2c7b2263223a31322c226e223a22636c6173735f3132222c2270223a302e3937382c2262223a5b33362c32342c35322c36325d7d2c7b2263223a31332c226e223a22636c6173735f3133222c2270223a302e3937372c2262223a5b33392c32362c35332c36335d7d2c7b2263223a31342c226e223a22636c6173735f3134222c2270223a302e3937362c2262223a5b34322c32382c35342c36345d7d2c7b2263223a31352c226e223a22636c6173735f3135222c2270223a302e3937352c2262223a5b34352c33302c35352c36355d7d2c7b2263223a31362c226e223a22636c6173735f3136222c2270223a302e3937342c2262223a5b34382c33322c35362c36365d7d2c7b2263223a31372c226e223a22636c6173735f3137222c2270223a302e3937332c2262223a5b35312c33342c35372c36375d7d5d7d80",
+      "roundtrip_ok": true
+    },
+    {
+      "name": "small_budget_truncation",
+      "input": {
+        "channel_id": "cam04",
+        "pts_ns": 1,
+        "age_ms": 1.0,
+        "budget": 200,
+        "detections": [
+          {
+            "class_id": 0,
+            "class_name": "class_0",
+            "confidence": 0.99,
+            "bbox": [
+              0.0,
+              0.0,
+              40.0,
+              50.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 1,
+            "class_name": "class_1",
+            "confidence": 0.989,
+            "bbox": [
+              3.0,
+              2.0,
+              41.0,
+              51.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 2,
+            "class_name": "class_2",
+            "confidence": 0.988,
+            "bbox": [
+              6.0,
+              4.0,
+              42.0,
+              52.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 3,
+            "class_name": "class_3",
+            "confidence": 0.987,
+            "bbox": [
+              9.0,
+              6.0,
+              43.0,
+              53.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 4,
+            "class_name": "class_4",
+            "confidence": 0.986,
+            "bbox": [
+              12.0,
+              8.0,
+              44.0,
+              54.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 5,
+            "class_name": "class_5",
+            "confidence": 0.985,
+            "bbox": [
+              15.0,
+              10.0,
+              45.0,
+              55.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 6,
+            "class_name": "class_6",
+            "confidence": 0.984,
+            "bbox": [
+              18.0,
+              12.0,
+              46.0,
+              56.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 7,
+            "class_name": "class_7",
+            "confidence": 0.983,
+            "bbox": [
+              21.0,
+              14.0,
+              47.0,
+              57.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 8,
+            "class_name": "class_8",
+            "confidence": 0.982,
+            "bbox": [
+              24.0,
+              16.0,
+              48.0,
+              58.0
+            ],
+            "landmarks": null
+          },
+          {
+            "class_id": 9,
+            "class_name": "class_9",
+            "confidence": 0.981,
+            "bbox": [
+              27.0,
+              18.0,
+              49.0,
+              59.0
+            ],
+            "landmarks": null
+          }
+        ]
+      },
+      "payload_len": 142,
+      "payload_hex": "7b2276223a312c226368223a2263616d3034222c22707473223a312c226167655f6d73223a312c22646574223a5b7b2263223a302c226e223a22636c6173735f30222c2270223a302e39392c2262223a5b302c302c34302c35305d7d2c7b2263223a312c226e223a22636c6173735f31222c2270223a302e3938392c2262223a5b332c322c34312c35315d7d5d7d",
+      "nal_len": 163,
+      "nal_hex": "06059e41494e56522d5345492d763100000300017b2276223a312c226368223a2263616d3034222c22707473223a312c226167655f6d73223a312c22646574223a5b7b2263223a302c226e223a22636c6173735f30222c2270223a302e39392c2262223a5b302c302c34302c35305d7d2c7b2263223a312c226e223a22636c6173735f31222c2270223a302e3938392c2262223a5b332c322c34312c35315d7d5d7d80",
+      "roundtrip_ok": true
+    },
+    {
+      "name": "budget_too_small_for_one_envelope_raises",
+      "input": {
+        "channel_id": "cam05",
+        "pts_ns": 1,
+        "age_ms": 1.0,
+        "budget": 40,
+        "detections": [
+          {
+            "class_id": 0,
+            "class_name": "class_0",
+            "confidence": 0.99,
+            "bbox": [
+              0.0,
+              0.0,
+              40.0,
+              50.0
+            ],
+            "landmarks": null
+          }
+        ]
+      },
+      "expect_exception": {
+        "raised": true,
+        "message": "SEI 预算不足以容纳基础元数据"
+      }
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+[Unit]
+Description=AINVR Recorder Microservice (SRS recording, local/SMB storage)
+Documentation=file:///home/sunrise/ainvr/recording-service/docs/recording-write-backpressure-design-2026-09-24.md
+After=network-online.target docker.service
+Wants=network-online.target
+# 启动频率限制只在 [Unit] 段生效（旧版误放 [Service] 被 systemd 忽略）。
+# 无人值守录像机：显式关闭限流，崩溃后永远按 RestartSec 重试；若启用
+# 60s/5 次限流，连续失败或重启助手连点几次后 systemd 会永久放弃拉起。
+StartLimitIntervalSec=0
+
+# 需要 mount.cifs（CIFS 挂载为特权操作），以 root 运行；
+# 仅监听 127.0.0.1:8100，由 nginx/BFF 代理对外。
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/sunrise/ainvr/recording-service
+Environment=PYTHONPATH=/home/sunrise/ainvr/recording-service/src
+Environment=RECORDER_DATA=/home/sunrise/ainvr/recording-service/data
+# 统一配置中心：启动即接入，轮询 BFF 拉取已发布配置并上报应用状态。
+# 令牌不写入 unit（曾随文件入库导致泄露），统一由 EnvironmentFile 注入，
+# 真值放 /etc/ainvr-recorder/service.env（chmod 0600，root:root），
+# 模板见同目录 service.env.example，变量名为 CONFIG_SERVICE_TOKEN_RECORDER
+# （与 srs-web-console/.env 同名变量同值；不带 token 也能拉配置，但拿到的
+# ${secret:...} 永远是占位符）。
+Environment=CONFIG_CENTER_URL=http://127.0.0.1:3001
+Environment=CONFIG_CENTER_POLL=10
+EnvironmentFile=/etc/ainvr-recorder/service.env
+ExecStart=/home/sunrise/ainvr/.venv/bin/python3 -m recorder.main \
+  --data-dir /home/sunrise/ainvr/recording-service/data
+Restart=always
+RestartSec=5
+
+# 安全加固（root 仍收紧能力边界：不需要特权升级/加载内核模块等）
+NoNewPrivileges=true
+# ProtectSystem=full 会把 /etc 和 /usr 挂只读，这里显式放行服务需要写的路径
+# （SMB 凭据/数据/本机录像），其余系统目录仍只读。
+ProtectSystem=full
+ReadWritePaths=/etc/ainvr-recorder /mnt/ainvr-recorder \
+  /home/sunrise/ainvr/recording-service/data /home/sunrise/ainvr/data
+ProtectHome=false
+PrivateTmp=true
+KillSignal=SIGTERM
+# mixed：SIGTERM 只发主进程，由录像服务有序停止子进程（先停读端、写端写完
+# 积压并收尾 fMP4）；主进程退出或超时后 systemd 再对 cgroup 剩余进程（含卡在
+# NAS D 状态的 ffmpeg）发 SIGKILL，避免重启后遗留进程双写分段。
+# 不用 control-group：它把 SIGTERM 同时发给写端，抢在有序停止之前打断写入。
+KillMode=mixed
+# 重连交接时同通道最多两代管线，给有界排空和进程/管道回收留足总时间。
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

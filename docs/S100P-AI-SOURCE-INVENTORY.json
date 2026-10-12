@@ -1,0 +1,1482 @@
+[
+  {
+    "path": ".gitignore",
+    "sha256": "b7643f8555be3a90bef2c31fc2262ce4de78cbe47d1df61c855f1376580b3751",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "CMakeLists.txt",
+    "sha256": "afb570c5c419e21a8e7ef9198aec72adaa8f6d26b57107b7619dd78e330268e9",
+    "dependencies": [
+      "cuda",
+      "opencv",
+      "tensorrt",
+      "jetson"
+    ],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "config/config.example.yaml",
+    "sha256": "e13c77e9aef31a1e921a703aa31410435c3cd31faea14112a3200935b715be63",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "deploy/ai-service.service.example",
+    "sha256": "f58785a8e14d438548c77fa4b0f18d9110f0194613ac739ab602bd782d41f6f1",
+    "dependencies": [
+      "cuda",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "deploy/service.env.example",
+    "sha256": "06bcbe15e7c243071a03eba4c28e4f1ebc11478088496a43b0bca44240053f7e",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "deploy/teche-grounding.service.example",
+    "sha256": "2bcbe109d28a377275a48af58858870a7ce90a03e6312ba86132729818a121a0",
+    "dependencies": [
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "deploy/teche-yoloe.service.example",
+    "sha256": "a6fb7de8f812f518836be2bda780a1b55e1277126aff36d16ee398b3bcc1eb78",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "docs/archive-gpu-isolation-2026-10-04.md",
+    "sha256": "87dc22c90339c5575f60adb9cfa88f2e16df057850a42a9c76794a71c073f71e",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "docs/archive-toggle-2026-10-04.md",
+    "sha256": "262c864e93054c296865fa5a1bc062bba075a744bd74bdd111dda441de0c6237",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "docs/erp全景图截取矩形中心点坐标加宽高.md",
+    "sha256": "d2161cc1ca6e856862f33d70cc4167c1ad1ad6161793975c184dced14584350f",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "docs/exposure-tone-design.md",
+    "sha256": "deacd21219cf87bbe18b6278150ea57de81bbcd1173eb0d715916744077d38db",
+    "dependencies": [
+      "cuda"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "docs/jetson AI程序优化.md",
+    "sha256": "ad6c7227778621e91ea9d3da0a9326c05a6462bc03ab3629f9568774e645661a",
+    "dependencies": [
+      "cuda",
+      "opencv",
+      "tensorrt",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "docs/recovery-policy.md",
+    "sha256": "64ca958529a1c1fdbf1744267f4f86539a3bb13e0302939e061676a1da0db2d0",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "docs/snapshot-pipeline-2026-10-04.md",
+    "sha256": "ebb91faae193fc1316db5c7486fae186c9e02118fcfd07e0e27a44b83ddc8453",
+    "dependencies": [
+      "cuda",
+      "tensorrt",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "docs/v1_parity_design.md",
+    "sha256": "2b959c1ba8068f7820f2d3bfba4b1440240c6579c3aafd54dbffe5521b7d4129",
+    "dependencies": [
+      "cuda",
+      "opencv",
+      "tensorrt",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "docs/vr播放器算法.md",
+    "sha256": "4aa1797bb572db7fff7519d00dae7b0cecacbea1775542f1d87a11c53bb8f7ce",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "docs/亮度调节.md",
+    "sha256": "3eb5ea90f48cf439b4220c5ed9133c2814aa1df5d5bb83a7dbc88af514df5c26",
+    "dependencies": [
+      "cuda",
+      "opencv",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "docs/全景和小行星坐标相互转换算法.md",
+    "sha256": "565ca7fbe4273634d5d6f8b13195eb29de61bc0e5c52bf6465dcce6a541e85a5",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "docs/正交相机.md",
+    "sha256": "4bfd4c084c500e27cd1c80315ea5f53c6e456bf59e52cedabdc97b2f386e5e81",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "gen_postprocess_fixtures.py",
+    "sha256": "dd91de6daea77b222218ea007e836d9bc3f7ef5d9c7bb18dee490887427b4f93",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "gen_preprocess_fixtures.py",
+    "sha256": "36e47e73b0c14c583ccc9b8ab5675d880ac4465449d7fa3f91330650457eb3a9",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "gen_sei_fixtures.py",
+    "sha256": "dc4f48510207f80280924dd27b8c53537e79b9e5401c425a082c0c827f752ef5",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "gen_trt_fixtures.py",
+    "sha256": "6f1b44df810a43b5b9df6718f2b077421f46ba6b31ff2ee6215d257ec196abab",
+    "dependencies": [
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "runtime/locateanything/launch.sh",
+    "sha256": "2468fb9c225d830c60ff57c3d06b576724697466348a8264d57e25a7c0ee4f7b",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "runtime/locateanything/runtime.py",
+    "sha256": "63b3b92f00defe58ce02e4ff6c72143863b2069a22a0d39a60d6a292016138e7",
+    "dependencies": [
+      "cuda",
+      "tensorrt",
+      "torch"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "runtime/locateanything/test_runtime.py",
+    "sha256": "dc6175849e9f85d71c888c30ca7989bd355e8de7ab3b9ad88878267a04b12116",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "runtime/prompted_server.py",
+    "sha256": "324c5f9dab47ef95f5f8b7f8a5e98a9548748a2fe91bf1475f0fba450747975d",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "runtime/resident_worker.py",
+    "sha256": "b9a5cff0bd92341ea469e6be4826f2c99b12fe0ca6f619642fd5610fb4d5b716",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "runtime/test_prompted_server.py",
+    "sha256": "50b05d7793a8f9d891b1d9ca578c84e0a4cc1e67af033099706576e4b55d9e02",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "runtime/test_resident_worker.py",
+    "sha256": "dba024a27faa90cd5879dd6e2f260192bfc435b0d93e1e813d8c23f400f614f6",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "runtime/yoloe/launch.sh",
+    "sha256": "2bdb338ebc4108b815af99f70851a460bbe5835001a194093f00d2cd5f08bf20",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "runtime/yoloe/runtime.py",
+    "sha256": "d9941b15057ef20d6bbc569736786d186041857beb517e2326beeec8a02fdb2d",
+    "dependencies": [
+      "cuda",
+      "torch"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "runtime/yoloe/test_runtime.py",
+    "sha256": "cb94fa9bae30801102336d562156082fb9142678053ef035bfb688335e4dc76b",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/adapters/base_adapter.hpp",
+    "sha256": "d895cd9bd3136da068ddca25615e2eb034fe3c7b8e6884fb48bd54cf9cf522ff",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/adapters/factory.cpp",
+    "sha256": "b4f4b170f2273487ed4a820d75073edfb027bbfb3b6ec46bcb14a5769d91458e",
+    "dependencies": [
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/adapters/factory.hpp",
+    "sha256": "50313f81c2d8b283bbbd2c0ca41e31ed61d735a8c59ca15e6e012f3d9cfa6f1a",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/adapters/locateanything_trt.hpp",
+    "sha256": "aeda9150afdfac583f8c334c16182a66fd8bb8701d56076ce64d8257ea5d2883",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/adapters/prompted_socket.hpp",
+    "sha256": "291abfb98a7066c104ce8775bb76b8dfb1f683fd0831a8061b6f48cff20b4a39",
+    "dependencies": [
+      "opencv",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/adapters/scrfd_trt.cpp",
+    "sha256": "983434570f3d1751be969d76f512a02d81a9e4714c15e267bf7939eafe2d9bbc",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/adapters/scrfd_trt.hpp",
+    "sha256": "b64dcbab7d45657ac8a83abbae0820b0725d59821f1c4a6999b7ff5f70249bfc",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/adapters/yolo26_trt.cpp",
+    "sha256": "4f9e0419d32a2d73b6c9a819b04d4c6a5e61b989d35cfb2c5eb82761a4064629",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/adapters/yolo26_trt.hpp",
+    "sha256": "1f04cc068ed681adaee9f53eeab84aad11b505f708344ebd0d68dd2b0437342a",
+    "dependencies": [
+      "cuda",
+      "tensorrt",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/adapters/yoloe_pt.hpp",
+    "sha256": "2450b7a25bd3d926af37749c61956a38c4305f1b846fe248df5d2e7c5d8f5cb0",
+    "dependencies": [
+      "cuda"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/adapters/yoloface_trt.cpp",
+    "sha256": "8e12832bdc6b807d7c123e48b174eec402f7005f40ffe2998c5768b448b31200",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/adapters/yoloface_trt.hpp",
+    "sha256": "566b8e01e5b25a96643cf99a656fd85f8bddeb79e12f66b34233b4cf0ddd0b9f",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/api/control_server.cpp",
+    "sha256": "31c90044d6f5f80e257ee98a9c360b9a44a10c57b58c204a7c689a5d503bb759",
+    "dependencies": [
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/api/control_server.hpp",
+    "sha256": "34fa2beeb494233bc697a8869d5cdc9b3eec90d85c44772f849e2fcdb92c6a82",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/api/internal_network.hpp",
+    "sha256": "4fc508f0999e2b8d33d7308f524ff9f64727b3f9adf521a4c139a4d3f6e5168b",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/config/config.cpp",
+    "sha256": "a569348bce9feecfa803e9f5731f74b9d29b74689be38bd506cc05bc1cfd105b",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/config/config.hpp",
+    "sha256": "af89fdb238ba3a270edb4dd8668951afa833c91ccaa95dc8407fe97c4cc8e424",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/config/config_center_apply.cpp",
+    "sha256": "33e9bf9e76adc0d0f864642bd04b7daa03444bdaf235cdd62bbf836c9dcdefa0",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/config/config_center_apply.hpp",
+    "sha256": "19f044f6ba31390b28a1f0a80748eabccdce511fb50792ef36260086cf76b293",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/config/config_center_client.cpp",
+    "sha256": "cfdc8a806c21af3adefe3665d97bad3ad2413e52874a6f59ef62d9cb6b0a56af",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/config/config_center_client.hpp",
+    "sha256": "c32d06d0b845a4d74a03052307b875ecf7766723dc2bd31d628d1990675acba3",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/config/config_store.cpp",
+    "sha256": "afc7f9d40b070a15e246b33eb6b88a5994d0c4b9204757e87b1ccbcbc917f06a",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/config/config_store.hpp",
+    "sha256": "cb0fe02bab04e43ef1871121ae3f05bf1792f0b690722e062b26f6f58e5270e9",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/config/durable_file.hpp",
+    "sha256": "de5418452704dc3462322db4d4f09f0f8e8b7d6942bf37fd8a6b488adb724f8f",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/config/yaml_json.cpp",
+    "sha256": "1d89346530cbb8a0b4419168db56f658cfdfa8bd6b1ac4bc853d70072246f04a",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/config/yaml_json.hpp",
+    "sha256": "d2daaf836ed3151a998e277b5cb72a3b69429b15d1436a85dfe616e4de0f43a7",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/licensing/license_client.cpp",
+    "sha256": "e5c75687f6118fdd541a0799c3f561cf188f3fdb63b77649f2be8df1a49a6188",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/licensing/license_client.hpp",
+    "sha256": "e06daae9f3fbfcc322eb60872abc18434e32d076e17fb519281965b0f897e488",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/main.cpp",
+    "sha256": "a191cb045766214711062606a23cd7f58b4aabf43071cc704e52ce114b863889",
+    "dependencies": [
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/archive_batch.hpp",
+    "sha256": "dc57ab8e7695019af7737826456efd4fbc5ee8c0e992e1221810a6d5d21020ac",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/output/archive_capacity.hpp",
+    "sha256": "2e3050dc1c0b1de69ef718b141703a35c13e05c137a914462a4b55fcd98542af",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/output/archive_executor.hpp",
+    "sha256": "e1106c8fba8ce79c49f0556344ebe343696cd07b56433c9bb75f203cb7f023e3",
+    "dependencies": [
+      "jetson"
+    ],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/output/erp_perspective.cpp",
+    "sha256": "71431a46602d1e570e10b1a5710db95d6520461287e6346534270a39d36ef7d9",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/erp_perspective.hpp",
+    "sha256": "f6d7f49f623e4ced458883008d9cb5f410c9b6fcc2d5b71796b822b251a952d2",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/exposure.cpp",
+    "sha256": "8bdd9635283ee0ce19c525db6f2972b41a1b2845da0e4df236bbdf1c36244674",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/exposure.hpp",
+    "sha256": "edbe91e75189f6241cade79b40d388b898f8a826b9d1516f668f1bee0274d2a6",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/exposure_cuda.cu",
+    "sha256": "9cc9abc32f7a1c12c22a70a7753bc593a5a0b1a459537426ae0c150467642864",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/exposure_cuda.hpp",
+    "sha256": "e43729447934349aaf11b00f80b90bdf7400c8704de18f33b6f2c712794d8dcf",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/face_enhancer.cpp",
+    "sha256": "02a6633da6113ed1ddf8ca12938ff1b0debe63d7e64d4d3fe27846d1b9edc28d",
+    "dependencies": [
+      "cuda",
+      "opencv",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/face_enhancer.hpp",
+    "sha256": "902a6607d35c4414b9bb8d01d1dc1de4173d57b362d940f9980fdf27aa4fdff7",
+    "dependencies": [
+      "cuda",
+      "opencv",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/gpu_image.cpp",
+    "sha256": "ae6dd8908febca2fe9daeaa5b0f034af3ab755c065d9a6b58338015fa75c9278",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/gpu_image.hpp",
+    "sha256": "2a8f84cff92117b61a1fe88ed928ae2cfd7210fa88b9b6b7a4e7ba3adc6773a1",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/history_deletions.hpp",
+    "sha256": "99553c103d4eaf851b0edc97f99dc5a119b1b7b5f2182ac8a402fc5dc2cc7547",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/output/result.cpp",
+    "sha256": "f3eeef511103ed150d8d851b76688aac8573a8d7ecbddc407d9e24689c1bdcf9",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/output/result.hpp",
+    "sha256": "a37759761b48aad9844020c6a080bb19782a57391ea6c4e8ad24e73b1e46cab2",
+    "dependencies": [
+      "cuda"
+    ],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/output/result_buffer.cpp",
+    "sha256": "f675d6175c2e931ba5d20de49bf3f8777c4d791a17adc4036d62d554bfa2cb80",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/output/result_buffer.hpp",
+    "sha256": "2b9fa314e094c0b19c349ac7634cd487cbf40c3142b1044e375f53ff83adf625",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/output/snapshot_crop.cpp",
+    "sha256": "b11b942589fce727fdd7c62d100143df4704a2cb69f6542f8d876914dfae485e",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/snapshot_download.hpp",
+    "sha256": "840059c5efe8cebd691fa9f11eaf9cb20d29efc146d861ed8f289af36919d17a",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/snapshot_internal.hpp",
+    "sha256": "2829223eb69b2ba6da210cf59e9b7a431a2a3f30fa8d5cf7bfe6e8016448e3c5",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/snapshot_pending.cpp",
+    "sha256": "5ddb1967bd709db2684b0e902bb683f683347abb1e720e9f7899244c9219e9f0",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/snapshot_pipeline.cpp",
+    "sha256": "ab7e31d8d227483598f87d1d761ff029c4ca29c2ef450b4d1d077e58720d3d92",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/snapshot_processing.cpp",
+    "sha256": "bae6fd15e85ac001d852565643078a770d3aac02222f50f8c77ef1c5325964e0",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/snapshot_repository.cpp",
+    "sha256": "900adc366ed67266ca0d214500f10efee0ca9fd7fcb11e83f67c47d051a57216",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/output/snapshot_store.cpp",
+    "sha256": "ecf27ef6613090f160e12f11ac7c68fe4067d9e2662ddcedb92f88fd82ada634",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/output/snapshot_store.hpp",
+    "sha256": "2add244a2154b9176dc39757ed6ebb10dc954ce000950f76cd94c3de2e1ecf38",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/pipeline/channel_worker.cpp",
+    "sha256": "89dee834bd2145924a57e4b73efad61e0b5e33afccd65b8a314e036e0a36f107",
+    "dependencies": [
+      "cuda",
+      "opencv",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/pipeline/channel_worker.hpp",
+    "sha256": "96604cab8bdfbce8d4856d26ff835ec6e61a372401a5317e58c86a29a7bc071f",
+    "dependencies": [
+      "opencv",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/pipeline/frame_accounting.hpp",
+    "sha256": "69a1a8ad9d6725b4c172c28c1fc0cd1f57005bde5b2ef97d9519108476d64716",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/pipeline/normalize_nchw.cu",
+    "sha256": "facc457bf08a50fa266c806d7c9762b4117f72a0917d5260cdac1a548f0e0bb2",
+    "dependencies": [
+      "cuda"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/pipeline/normalize_nchw.hpp",
+    "sha256": "1688b18a9bf375718879397544b23dd4d3a7074927eccd549f7a0f34b920847b",
+    "dependencies": [
+      "cuda"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/pipeline/postprocessor.cpp",
+    "sha256": "7244d748d9bfd188c47917cb8cb71a41550c358b7a17cf7d45670d3aaee19b43",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/pipeline/postprocessor.hpp",
+    "sha256": "3accc946925baa2f506f3ba8f688e0808a8fb85ea61d61835160cccb8cd2079d",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/pipeline/preprocess_config.hpp",
+    "sha256": "0467bdf354d7f38608100b683c071ba0d51439de367a126ed1cce4e89d66ad39",
+    "dependencies": [
+      "cuda"
+    ],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/pipeline/preprocessor.cpp",
+    "sha256": "f68afb460cfdcce1cfa1389a7d33030719d3cfed6aaef602df01adf23e9cda41",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/pipeline/preprocessor.hpp",
+    "sha256": "6e24b1107c0baeaa9b358ec747798294e3f4084f1d203b1643f8c8b97129d61a",
+    "dependencies": [
+      "cuda",
+      "opencv",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/pipeline/scale_info.cpp",
+    "sha256": "666a9dc48d01cd208081d5c6670c56b14b8fd9fb35d05de486893f819fb97024",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/pipeline/scale_info.hpp",
+    "sha256": "d7bdde7af9a9e9ea30ef1a0cc648ba5a4ca4abad521a32c447cba4601d8437b6",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/au_buffer.cpp",
+    "sha256": "3b0da365ab9b1a38c5d7d5fca3c62bff631f454fab573f7e6da394ff326d2dc8",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/au_buffer.hpp",
+    "sha256": "03e679662bb8c2a41b35a06295ee3bb927fd522917c097115b446900f7c5644e",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/flv_hevc.cpp",
+    "sha256": "c6f05da81a1ebb6b54f9b0ba893edbea646dd5f94154730b744e222129ed64db",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/flv_hevc.hpp",
+    "sha256": "a0856e7f9a34b425fed60c62ba9ec8169ae6e0a83015b873a50d448d34073d98",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/flv_hevc_elements.cpp",
+    "sha256": "d44eb1d9c5156eef4048857eefc8c84037d0597265616168acc9b8fb8030c43d",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/flv_hevc_elements.hpp",
+    "sha256": "cfee2cdbd63c73a58a40e2e89dd4116cd62d8e67a20397ec2584991eec87e80b",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/publisher.cpp",
+    "sha256": "c389cf112986aef96815ac3a7c764ecc0a28052f4fa667e5a1cb8aab6c11215f",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/publisher.hpp",
+    "sha256": "cbec4267e9d22d1c91ecfee8b9a91ee80c61e7f616ca6b5482b818f8247eb30e",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/reconnect.cpp",
+    "sha256": "3d94a6b647993b06b20877ec6d82ad6912f8a7be500815674a31ba63226c2781",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/reconnect.hpp",
+    "sha256": "5861cacac420684c269587a497e185bef684b6c1376703f97f6a77030f190a38",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/sei.cpp",
+    "sha256": "6f2c7b1d5a36557064b8d7ab855335266d31288b7c89e2e77fbedf6cccf9ab3e",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/sei.hpp",
+    "sha256": "505fecf8c6895224ee8f658f86191171ac25493dbb1d0cbd2541dc97a12cc40f",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/source.cpp",
+    "sha256": "d28b5859853bd9dd7a1c8d5ee613c319f0da6bad83fe136b2df38d227da78c61",
+    "dependencies": [
+      "cuda",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/stream/source.hpp",
+    "sha256": "2a908da6ab02b66a75ecbb0f8bffe765ea8b316491bb3d30f918bbe7f887508c",
+    "dependencies": [
+      "cuda",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/stream/srs_codec_probe.cpp",
+    "sha256": "56325013d4c9c70f32f462e82e4131a8531369acca6f0f3f10f054763cd9f987",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/stream/srs_codec_probe.hpp",
+    "sha256": "6f01060cbe9c6816b8736d885904bea14fb7c81ac5252f4c763c7b83d3c89ac5",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/stream/video_codec.cpp",
+    "sha256": "0fdf42db3b13604f0d8158baba5fee7b6fdd63d85685e88b230443aec53d8377",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/stream/video_codec.hpp",
+    "sha256": "d98da970b42b2e2652b98c070e413a08899cb23e6170b724140cd80c1d92de76",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/utils/coco.hpp",
+    "sha256": "dadc8b84fbf90451fa079a82844b93d0a904d195dbcc3dbf554c5f0a0e453c20",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/utils/crash_handler.cpp",
+    "sha256": "3b24534d54161ec2504627c8836b801b6ed0df2150cab43f50e5d15718fb366d",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/utils/crash_handler.hpp",
+    "sha256": "7c0375f4a78dc5fc2c629d83e122355250f6eab914654543fe22eb926d0b6739",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/utils/log.cpp",
+    "sha256": "c76f5b0b26da80bad9b0c03d31f6c67c44c2481bb83c95bea2b738a14d3ee8e3",
+    "dependencies": [
+      "tensorrt"
+    ],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/utils/log.hpp",
+    "sha256": "858e0419dd20d2c1ed95fe6909de149a989812593125cbdb6cf5872699f5cbcf",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/utils/systemd_watchdog.hpp",
+    "sha256": "538e2323e68ab7ef542c8a5dfab1fd3b32c8611a82a84da732278bba50178fa9",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "src/utils/timing.cpp",
+    "sha256": "bc18c97fe38e77b46bdcad18015cfc31fc9ce3419e59d3c261d3cf0de40df3b7",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/utils/timing.hpp",
+    "sha256": "a059ebbeb5151753ff4c0ced7133e601fe962b29fb25381fc197115f54958170",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "src/utils/user_facing_error.cpp",
+    "sha256": "7566c2e54b6e2ed4d76f29f2b3117bc68bc5ea169ed44d2081f45baed41784ac",
+    "dependencies": [
+      "cuda",
+      "tensorrt",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "src/utils/user_facing_error.hpp",
+    "sha256": "c9b80b7124261b2a021224cf589ff1f7a71a5b0e969c8e4337740661680d3aa3",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/au_buffer_test.cpp",
+    "sha256": "6e1947fee96eff63f5edbd39e312d109066ca04aa46ea7eb5e1865491302fcfa",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "tests/unit/channel_worker_test.cpp",
+    "sha256": "46c6e06fd8b969dcc526ef4e481dd3c68f4c1a9c87ff36f3eb0ed9fe251e05ce",
+    "dependencies": [
+      "opencv",
+      "tensorrt",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/CMakeLists.txt",
+    "sha256": "3fff094db27e04ea3ab566613c59f3965fb0566980234000c00e732e32b3a276",
+    "dependencies": [
+      "cuda"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/config_center_test.cpp",
+    "sha256": "9d517a9cad13c58e211e32943fb32c7cf591f539c43737257feaf0952e2a095d",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/config_store_test.cpp",
+    "sha256": "c38995f8808131dd980e9b98e656a97f7e96a8ed6245fabc0f7e229917e7491a",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/config_test.cpp",
+    "sha256": "581564cff5f104a228cc63213e72d92538369ffd4e173c99acdd9b5f39ef925b",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/control_server_test.cpp",
+    "sha256": "7d52e0ea8b642c3afc12f5390a69089c13ea6b2964959ad3cb9181c12e55ba39",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/crash_handler_test.cpp",
+    "sha256": "edc416786c3c680d7414dade72616e8cd72c5e36fec097be2536f6667a5e5622",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/erp_fixtures.json",
+    "sha256": "e02519933b8df320f7c52943bdd3d235685b9ea1022546f706f402fc4db9b18b",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/erp_perspective_test.cpp",
+    "sha256": "a3e84c0083406b9641acd585712fb7e53fe0d301f6f06fc691912bd5a56847e1",
+    "dependencies": [
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/exposure_fixtures.json",
+    "sha256": "79273b183eeafc55ef8f1d3ef8189c88bd17048fb0c215cea307026b91b99c86",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/exposure_test.cpp",
+    "sha256": "0ce56d132f89f71fdb3f7fb9c79653cf7b9ba34af003ef957821fd185c9a273e",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/face_enhancer_fixtures.json",
+    "sha256": "57c559a29ef07b5f393cc43314a87de879319b63b12a135bee42e567c1de35d6",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/face_enhancer_test.cpp",
+    "sha256": "c88048524a0b4cc5656c6d1537b6449b27160562e7c92cfb9cc4f6ac6dd2c07c",
+    "dependencies": [
+      "cuda",
+      "opencv",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/factory_test.cpp",
+    "sha256": "c2d606d9f6adeba07a761031420c9469c8f7d1f34c9dab6030b319ca24b12d2e",
+    "dependencies": [
+      "cuda"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/fixtures/hevc_codec12.flv",
+    "sha256": "47b0cffa642b07ae3fe4dd37d846700f97894a551853f40a522a6aeeba4ab6e2",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/fixtures/hevc_enhanced.flv",
+    "sha256": "99f7da11f6629bd63dc617d1ee99ee7e313da12464101dfd442fbcb1e1b003a6",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/flv_hevc_elements_test.cpp",
+    "sha256": "5596aba0170a050c6f3925d7e34913888cc577004c32a85df75eaccb09b2e324",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/flv_hevc_test.cpp",
+    "sha256": "e3a17c372212dd8ffa857e0d8defc4df012c6cfa48787e8417826462362170eb",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/frame_accounting_test.cpp",
+    "sha256": "34fec783b502ee86bd1256ef2055a08e20c4a3c7cfb90df148d8be37f7e0abc2",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "tests/unit/gen_flv_hevc_fixtures.py",
+    "sha256": "545a29b32c7133652f18cedf846501195e9ea215856d095a117a9ad1783d40fd",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/gop_shedder_test.cpp",
+    "sha256": "c52b6902832d1d46beb7caaf360ec6bcb387cdd44b97cb63d5a6aae42b42e073",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/gpu_direct_test.cpp",
+    "sha256": "525dd4e808b916edd2772738afe39c026d1f4d871661e5c5c8dc2440bdcc9dae",
+    "dependencies": [
+      "cuda",
+      "opencv",
+      "tensorrt",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/gpu_image_test.cpp",
+    "sha256": "aaff7e950de4901e0ec7b6eafa47f09ee95ccc425d3f8800685f549cfd770eff",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/history_deletions_test.cpp",
+    "sha256": "d8833a26a967662ceddbf50505fdbcadbefa22827dc7186471e2930ee9a25ac5",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "tests/unit/license_client_test.cpp",
+    "sha256": "83580d5f3c8fae735b41c9fa2784fd0f91a3e96c5dd3773515a67fa31f9782fc",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/log_test.cpp",
+    "sha256": "01022ed9ba6409fa2686c2d3aa8526c2ccd24d71dede66845eeb80a26a1f5c98",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/postprocess_fixtures.json",
+    "sha256": "45b50e55f2bcbd6c133a931fbcab76f1f96fb04fa014cabd55cfda55d897fcdd",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "tests/unit/postprocess_test.cpp",
+    "sha256": "b2a19630a7a91fe2c17216d50cf8f60e69f1f8d9d756cafc9c5f2c2cc77830b4",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "tests/unit/preprocess_fixtures.json",
+    "sha256": "d85a9ea557ac49895ddc8413d6dd1e01e3de91f97ead3715dc540d8955a08e38",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/preprocess_test.cpp",
+    "sha256": "3640cf7609a4929065248a29ae4c941fc3c3bba3a37b8afa9783776241d58d18",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/publisher_test.cpp",
+    "sha256": "5878f2f09b582b421be009b14d497e059da94eac94f078750a8d714579becdee",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/reconnect_test.cpp",
+    "sha256": "543626126c11286dfcbc25410618a59d47af850f6c7e187a68b87c074b32a0b6",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "tests/unit/recovery_test.cpp",
+    "sha256": "467996ae8c90dc2ecfa1be119a2417412e3b8f24f429711029b3389fb496a885",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/result_buffer_test.cpp",
+    "sha256": "4ed98f2de0387d345a242000a46d3f74866510e454d2034f4d4314560f739fbd",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "tests/unit/result_test.cpp",
+    "sha256": "c78a730690d111519c1ded9b12e299a117bee6ce9f0bca4a1a022b1f0e49c19c",
+    "dependencies": [
+      "tensorrt"
+    ],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "tests/unit/scrfd_fixtures.json",
+    "sha256": "ead220c23e1ecd7db19e62d2bf0d5260439b591fb1f183d026881231ed22bc79",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/scrfd_trt_test.cpp",
+    "sha256": "e7ab5d2d59b4d11808d7e9e098faf53d285e182aea27f8e9f77e9a124b8b20cc",
+    "dependencies": [
+      "cuda",
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/sei_fixtures.json",
+    "sha256": "c2998ac6d17cae96ef9924571011ab550b2fa154d95248eef002e2589c132e57",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "tests/unit/sei_test.cpp",
+    "sha256": "97215e9642cbf10512f2bca944c73ce048c70b0b76d70982060561f0a59d9e07",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  },
+  {
+    "path": "tests/unit/snapshot_crop_fixtures.json",
+    "sha256": "da93c742845d9ea49940ba85bb43db4221b3cb7687d4cf4d9da6dda9268dc231",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/snapshot_store_test.cpp",
+    "sha256": "14a7e0b059a919d4b767a2cb15c8126a123215fdbfbf32d58d98e2d376818e27",
+    "dependencies": [
+      "cuda",
+      "opencv"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/source_test.cpp",
+    "sha256": "9b8e6ce1cb418b789dab6e46d372cf6ab4c94939bdcf78c4c0eb6ac036da625b",
+    "dependencies": [
+      "cuda",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/srs_codec_probe_test.cpp",
+    "sha256": "7175d400f1fa22075f737b71a53314ecdddcf9af3eb75b3767eb33c34a539b67",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/test_process_group.hpp",
+    "sha256": "0ce2f545a55bfb116e3b5d8a2e5aff9ebb651218461f69d5ac4a3b62511ccea7",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/timing_test.cpp",
+    "sha256": "c4571a1e41dbe711135522162715c212dfae29511bc677aa879f70938411e566",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/toolchain_self_check.cpp",
+    "sha256": "b860b955e37aa778f998e73f85f889d3ee74f2f5706b7ef3459ccf495bcffd84",
+    "dependencies": [],
+    "ported_core": false,
+    "status": "reference_pending"
+  },
+  {
+    "path": "tests/unit/trt_adapter_test.cpp",
+    "sha256": "74704e18fe10aa9c2c007da96c369d48a69cfbe95ac1acc6edfa9f536b43e362",
+    "dependencies": [
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/trt_fixtures.json",
+    "sha256": "4c38869d7dac9466957cd7ea0d3053c771e511c2e41b252682f82716a20acc13",
+    "dependencies": [
+      "tensorrt"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/user_facing_error_test.cpp",
+    "sha256": "3d0104c638ad3d7356ff572127ab03bbf8fd4cd510fed5260a12754def16ea0f",
+    "dependencies": [
+      "cuda",
+      "tensorrt",
+      "jetson"
+    ],
+    "ported_core": false,
+    "status": "hardware_rewrite_required"
+  },
+  {
+    "path": "tests/unit/video_codec_test.cpp",
+    "sha256": "5c3290190ce8b130e2d69eda0acad23d10e5a759e3612a639d1d9b652db270f4",
+    "dependencies": [],
+    "ported_core": true,
+    "status": "ported_core"
+  }
+]

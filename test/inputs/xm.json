@@ -1,0 +1,16 @@
+{
+  "id": "xm",
+  "source_url": "rtmp://192.168.100.189:1935/live/xm",
+  "projection": "erp_equirect",
+  "expected_video": {"codec_name": "h264", "width": 3840, "height": 1920, "fps": 30},
+  "channel_request": {
+    "name": "AINVR XM 4K Panorama",
+    "upstreamProtocol": "rtmp",
+    "streamName": "xm",
+    "app": "live",
+    "downstreamProtocols": ["flv", "rtmp"],
+    "primaryProtocol": "flv",
+    "inputEnabled": true,
+    "remark": "Real camera debug input; ERP 3840x1920 H264 30fps. AI worker integration pending."
+  }
+}

@@ -1,0 +1,21 @@
+[Unit]
+Description=AINVR AI OS Helper (network management only)
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+# 需要 root: 修改网络配置 + 绑定指定网卡做连通性检测
+User=root
+WorkingDirectory=/home/sunrise/ainvr/shared/os-helper
+EnvironmentFile=/etc/ainvr-ai/os-helper.env
+ExecStart=/usr/bin/python3 main.py
+Restart=always
+RestartSec=2
+# 安全加固：本服务不再 shell 出 sudo（关机/重启已迁出），可以老实收紧
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

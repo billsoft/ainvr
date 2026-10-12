@@ -1,0 +1,10 @@
+.venv/
+out/
+data/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+*.local
+deploy/s100p/runtime/
+ai-service/models/

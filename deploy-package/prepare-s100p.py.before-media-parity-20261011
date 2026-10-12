@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Copyright (c) 2026 AINVR. Create local runtime configuration without exposing secrets."""
+from pathlib import Path
+import json
+import os
+import pwd
+import secrets
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNTIME = ROOT / 'deploy/s100p/runtime'
+
+
+def write_new(path, content, mode=0o600):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(fd, 'w') as f:
+        f.write(content)
+
+
+def env_file(name, values):
+    for value in values.values():
+        if '\n' in str(value) or '\r' in str(value):
+            raise ValueError('Newlines are not allowed in environment values')
+    write_new(RUNTIME / (name + '.env'), ''.join(f'{k}={v}\n' for k, v in values.items()))
+
+
+def main():
+    if os.geteuid() != 0:
+        raise SystemExit('Run this one-time preparation as root')
+    binary = ROOT / 'out/build/s100p-license/license_service'
+    if not binary.is_file():
+        raise SystemExit('Build the non-AI modules first')
+    pg_password = (ROOT / 'deploy/infra/secrets/pg_app_password').read_text().strip()
+    account = pwd.getpwnam('sunrise')
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+    RUNTIME.chmod(0o750)
+    os.chown(RUNTIME, 0, account.pw_gid)
+    material = RUNTIME / 'credentials.json'
+    write_new(material, json.dumps({k: secrets.token_hex(32) for k in
+        ['recorder', 'ingest', 'os-helper', 'restart-helper', 'license-admin', 'device-key',
+         'lease-recorder', 'lease-console-backend', 'lease-enforcer', 'lease-ai-service']}, indent=2))
+    keys = json.loads(material.read_text())
+    machine = subprocess.check_output([str(binary), '--machine-code'], text=True).strip().replace('-', '')
+    common = {'CONFIG_CENTER_URL': 'http://127.0.0.1:3001', 'PYTHONUNBUFFERED': '1',
+              'LICENSE_UDS_PATH': '/run/ainvr-license/license.sock', 'LICENSE_DEVICE_ID': machine}
+    for name in ['console', 'recorder', 'recordings', 'license', 'license-identity']:
+        path = ROOT / 'data' / name
+        path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o700)
+        if name in ['console', 'license', 'license-identity']:
+            os.chown(path, account.pw_uid, account.pw_gid)
+    license_config = {
+        'host': '127.0.0.1', 'port': 8001, 'uds_path': '/run/ainvr-license/license.sock',
+        'machine_code': machine, 'device_key': keys['device-key'], 'admin_api_key': keys['license-admin'],
+        'installation_path': str(ROOT / 'data/license-identity/identity.json'),
+        'state': {k: str(ROOT / 'data/license' / v) for k, v in
+                  [('primary', 'state.dat'), ('replica2', 'recovery-1.dat'), ('replica3', 'recovery-2.dat')]},
+        'signal_keys': {k: keys['lease-' + k] for k in ['recorder', 'console-backend', 'enforcer', 'ai-service']},
+    }
+    write_new(RUNTIME / 'license-service.yaml', json.dumps(license_config, indent=2), 0o640)
+    os.chown(RUNTIME / 'license-service.yaml', 0, account.pw_gid)
+    env_file('backend', {**common, 'NODE_ENV': 'production', 'HOST': '127.0.0.1', 'PORT': '3001',
+        'DATA_DIR': str(ROOT / 'data/console'), 'BRANDING_FILE': str(ROOT / 'srs-web-console/deploy/branding/branding.yaml'),
+        'SRS_API_HOST': '127.0.0.1:1985', 'SRS_CONF_PATH': str(ROOT / 'deploy/infra/config/srs.conf'),
+        'CONFIG_PG_HOST': '127.0.0.1', 'CONFIG_PG_PORT': '5432', 'CONFIG_PG_USER': 'ainvr_config',
+        'CONFIG_PG_DATABASE': 'ainvr_config', 'CONFIG_PG_PASSWORD': pg_password,
+        'CONFIG_MASTER_KEY_PATH': str(ROOT / 'data/console/keys/config-master.key'),
+        'CONFIG_SERVICE_TOKEN_RECORDER': keys['recorder'], 'INGEST_SERVICE_TOKEN': keys['ingest'],
+        'INGEST_SERVICE_URL': 'http://127.0.0.1:8120', 'RECORDER_SERVICE_BASE_URL': 'http://127.0.0.1:8100',
+        'RESTART_HELPER_URL': 'http://127.0.0.1:8199', 'RESTART_HELPER_TOKEN': keys['restart-helper'],
+        'OS_HELPER_URL': 'http://127.0.0.1:8299', 'OS_HELPER_TOKEN': keys['os-helper'],
+        'LICENSE_ADMIN_API_KEY': keys['license-admin'], 'LICENSE_SIGNAL_KEY': keys['lease-console-backend'],
+        'SRT_INGEST_ENABLED': '1'})
+    env_file('recorder', {**common, 'CONFIG_SERVICE_TOKEN_RECORDER': keys['recorder'],
+        'PYTHONPATH': str(ROOT / 'recording-service/src'), 'RECORDER_DATA': str(ROOT / 'data/recorder'),
+        'LICENSE_SIGNAL_KEY': keys['lease-recorder'], 'RECORDER_FFMPEG8': '/opt/ainvr/ffmpeg-8.1.2/bin/ffmpeg'})
+    write_new(ROOT / 'data/recorder/config.json', json.dumps({'server': {'host': '127.0.0.1', 'port': 8100},
+        'console': {'base_url': 'http://127.0.0.1:3001'}, 'srs_api_url': 'http://127.0.0.1:1985',
+        'recording': {'storage': {'kind': 'local', 'localPath': str(ROOT / 'data/recordings')}}}, indent=2))
+    env_file('ingest', {**common, 'INGEST_SERVICE_TOKEN': keys['ingest'], 'LICENSE_SIGNAL_KEY': keys['lease-recorder'],
+        'INGEST_BIND_HOST': '127.0.0.1', 'INGEST_FFMPEG': '/opt/ainvr/ffmpeg-8.1.2/bin/ffmpeg'})
+    env_file('os-helper', {'OS_HELPER_TOKEN': keys['os-helper'], 'OS_HELPER_BIND_HOST': '127.0.0.1'})
+    env_file('restart-helper', {'RESTART_HELPER_TOKEN': keys['restart-helper'], 'RESTART_HELPER_BIND_HOST': '127.0.0.1',
+                                'AINVR_DEPLOYMENT_MODE': 'native'})
+    nginx = RUNTIME / 'nginx'
+    nginx.mkdir(exist_ok=True)
+    for folder in ['client', 'proxy']:
+        (nginx / folder).mkdir(exist_ok=True)
+        os.chown(nginx / folder, account.pw_uid, account.pw_gid)
+    write_new(RUNTIME / 'nginx.conf', '''user sunrise;
+worker_processes 2;
+pid ''' + str(nginx / 'nginx.pid') + ''';
+error_log stderr warn;
+events { worker_connections 2048; }
+http {
+  include /etc/nginx/mime.types;
+  access_log off;
+  client_body_temp_path ''' + str(nginx / 'client') + ''';
+  proxy_temp_path ''' + str(nginx / 'proxy') + ''';
+  server {
+    listen 8088;
+    root ''' + str(ROOT / 'srs-web-console/frontend/dist') + ''';
+    location /api/v1/recordings/ {
+      proxy_pass http://127.0.0.1:8100/v1/recordings/;
+      proxy_buffering off; proxy_read_timeout 3600s;
+    }
+    location /api/ { proxy_pass http://127.0.0.1:3001/api/; }
+    location /ingest/ { proxy_pass http://127.0.0.1:3001; }
+    location = /_media_auth {
+      internal; proxy_pass http://127.0.0.1:3001/api/auth/media-check;
+      proxy_intercept_errors on;
+      error_page 503 =403 /_media_blocked;
+      proxy_pass_request_body off; proxy_set_header Content-Length "";
+      proxy_set_header Cookie $http_cookie;
+      proxy_set_header X-Console-Token $http_x_console_token;
+    }
+    location = /_media_blocked { internal; return 403; }
+    location /live/ {
+      auth_request /_media_auth; proxy_pass http://127.0.0.1:8080/live/;
+      proxy_buffering off; proxy_read_timeout 3600s;
+    }
+    location /rtc/ {
+      auth_request /_media_auth;
+      proxy_set_header Host $http_host;
+      proxy_pass http://127.0.0.1:1985/rtc/;
+    }
+    location / { add_header Cache-Control "no-cache"; try_files $uri $uri/ /index.html; }
+  }
+}
+''', 0o600)
+    print('AINVR S100P runtime configuration prepared; secrets remain in private files')
+
+
+if __name__ == '__main__':
+    main()

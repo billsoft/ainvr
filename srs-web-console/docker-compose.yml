@@ -1,0 +1,190 @@
+x-bounded-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ===== SRS 流媒体服务器 =====
+  srs:
+    # Log backpressure must not block the streaming coroutine thread.
+    # A full buffer drops new logs; rotation alone does not prevent blocking.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        mode: "non-blocking"
+        max-buffer-size: "4m"
+    # 7.0.162：rtmp→WebRTC 的 H.265 从 7.0.33 起才支持，并含 HEVC 协商修复 #4742。
+    # 只写 tag（离线 load 不保留 digest）；镜像 ID 锁在 deploy-package/thirdparty-images.txt。
+    # 容器名不可改：授权执行器按这个名字启停业务。
+    image: ossrs/srs:7.0.162
+    container_name: ainvr-srs
+    restart: unless-stopped
+    volumes:
+      # 目录挂载（读写），不是单文件挂载——srs.conf 单文件挂载时它自己就是
+      # 挂载点，容器内对它做 rename（sed -i / 任何"临时文件+改名覆盖"式
+      # 原子写）会失败于 "Device or resource busy"：entrypoint 的 sed 注入
+      # 因此从未真正生效过（WebRTC 现在能用纯粹是 SRS 自己原生解析
+      # $CANDIDATE 环境变量占位符，跟 sed 逻辑无关）。改成目录挂载后
+      # srs.conf 只是目录里的普通文件，sed -i 才能真正写入；同时 SRS 容器
+      # 本身已经在用 SRS_IN_DOCKER=on 触发的 auto_reload_for_docker 监视
+      # 这个目录（`docker logs` 可见 "watch=1, file=/usr/local/srs/conf"），
+      # 目录挂载后原地改配置文件即可触发 SRS 原生热重载，不需要重启容器。
+      # WebRTC 候选地址默认自动，不再经环境变量注入（2026-10-08）。
+      - ./deploy/srs-conf:/usr/local/srs/conf
+      - ./deploy/srs-entrypoint.sh:/entrypoint.sh:ro
+    # All HLS app paths share one bounded volatile filesystem. The entrypoint
+    # seeds static web assets here and rejects a missing tmpfs mount.
+    # Capacity includes retained segments, the active segment and GOP overshoot.
+    tmpfs:
+      - /run/srs-http:size=2g,mode=0755
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    working_dir: /usr/local/srs
+    ports:
+      - "1935:1935"     # RTMP
+      - "127.0.0.1:1985:1985" # Management: host services only
+      - "127.0.0.1:8080:8080" # Browser media uses authenticated nginx gateway
+      - "8000:8000/udp" # WebRTC UDP
+      - "10080:10080/udp" # SRT camera input (MPEG-TS H.264/H.265)
+
+  # ===== MongoDB：AI 识别快照归档 =====
+  # 注意：2026-09-21 从 ai-service/docker-compose.yml 迁到这里——两个 compose
+  # 项目分开运维容易遗漏（安全关机后开机 compose up 只起了 4 个，Mongo 被落下，
+  # 识别历史页面假"未开启"）。现在统一放在这里，跟 PG 同属基础设施，一个
+  # compose 全管。AI 服务本身是宿主机 systemd 进程，走 127.0.0.1:27017 直连，
+  # 不依赖 compose 网络。
+  mongo:
+    logging: *bounded-logging
+    image: mongo:7.0
+    container_name: ainvr-mongo
+    restart: unless-stopped
+    command: >
+      mongod
+      --auth
+      --wiredTigerCacheSizeGB 0.5
+      --wiredTigerCollectionBlockCompressor zstd
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - ainvr-mongo-data:/data/db
+
+  # ===== PostgreSQL：统一配置中心唯一存储 =====
+  postgres:
+    logging: *bounded-logging
+    image: postgres:16-alpine
+    container_name: ainvr-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=srs_console
+      - POSTGRES_USER=console
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set a unique PostgreSQL password}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - srs-console-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U console -d srs_console"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # 绑定到 127.0.0.1，仅本机裸进程服务（AI/录像）可访问，不对外暴露
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  # ===== 后端 BFF =====
+  backend:
+    logging: *bounded-logging
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ainvr-backend
+    env_file:
+      - ${LICENSE_ENV_FILE:-/etc/ainvr-license/console-backend.env}
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - SRS_API_HOST=srs:1985
+      - DATA_DIR=/app/data
+      - SRS_CONF_PATH=/srs-conf/srs.conf
+      # ai-service 是跑在宿主机上的 systemd 服务（C++ 实现，不在 docker-compose
+      # 里），backend 容器要经 host.docker.internal 才够得着宿主机
+      # 端口——见下面 extra_hosts（Linux Docker 20.10+ 原生支持
+      # host-gateway，不是只有 Docker Desktop 才有这个别名）。
+      - AI_SERVICE_BASE_URL=http://host.docker.internal:8000
+      # ===== 统一配置中心（PostgreSQL） =====
+      - CONFIG_PG_HOST=postgres
+      - CONFIG_PG_PORT=5432
+      - CONFIG_PG_USER=console
+      - CONFIG_PG_PASSWORD=${POSTGRES_PASSWORD:?Set a unique PostgreSQL password}
+      - CONFIG_PG_DATABASE=srs_console
+      - CONFIG_MASTER_KEY_PATH=/app/data/keys/config-master.key
+      # 服务间令牌（每服务独立，token→服务身份绑定，见 services/serviceTokens.ts）：
+      # 微服务拉配置/上报状态/解密 secret 快照用；与各 systemd unit 同值，定义在 .env
+      - CONFIG_SERVICE_TOKEN_RECORDER=${CONFIG_SERVICE_TOKEN_RECORDER:-}
+      - CONFIG_SERVICE_TOKEN_AI_SERVICE=${CONFIG_SERVICE_TOKEN_AI_SERVICE:-}
+      - INGEST_SERVICE_TOKEN=${INGEST_SERVICE_TOKEN:-}
+      - INGEST_SERVICE_URL=http://host.docker.internal:8120
+      - SRT_INGEST_ENABLED=1
+      # 重启助手（宿主机 ainvr-restart-helper.service，8199；来源网段 + token 校验）：
+      # backend 容器本身够不着宿主机 systemd，改了 ai-service/recorder 的
+      # 需要重启才生效的配置字段后，靠这个助手代为执行 systemctl restart。
+      - RESTART_HELPER_URL=${RESTART_HELPER_URL:-http://host.docker.internal:8199}
+      - RESTART_HELPER_TOKEN=${RESTART_HELPER_TOKEN:-}
+      # 系统操作助手（宿主机 ainvr-os-helper.service，8299）：网络管理（IP/WiFi/
+      # 连通性/安全回滚）。未配置时 BFF 网络接口整体返回 503，页面显示不可用。
+      - OS_HELPER_URL=${OS_HELPER_URL:-http://host.docker.internal:8299}
+      - OS_HELPER_TOKEN=${OS_HELPER_TOKEN:-}
+      # ===== 授权服务（宿主机 ainvr-license.service，127.0.0.1:8001） =====
+      # 使用受保护的 UDS；服务晚启动时自动重连，缺失凭据不放行业务。
+      # 登录、授权管理、配置和诊断不依赖有效授权。
+      - LICENSE_UDS_PATH=/run/ainvr-license/license.sock
+      - AINVR_PROFILE=production
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # UDS sock 权限 0660 ainvr:ainvr，附加组须对应宿主机 ainvr 的实际 GID。
+    group_add:
+      - "${AINVR_GID:-1000}"
+    # 配置中心 API 对宿主机裸进程微服务（AI/录像）可见，仅本机回环
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - srs-console-data:/app/data
+      # 与 srs 服务共享同一份 host 目录：rtcCandidateIp 改配置时原地写这个
+      # 文件（不走 rename），SRS 侧的 auto_reload_for_docker 监视会自动
+      # 拾取变化，两个容器都不需要重启
+      - ./deploy/srs-conf:/srs-conf
+      # 授权服务 UDS（只读挂载目录即可，connect 只看 sock 节点权限）
+      - /run/ainvr-license:/run/ainvr-license:ro
+      # OEM 品牌信息（产品名/版权/联系方式）：改宿主机上的 branding.yaml，刷新浏览器即生效
+      - ./deploy/branding:/app/branding:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ===== 前端（nginx）=====
+  frontend:
+    logging: *bounded-logging
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ainvr-web
+    environment:
+      TRUSTED_EDGE_PROXY_CIDRS: ${TRUSTED_EDGE_PROXY_CIDRS:-}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    # 录像媒体（/api/v1/recordings/...）由 nginx 直通宿主 ainvr-recorder:8100，
+    # 不走 Node BFF（大文件 + Range），见 frontend/nginx.conf
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  srs-console-data:
+    driver: local
+  srs-console-pgdata:
+    driver: local
+  ainvr-mongo-data:
+    driver: local

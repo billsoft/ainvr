@@ -1,0 +1,22 @@
+[Unit]
+Description=AINVR SRS License Enforcer
+After=docker.service ainvr-license.service
+Wants=docker.service
+[Service]
+Type=simple
+User=sunrise
+Group=sunrise
+SupplementaryGroups=docker
+EnvironmentFile=/etc/ainvr-license/enforcer.env
+ExecStart=/usr/bin/python3 @ENFORCER@
+Restart=always
+RestartSec=2
+TimeoutStopSec=15
+StateDirectory=ainvr-license-enforcer
+StateDirectoryMode=0750
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target

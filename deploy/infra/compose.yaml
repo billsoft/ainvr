@@ -1,0 +1,125 @@
+# Copyright AINVR. Base infrastructure for RDK S100P (ARM64).
+name: ainvr-infra
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  srs:
+    image: ossrs/srs:7.0.162
+    platform: linux/arm64
+    network_mode: host
+    container_name: ainvr-srs
+    restart: unless-stopped
+    init: true
+    working_dir: /usr/local/srs
+    entrypoint: ["/bin/sh", "/ainvr-srs-entrypoint.sh"]
+    environment:
+      CANDIDATE: ${SRS_CANDIDATE:-192.168.100.189}
+      SRS_IN_DOCKER: "on"
+      SRS_CONFIG: /usr/local/srs/conf/ainvr/srs.conf
+      SRS_HLS_CONFIG: /usr/local/srs/conf/ainvr/hls.conf
+    volumes:
+      - ./config:/usr/local/srs/conf/ainvr:ro
+      - ../../srs-web-console/deploy/srs-entrypoint.sh:/ainvr-srs-entrypoint.sh:ro
+    tmpfs:
+      - /run/srs-http:size=2g,mode=0755
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        mode: non-blocking
+        max-buffer-size: "4m"
+    mem_limit: 3g
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    stop_grace_period: 20s
+  postgres:
+    image: postgres:16-alpine
+    platform: linux/arm64
+    network_mode: host
+    container_name: ainvr-postgres
+    restart: unless-stopped
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1"]
+    environment:
+      POSTGRES_DB: ainvr_config
+      POSTGRES_USER: ainvr_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_admin_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - type: bind
+        source: /mnt/ainvr-ssd/databases/postgres
+        target: /var/lib/postgresql/data
+        bind:
+          create_host_path: false
+      - ./init/postgres.sh:/docker-entrypoint-initdb.d/10-ainvr.sh:ro
+    secrets:
+      - pg_admin_password
+      - pg_app_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ainvr_admin -d ainvr_config"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    logging: *logging
+    mem_limit: 1g
+    shm_size: 128m
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    stop_grace_period: 60s
+  mongo:
+    image: mongo:7.0
+    platform: linux/arm64
+    network_mode: host
+    container_name: ainvr-mongo
+    restart: unless-stopped
+    command: ["mongod", "--auth", "--bind_ip", "127.0.0.1", "--wiredTigerCacheSizeGB", "0.5", "--wiredTigerCollectionBlockCompressor", "zstd"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ainvr_admin
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_admin_password
+      MONGO_INITDB_DATABASE: ainvr_snapshots
+    volumes:
+      - type: bind
+        source: /mnt/ainvr-ssd/databases/mongo
+        target: /data/db
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/ainvr-ssd/databases/mongo-config
+        target: /data/configdb
+        bind:
+          create_host_path: false
+      - ./init/mongo.js:/docker-entrypoint-initdb.d/10-ainvr.js:ro
+    secrets:
+      - mongo_admin_password
+      - mongo_app_password
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--norc", "--eval", "quit(db.adminCommand({ping:1}).ok === 1 ? 0 : 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    logging: *logging
+    mem_limit: 2g
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    stop_grace_period: 60s
+secrets:
+  pg_admin_password:
+    file: ./secrets/pg_admin_password
+  pg_app_password:
+    file: ./secrets/pg_app_password
+  mongo_admin_password:
+    file: ./secrets/mongo_admin_password
+  mongo_app_password:
+    file: ./secrets/mongo_app_password
