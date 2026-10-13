@@ -1,0 +1,165 @@
+--- a/ai-service/src/output/snapshot_processing.cpp
++++ b/ai-service/src/output/snapshot_processing.cpp
+@@ -2,6 +2,7 @@
+ #include "face_enhancer.hpp"
+ #include "exposure.hpp"
+ #include "snapshot_jpeg.hpp"
++#include <cstdlib>
+ 
+ namespace ai_service::output {
+ using namespace snapshot_detail;
+@@ -14,31 +15,57 @@
+   } preparing_scope{preparing_targets_, jobs.size()};
+   preparing_targets_.fetch_add(jobs.size());
+   const double prepare_start = NowMono();
+-  std::vector<std::future<void>> work;
+-  work.reserve(jobs.size());
+-  std::exception_ptr failure;
+   std::vector<std::string> errors(jobs.size());
+-  try {
+-    for (size_t i = 0; i < jobs.size(); ++i) {
+-      work.push_back(SharedArchiveExecutor().Submit([this, &jobs, &errors, i] {
+-        for (unsigned attempt = 0; attempt < 3; ++attempt) {
+-          try { PrepareImage(jobs[i]); errors[i].clear(); return; }
+-          catch (const std::exception& e) {
+-            errors[i] = e.what();
+-            if (attempt < 2) std::this_thread::sleep_for(std::chrono::milliseconds(100));
++  // Opt-in bounded experiment; the same binary supports controlled A/B runs.
++  const char* selected=std::getenv("AINVR_ARCHIVE_CROP_FIRST");
++  const bool crop_first=selected && std::string(selected)=="1";
++  auto phase=[&](size_t begin,size_t end,bool crop_only) {
++    std::vector<std::future<void>> work;work.reserve(end-begin);
++    std::exception_ptr failure;
++    try {
++      for(size_t i=begin;i<end;++i) {
++        if(!errors[i].empty())continue;
++        work.push_back(SharedArchiveExecutor().Submit([&,i,crop_only] {
++          for(unsigned attempt=0;attempt<3;++attempt) {
++            try {
++              if(crop_only) {if(jobs[i].jpeg.empty())MaterializeCrop(jobs[i]);}
++              else PrepareImage(jobs[i]);
++              errors[i].clear();return;
++            } catch(const std::exception& e) {
++              errors[i]=e.what();
++              if(attempt<2)std::this_thread::sleep_for(std::chrono::milliseconds(100));
++            }
+           }
+-        }
+-      }));
+-    }
+-  } catch (...) { failure = std::current_exception(); }
+-  // Even after an error, join all workers before moving/destroying the batch.
+-  for (auto& future : work) {
+-    try { future.get(); } catch (...) { if (!failure) failure = std::current_exception(); }
+-  }
+-  if (failure) {
+-    try { std::rethrow_exception(failure); }
+-    catch (const std::exception& e) { throw SnapshotEncodeError(e.what()); }
+-    catch (...) { throw SnapshotEncodeError("non-standard archive preparation exception; tasks retained"); }
++        }));
++      }
++    }catch(...){failure=std::current_exception();}
++    // Tasks borrow jobs/errors; join every submitted task before unwinding.
++    for(auto& future:work)try{future.get();}catch(...){if(!failure)failure=std::current_exception();}
++    if(failure) {
++      try{std::rethrow_exception(failure);}
++      catch(const std::exception& e){throw SnapshotEncodeError(e.what());}
++      catch(...){throw SnapshotEncodeError("archive phase failed; jobs retained");}
++    }
++  };
++  auto estimate=[&](size_t i)->size_t {
++    const auto& job=jobs[i];
++    if(!job.jpeg.empty() || !job.crop.empty())return 0;
++    if(!job.config)return CropStageLease::Limit+1;
++    const int dimension=std::max(64,job.config->max_crop_dimension);
++    if(dimension>4096)return CropStageLease::Limit+1;
++    return size_t(dimension)*dimension*4;
++  };
++  if(!crop_first)phase(0,jobs.size(),false);
++  else for(size_t begin=0;begin<jobs.size();) {
++    // Oversized individual crops keep the original one-target path, instead
++    // of bypassing the extra small-image staging budget.
++    if(estimate(begin)>CropStageLease::Limit){phase(begin,begin+1,false);++begin;continue;}
++    size_t end=begin,bytes=0;
++    while(end<jobs.size() && estimate(end)<=CropStageLease::Limit-bytes)bytes+=estimate(end++);
++    CropStageLease lease(bytes);
++    phase(begin,end,true);
++    phase(begin,end,false);
++    begin=end;
+   }
+   // A permanently bad target cannot prevent healthy targets in the same batch
+   // from reaching Mongo. Keep recoverable bytes for inspection/manual replay.
+@@ -60,6 +87,7 @@
+ void SnapshotStore::MaterializeCrop(ArchiveJob& job) {
+   if (!job.crop.empty()) return;
+   if (!job.frame || !job.config) throw SnapshotEncodeError("missing captured snapshot frame");
++  const double start=NowMono();
+   // Pool threads exclusively own their GPU resources. Exact view keys preserve
+   // the pixels of a fresh per-target cropper, without cross-frame bin aliasing.
+   // Four workers retain at most 32 MiB of cached maps each.
+@@ -74,12 +102,13 @@
+   if (crops.empty() || crops[0].empty()) throw SnapshotEncodeError("captured target crop is empty");
+   job.crop = std::move(crops[0]);
+   job.frame.reset();
++  job.materialize_ms=(NowMono()-start)*1000;
+ }
+ 
+ void SnapshotStore::PrepareImage(ArchiveJob& job) {
+   if (!job.jpeg.empty()) return;  // Mongo retry must not repeat image processing.
++  MaterializeCrop(job);
+   const double crop_start = NowMono();
+-  MaterializeCrop(job);
+   if (job.crop.empty() || job.crop.type() != CV_8UC4)
+     throw SnapshotEncodeError("snapshot crop must be nonempty 8-bit RGBA");
+ #ifdef AINVR_ARCHIVE_JPU
+@@ -165,7 +194,7 @@
+   job.jpeg = std::move(jpeg_buf);
+   std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+   ++prepared_count_;
+-  crop_processing_ms_ += (crop_end - crop_start) * 1000;
++  crop_processing_ms_ += job.materialize_ms + (crop_end - crop_start) * 1000;
+   brightness_ms_ += (brightness_end - brightness_start) * 1000;
+   enhancement_ms_ += (enhancement_end - brightness_end) * 1000;
+   encoding_ms_ += ((brightness_start - crop_end) + (NowMono() - enhancement_end)) * 1000;
+--- a/ai-service/src/output/snapshot_store.hpp
++++ b/ai-service/src/output/snapshot_store.hpp
+@@ -146,6 +146,7 @@
+     std::string task_type;
+     Detection detection;  // stored 坐标(rescale 之后)
+     cv::Mat crop;          // RGBA
++    double materialize_ms = 0;
+     std::shared_ptr<CapturedSnapshotFrame> frame;
+     Detection crop_detection;
+     bool square = false;
+--- a/ai-service/src/output/archive_executor.hpp
++++ b/ai-service/src/output/archive_executor.hpp
+@@ -70,6 +70,29 @@
+   std::vector<std::thread> workers_;
+ };
+ 
++// Only coordinator threads acquire a staging lease; pool workers never wait
++// for this budget, preventing a queue/budget circular wait across channels.
++class CropStageLease {
++ public:
++  static constexpr size_t Limit = size_t(32)<<20;
++  explicit CropStageLease(size_t bytes):bytes_(bytes) {
++    if(bytes>Limit)throw std::invalid_argument("crop staging exceeds budget");
++    auto& state=State();std::unique_lock<std::mutex> lock(state.mutex);
++    state.changed.wait(lock,[&]{return state.used<=Limit-bytes;});
++    state.used+=bytes;
++  }
++  ~CropStageLease(){auto& state=State();
++    {std::lock_guard<std::mutex> lock(state.mutex);state.used-=bytes_;}
++    state.changed.notify_all();
++  }
++  CropStageLease(const CropStageLease&)=delete;
++  CropStageLease& operator=(const CropStageLease&)=delete;
++ private:
++  struct Budget {std::mutex mutex;std::condition_variable changed;size_t used=0;};
++  static Budget& State(){static Budget state;return state;}
++  size_t bytes_;
++};
++
+ inline size_t ArchiveWorkerCount() {
+   // S100P live archive trial: six workers increased GPU contention and memory
+   // without throughput benefit. Keep four; see S100P-ARCHIVE-PIPELINE.md.

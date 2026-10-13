@@ -2,6 +2,7 @@
 #pragma once
 #include <cstdint>
 #include <memory>
+#include <vector>
 #include <opencv2/core.hpp>
 #include "output/erp_perspective.hpp"
 namespace ainvr {
@@ -21,12 +22,15 @@ struct GlesCropStats {
 GlesCropStats GetGlesCropStats();
 class GlesCropBackend {
  public:
-  explicit GlesCropBackend(size_t max_entries=256,size_t max_bytes=size_t(64)<<20);
+  explicit GlesCropBackend(size_t max_entries=256,size_t max_bytes=size_t(64)<<20, bool exact_views=false);
   ~GlesCropBackend();
   GlesCropBackend(const GlesCropBackend&)=delete;
   GlesCropBackend& operator=(const GlesCropBackend&)=delete;
   std::shared_ptr<const GlesErpMap> GetMap(cv::Size source,const ai_service::output::ErpView& view);
   void Upload(const cv::Mat& rgba);
+  // Immutable packed NV12; tag must uniquely identify pixels for this lifetime.
+  void UploadNv12(const std::vector<uint8_t>& pixels,cv::Size size,
+                  uint64_t tag,bool bt709,bool full_range);
   // Integral source rectangle, including replicated out-of-frame padding.
   // bounded_linear preserves the original huge-square remap exception.
   cv::Mat Area(const cv::Rect& rectangle,cv::Size output,bool bounded_linear=false);

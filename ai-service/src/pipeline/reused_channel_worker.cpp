@@ -153,6 +153,7 @@ void ReusedChannelWorker::Start() {
     map_reused_count_ = map_registered_count_ = 0;
     stats_frame_unmap_ = utils::TimingStats(200);
     stats_snapshot_offer_ = utils::TimingStats(200);
+    stats_archive_admission_wait_ = utils::TimingStats(200);
     stats_sei_stamp_ = utils::TimingStats(200);
     stats_inference_ = utils::TimingStats(200);
     stats_postprocess_ = utils::TimingStats(200);
@@ -305,6 +306,7 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
         {"dropped_count", dropped_count_},
         {"sampled_skip_count", sampled_skip_count_},
         {"archive_backpressure_skip_count", archive_backpressure_skip_count_},
+        {"skip_classification", "heuristic; use archive_admission_wait for measured blocking"},
         {"overload_drop_count", overload_drop_count_},
         {"source_fps", std::round(source_fps * 100.0) / 100.0},
         {"inference_fps_target", cfg->model.adapter == "locateanything_trt" ? target_fps : std::round(target_fps * 100.0) / 100.0},
@@ -324,6 +326,7 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
              {"map_get_frame", stats_map_get_.ToDict()},
              {"frame_unmap", stats_frame_unmap_.ToDict()},
              {"snapshot_offer", stats_snapshot_offer_.ToDict()},
+             {"archive_admission_wait", stats_archive_admission_wait_.ToDict()},
              {"sei_stamp", stats_sei_stamp_.ToDict()},
              {"inference", stats_inference_.ToDict()},
              {"postprocess", stats_postprocess_.ToDict()},
@@ -518,8 +521,8 @@ void ReusedChannelWorker::CaptureLoop() {
 
     if (reconnect_) reconnect_->OnFrameReceived();
 
-    // 只持有解码输出缓冲的引用,不拷贝像素:推理按设定帧率只取用其中一部分,
-    // 没被取用的帧直接随下一帧替换而释放。
+    // Queue only the immutable frame owner here. VPU decoding already copied
+    // packed NV12 into that owner; this is not an end-to-end zero-copy path.
     const auto& ref = frame_opt;
     frame_seq_++;
     CapturedFrame cap;
@@ -717,9 +720,12 @@ void ReusedChannelWorker::InferLoop() {
         std::lock_guard<std::mutex> lock(frame_mutex_);
         if (latest_frame_) before_archive_wait = latest_frame_->seq;
       }
+      utils::Timer archive_wait_timer;
       snapshot_sink_->WaitForCapacity([this] {
         return stop_event_.load() || !LicenseAllowed();
       });
+      { std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_archive_admission_wait_.Add(archive_wait_timer.ElapsedMs()); }
       if (stop_event_.load() || !LicenseAllowed()) continue;
     }
     int skipped = 0;
@@ -952,7 +958,8 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
         host.create(region.height,region.width,CV_8UC4);
         for(int y=0;y<region.height;++y)std::memcpy(host.ptr(y),rgba.data()+size_t(y)*region.width*4,size_t(region.width)*4);
       } catch (...) { converter.reset(); throw; }
-    }},
+    }, {std::shared_ptr<const std::vector<uint8_t>>(frame.ref,&frame.ref->nv12.pixels),
+        snapshot_tag,frame.ref->bt709,frame.ref->full_range}},
       channel_id_,cfg->name,frame.pts_ns,result.timestamp,cfg->model.name,adapter_->TaskType(),
       pre_rescale_detections,result.detections,adapter_->SquareSnapshotCrop(),cfg->snapshot);
     std::lock_guard<std::mutex> lock(stats_mutex_);

@@ -1,0 +1,18 @@
+// AINVR: staging budget blocks coordinators and releases on exception.
+#include "output/archive_executor.hpp"
+#include <cassert>
+#include <chrono>
+int main(){
+ using namespace ai_service::output;using namespace std::chrono_literals;
+ bool rejected=false;try{CropStageLease too_large(CropStageLease::Limit+1);}catch(const std::invalid_argument&){rejected=true;}
+ assert(rejected);
+ std::future<void> waiter;
+ {
+  CropStageLease held(CropStageLease::Limit);
+  waiter=std::async(std::launch::async,[]{CropStageLease one(1);});
+  assert(waiter.wait_for(30ms)==std::future_status::timeout);
+ }
+ assert(waiter.wait_for(2s)==std::future_status::ready);waiter.get();
+ try{CropStageLease held(CropStageLease::Limit);throw 1;}catch(int){}
+ CropStageLease reused(CropStageLease::Limit);
+}

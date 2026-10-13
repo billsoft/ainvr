@@ -327,21 +327,36 @@ TEST_F(HardwareArchive, UnavailableBpuEnhancementIsVisibleWithoutBlockingHealthy
   EXPECT_EQ(GetSnapshotJpegStats().cpu,0); EXPECT_EQ(GetExposureBackendStats().cpu_runs,0);
 }
 TEST_F(HardwareArchive, Continuous4KErpQueueMeasuresHardwareAndDurability) {
-  cfg.projection_mode="erp_equirect";cfg.padding_ratio=.25;cfg.max_crop_dimension=320;cfg.max_count=500;
+  cfg.projection_mode="erp_equirect";cfg.padding_ratio=.25;cfg.max_crop_dimension=320;cfg.max_count=2000;
   Start();cv::Mat frame(1920,3840,CV_8UC4,cv::Scalar(40,40,40,91));
-  const std::vector<Detection> targets{Det({1700,700,200,200}),Det({2200,700,200,200})};
+  std::vector<Detection> targets{Det({1700,700,200,200}),Det({2200,700,200,200})};
+  if(const char* count=std::getenv("AINVR_TEST_ARCHIVE_TARGETS");count && std::string(count)=="8") {
+    for(int i=0;i<6;++i)targets.push_back(Det({double(500+i*250),900,160,160}));
+  }
+  const bool nv12_fixture=std::getenv("AINVR_TEST_ARCHIVE_NV12")!=nullptr;
+  auto nv12=std::make_shared<std::vector<uint8_t>>(size_t(3840)*1920*3/2,128);
+  std::fill(nv12->begin(),nv12->begin()+size_t(3840)*1920,40); // Test fixture only.
+  uint64_t tag=20000;
+  auto offer=[&](int64_t pts,const config::SnapshotConfig& config){
+    if(!nv12_fixture){Offer(frame,pts,config,targets,true);return;}
+    auto download=[frame](const cv::Rect& roi,cv::Mat& out){out=frame(roi);};
+    pipeline::SnapshotSink::FrameProvider provider{frame.size(),download,[]{return false;},download,
+      {nv12,++tag,false,true}};
+    store->Offer(provider,id,"nv12-queue-fixture",pts,1700000000.125+double(pts)/1000,
+      "hardware-fixture","object_detection",targets,targets,true,config);
+  };
   size_t count=0;int64_t pts=1000;
   for(bool brightness:{false,true}){
     auto config=cfg;config.brightness_enabled=brightness;config.brightness_target=220;
     const std::string phase=brightness?"with_exposure":"without_exposure";
-    for(int i=0;i<4;++i){Offer(frame,pts++,config,targets,true);count+=targets.size();}
+    for(int i=0;i<4;++i){offer(pts++,config);count+=targets.size();}
     ASSERT_TRUE(WaitCount(count)); // Include warm-up only in explicit separate counters.
     const auto crop_before=ainvr::GetGlesCropStats();
     const auto jpeg_before=GetSnapshotJpegStats();
     const auto exposure_before=GetExposureBackendStats();
     const auto before=store->GetStats();const auto start=std::chrono::steady_clock::now();
-    constexpr int frames=30;constexpr int jobs=frames*2;
-    for(int i=0;i<frames;++i){Offer(frame,pts++,config,targets,true);count+=targets.size();}
+    constexpr int frames=30;const int jobs=frames*targets.size();
+    for(int i=0;i<frames;++i){offer(pts++,config);count+=targets.size();}
     ASSERT_TRUE(WaitCount(count));
     const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
     const auto after=store->GetStats();const auto gpu=ainvr::GetGlesCropStats();
@@ -349,9 +364,10 @@ TEST_F(HardwareArchive, Continuous4KErpQueueMeasuresHardwareAndDurability) {
         before["crop_mean_ms"].get<double>()*before["prepared_count"].get<double>())/jobs;
     RecordProperty("queue_frames_per_second_4k_"+phase,std::to_string(frames/elapsed));
     RecordProperty("queue_targets_per_second_4k_"+phase,std::to_string(jobs/elapsed));
+    RecordProperty("measured_targets_"+phase,std::to_string(jobs));
     RecordProperty("worker_crop_mean_ms_"+phase,std::to_string(crop_ms));
-    RecordProperty("new_contexts_during_60_targets_"+phase,std::to_string(gpu.contexts_created-crop_before.contexts_created));
-    RecordProperty("shader_compilations_during_60_targets_"+phase,std::to_string(gpu.shader_compilations-crop_before.shader_compilations));
+    RecordProperty("new_contexts_during_measured_targets_"+phase,std::to_string(gpu.contexts_created-crop_before.contexts_created));
+    RecordProperty("shader_compilations_during_measured_targets_"+phase,std::to_string(gpu.shader_compilations-crop_before.shader_compilations));
     EXPECT_GE(gpu.crops,crop_before.crops+jobs);
     if(!std::getenv("AINVR_CONTEXT_BASELINE")){
       EXPECT_LE(gpu.contexts_created-crop_before.contexts_created,store->GetStats()["archive_workers"].get<size_t>());
@@ -367,7 +383,7 @@ TEST_F(HardwareArchive, Continuous4KErpQueueMeasuresHardwareAndDurability) {
     else EXPECT_EQ(cv::norm(original,processed,cv::NORM_INF),0);
   }
   Healthy(count);
-  RecordProperty("source","synthetic resident RGBA; VPU and user-model inference excluded");
+  RecordProperty("source",nv12_fixture?"synthetic immutable NV12; VPU and detector excluded":"synthetic resident RGBA; VPU and user-model inference excluded");
   RecordProperty("durable_target_count",std::to_string(count));
 }
 } // namespace
@@ -443,4 +459,33 @@ TEST(HardwareJpegReuse, OddVisibleSizesReuseAlignedContextWithoutChangingPixels)
   }
   EXPECT_EQ(GetSnapshotJpegStats().encoder_creates,before.encoder_creates);
   EXPECT_EQ(GetSnapshotJpegStats().encoder_reuses,before.encoder_reuses+9);
+  const auto after=GetSnapshotJpegStats();
+  for(size_t stage=0;stage<after.timings.size();++stage){
+    EXPECT_EQ(after.timings[stage].count,before.timings[stage].count+9) << stage;
+    EXPECT_GT(after.timings[stage].total_ns,before.timings[stage].total_ns) << stage;
+    EXPECT_GE(after.timings[stage].max_ns,before.timings[stage].max_ns) << stage;
+  }
+}
+
+TEST_F(HardwareArchive, DirectNv12CaptureRetainsOwnerUntilDurableArchive) {
+  cfg.projection_mode="erp_equirect";
+  Start();
+  auto bytes=std::make_shared<std::vector<uint8_t>>(size_t(3840)*1920*3/2,128);
+  std::weak_ptr<std::vector<uint8_t>> lifetime=bytes;
+  std::atomic<int> downloads=0;
+  auto forbidden=[&](const cv::Rect&,cv::Mat&){++downloads;throw std::runtime_error("unexpected RGBA intermediate");};
+  pipeline::SnapshotSink::FrameProvider provider{{3840,1920},forbidden,[]{return false;},forbidden,
+    {bytes,10000,true,true}};
+  auto dets=std::vector<Detection>{Det({1700,800,160,160}),Det({50,10,120,95})};
+  store->Offer(provider,id,"direct-nv12",999,1700000000.999,"hardware-fixture",
+    "object_detection",dets,dets,false,cfg);
+  provider.nv12={};bytes.reset();
+  ASSERT_TRUE(WaitCount(2));
+  EXPECT_TRUE(Until([&]{return lifetime.expired();}));
+  EXPECT_EQ(downloads.load(),0);
+  for(const auto& item:Page()["items"]){
+    auto original=Image(item,true);EXPECT_NEAR(cv::mean(original)[0],128,3);
+    EXPECT_EQ(*store->GetImage(item["image_id"]),*store->GetImage(item["image_id"],true));
+  }
+  EXPECT_EQ(store->GetStats()["captured_frames"],0);Healthy(2);
 }

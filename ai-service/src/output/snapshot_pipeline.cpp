@@ -70,6 +70,7 @@ void SnapshotStore::Offer(const FrameProvider& frame_provider, const std::string
           captured->size = frame_provider.size;
           if (frame_provider.owned_download) {
             captured->owned_download = frame_provider.owned_download;
+            captured->nv12 = frame_provider.nv12;
             ClearArchiveFault("capture");
             break;
           }

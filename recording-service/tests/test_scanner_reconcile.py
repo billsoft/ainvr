@@ -165,3 +165,27 @@ def test_catalog_arrives_late_and_old_duplicate_identity_is_repaired(tmp_path):
     finally:
         storage.io.shutdown()
         index.close()
+
+
+def test_initialization_only_file_is_not_fabricated_into_playable_segment(tmp_path):
+    index, storage, scanner = setup(tmp_path)
+    day = tmp_path / 'videos' / '20260918'
+    day.mkdir()
+    video = day / 'ch_camera_20260918_100000.mp4'
+    video.write_bytes(b'initialization-only')
+    async def run():
+        await scanner.resolver.update([dict(id='ch', name='camera', streamName='s', kind='ai')])
+        for probe in ({'format': {}}, {'format': {'duration': '0.000000'}}):
+            with patch('recorder.scanner.ffprobe', return_value=probe):
+                await scanner.scan_once()
+            assert not any(r['relPath'].endswith(video.name) for r in index.all_segments())
+            assert video.read_bytes() == b'initialization-only'
+        video.write_bytes(b'initialization-only plus actual samples')
+        with patch('recorder.scanner.ffprobe', return_value={'format': {'duration': '0.033333'}}):
+            await scanner.scan_once()
+        rows=[r for r in index.all_segments() if r['relPath'].endswith(video.name)]
+        assert len(rows)==1 and rows[0]['durationMs']==33
+    try:
+        asyncio.run(run())
+    finally:
+        storage.shutdown();index.close()

@@ -55,6 +55,7 @@ std::string NewUuid4();
 // 普通裁剪及预算超出的 ERP 计划使用复用的整帧缓冲兜底。
 class SnapshotCropper {
  public:
+  explicit SnapshotCropper(bool exact_views=false):exact_views_(exact_views) {}
   std::vector<cv::Mat> Crop(const pipeline::SnapshotSink::FrameProvider& frame,
                             const std::vector<Detection>& detections, bool square,
                             const config::SnapshotConfig& cfg);
@@ -63,6 +64,7 @@ class SnapshotCropper {
   bool full_frame() const { return full_frame_; }
   size_t invalid_count() const { return invalid_count_; }
  private:
+  bool exact_views_;
   ErpMapCache maps_;
   std::shared_ptr<ainvr::GlesCropBackend> gpu_;
   cv::Mat host_;

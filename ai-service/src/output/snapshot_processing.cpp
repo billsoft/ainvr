@@ -2,6 +2,7 @@
 #include "face_enhancer.hpp"
 #include "exposure.hpp"
 #include "snapshot_jpeg.hpp"
+#include <cstdlib>
 
 namespace ai_service::output {
 using namespace snapshot_detail;
@@ -60,17 +61,31 @@ void SnapshotStore::PrepareBatch(std::vector<ArchiveJob>& jobs) {
 void SnapshotStore::MaterializeCrop(ArchiveJob& job) {
   if (!job.crop.empty()) return;
   if (!job.frame || !job.config) throw SnapshotEncodeError("missing captured snapshot frame");
-  SnapshotCropper cropper;
-  FrameProvider provider{job.frame->size, [&job](const cv::Rect& roi, cv::Mat& dst) {
-    if (job.frame->owned_download) { job.frame->owned_download(roi, dst); return; }
-    // The immutable capture stays owned by this job until cropping completes.
-    // A shallow view is safe here; Crop always returns independent target pixels.
-    dst = job.frame->rgba(roi);
-  }};
-  auto crops = cropper.Crop(provider, {job.crop_detection}, job.square, *job.config);
-  if (crops.empty() || crops[0].empty()) throw SnapshotEncodeError("captured target crop is empty");
-  job.crop = std::move(crops[0]);
-  job.frame.reset();
+  auto execute = [&] {
+    // Pool threads exclusively own their GPU resources. Exact view keys preserve
+    // the pixels of a fresh per-target cropper, without cross-frame bin aliasing.
+    // Each execution thread retains at most 32 MiB of cached maps.
+    static thread_local SnapshotCropper cropper(true);
+    FrameProvider provider{job.frame->size, [&job](const cv::Rect& roi, cv::Mat& dst) {
+      if (job.frame->owned_download) { job.frame->owned_download(roi, dst); return; }
+      // The immutable capture stays owned by this job until cropping completes.
+      // A shallow view is safe here; Crop always returns independent target pixels.
+      dst = job.frame->rgba(roi);
+    }};
+    provider.nv12=job.frame->nv12;
+    auto crops = cropper.Crop(provider, {job.crop_detection}, job.square, *job.config);
+    if (crops.empty() || crops[0].empty()) throw SnapshotEncodeError("captured target crop is empty");
+    job.crop = std::move(crops[0]);
+    provider.nv12 = {};  // Drop the temporary owner before returning capture capacity.
+    job.frame.reset();
+  };
+  const char* shared=std::getenv("AINVR_ARCHIVE_SHARED_CROP");
+  if((!shared || std::string(shared)!="0") && job.frame->nv12.pixels){
+    // Distinct executor: four archive workers may wait, but none can enqueue
+    // back into its own pool. Only small target outputs cross this boundary.
+    static ArchiveExecutor gpu_queue(1,4);
+    gpu_queue.Submit(execute).get();
+  }else execute();
 }
 
 void SnapshotStore::PrepareImage(ArchiveJob& job) {

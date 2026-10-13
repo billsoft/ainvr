@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <memory>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <opencv2/core.hpp>
@@ -19,6 +21,11 @@ class SnapshotSink {
   // SnapshotSink 生效,不需要额外的配置同步通路。
   // 只在需要归档且队列有空间时下载一个合并区域。目标 Mat 可跨帧复用。
   // 回调必须在 Offer 返回前同步完成，禁止保存帧视图到后台队列。
+  struct Nv12Source {
+    std::shared_ptr<const std::vector<uint8_t>> pixels;
+    uint64_t tag=0;
+    bool bt709=false,full_range=false;
+  };
   struct FrameProvider {
     cv::Size size;
     std::function<void(const cv::Rect&, cv::Mat&)> download;
@@ -26,6 +33,8 @@ class SnapshotSink {
     // Optional immutable, detached pixel owner. Safe on archive workers; never
     // captures a decoder surface, inference-thread GLES context or worker this.
     std::function<void(const cv::Rect&, cv::Mat&)> owned_download;
+    // Optional immutable CPU-owned bytes, never a borrowed VPU surface.
+    Nv12Source nv12;
   };
   virtual void Offer(const FrameProvider& frame_provider, const std::string& channel_id,
                       const std::string& channel_name, int64_t frame_pts_ns, double timestamp,

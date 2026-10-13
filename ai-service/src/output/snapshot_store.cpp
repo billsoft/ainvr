@@ -1,6 +1,7 @@
 #include "snapshot_internal.hpp"
 #include "face_enhancer.hpp"
 #include "exposure.hpp"
+#include "snapshot_jpeg.hpp"
 
 namespace ai_service::output {
 using namespace snapshot_detail;
@@ -348,6 +349,16 @@ json SnapshotStore::GetStats() const {
       {"captured_frames", captured_frames_->load()},
       {"capture_reserved_bytes", capacity_->Reserved()},
       {"captured_count", captured_count_},
+      {"jpeg_process_wide", [] {
+        const auto stats=GetSnapshotJpegStats();
+        json result={{"scope","process"},{"jpu",stats.jpu},{"failures",stats.failures},
+          {"encoder_creates",stats.encoder_creates},{"encoder_reuses",stats.encoder_reuses}};
+        const char* names[]={"input_copy","admission_wait","conversion_queue_wait","conversion","encoder_queue_wait","encoder_setup","jpu_encode"};
+        for(size_t i=0;i<stats.timings.size();++i){const auto& t=stats.timings[i];
+          result["stages"][names[i]]={{"count",t.count},{"total_ms",t.total_ns/1e6},
+            {"mean_ms",t.count?t.total_ns/1e6/t.count:0.0},{"max_ms",t.max_ns/1e6}};}
+        return result;
+      }()},
       {"archive_workers", ArchiveWorkerCount()},
       {"last_prepare_ms", last_prepare_ms_},
       {"last_mongo_ms", last_mongo_ms_},

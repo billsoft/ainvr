@@ -10,6 +10,30 @@ import time
 import urllib.request
 
 
+def publisher_interval(samples, enabled):
+    if not enabled:
+        return {'enabled': False, 'clean': True}
+    if len(samples) < 2:
+        return {'enabled': True, 'available': False, 'clean': False,
+                'reason': 'At least two samples are required for an interval'}
+    publishers = [s['worker'].get('publish') for s in samples]
+    if not all(isinstance(p, dict) and isinstance(p.get('buffer'), dict) for p in publishers):
+        return {'enabled': True, 'available': False, 'clean': False,
+                'reason': 'Publisher unavailable in one or more samples; warm up before measuring'}
+    paths = {'sei_too_late': ('buffer', 'too_late'), 'sei_unknown': ('buffer', 'unknown'),
+             'au_dropped': ('buffer', 'dropped'), 'au_shed': (None, 'au_shed'),
+             'reconnects': (None, 'reconnect_count')}
+    deltas = {}; continuous = True
+    for label, (parent, key) in paths.items():
+        values = [(p[parent] if parent else p).get(key) for p in publishers]
+        if not all(isinstance(v, (int, float)) for v in values):
+            continuous = False; deltas[label] = None; continue
+        continuous = continuous and all(b >= a for a, b in zip(values, values[1:]))
+        deltas[label] = values[-1] - values[0]
+    return {'enabled': True, 'available': True, 'continuous': continuous, 'deltas': deltas,
+            'clean': continuous and all(v == 0 for v in deltas.values())}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--channel-id', required=True)
@@ -60,7 +84,9 @@ def main():
         'config_sha256':configs[0], 'snapshot_config':channel['config']['snapshot'],
         'binary_sha256':hashlib.sha256((root/'deploy/s100p/bin/ainvr_ai_service').read_bytes()).hexdigest(),
         'samples':samples}
-    report['healthy']=continuous and all(s['worker']['last_error'] is None and s['archive']['healthy'] and s['archive']['dropped_count']==0 for s in samples)
+    report['archive_healthy']=continuous and all(s['worker']['last_error'] is None and s['archive']['healthy'] and s['archive']['dropped_count']==0 for s in samples)
+    report['publisher_interval']=publisher_interval(samples, channel['config'].get('publish', {}).get('enabled', False))
+    report['healthy']=report['archive_healthy'] and report['publisher_interval']['clean']
     with args.output.open('x') as output:
         json.dump(report,output,indent=2)
     print(json.dumps({k:v for k,v in report.items() if k not in ('samples','snapshot_config')}))

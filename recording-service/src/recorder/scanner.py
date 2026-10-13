@@ -271,7 +271,12 @@ class Scanner:
             if probe is None:
                 continue  # 暂时不可探（正在写/网络抖动），下轮再来
             meta = parse_probe(probe)
-            duration_ms = max(1, meta["durationMs"])
+            duration_ms = meta["durationMs"]
+            if duration_ms <= 0:
+                # Startup/stop can leave an initialization-only MP4. Do not
+                # fabricate a 1 ms playable segment or enqueue SEI indexing.
+                # Keep the file and retry: a writer may still append samples.
+                continue
             (await self.index.run(self.index.upsert_segment, {
                 "id": segment_id,
                 "channelId": cid,

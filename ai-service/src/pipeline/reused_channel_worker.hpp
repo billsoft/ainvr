@@ -206,6 +206,7 @@ class ReusedChannelWorker : public ChannelWorker {
   uint64_t map_registered_count_ = 0;
   utils::TimingStats stats_frame_unmap_{200};
   utils::TimingStats stats_snapshot_offer_{200};
+  utils::TimingStats stats_archive_admission_wait_{200};
   utils::TimingStats stats_sei_stamp_{200};
   utils::TimingStats stats_inference_{200};
   utils::TimingStats stats_postprocess_{200};

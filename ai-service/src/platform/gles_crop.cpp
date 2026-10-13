@@ -76,6 +76,9 @@ precision highp float;
 precision highp int;
 layout(local_size_x=16,local_size_y=16) in;
 layout(binding=0) uniform highp sampler2D input_image;
+layout(binding=1) uniform highp sampler2D chroma_image;
+uniform bool input_nv12;
+uniform vec3 yuv_offset,yuv_scale,yuv_red,yuv_green,yuv_blue;
 layout(std430,binding=0) buffer Map { vec2 coordinates[]; };
 layout(std430,binding=1) buffer Small { uint intermediate[]; };
 layout(std430,binding=2) buffer Output { uint pixels[]; };
@@ -88,7 +91,16 @@ uniform mat3 rotation;
 uniform vec2 focal;
 const float PI=3.14159265358979323846;
 int idx(ivec2 p,ivec2 size){return p.y*size.x+p.x;}
-ivec4 source(ivec2 p){return ivec4(roundEven(texelFetch(input_image,clamp(p,ivec2(0),input_size-1),0)*255.0));}
+ivec4 source(ivec2 p){
+  p=clamp(p,ivec2(0),input_size-1);
+  if(!input_nv12)return ivec4(roundEven(texelFetch(input_image,p,0)*255.0));
+  vec2 uv=(vec2(p)+.5)/vec2(input_size);
+  vec3 yuv=vec3(textureLod(input_image,uv,0.).r,textureLod(chroma_image,uv,0.).rg);
+  yuv=(yuv*255.-yuv_offset)*yuv_scale;
+  vec3 rgb=clamp(vec3(dot(yuv,yuv_red),dot(yuv,yuv_green),dot(yuv,yuv_blue)),0.,255.);
+  // Preserve the old RGBA8 intermediate rounding before interpolation.
+  return ivec4(ivec3(floor(rgb+.5)),255);
+}
 uint pack(ivec4 v){uvec4 a=uvec4(clamp(v,ivec4(0),ivec4(255)));return a.x|(a.y<<8)|(a.z<<16)|(a.w<<24);}
 ivec4 unpack(uint v){return ivec4(v&255u,(v>>8)&255u,(v>>16)&255u,(v>>24)&255u);}
 float cubic(float distance){float t=abs(distance),a=-.75;if(t<=1.)return ((a+2.)*t-(a+3.))*t*t+1.;if(t<2.)return ((a*t-5.*a)*t+8.*a)*t-4.*a;return 0.;}
@@ -207,27 +219,40 @@ struct GlesErpMap::Storage {
 struct GlesCropBackend::State {
   std::shared_ptr<Context> context=AcquireContext();
   std::shared_ptr<void> owner=std::make_shared<int>(0);
-  using Key=std::tuple<int,int,int64_t,int64_t,int64_t,int,int>;
+  using Key=std::tuple<int,int,double,double,double,int,int>;
+  bool exact_views;
   std::list<std::pair<Key,std::shared_ptr<GlesErpMap>>> lru;
   std::map<Key,decltype(lru)::iterator> index;
   size_t bytes=0,max_entries,max_bytes;
-  GLuint program=0,texture=0,small=0,output=0,bounds=0,coefficients=0;
+  GLuint program=0,texture=0,chroma=0,small=0,output=0,bounds=0,coefficients=0;
+  bool nv12=false,bt709=false,full_range=false;
+  uint64_t source_tag=0;
   cv::Size input_size;
-  State(size_t entries,size_t budget):max_entries(entries),max_bytes(budget){
+  size_t small_capacity=0,output_capacity=0,bounds_capacity=0;
+  State(size_t entries,size_t budget,bool exact):exact_views(exact),max_entries(entries),max_bytes(budget){
     Active active(*context);
     try {
       context->EnsureResources();program=context->program;coefficients=context->coefficients;
-      glGenTextures(1,&texture);glGenBuffers(1,&small);glGenBuffers(1,&output);glGenBuffers(1,&bounds);
+      glGenTextures(1,&texture);glGenTextures(1,&chroma);glGenBuffers(1,&small);glGenBuffers(1,&output);glGenBuffers(1,&bounds);
       Check(*context);
       Buffer(small,8);Buffer(output,4);Buffer(bounds,20);
     }catch(...){Destroy();throw;}
   }
   ~State(){try{Active active(*context);lru.clear();Destroy();}catch(...) {}}
-  void Destroy(){if(texture)glDeleteTextures(1,&texture);for(GLuint b:{small,output,bounds})if(b)glDeleteBuffers(1,&b);}
+  void Destroy(){if(chroma)glDeleteTextures(1,&chroma);if(texture)glDeleteTextures(1,&texture);for(GLuint b:{small,output,bounds})if(b)glDeleteBuffers(1,&b);}
   void Buffer(GLuint id,size_t bytes,const void* data=nullptr){
     GLint64 limit=0;glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE,&limit);
     if(bytes>size_t(limit))throw std::invalid_argument("Crop buffer exceeds GPU limit");
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER,id);glBufferData(GL_SHADER_STORAGE_BUFFER,bytes,data,GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER,id);
+    // Only these lifetime-owned work buffers may retain capacity. Map buffer
+    // names can be deleted/recycled by the LRU and must always be allocated.
+    size_t* capacity=id==small?&small_capacity:id==output?&output_capacity:id==bounds?&bounds_capacity:nullptr;
+    if(!capacity || bytes>*capacity) {
+      glBufferData(GL_SHADER_STORAGE_BUFFER,bytes,data,GL_DYNAMIC_DRAW);
+      if(capacity)*capacity=bytes;
+    } else if(data) {
+      glBufferSubData(GL_SHADER_STORAGE_BUFFER,0,bytes,data);
+    }
   }
   GLint Uniform(const char* name){return glGetUniformLocation(program,name);}
   void Size(const char* name,cv::Size value){glUniform2i(Uniform(name),value.width,value.height);}
@@ -237,6 +262,13 @@ struct GlesCropBackend::State {
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT|GL_BUFFER_UPDATE_BARRIER_BIT);Check(*context);
   }
   void Bind(){glUseProgram(program);Size("input_size",input_size);glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,texture);
+    glUniform1i(Uniform("input_nv12"),nv12);
+    glUniform3f(Uniform("yuv_offset"),full_range?0:16,128,128);
+    glUniform3f(Uniform("yuv_scale"),full_range?1:255.f/219,full_range?1:255.f/224,full_range?1:255.f/224);
+    glUniform3f(Uniform("yuv_red"),1,0,bt709?1.5748f:1.402f);
+    glUniform3f(Uniform("yuv_green"),1,bt709?-.187324f:-.344136f,bt709?-.468124f:-.714136f);
+    glUniform3f(Uniform("yuv_blue"),1,bt709?1.8556f:1.772f,0);
+    glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,chroma);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER,0,coefficients);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER,1,small);glBindBufferBase(GL_SHADER_STORAGE_BUFFER,2,output);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER,3,bounds);glBindBufferBase(GL_SHADER_STORAGE_BUFFER,4,coefficients);
@@ -256,10 +288,10 @@ struct GlesErpMap::Storage {};
 #endif
 GlesCropStats GetGlesCropStats(){return {map_count.load(),hit_count.load(),crop_count.load(),failure_count.load(),
   contexts_created.load(),contexts_reused.load(),contexts_live.load(),shader_compilations.load()};}
-GlesCropBackend::GlesCropBackend(size_t entries,size_t budget){
+GlesCropBackend::GlesCropBackend(size_t entries,size_t budget,bool exact_views){
   if(!entries||!budget)throw std::invalid_argument("Invalid crop cache budget");
 #ifdef AINVR_CROP_GLES
-  try{state_=std::make_unique<State>(entries,budget);}catch(...){++failure_count;throw;}
+  try{state_=std::make_unique<State>(entries,budget,exact_views);}catch(...){++failure_count;throw;}
 #else
   ++failure_count;throw std::runtime_error("Hardware crop backend unavailable");
 #endif
@@ -274,8 +306,12 @@ std::shared_ptr<const GlesErpMap> GlesCropBackend::GetMap(cv::Size source,const 
     throw std::invalid_argument("Invalid ERP GPU map dimensions/view");
   auto& s=*state_;Active active(*s.context);
   try {
-    State::Key key{source.width,source.height,int64_t(std::nearbyint((v.cx/source.width-.5)*120)),
-      int64_t(std::nearbyint((.5-v.cy/source.height)*60)),int64_t(std::nearbyint(v.fov_h_deg/3)),v.w_out,v.h_out};
+    // Persistent archive workers must not reuse a nearby (but different) view.
+    // Legacy callers retain the original first-view-per-quantized-bin contract.
+    State::Key key{source.width,source.height,
+      s.exact_views ? v.cx : std::nearbyint((v.cx/source.width-.5)*120),
+      s.exact_views ? v.cy : std::nearbyint((.5-v.cy/source.height)*60),
+      s.exact_views ? v.fov_h_deg : std::nearbyint(v.fov_h_deg/3),v.w_out,v.h_out};
     if(auto i=s.index.find(key);i!=s.index.end()){s.lru.splice(s.lru.end(),s.lru,i->second);++hit_count;return i->second->second;}
     auto map=std::make_shared<GlesErpMap>();map->source_size=source;map->size={v.w_out,v.h_out};
     map->storage=std::make_shared<GlesErpMap::Storage>();map->storage->context=s.context;map->storage->owner=s.owner;
@@ -320,9 +356,45 @@ void GlesCropBackend::Upload(const cv::Mat& rgba){
     cv::Mat packed=rgba.isContinuous()?rgba:rgba.clone(); // Byte copy only.
     glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,s.texture);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-    glPixelStorei(GL_UNPACK_ALIGNMENT,1);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,rgba.cols,rgba.rows,0,GL_RGBA,GL_UNSIGNED_BYTE,packed.data);
-    s.input_size=rgba.size();Check(*s.context);
+    glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+    if(!s.nv12 && s.input_size==rgba.size())
+      glTexSubImage2D(GL_TEXTURE_2D,0,0,0,rgba.cols,rgba.rows,GL_RGBA,GL_UNSIGNED_BYTE,packed.data);
+    else
+      glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,rgba.cols,rgba.rows,0,GL_RGBA,GL_UNSIGNED_BYTE,packed.data);
+    s.input_size=rgba.size();s.nv12=false;s.source_tag=0;Check(*s.context);
   }catch(...){++failure_count;throw;}
+#else
+  throw std::runtime_error("Hardware crop backend unavailable");
+#endif
+}
+void GlesCropBackend::UploadNv12(const std::vector<uint8_t>& pixels,cv::Size size,
+                                  uint64_t tag,bool bt709,bool full_range){
+#ifdef AINVR_CROP_GLES
+  if(size.width<=0||size.height<=0||size.width>8192||size.height>8192||
+     (size.width&1)||(size.height&1)||pixels.size()!=size_t(size.width)*size.height*3/2)
+    throw std::invalid_argument("Crop requires bounded packed NV12 source");
+  auto& s=*state_;Active active(*s.context);
+  try {
+    if(s.nv12 && tag && s.source_tag==tag && s.input_size==size){
+      s.bt709=bt709;s.full_range=full_range;return;
+    }
+    GLint limit=0;glGetIntegerv(GL_MAX_TEXTURE_SIZE,&limit);
+    if(size.width>limit||size.height>limit)throw std::invalid_argument("NV12 crop exceeds texture limit");
+    const bool reuse=s.nv12 && s.input_size==size;
+    glPixelStorei(GL_UNPACK_ALIGNMENT,1);
+    for(int plane=0;plane<2;++plane){
+      glActiveTexture(GL_TEXTURE0+plane);glBindTexture(GL_TEXTURE_2D,plane?s.chroma:s.texture);
+      glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+      const int w=plane?size.width/2:size.width,h=plane?size.height/2:size.height;
+      const auto* data=pixels.data()+(plane?size_t(size.width)*size.height:0);
+      if(reuse)glTexSubImage2D(GL_TEXTURE_2D,0,0,0,w,h,plane?GL_RG:GL_RED,GL_UNSIGNED_BYTE,data);
+      else glTexImage2D(GL_TEXTURE_2D,0,plane?GL_RG8:GL_R8,w,h,0,plane?GL_RG:GL_RED,GL_UNSIGNED_BYTE,data);
+    }
+    Check(*s.context);s.input_size=size;s.nv12=true;s.source_tag=tag;s.bt709=bt709;s.full_range=full_range;
+  }catch(...){s.source_tag=0;++failure_count;throw;}
 #else
   throw std::runtime_error("Hardware crop backend unavailable");
 #endif

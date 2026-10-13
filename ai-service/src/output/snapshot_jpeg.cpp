@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
 #include <cstring>
 #include <deque>
 #include <future>
@@ -20,11 +21,18 @@ namespace ai_service::output {
 namespace {
 std::atomic<uint64_t> hardware_count{0}, failure_count{0}, gpu_count{0};
 std::atomic<uint64_t> encoder_creates{0}, encoder_reuses{0};
+std::mutex timing_mutex;
+std::array<SnapshotJpegTiming,7> timings;
+uint64_t Tick(){return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
+void Observe(size_t stage,uint64_t start){const auto ns=Tick()-start;std::lock_guard lock(timing_mutex);
+ auto& t=timings[stage];++t.count;t.total_ns+=ns;t.max_ns=std::max(t.max_ns,ns);}
+
 #ifdef AINVR_ARCHIVE_JPU
 struct Job {
  std::vector<uint8_t> pixels;
  int width,height,quality;
  bool rgba;
+ uint64_t enqueued=0,converted=0;
  std::promise<std::vector<uint8_t>> result;
 };
 class HardwareJpeg {
@@ -44,13 +52,17 @@ class HardwareJpeg {
  std::vector<uint8_t> Run(const cv::Mat& input,int quality,bool rgba){
   auto job=std::make_unique<Job>();job->width=input.cols;job->height=input.rows;job->quality=quality;
   job->rgba=rgba;
+  const auto copy_start=Tick();
   const size_t row=size_t(input.cols)*(rgba?4:3);job->pixels.resize(row*input.rows);
   // Memory transfer only; GPU handles channel order, colors, chroma and padding.
   for(int y=0;y<input.rows;++y)std::memcpy(job->pixels.data()+size_t(y)*row,input.ptr(y),row);
+  Observe(0,copy_start);
   auto result=job->result.get_future();
+  const auto admission_start=Tick();
   {std::unique_lock<std::mutex> lock(mutex_);
    available_.wait(lock,[&]{return stopping_||(jobs_.size()<4&&queued_bytes_+job->pixels.size()<=size_t(256)*1024*1024);});
    if(stopping_)throw std::runtime_error("Snapshot JPEG worker is stopping");
+   Observe(1,admission_start);job->enqueued=Tick();
    queued_bytes_+=job->pixels.size();jobs_.push_back(std::move(job));}
   available_.notify_all();return result.get();
  }
@@ -65,6 +77,7 @@ class HardwareJpeg {
     if(jobs_.empty()&&stopping_)break;
     job=std::move(jobs_.front());jobs_.pop_front();queued_bytes_-=job->pixels.size();}
    available_.notify_all();
+   Observe(2,job->enqueued);const auto conversion_start=Tick();
    try {
     // Generate the entire SDK-aligned plane on GPU so the encoder only copies
     // bytes; no CPU pixel padding is needed for archive snapshots.
@@ -76,6 +89,7 @@ class HardwareJpeg {
     auto nv12=job->rgba
       ? colors->RunRgbaJpegNv12(job->pixels,job->width,job->height,transform)
       : colors->RunBgrJpegNv12(job->pixels,job->width,job->height,transform);++gpu_count;
+    Observe(3,conversion_start);job->converted=Tick();
     std::vector<uint8_t>().swap(job->pixels); // GPU has consumed the owned input.
     {
       std::unique_lock<std::mutex> lock(prepared_mutex_);
@@ -105,6 +119,7 @@ class HardwareJpeg {
    prepared_available_.notify_all();
    auto& job=next_job.job;auto& nv12=next_job.nv12;
    const int w=next_job.width,h=next_job.height;
+   Observe(4,job->converted);const auto setup_start=Tick();
    try {
     const std::array<int,5> next{w,h,job->quality,job->width,job->height};
     // Keep the validated single-context behavior for SDK-padded visible sizes.
@@ -122,7 +137,9 @@ class HardwareJpeg {
       while(!encoders.empty()&&(encoders.size()>=(cacheable?2u:1u)||area()+size_t(w)*h>size_t(2)*1024*1024))encoders.pop_front();
       encoders.push_back({next,std::make_unique<ainvr::JpegEncoder>(w,h,job->quality,job->width,job->height)});++encoder_creates;
     }
+    Observe(5,setup_start);const auto encode_start=Tick();
     auto bytes=encoders.back().encoder->EncodeFullRangeNv12(nv12,job->width,job->height);
+    Observe(6,encode_start);
     if(bytes.empty())throw std::runtime_error("JPU returned empty JPEG");
     ++hardware_count;job->result.set_value(std::move(bytes));
    } catch(...) {encoders.clear();++failure_count;job->result.set_exception(std::current_exception());}
@@ -146,7 +163,7 @@ class HardwareJpeg {
 };
 #endif
 }
-SnapshotJpegStats GetSnapshotJpegStats(){return {hardware_count.load(),0,failure_count.load(),gpu_count.load(),encoder_creates.load(),encoder_reuses.load()};}
+SnapshotJpegStats GetSnapshotJpegStats(){std::lock_guard lock(timing_mutex);return {hardware_count.load(),0,failure_count.load(),gpu_count.load(),encoder_creates.load(),encoder_reuses.load(),timings};}
 cv::Mat EnsureSnapshotJpuCanvas(const cv::Mat& rgba){
  if(rgba.empty()||rgba.type()!=CV_8UC4||rgba.cols>8192||rgba.rows>8192)
   throw std::invalid_argument("Invalid snapshot RGBA canvas");

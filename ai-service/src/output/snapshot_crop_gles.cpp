@@ -140,7 +140,8 @@ std::vector<cv::Mat> SnapshotCropper::Crop(
   // Decide fallback before touching the quantized LRU. Each target accesses its
   // mapping once, in the same order as the original algorithm, even after eviction.
   if (std::none_of(plans.begin(),plans.end(),[](const Plan& p){return p.valid;})) return result;
-  if (!gpu_) gpu_=std::make_shared<ainvr::GlesCropBackend>();
+  if (!gpu_) gpu_=std::make_shared<ainvr::GlesCropBackend>(exact_views_?64:256,
+      size_t(exact_views_?32:64)<<20,exact_views_);
   // Any exceptional GPU operation discards cached device state for a clean
   // retry by the original archive worker. No CPU execution is selected.
   struct RetryState { std::shared_ptr<ainvr::GlesCropBackend>& gpu; int exceptions=std::uncaught_exceptions();
@@ -163,13 +164,21 @@ std::vector<cv::Mat> SnapshotCropper::Crop(
   full_frame_ = region == bounds;
   // Discard retained map references before sequential fallback to enforce the budget.
   if (fallback) for (auto& p : plans) p.map.reset();
-  double start = NowMono();
-  frame.download(region, host_);
-  download_ms_ = (NowMono() - start) * 1000;
-  if (host_.size() != region.size() || host_.type() != CV_8UC4)
-    throw std::runtime_error("snapshot provider returned invalid region");
-  downloaded_bytes_ = host_.total() * host_.elemSize();
-  gpu_->Upload(host_);
+  if(frame.nv12.pixels){
+    gpu_->UploadNv12(*frame.nv12.pixels,frame.size,frame.nv12.tag,
+                     frame.nv12.bt709,frame.nv12.full_range);
+    // Keep RGBA8 rounding before interpolation, without a host intermediate.
+    region=bounds;
+    host_.release();
+  }else{
+    double start = NowMono();
+    frame.download(region, host_);
+    download_ms_ = (NowMono() - start) * 1000;
+    if (host_.size() != region.size() || host_.type() != CV_8UC4)
+      throw std::runtime_error("snapshot provider returned invalid region");
+    downloaded_bytes_ = host_.total() * host_.elemSize();
+    gpu_->Upload(host_);
+  }
   for (size_t i = 0; i < plans.size(); ++i) {
     auto& p = plans[i];
     if (!p.valid) continue;

@@ -2,9 +2,15 @@
 #pragma once
 #include <cstdint>
 #include <vector>
+#include <array>
 #include <opencv2/core.hpp>
 namespace ai_service::output {
-struct SnapshotJpegStats { uint64_t jpu, cpu, failures, gpu_color, encoder_creates, encoder_reuses; };
+struct SnapshotJpegTiming { uint64_t count=0,total_ns=0,max_ns=0; };
+// Process-wide, monotonic stage totals; independent stage counts include retries.
+struct SnapshotJpegStats {
+ uint64_t jpu, cpu, failures, gpu_color, encoder_creates, encoder_reuses;
+ std::array<SnapshotJpegTiming,7> timings{};
+};
 SnapshotJpegStats GetSnapshotJpegStats();
 // Preserve tiny RGBA crop pixels and add replicated right/bottom edge pixels
 // on GLES so the JPU's minimum MCU grid is met. Larger crops are unchanged.

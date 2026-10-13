@@ -313,3 +313,149 @@ TEST(SnapshotCropGles, WarmErpCropPerformanceIncludesRegionDownloadAndReadback){
   RecordProperty("warm_erp_4k_to_320_complete_call_ms",std::to_string(ms));
   RecordProperty("region_download_bytes",std::to_string(cropper.downloaded_bytes()));
 }
+
+TEST(SnapshotCropGles, PersistentExactViewsMatchFreshTargetPixelsAcrossMotion) {
+  auto image=Pattern({1024,512},true);
+  pipeline::SnapshotSink::FrameProvider provider{image.size(),[&](const cv::Rect& roi,cv::Mat& dst){dst=image(roi);}};
+  config::SnapshotConfig cfg;cfg.projection_mode="erp_equirect";
+  cfg.max_crop_dimension=96;cfg.padding_ratio=.25;
+  SnapshotCropper persistent(true);
+  auto before=ainvr::GetGlesCropStats();
+  for(double offset:{0.,.1,.2,0.,.1}) {
+    auto detection=Detect({400.+offset,200.,80.,100.});
+    SnapshotCropper fresh;
+    auto expected=fresh.Crop(provider,{detection},false,cfg);
+    auto actual=persistent.Crop(provider,{detection},false,cfg);
+    ASSERT_EQ(actual.size(),1u);ASSERT_FALSE(actual[0].empty());
+    EXPECT_EQ(cv::norm(actual[0],expected[0],cv::NORM_INF),0);
+  }
+  EXPECT_GE(ainvr::GetGlesCropStats().cache_hits-before.cache_hits,2u);
+}
+
+TEST(SnapshotCropGles, ExactSharedUploadExperimentPreservesPixelsAndMeasuresBytes) {
+  auto image=Pattern({3840,1920},true);
+  config::SnapshotConfig cfg;cfg.projection_mode="erp_equirect";
+  cfg.max_crop_dimension=320;cfg.padding_ratio=.25;
+  for(bool scattered:{false,true}) {
+    std::vector<Detection> detections;
+    for(int i=0;i<8;++i) detections.push_back(Detect({double(scattered?200+i*420:1500+i*45),800.,120.,180.}));
+    size_t downloaded=0;
+    pipeline::SnapshotSink::FrameProvider provider{image.size(),[&](const cv::Rect& roi,cv::Mat& dst){downloaded+=size_t(roi.area())*4;dst=image(roi);}};
+    SnapshotCropper singles(true),batch(true);
+    auto combined=batch.Crop(provider,detections,false,cfg);
+    ASSERT_EQ(combined.size(),detections.size());
+    for(size_t i=0;i<detections.size();++i) {
+      SnapshotCropper fresh;
+      auto expected=fresh.Crop(provider,{detections[i]},false,cfg);
+      EXPECT_EQ(cv::norm(combined[i],expected[0],cv::NORM_INF),0);
+    }
+    for(bool shared:{false,true}) {
+      downloaded=0;
+      auto begin=std::chrono::steady_clock::now();
+      for(int n=0;n<12;++n) {
+        if(shared) batch.Crop(provider,detections,false,cfg);
+        else for(const auto& d:detections) singles.Crop(provider,{d},false,cfg);
+      }
+      const std::string prefix=std::string(scattered?"scattered":"clustered")+(shared?"_shared":"_separate");
+      RecordProperty(prefix+"_ms_per_frame",std::to_string(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count()/12));
+      RecordProperty(prefix+"_bytes_per_frame",std::to_string(downloaded/12));
+    }
+  }
+}
+
+TEST(SnapshotCropGles, PersistentWorkCapacityDoesNotLeakOldPixelsAcrossSizesOrFrames) {
+  SnapshotCropper persistent(true);
+  config::SnapshotConfig cfg;cfg.padding_ratio=.25;
+  auto image=Pattern({1024,512},true);
+  pipeline::SnapshotSink::FrameProvider provider{image.size(),[&](const cv::Rect& roi,cv::Mat& dst){dst=image(roi);}};
+  for(int frame=0;frame<3;++frame) {
+    if(frame) image.setTo(cv::Scalar(20*frame,80,150,255));
+    for(const char* projection:{"erp_equirect","none"}) {
+      cfg.projection_mode=projection;
+      for(int size:{192,48,96,48,192}) {
+        cfg.max_crop_dimension=size;
+        auto detection=Detect({400.,160.,150.,180.});
+        SnapshotCropper fresh;
+        auto expected=fresh.Crop(provider,{detection},false,cfg);
+        auto actual=persistent.Crop(provider,{detection},false,cfg);
+        ASSERT_FALSE(actual[0].empty());
+        EXPECT_EQ(cv::norm(actual[0],expected[0],cv::NORM_INF),0);
+      }
+    }
+  }
+}
+
+TEST(SnapshotCropGles, DirectNv12MatchesRgbaIntermediateAndInvalidatesSourceCache) {
+  ainvr::GlesPreprocessor converter;
+  ainvr::GlesCropBackend actual(64,size_t(32)<<20,true),expected(64,size_t(32)<<20,true);
+  uint64_t tag=0;
+  for(auto size:{cv::Size(258,130),cv::Size(3840,1920),cv::Size(7680,3840)}) {
+    std::vector<uint8_t> nv12(size_t(size.width)*size.height*3/2);
+    cv::RNG rng(392);rng.fill(cv::Mat(1,int(nv12.size()),CV_8U,nv12.data()),cv::RNG::UNIFORM,0,256);
+    for(bool bt709:{false,true})for(bool full:{false,true}) {
+      ainvr::ImageTransform t;t.width=size.width;t.height=size.height;t.letterbox=false;
+      t.yuv_bt709=bt709;t.yuv_full_range=full;
+      const auto rgba=converter.RunNv12Rgba(nv12,size.width,size.height,t,++tag);
+      cv::Mat image(size,CV_8UC4,const_cast<uint8_t*>(rgba.data()));expected.Upload(image);
+      actual.UploadNv12(nv12,size,tag,bt709,full);
+      // Repeating an immutable tag must preserve content and switch color flags safely.
+      actual.UploadNv12(nv12,size,tag,bt709,full);
+      for(cv::Rect rect:{cv::Rect(0,0,65,67),cv::Rect(-4,-3,65,67),cv::Rect(size.width-50,size.height-50,65,67)}) {
+        const auto a=actual.Area(rect,{47,49}),b=expected.Area(rect,{47,49});
+        EXPECT_LE(cv::norm(a,b,cv::NORM_INF),1.0);EXPECT_LE(MeanError(a,b),.05);
+      }
+      for(auto box:std::vector<std::array<double,4>>{{0,10,80,65},{size.width*.48,size.height*.45,90,73},{size.width-40.,size.height-35.,80,65}}){
+        const auto view=BboxToErpView(box,.25,size.width,size.height,96,9,false);ASSERT_TRUE(view);
+        auto ss=ScaleErpView(*view,1.5);
+        const auto a=actual.Remap(actual.GetMap(size,ss),{}, {view->w_out,view->h_out});
+        const auto b=expected.Remap(expected.GetMap(size,ss),{}, {view->w_out,view->h_out});
+        EXPECT_LE(cv::norm(a,b,cv::NORM_INF),1.0);EXPECT_LE(MeanError(a,b),.05);
+      }
+      actual.Upload(image);EXPECT_EQ(cv::norm(actual.Area({0,0,32,32},{32,32}),expected.Area({0,0,32,32},{32,32}),cv::NORM_INF),0);
+    }
+  }
+  EXPECT_THROW(actual.UploadNv12({}, {32,32},0,false,false),std::invalid_argument);
+}
+
+TEST(SnapshotCropGles, DirectNv12ProviderPreservesProductionRoiPixelsAndBenchmarks) {
+  const cv::Size size(3840,1920);
+  auto bytes=std::make_shared<std::vector<uint8_t>>(size_t(size.width)*size.height*3/2);
+  cv::RNG rng(83);rng.fill(cv::Mat(1,int(bytes->size()),CV_8U,bytes->data()),cv::RNG::UNIFORM,0,256);
+  ainvr::GlesPreprocessor converter;
+  uint64_t tag=100;
+  pipeline::SnapshotSink::FrameProvider old{size,[&](const cv::Rect& roi,cv::Mat& dst){
+    ainvr::ImageTransform t;t.width=roi.width;t.height=roi.height;t.letterbox=false;
+    t.yuv_bt709=true;t.yuv_full_range=false;
+    t.source_region=std::array<float,4>{float(roi.x),float(roi.y),float(roi.width),float(roi.height)};
+    auto rgba=converter.RunNv12Rgba(*bytes,size.width,size.height,t,tag);
+    dst=cv::Mat(roi.size(),CV_8UC4,rgba.data()).clone();
+  }};
+  auto direct=old;direct.download=[](const cv::Rect&,cv::Mat&){throw std::runtime_error("Unexpected host intermediate");};
+  direct.nv12={bytes,tag,true,false};
+  config::SnapshotConfig cfg;cfg.padding_ratio=.25;cfg.max_crop_dimension=320;
+  const std::vector<Detection> detections{Detect({0,10,180,165}),Detect({500.5,930.5,120,85}),
+    Detect({1830,680,190,170}),Detect({2450,650,120,310}),Detect({3800,1850,80,65}),
+    Detect({3100,400,130,150}),Detect({900,500,150,300}),Detect({1200,400,175,150})};
+  SnapshotCropper a(true),b(true);
+  for(const char* projection:{"none","erp_equirect"})for(bool square:{false,true}) {
+    cfg.projection_mode=projection;
+    for(const auto& det:detections) {
+      auto expected=a.Crop(old,{det},square,cfg),actual=b.Crop(direct,{det},square,cfg);
+      ASSERT_EQ(actual[0].size(),expected[0].size());
+      EXPECT_LE(cv::norm(actual[0],expected[0],cv::NORM_INF),1.0);
+      EXPECT_LE(MeanError(actual[0],expected[0]),.05);
+      EXPECT_EQ(b.downloaded_bytes(),0u);
+    }
+  }
+  cfg.projection_mode="erp_equirect";
+  for(int pass=0;pass<4;++pass) {
+    const bool use_direct=pass==1||pass==2;
+    auto start=std::chrono::steady_clock::now();
+    for(int frame=0;frame<10;++frame){
+      ++tag;direct.nv12.tag=tag;
+      for(const auto& det:detections) (use_direct?b:a).Crop(use_direct?direct:old,{det},false,cfg);
+    }
+    RecordProperty(std::string(use_direct?"direct":"old")+std::to_string(pass)+"_ms_per_frame",
+      std::to_string(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/10));
+  }
+}

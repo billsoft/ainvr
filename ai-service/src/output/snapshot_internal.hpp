@@ -30,10 +30,12 @@ struct CapturedSnapshotFrame {
   cv::Mat rgba;
   cv::Size size;
   std::function<void(const cv::Rect&, cv::Mat&)> owned_download;
+  pipeline::SnapshotSink::Nv12Source nv12;
   std::function<void()> release;
   ~CapturedSnapshotFrame() {
     rgba.release();
     owned_download = {};
+    nv12 = {};
     if (release) release();
   }
 };
