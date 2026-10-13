@@ -1,3 +1,7 @@
+# 阅读入口（2026-10-13）
+
+PC GPU 环境部署、四模型最终编译步骤及问题解决，请先阅读 [完整手册](S100P-HBM-PC-GPU.md)。最终入口在 `test/model_conversion/final/`。下文保留实测与研发历史；已完成状态以 `S100P-MODEL-READINESS.md` 为准。
+
 # AINVR S100P HBM 编译、验证与加速约定
 
 更新：2026-10-12。适用开发板：RDK S100P，Nash-M，当前板端一个 BPU 核。

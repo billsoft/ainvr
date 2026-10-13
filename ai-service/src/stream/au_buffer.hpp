@@ -50,7 +50,7 @@ class AdaptiveDelayController {
   explicit AdaptiveDelayController(double min_delay_s = 0.10, double max_delay_s = 3.0,
                                     double headroom = 1.4, size_t window = 240,
                                     double percentile = 0.95, double miss_growth = 1.3,
-                                    double fall_rate = 0.04);
+                                    double fall_rate = 0.04, double initial_delay_s = -1.0);
 
   // 记录一次成功打标的实际滞后。
   void on_stamp(double lag_s);

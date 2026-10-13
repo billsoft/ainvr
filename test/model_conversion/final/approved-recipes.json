@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "date": "2026-10-13",
+  "target": "nash-m",
+  "image": "ai_toolchain_ubuntu_22_s100_s600_gpu:v3.7.0",
+  "image_id": "sha256:59ba4a8a94b7dff36acd07cae0c9db0e731dcaf16963b30ae1d94cee7b7e84b1",
+  "image_tar_sha256": "6e75dedd862f5826d01f7b9bfc86868d243fe42fa8e4cd32543fff629ef9ae7a",
+  "recipes": {
+    "coco80": {
+      "bc_sha256": "8453c9764a623ffd4c792f7404ae6c78bd51e35bf6c83f9bd1cba86ebc1e9fb5",
+      "approved_hbm_sha256": "65e2cd362771a616c39a5d55b5fd520cb8a0f78112bd389a284179effd75948d",
+      "opt": 2,
+      "jobs": 2,
+      "filename": "yolo26x.hbm",
+      "checkpoint_file": "coco80.bc",
+      "historical_container": "ainvr-oe370-gpu-probe-v2-20261012",
+      "historical_bc_path": "/work/ainvr-gpu-gpen/compiled-coco-fast-softmax16-v8/quantized.bc"
+    },
+    "face": {
+      "bc_sha256": "da28efe1b09b396020260f421531734b418d99047ee5003dbf3bd4ec9588795c",
+      "approved_hbm_sha256": "e0dd6c95cddc25e01e5e482da968fc82688e1410362e92e78e13417d8379b0d7",
+      "opt": 2,
+      "jobs": 4,
+      "filename": "yolo26x-face.hbm",
+      "checkpoint_file": "face.bc",
+      "historical_container": "ainvr-gpu-face-o2-20261012",
+      "historical_bc_path": "/data/gpu-migration-20261012/face-approved-o0.bc"
+    },
+    "gpen256": {
+      "bc_sha256": "be14153d0b926c2f828b9e6c6bd7ee9c63bca94440c8a72d3da3d6fc1f6409d5",
+      "approved_hbm_sha256": "b7885842124c164814c2ced0c50f87a825ed41d7f39ade61bfaf745137909aba",
+      "opt": 2,
+      "jobs": 1,
+      "filename": "gpen256.hbm",
+      "checkpoint_file": "gpen256.bc",
+      "historical_container": "ainvr-oe370-gpu-probe-v2-20261012",
+      "historical_bc_path": "/work/ainvr-gpu-gpen/compiled-static-gpen-v7/gpen256/model_output/gpen256_int8_quantized_model.bc"
+    },
+    "yoloe-detector": {
+      "bc_sha256": "6fe8f2842ff511569a8b7e9af95d8bee2f8d6b44e9c08ac779da708cc00418f8",
+      "approved_hbm_sha256": "9085fb79005892dcf9def5ca9d9043167c32373df05bff582a7e3f9489ed2ebd",
+      "opt": 2,
+      "jobs": 4,
+      "filename": "detector.hbm",
+      "checkpoint_file": "yoloe-detector.bc",
+      "historical_container": "ainvr-gpu-face-o2-20261012",
+      "historical_bc_path": "/work/yoloe-detector-float-prompt-norm-v2/quantized.bc"
+    },
+    "yoloe-text": {
+      "bc_sha256": "2e6f845dcc295d816e255838bfebfdba583722447986f48a0067efe835d02312",
+      "approved_hbm_sha256": "0bd2f438e56b77f97699385966de3e7264ac7061ab35a44b9b58d6958a5d5440",
+      "opt": 0,
+      "jobs": 1,
+      "filename": "mobileclip2-text.hbm",
+      "checkpoint_file": "yoloe-text.bc",
+      "historical_container": "ainvr-gpu-yoloe-20261012",
+      "historical_bc_path": "/work/text-float-softmax-tail-v18/quantized.bc"
+    },
+    "yoloe-reprta": {
+      "bc_sha256": "8d8f0d5033989cb52c96b02ce8a97e72f41b7b1ac5a45c2d75ebd36473f608c4",
+      "approved_hbm_sha256": "9c83212eadae6ecfe788bd2c7bc1d3c9f72c4a0565fcf0feffb842be4189fdd9",
+      "opt": 0,
+      "jobs": 1,
+      "filename": "reprta.hbm",
+      "checkpoint_file": "yoloe-reprta.bc",
+      "historical_container": "ainvr-gpu-face-o2-20261012",
+      "historical_bc_path": "/work/yoloe-reprta-ec-headroom-v5/quantized.bc"
+    }
+  }
+}

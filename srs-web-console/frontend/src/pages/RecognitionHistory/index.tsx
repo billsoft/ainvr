@@ -513,7 +513,7 @@ export default function RecognitionHistoryPage() {
                       <div className="flex items-center justify-between gap-2">
                         <span className="flex min-w-0 flex-1 items-center gap-1">
                           <span className="truncate">{c.name}</span>
-                          {enabled && c.faceModel !== 'none' && (
+                          {enabled && c.faceChannel && c.faceModel !== 'none' && (
                             <Sparkles size={11} className="shrink-0 text-primary" aria-label={`人脸修复已开启（${c.faceModel}）`} />
                           )}
                         </span>
@@ -604,6 +604,10 @@ export default function RecognitionHistoryPage() {
                 本次归档接收 {selected.overview.archive_stats.delivery.accepted} 个目标 · 已保存 {selected.overview.archive_stats.delivery.committed} · 待处理 {selected.overview.archive_stats.delivery.outstanding}
                 {selected.overview.archive_stats.delivery.outstanding > 0 && ` · 最久等待 ${Math.ceil(selected.overview.archive_stats.delivery.oldest_wait_seconds)} 秒`}
               </p>}
+              {!!selected.overview.archive_stats?.delivery?.admission_to_commit?.count && <p className="mt-1 text-xs text-ink-subtle">
+                接收至保存：平均 {Math.round(selected.overview.archive_stats.delivery.admission_to_commit.mean_ms)} 毫秒 · 最近95%的目标在 {Math.ceil(selected.overview.archive_stats.delivery.admission_to_commit.recent_p95_ms)} 毫秒内保存
+              </p>}
+              <p className="mt-1 text-xs text-ink-subtle">按已识别目标保存截图，单帧可有多条；保留上限 {(selected.overview.max_count ?? 0).toLocaleString()} 条，超过后分批清理最旧记录。</p>
               {!!selected.overview.archive_stats?.delivery?.quarantined && <p role="alert" className="mt-2 text-sm text-danger">有 {selected.overview.archive_stats.delivery.quarantined} 个目标处理失败，已保留在本地隔离文件，尚未写入识别历史，请检查日志。</p>}
               {!!selected.overview.archive_stats?.quarantined_bytes && !selected.overview.archive_stats?.delivery?.quarantined && <p role="alert" className="mt-2 text-sm text-danger">本地仍有隔离归档文件待处理，请检查归档日志。</p>}
               {!!selected.overview.archive_stats?.dropped_count && <p role="alert" className="mt-2 text-sm text-danger">本次运行有 {selected.overview.archive_stats.dropped_count} 个目标截图未保存，请检查归档日志。</p>}
@@ -612,7 +616,7 @@ export default function RecognitionHistoryPage() {
                 <span className="text-ink-faint">·</span>
                 <span>{PROJECTION_MODE_LABEL[selected.projectionMode]}</span>
                 {(() => {
-                  const badge = FACE_MODEL_BADGE[selected.faceModel]
+                  const badge = selected.faceChannel ? FACE_MODEL_BADGE[selected.faceModel] : undefined
                   return badge ? (
                     <span
                       className="flex items-center gap-1 rounded-full bg-primary-50 px-2 py-0.5 font-medium text-primary"

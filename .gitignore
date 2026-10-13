@@ -8,3 +8,6 @@ __pycache__/
 *.local
 deploy/s100p/runtime/
 ai-service/models/
+
+# Local recoverable cleanup archives
+/.Codex-trash/

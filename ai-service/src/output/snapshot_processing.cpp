@@ -61,7 +61,8 @@ void SnapshotStore::MaterializeCrop(ArchiveJob& job) {
   if (!job.crop.empty()) return;
   if (!job.frame || !job.config) throw SnapshotEncodeError("missing captured snapshot frame");
   SnapshotCropper cropper;
-  FrameProvider provider{job.frame->rgba.size(), [&job](const cv::Rect& roi, cv::Mat& dst) {
+  FrameProvider provider{job.frame->size, [&job](const cv::Rect& roi, cv::Mat& dst) {
+    if (job.frame->owned_download) { job.frame->owned_download(roi, dst); return; }
     // The immutable capture stays owned by this job until cropping completes.
     // A shallow view is safe here; Crop always returns independent target pixels.
     dst = job.frame->rgba(roi);
@@ -149,7 +150,9 @@ void SnapshotStore::PrepareImage(ArchiveJob& job) {
   // Preserve RGBA through processing. GPU converts channel order, BT.601 color
   // and chroma; JPU receives NV12. Never pass RGBA bytes to a BGR encoder.
   std::vector<uchar> jpeg_buf;
-  if (!EncodeSnapshotRgbaJpeg(crop, jpeg_buf, cfg_snapshot.jpeg_quality)) {
+  if (!enhanced && !brightness_applied) {
+    jpeg_buf = job.original_jpeg;  // Identical pixels and quality: encode once.
+  } else if (!EncodeSnapshotRgbaJpeg(crop, jpeg_buf, cfg_snapshot.jpeg_quality)) {
     throw SnapshotEncodeError("JPEG 编码失败");
   }
 

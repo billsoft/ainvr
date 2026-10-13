@@ -36,9 +36,14 @@ JpegEncoder::JpegEncoder(int width,int height,int quality,int visible_width,int 
   Check(hb_mm_mc_start(&c,&start),"Start JPU");s.started=true;
 }
 JpegEncoder::~JpegEncoder()=default;
-std::vector<uint8_t> JpegEncoder::EncodeFullRangeNv12(const std::vector<uint8_t>& pixels){
+std::vector<uint8_t> JpegEncoder::EncodeFullRangeNv12(const std::vector<uint8_t>& pixels,int visible_width,int visible_height){
   auto& s=*state_;std::lock_guard<std::mutex> lock(s.mutex);
   if(pixels.size()!=size_t(s.width)*s.height*3/2)throw std::invalid_argument("Incorrect packed NV12 size");
+  const int vw=visible_width?visible_width:s.visible_width;
+  const int vh=visible_height?visible_height:s.visible_height;
+  if(vw<=0||vh<=0||vw>s.width||vh>s.height||
+     (vw+15)/16!=(s.width+15)/16||(vh+15)/16!=(s.height+15)/16)
+    throw std::invalid_argument("Visible JPEG size must preserve the MCU grid");
   if(s.failed)throw std::runtime_error("JPU failed; recreate encoder");
   try{
     media_codec_buffer_t input{};
@@ -91,8 +96,8 @@ std::vector<uint8_t> JpegEncoder::EncodeFullRangeNv12(const std::vector<uint8_t>
            ((int(jpeg[offset+5])<<8)|jpeg[offset+6])!=ew||
            (s.width+15)/16!=(ew+15)/16||(s.height+15)/16!=(eh+15)/16)
           throw std::runtime_error("Unexpected JPEG layout for visible-size cropping");
-        jpeg[offset+3]=s.visible_height>>8;jpeg[offset+4]=s.visible_height&255;
-        jpeg[offset+5]=s.visible_width>>8;jpeg[offset+6]=s.visible_width&255;dimensions_set=true;
+        jpeg[offset+3]=vh>>8;jpeg[offset+4]=vh&255;
+        jpeg[offset+5]=vw>>8;jpeg[offset+6]=vw&255;dimensions_set=true;
       }
       bool empty_app9=marker==0xe9&&length==4;
       if(!empty_app9){

@@ -24,6 +24,8 @@ class BpuChannelAdapter : public BaseModelAdapter {
   nlohmann::json ResultMetadata() const override;
   virtual ainvr::BpuImageResult RunFrame(const ainvr::Nv12Frame& frame,const pipeline::PreprocessConfig& preprocess,
                                 bool bt709,bool full_range);
+  virtual std::future<ainvr::BpuImageResult> RunFrameAsync(const ainvr::Nv12Frame& frame,const pipeline::PreprocessConfig& preprocess,
+                                bool bt709,bool full_range);
   std::vector<Detection> Postprocess(const std::vector<float>& output,const pipeline::ScaleInfo& scale,
                                      double confidence,double iou,int maximum) override;
   std::vector<Detection> PostprocessMulti(const std::vector<std::vector<float>>& output,

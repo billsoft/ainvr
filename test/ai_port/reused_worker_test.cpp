@@ -16,12 +16,13 @@ namespace {
 using Clock=std::chrono::steady_clock;
 struct ModelEvidence {
   std::thread::id loaded_on;std::atomic<bool> load_fail=false,run_fail=false;
+  std::atomic<int> active=0;std::atomic<bool> async_fail=false,destroyed_active=false;
   std::atomic<int> runs=0,destroyed=0;std::atomic<bool> same_thread=true;
 };
 class ModelDouble : public adapters::BpuChannelAdapter {
  public:
   ModelDouble(const config::ModelConfig& c,std::shared_ptr<ModelEvidence> e):BpuChannelAdapter(c),e_(std::move(e)){}
-  ~ModelDouble(){if(e_->loaded_on!=std::thread::id{})e_->same_thread=e_->same_thread&&std::this_thread::get_id()==e_->loaded_on;++e_->destroyed;}
+  ~ModelDouble(){e_->destroyed_active=e_->active.load()!=0;if(e_->loaded_on!=std::thread::id{})e_->same_thread=e_->same_thread&&std::this_thread::get_id()==e_->loaded_on;++e_->destroyed;}
   void Load(const std::string&,const std::string&,const std::string&) override {e_->loaded_on=std::this_thread::get_id();if(e_->load_fail)throw std::runtime_error("Test-only model load failure");}
   pipeline::PreprocessConfig DefaultPreprocess() const override {return {};}
   std::string ActualProvider() const override {return "test-double";}
@@ -31,6 +32,16 @@ class ModelDouble : public adapters::BpuChannelAdapter {
     if(e_->run_fail)throw std::runtime_error("Test-only execution failure");
     if(f.width!=3840||f.height!=1920||f.pixels.size()!=size_t(3840)*1920*3/2)throw std::runtime_error("Invalid real VPU input");
     ainvr::BpuImageResult r;r.outputs={{0}};r.image_backend="test-double";return r;
+  }
+  std::future<ainvr::BpuImageResult> RunFrameAsync(const ainvr::Nv12Frame& f,const pipeline::PreprocessConfig& p,bool bt,bool full) override {
+    auto result=RunFrame(f,p,bt,full);
+    return std::async(std::launch::async,[result=std::move(result),e=e_]() mutable {
+      ++e->active;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      --e->active;
+      if(e->async_fail)throw std::runtime_error("Test-only asynchronous execution failure");
+      return std::move(result);
+    });
   }
   std::vector<Detection> Postprocess(const std::vector<float>&,const pipeline::ScaleInfo&,double,double,int) override{
     Detection d;d.bbox={200,100,63,47};d.confidence=.9;return {d};
@@ -54,6 +65,14 @@ class SnapshotDouble : public pipeline::SnapshotSink {
     if(!cfg.enabled||f.cancelled())return;
     cv::Mat pixels;f.download({200,100,63,47},pixels);
     bool ok=pixels.type()==CV_8UC4&&pixels.cols==63&&pixels.rows==47;
+    if(f.owned_download){
+      auto future=std::async(std::launch::async,[download=f.owned_download]{
+        cv::Mat owned;download({200,100,63,47},owned);return owned;
+      });
+      auto owned=future.get();
+      ok=ok&&owned.size()==pixels.size()&&owned.type()==pixels.type()&&cv::norm(owned,pixels,cv::NORM_INF)==0;
+    }
+
     if(ok)for(int y=0;y<pixels.rows;++y)for(int x=0;x<pixels.cols;++x)ok=ok&&pixels.ptr(y)[x*4+3]==255;
     valid=valid&&ok;++downloads;
   }
@@ -270,7 +289,7 @@ TEST(FaceSnapshotPreflight, RestorationSignatureValidationDoesNotLoadSdkOrOpenSo
 TEST(ReusedWorker,RealVpuHotConfigGpuSnapshotAndModelThreadOwnership){
   auto c=Config();c.snapshot.enabled=true;auto e=std::make_shared<ModelEvidence>();WorkerDouble w(c,e);
   auto sink=std::make_shared<SnapshotDouble>();w.SetSnapshotSink(sink);w.Start();
-  ASSERT_EQ(w.State(),pipeline::ChannelState::kRunning);ASSERT_TRUE(Wait([&]{return sink->downloads>=3;}));
+  ASSERT_EQ(w.State(),pipeline::ChannelState::kRunning);ASSERT_TRUE(Wait([&]{return sink->downloads>=3;},15000));
   EXPECT_TRUE(sink->valid);EXPECT_NE(e->loaded_on,std::this_thread::get_id());
   auto next=*w.Config();next.name="TEST RENAMED";next.inference_fps=5;next.result_buffer.max_frames=2;next.snapshot.enabled=false;
   const auto before=e->runs.load();w.ApplyHotPatch(next,{"name","inference_fps","result_buffer","snapshot"});
@@ -309,9 +328,32 @@ TEST(ReusedWorker,OriginalPublisherReceivesMatchingGenerationSeiOnlyOnIsolatedSt
   c.publish.target_url="rtmp://127.0.0.1:1935/live/"+c.id;
   auto e=std::make_shared<ModelEvidence>();WorkerDouble w(c,e);w.Start();
   ASSERT_EQ(w.State(),pipeline::ChannelState::kRunning);
-  ASSERT_TRUE(Wait([&]{const auto s=w.GetStats();return s.contains("publish")&&s["publish"]["sei_injected"].get<int64_t>()>=3;},8000));
+  ASSERT_TRUE(Wait([&]{const auto s=w.GetStats();return s.contains("publish")&&s["publish"]["sei_injected"].get<int64_t>()>=3&&s["publish"]["au_pushed"].get<int64_t>()>=3;},8000));
   const auto stats=w.GetStats();EXPECT_GE(stats["publish"]["au_pushed"].get<int64_t>(),3);
   EXPECT_EQ(stats["publish"]["buffer"]["unknown"],0);
   RecordProperty("isolated_sei_injected",stats["publish"]["sei_injected"].get<int>());
   w.Stop();EXPECT_TRUE(e->same_thread);
+}
+
+TEST(ReusedWorker,StopJoinsActualAsyncWorkAndFailureCanRestart) {
+  auto evidence=std::make_shared<ModelEvidence>();
+  WorkerDouble worker(Config(),evidence);
+  worker.Start();
+  EXPECT_TRUE(Wait([&]{return evidence->active.load()>0;}));
+  worker.Stop();
+  EXPECT_EQ(evidence->active.load(),0);
+  EXPECT_FALSE(evidence->destroyed_active.load());
+  evidence->async_fail=true;
+  worker.Start();
+  EXPECT_TRUE(Wait([&]{return worker.State()==pipeline::ChannelState::kError;}));
+  worker.Stop();
+  EXPECT_EQ(evidence->active.load(),0);
+  EXPECT_FALSE(evidence->destroyed_active.load());
+  evidence->async_fail=false;
+  const auto before=evidence->runs.load();
+  worker.Start();
+  EXPECT_TRUE(Wait([&]{return evidence->runs.load()>before+2;}));
+  worker.Stop();
+  EXPECT_TRUE(evidence->same_thread.load());
+  EXPECT_FALSE(evidence->destroyed_active.load());
 }

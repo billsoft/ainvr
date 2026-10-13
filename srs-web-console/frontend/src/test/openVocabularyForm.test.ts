@@ -39,7 +39,7 @@ describe('开放词汇通道契约', () => {
     const fast = applyModelPreset(advanced, 'yoloe-26x')
     expect(fast.description).toBe('person')
     expect(fast.labelName).toBe('人员')
-    expect(fast.inferenceFps).toBe(3)
+    expect(fast.inferenceFps).toBe(5)
   })
   it('识别描述和检索标签独立，默认每十五秒识别一次', () => {
     const value = { ...applyModelPreset(DEFAULT_WIZARD_VALUE, 'locateanything-3b'),

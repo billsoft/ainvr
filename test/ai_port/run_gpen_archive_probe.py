@@ -13,6 +13,7 @@ p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--model',type=Path,required=True)
 p.add_argument('--input',type=Path,required=True)
 p.add_argument('--label',required=True)
+p.add_argument('--build-dir',type=Path,default=Path('/home/sunrise/ainvr/out/build/ai-ffmpeg8'))
 a=p.parse_args();assert re.fullmatch(r'[A-Za-z0-9_-]+',a.label)
 root=Path('/home/sunrise/ainvr');ssd=Path('/mnt/ainvr-ssd');assert ssd.is_mount()
 scratch=ssd/'test-scratch'/('gpen-archive-'+a.label);scratch.mkdir()
@@ -23,7 +24,7 @@ shutil.copy2(a.input,scratch/'input-96.rgba')
 env=os.environ.copy();secret=(root/'deploy/infra/secrets/mongo_admin_password').read_text().strip()
 env['AI_SERVICE_TEST_MONGO_URI']='mongodb://ainvr_admin:'+quote(secret,safe='')+'@127.0.0.1:27017/?authSource=admin'
 env['LD_LIBRARY_PATH']='/usr/hobot/lib';env['AINVR_DRM_RENDER_NODE']='/dev/dri/renderD128';env.pop('HW_WAYLAND_SOCKET',None)
-command=[str(root/'out/build/ai-ffmpeg8/ainvr_gpen_archive_probe'),str(a.model.resolve(strict=True)),str(scratch/'input-96.rgba'),str(scratch),str(scratch/'report.json')]
+command=[str(a.build_dir.resolve(strict=True)/'ainvr_gpen_archive_probe'),str(a.model.resolve(strict=True)),str(scratch/'input-96.rgba'),str(scratch),str(scratch/'report.json')]
 if user!='root':command=['runuser','-u',user,'--']+command
 with (scratch/'run.log').open('w') as log:
     result=subprocess.run(command,cwd=root,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=90)

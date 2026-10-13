@@ -1,0 +1,245 @@
+{
+  "scope": "Final first-party model conversion sources; weights/checkpoints excluded",
+  "files": [
+    {
+      "file": "audit.py",
+      "sha256": "50e1ea360911dcac0f44a9f82461c50d26d15f3d3dc0e2c4442d4cb611e45687"
+    },
+    {
+      "file": "audit_four_model_delivery.py",
+      "sha256": "6bee8ca36a53547273082875173edc89685416baeb877fab94cb844bd41a55e5"
+    },
+    {
+      "file": "audit_hbm_placement.py",
+      "sha256": "5f00c6c4a73ddd3f945d04e2db32c273cc78caa6a694d5db8bd3d971e5f677c6"
+    },
+    {
+      "file": "benchmark_featuremap_hbm.py",
+      "sha256": "a92488b0c65d86f867a303c871fbab320722ad2eb3149b4a0232db99135f0013"
+    },
+    {
+      "file": "CALIBRATION.md",
+      "sha256": "01e2f508ce1e26798b8c6bbe685388f359e732edce923b6248db904204feaad5"
+    },
+    {
+      "file": "calibration_capture.cpp",
+      "sha256": "5bcb829114c6cc9eec887a30327ebb48d91f954c1f332c209caa058e356f7e5a"
+    },
+    {
+      "file": "capture_ptq_validation.py",
+      "sha256": "1691a77096e662ad0798ed15fb39ae697ba838701440573999e879158f748489"
+    },
+    {
+      "file": "capture_yoloe_detector_validation.py",
+      "sha256": "224861e5b32a09afc59383b80b3b47841b19f662bbb73d116e42ac3d14c32968"
+    },
+    {
+      "file": "check_yoloe_text_prompt_semantics.py",
+      "sha256": "7c2907cc68affe58663c76cf2b40199b35e538e03bae8eaa1ee147d9f305e8a8"
+    },
+    {
+      "file": "collect_yolo26_calibration.py",
+      "sha256": "caf3313d8d5720fb2191b500f69ff3d83c733f7fb0c8a479e9e5f5b456ab0e5b"
+    },
+    {
+      "file": "compare_hbm_optimization.py",
+      "sha256": "c1f9cab369f328583db33ccbaa32041b63e3234d8dbb50e02bea0a9ed4206d33"
+    },
+    {
+      "file": "compare_hbm_reference.py",
+      "sha256": "afeae687b757553056759b064188d79810637c9a2e676e5e8791f28b3cc054c5"
+    },
+    {
+      "file": "compare_yoloe_component_optimization.py",
+      "sha256": "ef0d0e5824dc362750a758e634c67c6b60b9b4bf63de7e309bc936c6f16d55c9"
+    },
+    {
+      "file": "compare_yoloe_detector_validation.py",
+      "sha256": "cefcf17b47f9d815e9a3637a666bda77a13cbd93d50851c7f53938525df8a737"
+    },
+    {
+      "file": "compile_mobileclip2_text_candidate.py",
+      "sha256": "9e6c17ab75a28086dcd38dd174e91047d4179ededd9ad42f5ed629107240e644"
+    },
+    {
+      "file": "compile_saved_bc.py",
+      "sha256": "bb8f69409e81fb33a9c5725b369f10cf49304986441eb60ad5db4b3ea1b7b58f"
+    },
+    {
+      "file": "compile_yoloe_component.py",
+      "sha256": "97656e1f8d92204faa21eda5887a129919cf7f7a94d7e1a846fecebb3a9045d5"
+    },
+    {
+      "file": "deploy_verified_hbm_optimization.py",
+      "sha256": "635b7c9837b657bbcff7f5aa4362ede4fb8175ba63a3f3e2e1e3b7276964ce3f"
+    },
+    {
+      "file": "evaluate_coco_subset.py",
+      "sha256": "d44b4df74bc10e8728f55d6fcc62f6898baf71ccfacf578be20864f474be9f36"
+    },
+    {
+      "file": "export_mobileclip2_text_onnx.py",
+      "sha256": "3dd2104c728cd4287701ea3254dd8103500cd94ac0b39cbe4a270cbee9c705b1"
+    },
+    {
+      "file": "export_yolo26x.py",
+      "sha256": "7c56e2bdce48f75a7173219f2601c342ba4e406fd58449ee1b871a32393d7298"
+    },
+    {
+      "file": "fetch_yolo26x.py",
+      "sha256": "c50a0618bc89b595ddc591ed230588472d87f4988f64de303d1627eee27cb5eb"
+    },
+    {
+      "file": "final/approved-recipes.json",
+      "sha256": "d0df9710d15b0731fd2fdea113ad2e5b5e01bf06ad02effd92892023eadfe81f"
+    },
+    {
+      "file": "final/check_environment.py",
+      "sha256": "3a818b45a3bb6edff90d81e740efc7af43c1ae002719937602facdad431c0484"
+    },
+    {
+      "file": "final/cleanup-manifest.json",
+      "sha256": "be51bce18d1880c313df25dee1528b786b66d74f44967dd1263fe91ad98dadde"
+    },
+    {
+      "file": "final/Export-ApprovedCheckpoints.ps1",
+      "sha256": "ae2d353dcf8b411a4fa01d55f94b77dd4e8d8f6b586d51213b31f8e464a25aec"
+    },
+    {
+      "file": "final/Get-OeGpu.ps1",
+      "sha256": "a108644527d4bc5084ef815f18beee3fe3ece071a7b70438b0ccad38629843c8"
+    },
+    {
+      "file": "final/run_approved_recipe.py",
+      "sha256": "f5be2d670eaaba362acb939f88c80314470cbdf73bc9131c4c9ab6444128a8c0"
+    },
+    {
+      "file": "final/SCRIPT-INDEX.md",
+      "sha256": "afd4185281d9fa57ba8862fe89141d9b6734a26aeda4bbcd4d519ef95f83faba"
+    },
+    {
+      "file": "final/Start-OeGpu.ps1",
+      "sha256": "f52ac774fc2a2561233e48813eb54a0e1645ac792e60e521827d7b4b9a532ca0"
+    },
+    {
+      "file": "final/test_release_tools.py",
+      "sha256": "b1d039873cf612cddbae3926c65015e7ddb323f5296c597955265c09f524c005"
+    },
+    {
+      "file": "guard_docker_compile_memory.py",
+      "sha256": "9d28a4a0b141c00bf0395df1ab7a50ff1074d95894718b4bfbddc12638d56826"
+    },
+    {
+      "file": "make_hbm_contract.py",
+      "sha256": "8168667f54d2ce1eba96ac547d3ed447dd91c17247647714550c617271322dac"
+    },
+    {
+      "file": "make_text_encoder_validation.py",
+      "sha256": "9669f52dc8f224f37afb5bb83631d8f58d9df57deeb814c50f0a057aad70d170"
+    },
+    {
+      "file": "prepare_celeba_calibration.py",
+      "sha256": "c1da28ea8c8f32307a89ebf7a8d1f7525d550704f2d4d71b1b0fc7ffb2ddf6f5"
+    },
+    {
+      "file": "prepare_coco_calibration.py",
+      "sha256": "764d2a43e29be096ce45c52bad7c7f372c392a848a82f56336ec16cb85abc5e8"
+    },
+    {
+      "file": "prepare_text_final_holdout.py",
+      "sha256": "2a1664b65784edbfa4f3f2bab107b85afd63f08ea22d44086d403b96b0929d23"
+    },
+    {
+      "file": "prepare_yoloe_final_images.py",
+      "sha256": "3c59d1687a0f3399c632950d675e5b6ae553f42f9dec7103dd9b8778d462c18d"
+    },
+    {
+      "file": "prepare_yoloe_free_text_semantics.py",
+      "sha256": "d7a878ecc027e3b914c1f07e00c72e63a353edc95939ffda1a311511e305548b"
+    },
+    {
+      "file": "prepare_yoloe_runtime_calibration.py",
+      "sha256": "44ea74d0763a75a2bb6c7458dba495cd95fa7209de03d3106d31dd8d3439d332"
+    },
+    {
+      "file": "probe_gpu_calibration_runtime.py",
+      "sha256": "c6e36236290c0190e877a9970682c9687fa7b93722de33796789fae48f068d62"
+    },
+    {
+      "file": "probe_text_sensitive_precision.py",
+      "sha256": "4f38ab0e97c6f0db4601ef5d1f4e6861ce459f5f1c28a97a7319007415db197a"
+    },
+    {
+      "file": "probe_yoloe_runtime_prompts.py",
+      "sha256": "2d94288e929027dd655154cb0b03e0df6a3d3f6636a147d65144d0f5a63f8a1e"
+    },
+    {
+      "file": "README.md",
+      "sha256": "c4c44493005b494bcf1de8ec8d9ad65259192e311685e68f541f6bf907d5f7f9"
+    },
+    {
+      "file": "reference_dataset_outputs.py",
+      "sha256": "507da9d0f752824e90c45f3b02f1db271c92224c0d0d835ab8de129ba867c2ab"
+    },
+    {
+      "file": "render_gpen_validation.py",
+      "sha256": "ba3e2027416ae7880cb4ad6122d5bc29fc1516f305af4fb0c80d8cf23f310f5f"
+    },
+    {
+      "file": "requantize_saved_calibration.py",
+      "sha256": "5b7866a8fcccb4fd6bbd04f6187b202a70d33fba91ec94242a0e07e4eb9b903f"
+    },
+    {
+      "file": "rewrite_gpen_static_conv.py",
+      "sha256": "7531f94edc308791127112aa58c1f95951394e7355e79dab3be2ff22c91e9d96"
+    },
+    {
+      "file": "run_dataset_int8_compile.py",
+      "sha256": "8776a3e82ce31630d054eff7bb8d68b02c309a9705e51a69c74d200eac71b7a1"
+    },
+    {
+      "file": "split_mobileclip_token_lookup.py",
+      "sha256": "97a485d64ae488da94d051098b3dd6f2ae4b6ba36d8e87d333bd363c521b2273"
+    },
+    {
+      "file": "stage_yoloe_component_contract.py",
+      "sha256": "dadf683b97c2017a852b4d24e7f3104b8eb00363e6995a17bde4fec726c85822"
+    },
+    {
+      "file": "test_hbm_contract.py",
+      "sha256": "5a7aef00c79a8de3deae8794fa558575d6fd0463143189a31b29922744dd1d83"
+    },
+    {
+      "file": "validate_gpen_rewrite.py",
+      "sha256": "419781cd265904360a360fa123cc614a441d6b2af1841a7cb79fed1be5b5f195"
+    },
+    {
+      "file": "validate_hbm_dataset.py",
+      "sha256": "d4c1ee3812f2eccfc7c1c177d9bebafacdb695db9384af93c09ad5ce273dd22e"
+    },
+    {
+      "file": "validate_text_encoder_hbm.py",
+      "sha256": "f8896d52bf81641d330ac00469d3fcfcf42517a2d4fa52b4764d0db2fe84e5e9"
+    },
+    {
+      "file": "validate_yoloe_free_text_semantics.py",
+      "sha256": "c419c185af7f6a69ec6bd3415331fcbe3ffa42281b7a867e8d78f5f71386cf5e"
+    },
+    {
+      "file": "validate_yoloe_reprta_hbm.py",
+      "sha256": "93c62d77a42909b414b4e8be432e21381a44609102e176931d65f93f5317ecb9"
+    },
+    {
+      "file": "validate_yoloe_visible_semantics.py",
+      "sha256": "ae3e85563f6024d4d2b92732eb97f67e85a312a230fecc5801f8a9b26c479cae"
+    },
+    {
+      "file": "verify_yoloe_descriptions.py",
+      "sha256": "864a636e2b4bb74cc84600e21afdfc680eff9a9cf4a174976c83ff5e73b9d4c9"
+    },
+    {
+      "file": "verify_yoloe_producer.py",
+      "sha256": "6a5b52864735711c1c6f44bf35e0263ee14e90c01addc84c40af26573a761fb7"
+    }
+  ]
+}

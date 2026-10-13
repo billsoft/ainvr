@@ -530,3 +530,25 @@ describe('RecognitionHistoryPage —— 首页数据先于通道列表返回（�
     expect(await screen.findByText('已加载全部记录')).toBeInTheDocument()
   })
 })
+
+
+describe('RecognitionHistoryPage — archive health semantics', () => {
+  it('shows admission-to-save latency and retention without claiming GPEN on a general detector', async () => {
+    const channel = makeChannel('cam01')
+    channel.config.snapshot.face_enhance_model = 'gpen'
+    channel.config.snapshot.enabled = true
+    reseed([channel])
+    mockGetOverview.mockResolvedValue(makeOverview({ archive_stats: {
+      backpressured: false, queue_depth: 0, dropped_count: 0, write_error_count: 0,
+      delivery: { accepted: 8, committed: 8, outstanding: 0, quarantined: 0, deleted: 0,
+        oldest_wait_seconds: 0, stages: {}, admission_to_commit: {
+          count: 8, mean_ms: 120.4, max_ms: 220, recent_p95_ms: 201.2, recent_count: 8,
+        } },
+    } }))
+    renderAt('/recognition-history/cam01')
+    expect(await screen.findByText(/接收至保存：平均 120 毫秒/)).toHaveTextContent('202 毫秒内保存')
+    expect(screen.getByText(/单帧可有多条/)).toHaveTextContent('超过后分批清理最旧记录')
+    expect(screen.queryByLabelText(/人脸修复已开启/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('face-enhance-badge')).not.toBeInTheDocument()
+  })
+})

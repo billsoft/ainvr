@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <sstream>
 #include <tuple>
 
@@ -157,6 +158,7 @@ void ReusedChannelWorker::Start() {
     stats_postprocess_ = utils::TimingStats(200);
     stats_total_ = utils::TimingStats(200);
     stats_period_ = utils::TimingStats(200);
+    stats_frame_age_ = utils::TimingStats(200);
     stats_infer_total_ = utils::TimingStats(200);
     stats_pull_wait_ = utils::TimingStats(200);
     stats_pull_drop_ = utils::TimingStats(200);
@@ -328,6 +330,7 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
              {"total", stats_total_.ToDict()},
              {"pull_wait", stats_pull_wait_.ToDict()},
              {"period", stats_period_.ToDict()},
+             {"capture_to_result", stats_frame_age_.ToDict()},
              {"infer_total", stats_infer_total_.ToDict()},
              {"loop_wall", stats_loop_wall_.ToDict()},
              {"pull_drop", stats_pull_drop_.ToDict()},
@@ -458,6 +461,7 @@ void ReusedChannelWorker::CaptureLoop() {
         std::lock_guard<std::mutex> lock(frame_mutex_);
         stream_epoch_.fetch_add(1);
         latest_frame_.reset();
+        pending_frames_.clear();
         result_buffer_.Clear();
       }
       frame_cond_.notify_all();
@@ -533,6 +537,12 @@ void ReusedChannelWorker::CaptureLoop() {
     {
       std::lock_guard<std::mutex> lock(frame_mutex_);
       latest_frame_ = cap;
+      const auto target=LoadCfg()->inference_fps;
+      const size_t cadence_limit=target>0?size_t(std::max(1.0,std::ceil(target*.25))):8;
+      const size_t memory_limit=std::max<size_t>(1,96*1024*1024/std::max<size_t>(1,ref->nv12.pixels.size()));
+      const size_t limit=std::min({size_t(8),cadence_limit,memory_limit});
+      pending_frames_.push_back(cap);
+      while(pending_frames_.size()>limit)pending_frames_.pop_front();
     }
     frame_cond_.notify_all();
 
@@ -546,6 +556,7 @@ void ReusedChannelWorker::CaptureLoop() {
     // 解码帧缓冲属于管线的缓冲池:先还掉手里的最新帧再停管线
     std::lock_guard<std::mutex> lock(frame_mutex_);
     latest_frame_.reset();
+    pending_frames_.clear();
   }
   auto stream = LoadStream();
   if (stream) {
@@ -634,13 +645,17 @@ std::optional<ReusedChannelWorker::CapturedFrame> ReusedChannelWorker::PickNextF
     int64_t last_consumed_seq, int* skipped) {
   std::lock_guard<std::mutex> lock(frame_mutex_);
   *skipped = 0;
-  if (!latest_frame_.has_value() || latest_frame_->seq <= last_consumed_seq) {
+  const auto now=NowMono();
+  while(!pending_frames_.empty() &&
+        (pending_frames_.front().seq<=last_consumed_seq ||
+         now-pending_frames_.front().captured_mono>.25))pending_frames_.pop_front();
+  if (pending_frames_.empty()) {
     return std::nullopt;
   }
   if (last_consumed_seq >= 0) {
-    *skipped = static_cast<int>(latest_frame_->seq - last_consumed_seq - 1);
+    *skipped = static_cast<int>(pending_frames_.front().seq - last_consumed_seq - 1);
   }
-  return latest_frame_;
+  auto next=std::move(pending_frames_.front());pending_frames_.pop_front();return next;
 }
 
 void ReusedChannelWorker::InferLoop() {
@@ -658,27 +673,46 @@ void ReusedChannelWorker::InferLoop() {
   }
   log::Info(kLogModule, "[" + channel_id_ + "] 推理线程已启动");
   int64_t last_consumed_seq = -1;
+  // One previous inference overlaps preparation of the next frame. Results
+  // remain FIFO; at most two BPU futures and one model's SDK buffers exist.
+  const char* pipeline_setting=std::getenv("AINVR_BPU_PIPELINE");
+  const bool pipeline_enabled=!pipeline_setting || std::string(pipeline_setting)!="0";
+  std::optional<CapturedFrame> queued_frame;
+  std::future<ainvr::BpuImageResult> queued_result;
+  double queued_start=0;
 
   while (!stop_event_.load() && LicenseAllowed()) {
     auto cfg = LoadCfg();
     double interval = cfg->inference_fps > 0.0 ? 1.0 / cfg->inference_fps : 0.0;
     if (reset_deadline_.exchange(false)) next_deadline_ = 0.0;
     double now = NowMono();
+    bool dispatch_due=true;
 
     if (interval > 0.0) {
       if (next_deadline_ <= 0.0) next_deadline_ = now;
       double time_to_deadline = next_deadline_ - now;
       if (time_to_deadline > 0.0) {
+        if (queued_frame && queued_result.wait_for(std::chrono::seconds(0)) != std::future_status::timeout) {
+          dispatch_due = false;  // Publish a ready result promptly.
+        } else if (queued_frame) {
+          // Do not block on an unfinished inference beyond the next dispatch
+          // slot: preprocessing the next frame must overlap that inference.
+          queued_result.wait_for(std::chrono::duration<double>(std::min(time_to_deadline, 0.005)));
+          continue;
+        } else {
         std::unique_lock<std::mutex> lock(frame_mutex_);
         // 短片段等待可及时响应停止、授权失效和热更新；不用持有解码图。
         frame_cond_.wait_for(lock, std::chrono::duration<double>(std::min(time_to_deadline, 0.1)),
                             [this] { return stop_event_.load() || reset_deadline_.load(); });
         continue;
+        }
       }
     }
 
     int64_t before_archive_wait = -1;
-    if (snapshot_sink_ && cfg->snapshot.enabled) {
+    if (queued_frame && queued_result.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+      dispatch_due=false;
+    if (dispatch_due && snapshot_sink_ && cfg->snapshot.enabled) {
       {
         std::lock_guard<std::mutex> lock(frame_mutex_);
         if (latest_frame_) before_archive_wait = latest_frame_->seq;
@@ -689,7 +723,7 @@ void ReusedChannelWorker::InferLoop() {
       if (stop_event_.load() || !LicenseAllowed()) continue;
     }
     int skipped = 0;
-    auto frame = PickNextFrame(last_consumed_seq, &skipped);
+    auto frame = dispatch_due?PickNextFrame(last_consumed_seq, &skipped):std::nullopt;
     if (frame.has_value()) {
       const int64_t archive_skipped = ArchiveAdmissionSkips(before_archive_wait, frame->seq, skipped);
       last_consumed_seq = frame->seq;
@@ -705,7 +739,7 @@ void ReusedChannelWorker::InferLoop() {
       }
     }
 
-    if (!frame.has_value()) {
+    if (!frame.has_value() && !queued_frame.has_value()) {
       SleepMs(5.0);
       if (interval > 0.0 && next_deadline_ < NowMono() - interval) {
         next_deadline_ = NowMono() + interval;
@@ -715,7 +749,27 @@ void ReusedChannelWorker::InferLoop() {
 
     double infer_start = NowMono();
     try {
-      InferOneFrame(std::move(*frame));
+      ainvr::BpuImageResult prepared;
+      if(frame && pipeline_enabled){
+        const auto pre=ResolvePreprocess(cfg->preprocess,adapter_->DefaultPreprocess());
+        auto next=adapter_->RunFrameAsync(frame->ref->nv12,pre,frame->ref->bt709,frame->ref->full_range);
+        if(interval>0)next_deadline_=NextInferenceDeadline(next_deadline_,NowMono(),interval);
+        if(!queued_frame){
+          queued_frame=std::move(frame);queued_result=std::move(next);queued_start=infer_start;
+          continue;
+        }
+        auto previous_frame=std::move(queued_frame);auto previous_result=std::move(queued_result);
+        const double previous_start=queued_start;
+        queued_frame=std::move(frame);queued_result=std::move(next);queued_start=infer_start;
+        frame=std::move(previous_frame);infer_start=previous_start;prepared=previous_result.get();
+      }else if(queued_frame){
+        frame=std::move(queued_frame);queued_frame.reset();infer_start=queued_start;
+        prepared=queued_result.get();
+      }else{
+        const auto pre=ResolvePreprocess(cfg->preprocess,adapter_->DefaultPreprocess());
+        prepared=adapter_->RunFrame(frame->ref->nv12,pre,frame->ref->bt709,frame->ref->full_range);
+      }
+      InferOneFrame(std::move(*frame),std::move(prepared));
     } catch (const std::exception& e) {
       int errs;
       {
@@ -742,7 +796,7 @@ void ReusedChannelWorker::InferLoop() {
     }
 
     double now3 = NowMono();
-    if (interval > 0.0) {
+    if (interval > 0.0 && !pipeline_enabled) {
       next_deadline_ = NextInferenceDeadline(next_deadline_, now3, interval);
     }
 
@@ -768,6 +822,9 @@ void ReusedChannelWorker::InferLoop() {
     }
   }
 
+  // An async SDK task must finish before model buffers/GLES are destroyed.
+  if(queued_result.valid())queued_result.wait();
+  queued_frame.reset();
   Cleanup();
   if (state_.load() != ChannelState::kError) SetState(ChannelState::kIdle);
   log::Info(kLogModule, "[" + channel_id_ + "] 推理线程已退出");
@@ -777,7 +834,7 @@ void ReusedChannelWorker::InferPromptedFrame(CapturedFrame) {
   throw std::runtime_error("开放词汇模型的 BPU 输入和执行适配尚未完成");
 }
 
-void ReusedChannelWorker::InferOneFrame(CapturedFrame frame) {
+void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResult prepared) {
   if (adapter_->IsPrompted()) { InferPromptedFrame(std::move(frame)); return; }
   if (!LicenseAllowed()) return;
   auto cfg = LoadCfg();
@@ -787,8 +844,6 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame) {
   utils::Timer total_timer;
 
   const bool multi_output=adapter_->IsMultiOutput();
-  auto pre_cfg=ResolvePreprocess(cfg->preprocess,adapter_->DefaultPreprocess());
-  auto prepared=adapter_->RunFrame(frame.ref->nv12,pre_cfg,frame.ref->bt709,frame.ref->full_range);
   auto [in_h,in_w]=adapter_->InputSize();
   const auto scale_info=compute_scale(frame.width,frame.height,in_w,in_h);
   {
@@ -807,7 +862,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame) {
   {
     std::lock_guard lock(stats_mutex_);
     stats_postprocess_.Add(post_timer.ElapsedMs()+prepared.output_decode_ms);
-    stats_total_.Add(total_timer.ElapsedMs());
+    stats_total_.Add(prepared.preprocess_ms+prepared.inference_ms+prepared.output_decode_ms+total_timer.ElapsedMs());
   }
 
   // 推理期间可能断流重连;旧结果不进入新流的缓存/SEI/截图归档。
@@ -863,10 +918,13 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame) {
   {
     std::lock_guard<std::mutex> lock(stats_mutex_);
     stats_sei_stamp_.Add(sei_timer.ElapsedMs());
+    stats_frame_age_.Add((NowMono()-frame.captured_mono)*1000.0);
   }
 
   if (snapshot_sink_ && LicenseAllowed()) {
     utils::Timer snapshot_timer;
+    static std::atomic<uint64_t> next_snapshot_tag{1};
+    const auto snapshot_tag=next_snapshot_tag.fetch_add(1);
     snapshot_sink_->Offer({{frame.width,frame.height}, [this,&frame](const cv::Rect& region,cv::Mat& host) {
       if(region.x<0||region.y<0||region.width<=0||region.height<=0||
          region.x+region.width>frame.width||region.y+region.height>frame.height)
@@ -878,7 +936,23 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame) {
       const auto rgba=snapshot_converter_->RunNv12Rgba(frame.ref->nv12.pixels,frame.width,frame.height,t);
       host.create(region.height,region.width,CV_8UC4);
       for(int y=0;y<region.height;++y)std::memcpy(host.ptr(y),rgba.data()+size_t(y)*region.width*4,size_t(region.width)*4);
-    }, [this] { return stop_event_.load()||!LicenseAllowed(); }},
+    }, [this] { return stop_event_.load()||!LicenseAllowed(); },
+    [owned=frame.ref,snapshot_tag](const cv::Rect& region, cv::Mat& host) {
+      const auto& source=owned->nv12;
+      if(region.x<0||region.y<0||region.width<=0||region.height<=0||
+         region.x+region.width>source.width||region.y+region.height>source.height)
+        throw std::invalid_argument("Invalid owned snapshot region");
+      static thread_local std::unique_ptr<ainvr::GlesPreprocessor> converter;
+      try {
+        if(!converter)converter=std::make_unique<ainvr::GlesPreprocessor>();
+        ainvr::ImageTransform t;t.width=region.width;t.height=region.height;t.letterbox=false;
+        t.yuv_bt709=owned->bt709;t.yuv_full_range=owned->full_range;
+        t.source_region=std::array<float,4>{float(region.x),float(region.y),float(region.width),float(region.height)};
+        const auto rgba=converter->RunNv12Rgba(source.pixels,source.width,source.height,t,snapshot_tag);
+        host.create(region.height,region.width,CV_8UC4);
+        for(int y=0;y<region.height;++y)std::memcpy(host.ptr(y),rgba.data()+size_t(y)*region.width*4,size_t(region.width)*4);
+      } catch (...) { converter.reset(); throw; }
+    }},
       channel_id_,cfg->name,frame.pts_ns,result.timestamp,cfg->model.name,adapter_->TaskType(),
       pre_rescale_detections,result.detections,adapter_->SquareSnapshotCrop(),cfg->snapshot);
     std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -957,10 +1031,15 @@ void ReusedChannelWorker::InitComponents() {
         au_buffer_ = std::make_shared<stream::AuDelayBuffer>(
             std::make_shared<stream::AdaptiveDelayController>(3.0, 3.0));
       } else {
-        au_buffer_ = std::make_shared<stream::AuDelayBuffer>();
+        // S100P capture/preprocess/archive contention exceeds the generic
+        // 100 ms initial budget. Begin with 3 s for cold contexts, then
+        // adapt to measured P99 lag with a 750 ms floor and slower decay.
+        // Preserve compressed video, exact PTS and the existing 3 s ceiling.
+        au_buffer_ = std::make_shared<stream::AuDelayBuffer>(
+            std::make_shared<stream::AdaptiveDelayController>(0.75, 3.0, 1.6, 240, 0.99, 1.3, 0.01, 3.0));
       }
       stream::StreamPublisher::Config pub_cfg;
-      pub_cfg.wait_for_initial_buffer = adapter_->IsPrompted();
+      pub_cfg.wait_for_initial_buffer = true;
       pub_cfg.enabled = true;
       pub_cfg.rtmp_base = cfg->publish.rtmp_base;
       pub_cfg.watchdog_timeout_seconds = cfg->publish.watchdog_timeout_seconds;

@@ -57,8 +57,17 @@ void SnapshotStore::Track(const std::string& id, const std::string& stage) {
 
 void SnapshotStore::Finish(const std::string& id, const std::string& outcome) {
   std::lock_guard<std::mutex> lock(ledger_mutex_);
-  if (!outstanding_.erase(id)) return;
-  if (outcome == "committed") ++committed_targets_;
+  const auto it=outstanding_.find(id);
+  if(it==outstanding_.end()) return;
+  const double latency_ms=std::max(0.0,(NowMono()-it->second.since)*1000.0);
+  outstanding_.erase(it);
+  if (outcome == "committed") {
+    ++committed_targets_;
+    committed_latency_sum_ms_+=latency_ms;
+    committed_latency_max_ms_=std::max(committed_latency_max_ms_,latency_ms);
+    recent_committed_latency_ms_.push_back(latency_ms);
+    if(recent_committed_latency_ms_.size()>256)recent_committed_latency_ms_.pop_front();
+  }
   else if (outcome == "quarantined") ++quarantined_targets_;
   else ++deleted_targets_;
 }
@@ -76,12 +85,24 @@ void SnapshotStore::ClearArchiveFault(const std::string& stage) {
 
 void SnapshotStore::WaitForCapacity(const std::function<bool()>& cancelled) {
   const auto epoch = capture_epoch_.load();
-  std::unique_lock<std::mutex> lock(queue_mutex_);
+  auto& captures = Captures();
   while (capture_enabled_.load() && capture_epoch_.load() == epoch &&
-         !stop_event_.load() && !cancelled() &&
-         (queue_.size() >= queue_maxsize_ || captured_frames_->load() >= 2)) {
+         !stop_event_.load() && !cancelled()) {
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex_);
+      if (queue_.size() >= queue_maxsize_) {
+        backpressured_.store(true);
+        queue_cond_.wait_for(lock, std::chrono::milliseconds(100));
+        continue;
+      }
+    }
+    // Frame release signals Captures.changed, not queue_cond_. Waiting on the
+    // queue condition here used to sleep until the 100ms timeout even when
+    // archive workers had already released all owned source frames.
+    std::unique_lock<std::mutex> lock(captures.mutex);
+    if (captured_frames_->load() < 2) break;
     backpressured_.store(true);
-    queue_cond_.wait_for(lock, std::chrono::milliseconds(100));
+    captures.changed.wait_for(lock, std::chrono::milliseconds(100));
   }
   backpressured_.store(false);
 }
@@ -252,7 +273,13 @@ json SnapshotStore::GetStats() const {
       stages[item.stage] = stages.value(item.stage, size_t(0)) + 1;
       oldest = std::max(oldest, NowMono() - item.since);
     }
-    ledger = {{"accepted", accepted_targets_}, {"committed", committed_targets_},
+    auto sorted=recent_committed_latency_ms_;
+    std::sort(sorted.begin(),sorted.end());
+    const double p95=sorted.empty()?0:sorted[(sorted.size()*95+99)/100-1];
+    ledger = {{"admission_to_commit", {{"count",committed_targets_},
+              {"mean_ms",committed_targets_?committed_latency_sum_ms_/committed_targets_:0},
+              {"max_ms",committed_latency_max_ms_},{"recent_p95_ms",p95},
+              {"recent_count",sorted.size()}}}, {"accepted", accepted_targets_}, {"committed", committed_targets_},
               {"quarantined", quarantined_targets_}, {"deleted", deleted_targets_},
               {"outstanding", outstanding_.size()}, {"stages", stages},
               {"oldest_wait_seconds", oldest}};

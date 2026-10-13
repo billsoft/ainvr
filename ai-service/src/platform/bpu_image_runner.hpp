@@ -3,6 +3,7 @@
 #include "bpu.hpp"
 #include "image_preprocessor.hpp"
 #include <map>
+#include <future>
 namespace ainvr {
 enum class BpuImageContract { FloatNchw, Nv12EmbeddedPreprocess };
 struct BpuImageResult {
@@ -16,6 +17,10 @@ class BpuImageRunner {
                  const std::string& image_input_name="");
   BpuImageResult Run(const Nv12Frame& frame,const ImageTransform& transform,
                     const std::map<std::string,std::vector<float>>& auxiliary={});
+  // Prepare on the GLES owner thread, then execute BPU asynchronously. Caller
+  // bounds in-flight futures and must join them before destroying this runner.
+  std::future<BpuImageResult> RunAsync(const Nv12Frame& frame,const ImageTransform& transform,
+                    const std::map<std::string,std::vector<float>>& auxiliary={});
   const nlohmann::json& Description() const { return description_; }
  private:
   BpuModel model_;
@@ -24,6 +29,7 @@ class BpuImageRunner {
   std::string image_input_name_;
   size_t image_input_index_=0;
   ImagePreprocessor images_;
+  std::mutex inference_mutex_;
   std::thread::id owner_=std::this_thread::get_id();
 };
 }

@@ -1,0 +1,58 @@
+{
+  "archive_root": "/home/sunrise/ainvr/.Codex-trash/model-conversion-prototypes-20261013",
+  "reason": "Superseded diagnostic/unsupported model paths; final workflow and dependencies retained; historical reports not deleted",
+  "files": [
+    {
+      "file": "check_bpu_float_only.py",
+      "sha256": "1b8d42a53811ede258ed0920fe63279fddf1853baab5bb523945d6c08e39f0be"
+    },
+    {
+      "file": "compile_floating_softmax_probe.py",
+      "sha256": "0b52ebf56885e40198561e5032b75e398f0c737164bb76d5f46496f2031bce05"
+    },
+    {
+      "file": "compile_probe.sh",
+      "sha256": "e979299de2497297df9d4a1cc6cba0ef521cd164e755f4f37c19acdd454a7fa2"
+    },
+    {
+      "file": "prepare_scrfd.py",
+      "sha256": "630b3986d0ed5175af29d046c8332338bf4a6cbb8835a03f9dfd94b3375ab80a"
+    },
+    {
+      "file": "prepare_yolo26_compile.py",
+      "sha256": "bbd20add2b8e6c8a662be176e8ab841c41f4ec90d81e819d4cb20094e394f199"
+    },
+    {
+      "file": "prepare_yolo_output_precision.py",
+      "sha256": "cc6a146f92e2f6d0e62bab2a06f594595b90fad22932a731c6f74cc4c8c1e121"
+    },
+    {
+      "file": "export_prompted_models.py",
+      "sha256": "aa896752ac186df6cb26d688c7c7e3d9bdb682f8ae6a158c0982ef128278f8ef"
+    },
+    {
+      "file": "run_onnx.py",
+      "sha256": "407101bc1f05d744421c0523f71680cf027f7c3d536cbdfd989e2d930ac2fe1c"
+    },
+    {
+      "file": "guard_gpu_compile.py",
+      "sha256": "72b39d96b99d5fccfe0143bae32224f8665cc9912de375a4670e2ca8b61c4756"
+    },
+    {
+      "file": "compile_saved_text_ptq.py",
+      "sha256": "6a2a19a378b1ec9cd035379ee9e9732cbb395532ab234a111736127efe6e3d81"
+    },
+    {
+      "file": "probe_bpu_dynamic_prompt_matmul.py",
+      "sha256": "d59e058a8c90de23a53a50bcdcbeb282090d796ca93c7f513ee6ccf47acceb90"
+    },
+    {
+      "file": "validate_runtime_prompt_matmul.py",
+      "sha256": "f6b160d9893909ed1df2f1636078e8b66488822a1738e65d52aa67616e917c25"
+    },
+    {
+      "file": "fetch_oe_3_7_0.sh",
+      "sha256": "5bf9ee04c0f621d92a2aeed84e7a27cbdf5da0b515fa37dcc92cfa99e2643ed4"
+    }
+  ]
+}

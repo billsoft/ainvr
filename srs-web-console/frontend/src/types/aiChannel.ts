@@ -361,7 +361,7 @@ export interface AiServiceHealth {
 export const AI_MODEL_PRESETS = {
   'yoloe-26x': {
     displayName: '开放词汇模型', streamSlug: 'grounding-fast',
-    needsIouThreshold: true, label: '开放词汇模型（YOLOE-26x）',
+    needsIouThreshold: true, label: '开放词汇识别',
     description: '按文字描述检测目标，修改描述无需重新编译模型',
     model: {
       name: 'yoloe-26x', adapter: 'yoloe_bpu' as AiModelAdapter,
@@ -388,7 +388,7 @@ export const AI_MODEL_PRESETS = {
     displayName: '通用目标检测',
     streamSlug: 'yolo26x',
     needsIouThreshold: false,
-    label: '通用目标检测（YOLO26x）',
+    label: '通用目标检测',
     description: '80 类常见目标（人、车辆、动物等）',
     model: {
       name: 'yolo26x', adapter: 'yolo26_bpu' as AiModelAdapter,
@@ -476,7 +476,7 @@ export const AI_MODEL_PRESETS = {
     displayName: '人脸检测（高精度）',
     streamSlug: 'yolo26x-face',
     needsIouThreshold: false,
-    label: '人脸检测（YOLO26x-face）',
+    label: '人脸检测',
     // S100P 纯推理与完整视频链路分别实测，不能沿用 Jetson/VIC 的帧率。
     // 编译和验证流程见 docs/S100P-HBM-COMPILATION.md。
     description: '人脸框检测，仅出框不含关键点；S100P 性能以 BPU 实测为准',

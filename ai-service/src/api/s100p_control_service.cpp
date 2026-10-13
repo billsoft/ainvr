@@ -21,7 +21,7 @@ namespace cfg = ai_service::config;
 namespace lic = ai_service::licensing;
 static volatile std::sig_atomic_t stopping = 0;
 static void Signal(int) { stopping = 1; }
-static constexpr const char* kServiceVersion="ainvr-s100p-reused-control-0.13";
+static constexpr const char* kServiceVersion="ainvr-s100p-reused-control-0.14";
 static nlohmann::json FfmpegRuntimeInfo() {
   return {{"version",av_version_info()},{"avformat_version",avformat_version()},
     {"avcodec_version",avcodec_version()},{"avutil_version",avutil_version()}};

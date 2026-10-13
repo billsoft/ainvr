@@ -67,6 +67,12 @@ void SnapshotStore::Offer(const FrameProvider& frame_provider, const std::string
       const double start = NowMono();
       for (;;) {
         try {
+          captured->size = frame_provider.size;
+          if (frame_provider.owned_download) {
+            captured->owned_download = frame_provider.owned_download;
+            ClearArchiveFault("capture");
+            break;
+          }
           frame_provider.download(cv::Rect({}, frame_provider.size), captured->rgba);
           if (captured->rgba.size() != frame_provider.size || captured->rgba.type() != CV_8UC4)
             throw std::runtime_error("snapshot provider returned invalid frame");
@@ -88,7 +94,7 @@ void SnapshotStore::Offer(const FrameProvider& frame_provider, const std::string
       if (captured) {
         std::lock_guard<std::mutex> lock(stats_mutex_);
         ++captured_count_; ++crop_batches_;
-        last_download_bytes_ = bytes;
+        last_download_bytes_ = frame_provider.owned_download ? 0 : bytes;
         last_download_ms_ = (NowMono() - start) * 1000;
         last_crop_ms_ = 0;  // processing is now measured on the archive workers
       }

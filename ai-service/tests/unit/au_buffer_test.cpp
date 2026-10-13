@@ -510,3 +510,22 @@ TEST(InitialPublishBuffer, CapacityFailureDoesNotWaitForeverAndSourceRecoveryDoe
   stats.held_s = 40;
   EXPECT_EQ(DecideInitialBuffer(stats, false), InitialBufferStep::kReady);
 }
+
+TEST(AdaptiveDelayController, ExplicitColdStartBudgetDecaysWithoutFabricatedMisses) {
+  AdaptiveDelayController controller(0.75,3.0,1.6,240,0.99,1.3,0.01,3.0);
+  EXPECT_DOUBLE_EQ(controller.delay_s(),3.0);
+  EXPECT_EQ(controller.stats().miss_events,0);
+  for(int i=0;i<500;++i)controller.on_stamp(0.2);
+  EXPECT_GE(controller.delay_s(),0.75);
+  EXPECT_LT(controller.delay_s(),0.8);
+  EXPECT_EQ(controller.stats().miss_events,0);
+  EXPECT_THROW(AdaptiveDelayController(0.75,3.0,1.4,240,0.95,1.3,0.04,4.0),std::invalid_argument);
+  AuDelayBuffer buffer(std::make_shared<AdaptiveDelayController>(0.75,3.0,1.6,240,0.99,1.3,0.01,3.0));
+  auto frame=Au(123,false,100);
+  buffer.put(frame);
+  EXPECT_FALSE(buffer.pop_ready(102.8));
+  EXPECT_EQ(buffer.stamp(frame.pts_ns,[](const auto& data){auto result=data;result.push_back(4);return result;},102.9),StampResult::kStamped);
+  auto output=buffer.pop_ready(103.1);
+  ASSERT_TRUE(output);
+  EXPECT_EQ(output->pts_ns,frame.pts_ns);
+}

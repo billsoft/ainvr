@@ -44,3 +44,17 @@ TEST(Gles, Nv12LimitedAndFullRange) {
   for(int c=0;c<3;++c){EXPECT_NEAR(out[c*4],0,0.001);EXPECT_NEAR(out[c*4+1],1,0.001);}
   EXPECT_THROW(gpu.RunNv12({0,0,0},1,2,t),std::invalid_argument);
 }
+
+TEST(Gles, ImmutableNv12TextureReusePreservesRoisAndInvalidatesBetweenFrames) {
+  ainvr::GlesPreprocessor gpu,reference;
+  ainvr::ImageTransform t;t.width=2;t.height=2;t.letterbox=false;t.yuv_full_range=true;
+  std::vector<uint8_t> frame{20,50,80,110,140,170,200,230,128,128,128,128};
+  t.source_region=std::array<float,4>{0,0,2,2};
+  EXPECT_EQ(gpu.RunNv12Rgba(frame,4,2,t,1),reference.RunNv12Rgba(frame,4,2,t));
+  t.source_region=std::array<float,4>{2,0,2,2};
+  EXPECT_EQ(gpu.RunNv12Rgba(frame,4,2,t,1),reference.RunNv12Rgba(frame,4,2,t));
+  auto changed=frame;changed[2]=30;
+  EXPECT_EQ(gpu.RunNv12Rgba(changed,4,2,t,2),reference.RunNv12Rgba(changed,4,2,t));
+  EXPECT_EQ(gpu.RunNv12Rgba(frame,4,2,t),reference.RunNv12Rgba(frame,4,2,t));
+  EXPECT_EQ(gpu.RunNv12Rgba(changed,4,2,t,2),reference.RunNv12Rgba(changed,4,2,t));
+}

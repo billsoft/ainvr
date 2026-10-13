@@ -42,7 +42,9 @@ class GlesPreprocessor {
   // Packed RGBA8, for the original archive FrameProvider. Color conversion,
   // region sampling and byte packing execute on Mali, including odd-size ROIs.
   std::vector<uint8_t> RunNv12Rgba(const std::vector<uint8_t>& nv12,int width,int height,
-                                  const ImageTransform& transform);
+                                  const ImageTransform& transform, uint64_t immutable_source_tag=0);
+  // A nonzero tag identifies immutable pixels uniquely across this process.
+  // Zero always uploads. Cached textures retain no host pixels or decoder lease.
   // Full-range BT.601 NV12 for JPEG. Overrides model normalization/channel order.
   std::vector<uint8_t> RunJpegNv12(const std::vector<uint8_t>& nv12,int width,int height,
                                   const ImageTransform& transform);
@@ -57,7 +59,7 @@ class GlesPreprocessor {
  private:
   std::vector<float> RunImpl(const std::vector<uint8_t>& pixels,int width,int height,
                              const ImageTransform& transform,bool nv12,std::vector<uint8_t>* jpeg=nullptr,
-                             bool bgr_input=false,std::vector<uint8_t>* rgba_output=nullptr);
+                             bool bgr_input=false,std::vector<uint8_t>* rgba_output=nullptr,uint64_t immutable_source_tag=0);
   struct State;
   std::unique_ptr<State> state_;
 };

@@ -15,6 +15,7 @@ command -v nginx >/dev/null || { echo 'Install nginx first'; exit 1; }
 chgrp sunrise "$ROOT/deploy/infra/config"
 chmod g+rwx "$ROOT/deploy/infra/config"
 python3 "$ROOT/deploy-package/prepare-s100p.py"
+python3 "$ROOT/deploy-package/harden-storage-s100p.py"
 python3 - "$ROOT" <<'PY'
 from pathlib import Path
 import sys

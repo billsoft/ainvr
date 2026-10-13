@@ -2,18 +2,31 @@
 
 工作目录：`/home/sunrise/ainvr`。此文记录当前实际部署；编译流程与复验要求见 `S100P-HBM-COMPILATION.md`。
 
+## 最新生产状态：ERP 截图与系统体检（2026-10-13 12:22）
+
+当前部署 SHA-256：`493cfdce4848c87ee24c3ffaa68918966df4f030382ea11374d41172f2777557`。截图设置为 `erp_equirect`，GLES 执行 ERP 到普通视角的目标截图，BPU 推理、JPU 编码。五分钟实流 17.55 FPS、144.23 目标/秒、BPU 51.67%；归档无丢弃或写库错误，检查窗口录像文件/索引正常。启动前五秒仍有一次 SEI 迟到，之后未增加，不能称所有边界问题已解决。系统盘恢复约 13 GB 可用，录像索引已迁 SSD。完整限制、回退与验收见 [系统体检](S100P-RUNTIME-HEALTH.md)。
+
+## 较早生产状态：普通截图归档流水线（2026-10-13，已被上节替代）
+
+该轮主通道开启普通截图，HBM 未变；使用 4 个归档线程的优化版。
+三分钟实流：19.56 FPS、159.91 个目标/秒入库、BPU 平均 56.14%，峰值 RSS 约 1.32 GiB。
+6 线程反而降到 18.31 FPS、内存约 1.71 GiB，已撤销。后台图像所有权、GPU/JPU 流水线、避免重复编码及容量唤醒修正见 [截图归档优化](S100P-ARCHIVE-PIPELINE.md)。
+该轮二进制 SHA-256：`755755ab5e065b4f5f14d70b1c78740e4a59ecf42b932983fc26e967e0d332a3`。
+主要证据：`test/results/archive-pipeline-selection-20261013.json`。归档没有丢弃/故障，但三分钟含 6 次 SEI 迟到，排除前 30 秒后 2 次；发布器没有重连，不能宣称 SEI 零迟到。
+下文约 30 FPS 的生产记录是**关闭截图时的历史基准**，不代表当前开启截图的完整链路。
+
 ## 当前已部署四个模型，原生服务和网页接线已验收（2026-10-13）
 
 当前以本节及文末交付验收为准；下文编译 PID、失败候选和“未接入”段落是研发历史，不是仍在等待的任务。YOLOE 使用原生 BPU 文本编码及完整检测路径，可在网页改描述而不重新编译。使用方法和复现入口见 `S100P-YOLOE-DYNAMIC.md`。
 
 | 模型 | 实际文件 | 原始 BPU 推理速度 | 质量依据 | 实际接线 |
 | --- | --- | ---: | --- | --- |
-| YOLO26x COCO80 | `ai-service/models/derived/s100p/yolo26x.hbm` | 35.8293 FPS（O2） | O0 的 128 张 FP32 对比 precision 96.93%、recall 96.41%、IoU 98.39%；子集 AP50 0.744677；O2 的 128 个输出与已验收 O0 完全相同 | 已替换 O2，原 4K 通道恢复，SEI 继续运行；当前截图开关关闭，保留现配置 |
+| YOLO26x COCO80 | `ai-service/models/derived/s100p/yolo26x.hbm` | 35.8293 FPS（O2） | O0 的 128 张 FP32 对比 precision 96.93%、recall 96.41%、IoU 98.39%；子集 AP50 0.744677；O2 的 128 个输出与已验收 O0 完全相同 | 已替换 O2，原 4K 通道恢复，SEI 继续运行；当前截图已开启，归档性能见上节 |
 | YOLO26x-face | `ai-service/models/derived/s100p/yolo26x-face.hbm` | 35.6082 FPS（O2） | O0 的 128 张 FP32 对比 precision 99.29%、recall 98.59%、IoU 99.36%；O2 的 128 个输出与已验收 O0 完全相同 | O2 人脸检测、GPEN、JPU/MongoDB 实流及原图/增强图网页查看已通过 `three-model-final-audit-20261012.json`；当前主通道保持 COCO |
 | GPEN256 | `ai-service/models/gpen_bfr_256.hbm` | 92.7491 FPS（O2） | 原 O0 的数值 FP32 对比未过门槛，用户已明确视觉验收；O2 与已验收 O0 的 128 个原始输出数组完全相同 | 人脸归档流水线实际使用，原图和增强图可查看 |
-| YOLOE-26x 动态描述 | `ai-service/models/derived/s100p/yoloe-26x.hbm`（另有文字/RepRTA HBM） | 检测张量 39.48 FPS（O2，生产并行）；真实 4K 通道约 6.5–8.8 FPS（目标 10，截图关闭） | 新独立 128 图完整 BPU 文字→RepRTA→检测与原 FP32 的 precision 95.95%、recall 95.15%、IoU 98.05%；四个预定自由描述案例全部最终框通过。原逐网格误差检查仍失败，原模型漏检仍保留 | 网页正常向导保存、`person`→`an airplane` 运行时改词、真实 SEI 回读通过；原生生产 Worker/Store 在独立历史集合验证 20 条 GLES/JPU/Mongo 归档 |
+| YOLOE-26x 动态描述 | `ai-service/models/derived/s100p/yoloe-26x.hbm`（另有文字/RepRTA HBM） | 检测张量 39.48 FPS（O2，生产并行）；流水线优化后真实 4K 单通道 29.76 FPS（30 FPS 源，截图关闭） | 新独立 128 图完整 BPU 文字→RepRTA→检测与原 FP32 的 precision 95.95%、recall 95.15%、IoU 98.05%；四个预定自由描述案例全部最终框通过。原逐网格误差检查仍失败，原模型漏检仍保留 | 网页正常向导保存、`person`→`an airplane` 运行时改词、真实 SEI 回读通过；原生生产 Worker/Store 在独立历史集合验证 20 条 GLES/JPU/Mongo 归档 |
 
-纯推理测速均不包含解码、图像转换、截图和数据库时间。GPEN 的小图归档流水线吞吐约 75.25 张/秒，也不是整路 4K 视频帧率。当前生产 COCO 通道设为 15 FPS，实际实流约 9 FPS，截图关闭；原视频与录像继续使用原流，不将配置值当硬件极限。
+纯推理测速均不包含解码、图像转换、截图和数据库时间。GPEN 的小图归档流水线吞吐约 75.25 张/秒，也不是整路 4K 视频帧率。2026-10-13 流水线优化后，生产 COCO 目标已通过正常网页向导从 15 改为 0（跟随源流）；30 FPS 固定采样的两分钟均值为 28.55 FPS，因此该次纯推理验收使用跟随源流模式，截图当时关闭，录像已恢复。旧约 9 FPS 是优化前历史结果；独立真实 4K 实流 COCO 29.98、Face 30.02、YOLOE 29.76 FPS。生产持续观测数据见 `test/results/throughput-production-final-20261013.json`，实现、局限及回退见 [推理流水线优化](S100P-INFERENCE-PIPELINE.md)。本次 HBM 与描述文件共 10 项哈希未变，三个检测模型各 64 次完整输出逐项一致，服务更新至 0.14。
 
 证据：`test/results/coco-channel-deployment-20261012.json`、`face-channel-deployment-20261012.json`、`gpen-O2-optimization-20261012.json`、`ui-hbm-workflow-20261012.json`，以及实际播放截图 `test/results/coco-ai-live-monitor-20261012.png`。每个 HBM 配有校验哈希与实际张量接口的 `.hbm.ainvr.json`。
 

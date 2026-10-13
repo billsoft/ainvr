@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -129,7 +130,7 @@ class ReusedChannelWorker : public ChannelWorker {
   // (CaptureLoop)必须立即退出循环,不能继续用旧的 stream 引用。
   std::pair<std::shared_ptr<stream::FrameRef>, bool> PullFrameSafe();
   std::optional<CapturedFrame> PickNextFrame(int64_t last_consumed_seq, int* skipped);
-  void InferOneFrame(CapturedFrame frame);
+  void InferOneFrame(CapturedFrame frame, ainvr::BpuImageResult prepared);
   void InferPromptedFrame(CapturedFrame frame);
   bool ReconnectStream();
   void OnStreamError(const std::string& msg);
@@ -188,6 +189,8 @@ class ReusedChannelWorker : public ChannelWorker {
   std::mutex frame_mutex_;
   std::condition_variable frame_cond_;
   std::optional<CapturedFrame> latest_frame_;
+  // Absorb bursty delivery without unbounded latency or 8K memory growth.
+  std::deque<CapturedFrame> pending_frames_;
   std::atomic<int64_t> stream_epoch_{0};
   int64_t frame_seq_ = 0;
 
@@ -208,6 +211,7 @@ class ReusedChannelWorker : public ChannelWorker {
   utils::TimingStats stats_postprocess_{200};
   utils::TimingStats stats_total_{200};
   utils::TimingStats stats_period_{200};
+  utils::TimingStats stats_frame_age_{200};
   utils::TimingStats stats_infer_total_{200};
   utils::TimingStats stats_pull_wait_{200};
   utils::TimingStats stats_pull_drop_{200};

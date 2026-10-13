@@ -95,8 +95,8 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
         <span>模型：{getAiModelDisplayName(config.model)}</span>
         <span>{config.model.adapter === 'locateanything_trt'
           ? `采集：每 ${(1 / config.inference_fps).toFixed(1)} 秒一次（${receiving && stats.inference_fps_actual > 0 ? `实测约 ${(1 / stats.inference_fps_actual).toFixed(1)} 秒` : '等待识别结果'}）`
-          : `推理：${config.inference_fps} FPS（${receiving ? `实测 ${stats.inference_fps_actual?.toFixed?.(1) ?? '0.0'}` : '等待视频恢复'}）`}</span>
-        <span>延迟 p95：{receiving ? `${stats.timing?.total?.p95_ms?.toFixed?.(1) ?? '0.0'}ms` : '—'}</span>
+          : `推理：${config.inference_fps > 0 ? `${config.inference_fps} FPS` : '跟随源流'}（${receiving ? `实测 ${stats.inference_fps_actual?.toFixed?.(1) ?? '0.0'}` : '等待视频恢复'}）`}</span>
+        <span>处理耗时 p95：{receiving ? `${stats.timing?.total?.p95_ms?.toFixed?.(1) ?? '0.0'}ms` : '—'}</span>
         {/* 源 30fps、推理 15fps 时每次天然跳 1 帧，这是按设定帧率抽帧，不是
             丢帧；过载丢帧才是推理跟不上源。旧版 ai-service 没有拆分字段，回退
             显示总跳帧数（不能再叫"丢帧"，它大部分是正常抽帧）。 */}

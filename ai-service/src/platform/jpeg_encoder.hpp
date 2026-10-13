@@ -17,7 +17,8 @@ class JpegEncoder {
   // Packed FULL-RANGE BT.601/JPEG NV12. Limited-range video must be converted
   // before calling; this interface never silently relabels video color values.
   // Calls are serialized. SDK failure poisons the instance; recreate to retry.
-  std::vector<uint8_t> EncodeFullRangeNv12(const std::vector<uint8_t>& pixels);
+  std::vector<uint8_t> EncodeFullRangeNv12(const std::vector<uint8_t>& pixels,
+      int visible_width=0,int visible_height=0);
  private:
   struct State;std::unique_ptr<State> state_;
 };

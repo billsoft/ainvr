@@ -14,7 +14,7 @@ double round4(double v) { return std::nearbyint(v * 10000.0) / 10000.0; }
 AdaptiveDelayController::AdaptiveDelayController(double min_delay_s, double max_delay_s,
                                                    double headroom, size_t window,
                                                    double percentile, double miss_growth,
-                                                   double fall_rate)
+                                                   double fall_rate, double initial_delay_s)
     : min_delay_s_(min_delay_s),
       max_delay_s_(max_delay_s),
       headroom_(headroom),
@@ -22,7 +22,9 @@ AdaptiveDelayController::AdaptiveDelayController(double min_delay_s, double max_
       percentile_(percentile),
       miss_growth_(miss_growth),
       fall_rate_(fall_rate),
-      current_(min_delay_s) {
+      current_(initial_delay_s == -1.0 ? min_delay_s : initial_delay_s) {
+  if (!std::isfinite(current_) || current_ < min_delay_s || current_ > max_delay_s)
+    throw std::invalid_argument("Initial delay must be within the configured bounds");
   if (!(min_delay_s >= 0.0 && min_delay_s <= max_delay_s)) {
     throw std::invalid_argument("必须满足 0 <= min_delay_s <= max_delay_s");
   }

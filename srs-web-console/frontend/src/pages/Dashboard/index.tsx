@@ -80,18 +80,18 @@ export default function DashboardPage(){
       setShuttingDown(false)
     }
   }
-  function values(field:'cpu'|'memory'|'gpu'){
+  function values(field:'cpu'|'memory'|'bpu'){
     return history.map(p=>{
       const s=p.services.find(v=>v.id===metricService)
-      const value=field==='gpu'?p.host.gpuPercent:field==='cpu'?(metricService==='host'?p.host.cpuPercent:wholeHostCpu(s?.cpuPercent,p.host.cores)):(metricService==='host'?p.host.memoryBytes:s?.memoryBytes??null)
+      const value=field==='bpu'?(p.host.bpuPercent??null):field==='cpu'?(metricService==='host'?p.host.cpuPercent:wholeHostCpu(s?.cpuPercent,p.host.cores)):(metricService==='host'?p.host.memoryBytes:s?.memoryBytes??null)
       return {ts:p.ts,value:field==='memory'&&value!==null?value/1024**2:value}
     })
   }
   // 顶部卡片专用：主机维度的最近 N 秒序列（不受 metricService 切换影响）
-  function hostSeries(field:'cpu'|'memory'|'gpu'|'diskPct'|'netRx'|'netTx'):DataPoint[]{
+  function hostSeries(field:'cpu'|'memory'|'bpu'|'diskPct'|'netRx'|'netTx'):DataPoint[]{
     return history.map(p=>{
       if(field==='cpu')return{ts:p.ts,value:p.host.cpuPercent}
-      if(field==='gpu')return{ts:p.ts,value:p.host.gpuPercent}
+      if(field==='bpu')return{ts:p.ts,value:p.host.bpuPercent??null}
       if(field==='memory')return{ts:p.ts,value:p.host.memoryBytes/1024**2}
       if(field==='diskPct')return{ts:p.ts,value:p.host.diskTotalBytes?100*(p.host.diskUsedBytes??0)/p.host.diskTotalBytes:null}
       if(field==='netRx')return{ts:p.ts,value:net(p,'rxBytesPerSecond')}
@@ -100,10 +100,10 @@ export default function DashboardPage(){
   }
   // 不同指标用不同的平均窗口：快变的更宽（更平滑），慢变的够用就行
   // 采样频率后端固定 10s 一次（嵌入式不增加负荷），纯前端调窗口
-  const WINDOWS={cpu:120_000,gpu:120_000,memory:60_000,diskPct:60_000,net:120_000} as const
+  const WINDOWS={cpu:120_000,bpu:120_000,memory:60_000,diskPct:60_000,net:120_000} as const
   const cardNow=history.at(-1)?.ts??snap?.ts??Date.now()
   const cpuCard=computeRecentStats(hostSeries('cpu'),WINDOWS.cpu,cardNow)
-  const gpuCard=computeRecentStats(hostSeries('gpu'),WINDOWS.gpu,cardNow)
+  const bpuCard=computeRecentStats(hostSeries('bpu'),WINDOWS.bpu,cardNow)
   const memCard=computeRecentStats(hostSeries('memory'),WINDOWS.memory,cardNow)
   const diskCard=computeRecentStats(hostSeries('diskPct'),WINDOWS.diskPct,cardNow)
   const netRxCard=computeRecentStats(hostSeries('netRx'),WINDOWS.net,cardNow)
@@ -197,14 +197,14 @@ export default function DashboardPage(){
         <div className="grid gap-3 sm:grid-cols-2">
           {[
             {label:'CPU · 整机利用率',color:'#2563eb',kind:'cpu' as const,unit:'%',stats:cpuCard,sparkPoints:recentSlice(hostSeries('cpu'),WINDOWS.cpu),scale:100,fallback:percent(snap?.host.cpuPercent,2),fallbackRatio:snap?.host.cpuPercent},
-            {label:'GPU · 共享计算负载',color:'#7c3aed',kind:'gpu' as const,unit:'%',stats:gpuCard,sparkPoints:recentSlice(hostSeries('gpu'),WINDOWS.gpu),scale:100,fallback:percent(snap?.host.gpuPercent),fallbackRatio:snap?.host.gpuPercent},
+            {label:'BPU · 神经网络利用率',color:'#7c3aed',kind:'bpu' as const,unit:'%',stats:bpuCard,sparkPoints:recentSlice(hostSeries('bpu'),WINDOWS.bpu),scale:100,fallback:percent(snap?.host.bpuPercent),fallbackRatio:snap?.host.bpuPercent},
             {label:'内存 · 已用 / 总量',color:'#059669',kind:'memory' as const,unit:'MiB',stats:memCard,sparkPoints:recentSlice(hostSeries('memory'),WINDOWS.memory),scale:undefined,fallback:snap?`${bytes(snap.host.memoryBytes)} / ${bytes(snap.host.memoryTotalBytes)}`:'—',fallbackRatio:snap?100*snap.host.memoryBytes/snap.host.memoryTotalBytes:null},
             {label:'本机磁盘 · 已用 / 总量',color:'#d97706',kind:'disk' as const,unit:'%',stats:diskCard,sparkPoints:recentSlice(hostSeries('diskPct'),WINDOWS.diskPct),scale:100,fallback:snap?`${bytes(snap.host.diskUsedBytes)} / ${bytes(snap.host.diskTotalBytes)}`:'—',fallbackRatio:snap?.host.diskTotalBytes?100*(snap.host.diskUsedBytes??0)/snap.host.diskTotalBytes:null},
           ].map(m=>{
             const isMemory=m.kind==='memory'
             const isDisk=m.kind==='disk'
             const showAvg=m.stats&&m.stats.samples>1
-            // 进度条比例：内存是 MiB 绝对值，需换算成占总量的百分比；CPU/GPU/磁盘本身就是百分比
+            // 进度条比例：内存是 MiB 绝对值，需换算成占总量的百分比；CPU/BPU/磁盘本身就是百分比
             let ratio:number
             if(showAvg){
               if(isMemory){
@@ -253,13 +253,13 @@ export default function DashboardPage(){
       </tbody></table></div>
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
-          <div><h2 className="font-medium">资源历史</h2><p className="mt-1 text-xs text-slate-500">持续展示 CPU、内存、GPU、磁盘和网络趋势，避免只依赖瞬时值判断系统状态。</p></div>
+          <div><h2 className="font-medium">资源历史</h2><p className="mt-1 text-xs text-slate-500">持续展示 CPU、内存、BPU、磁盘和网络趋势，避免只依赖瞬时值判断系统状态。</p></div>
           <div className="flex flex-wrap items-center gap-2"><select aria-label="资源服务" className={input} value={metricService} onChange={e=>setMetricService(e.target.value)}><option value="host">设备主机</option>{services.map(s=><option key={s.id} value={s.id}>{names[s.id]}</option>)}</select><select aria-label="历史周期" className={input} value={hours} onChange={e=>setHours(Number(e.target.value))}>{[1,6,24,72,168].map(v=><option key={v} value={v}>最近 {v} 小时</option>)}</select></div>
         </div>
         <div className="space-y-4 p-4 sm:p-5">
           {historyError&&<p role="alert" className="text-sm text-amber-700">历史读取失败：{historyError}</p>}
-          <div className="grid gap-4 lg:grid-cols-3"><Curve range={chartRange} title={`${names[metricService]} CPU · 占整机`} points={values('cpu')} digits={2} unit="%" color="#2563eb"/><Curve range={chartRange} title={`${names[metricService]} 内存`} points={values('memory')} unit="MiB" color="#059669"/><Curve range={chartRange} title="主机共享 GPU" points={values('gpu')} unit="%" color="#7c3aed"/><Curve range={chartRange} title="本机磁盘使用率" points={history.map(p=>({ts:p.ts,value:p.host.diskTotalBytes?100*(p.host.diskUsedBytes??0)/p.host.diskTotalBytes:null}))} unit="%" color="#d97706"/><Curve scale={networkScale} range={chartRange} title="网络接收" points={history.map(p=>({ts:p.ts,value:net(p,'rxBytesPerSecond')}))} unit="Mbps" color="#2563eb"/><Curve scale={networkScale} range={chartRange} title="网络发送" points={history.map(p=>({ts:p.ts,value:net(p,'txBytesPerSecond')}))} unit="Mbps" color="#7c3aed"/></div>
-          <p className="text-xs text-slate-500">历史保存在设备本地，刷新页面不会丢失；采集停止的时段不补零。各服务共享 GPU，暂不提供不可靠的逐服务 GPU/显存分摊。</p>
+          <div className="grid gap-4 lg:grid-cols-3"><Curve range={chartRange} title={`${names[metricService]} CPU · 占整机`} points={values('cpu')} digits={2} unit="%" color="#2563eb"/><Curve range={chartRange} title={`${names[metricService]} 内存`} points={values('memory')} unit="MiB" color="#059669"/><Curve range={chartRange} title="整机 BPU 利用率" points={values('bpu')} unit="%" color="#7c3aed"/><Curve range={chartRange} title="本机磁盘使用率" points={history.map(p=>({ts:p.ts,value:p.host.diskTotalBytes?100*(p.host.diskUsedBytes??0)/p.host.diskTotalBytes:null}))} unit="%" color="#d97706"/><Curve scale={networkScale} range={chartRange} title="网络接收" points={history.map(p=>({ts:p.ts,value:net(p,'rxBytesPerSecond')}))} unit="Mbps" color="#2563eb"/><Curve scale={networkScale} range={chartRange} title="网络发送" points={history.map(p=>({ts:p.ts,value:net(p,'txBytesPerSecond')}))} unit="Mbps" color="#7c3aed"/></div>
+          <p className="text-xs text-slate-500">历史保存在设备本地，刷新页面不会丢失；采集停止或尚无 BPU 数据的时段不补零。BPU 展示整机神经网络负载，不按服务分摊。</p>
         </div>
       </section>
     </>}

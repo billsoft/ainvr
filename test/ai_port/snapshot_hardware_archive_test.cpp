@@ -1,3 +1,4 @@
+#include <future>
 // Copyright AINVR. Production queue + Mali pixels + JPU + isolated real Mongo.
 // Synthetic pixels/detections and JPEG decoding are test fixtures/oracles only.
 #include <gtest/gtest.h>
@@ -221,7 +222,7 @@ TEST_F(HardwareArchive, AsyncOwnsFramesPerJobConfigAndPagination) {
   EXPECT_EQ(ids.size(),6); EXPECT_EQ(pts.size(),6);
   EXPECT_EQ(store->GetStats()["brightness_corrected_count"],3);
   EXPECT_EQ(store->GetStats()["captured_count"],6);
-  EXPECT_EQ(GetSnapshotJpegStats().jpu,jpeg.jpu+12);
+  EXPECT_EQ(GetSnapshotJpegStats().jpu,jpeg.jpu+9);
   Healthy(6);
   EXPECT_EQ(store->DeleteRange(1700000000.4285,1700000000.4305),2);
   EXPECT_EQ(Page()["items"].size(),4);
@@ -353,10 +354,10 @@ TEST_F(HardwareArchive, Continuous4KErpQueueMeasuresHardwareAndDurability) {
     RecordProperty("shader_compilations_during_60_targets_"+phase,std::to_string(gpu.shader_compilations-crop_before.shader_compilations));
     EXPECT_GE(gpu.crops,crop_before.crops+jobs);
     if(!std::getenv("AINVR_CONTEXT_BASELINE")){
-      EXPECT_LE(gpu.contexts_created-crop_before.contexts_created,4u);
-      EXPECT_LE(gpu.shader_compilations-crop_before.shader_compilations,4u);
+      EXPECT_LE(gpu.contexts_created-crop_before.contexts_created,store->GetStats()["archive_workers"].get<size_t>());
+      EXPECT_LE(gpu.shader_compilations-crop_before.shader_compilations,store->GetStats()["archive_workers"].get<size_t>());
     }
-    EXPECT_EQ(GetSnapshotJpegStats().jpu,jpeg_before.jpu+jobs*2);
+    EXPECT_EQ(GetSnapshotJpegStats().jpu,jpeg_before.jpu+jobs*(brightness?2:1));
     EXPECT_EQ(GetExposureBackendStats().gpu_runs,exposure_before.gpu_runs+(brightness?jobs:0));
     EXPECT_EQ(after["delivery"]["committed"],count);
     auto page=Page(2);auto original=Image(page["items"][0],true);
@@ -370,3 +371,76 @@ TEST_F(HardwareArchive, Continuous4KErpQueueMeasuresHardwareAndDurability) {
   RecordProperty("durable_target_count",std::to_string(count));
 }
 } // namespace
+
+TEST_F(HardwareArchive, DetachedProviderRunsOnlyOnArchiveWorkerAndKeepsOwnerAlive) {
+  Start();
+  const auto producer=std::this_thread::get_id();
+  auto pixels=std::make_shared<cv::Mat>(1920,3840,CV_8UC4,cv::Scalar(40,40,40,255));
+  std::weak_ptr<cv::Mat> lifetime=pixels;
+  std::atomic<int> synchronous=0,background=0;
+  std::atomic<bool> same_thread=false;
+  pipeline::SnapshotSink::FrameProvider provider{pixels->size(),
+    [&](const cv::Rect&,cv::Mat&){++synchronous;throw std::runtime_error("unexpected synchronous download");},
+    []{return false;},
+    [pixels,producer,&background,&same_thread](const cv::Rect& roi,cv::Mat& out){
+      same_thread=std::this_thread::get_id()==producer;
+      ++background; out=(*pixels)(roi);
+    }};
+  store->Offer(provider,id,"owned-provider-test",777,1700000000.777,"hardware-fixture",
+    "object_detection",{Det()},{Det()},false,cfg);
+  provider.owned_download={};pixels.reset();
+  ASSERT_TRUE(WaitCount(1));
+  EXPECT_EQ(synchronous.load(),0);EXPECT_EQ(background.load(),1);EXPECT_FALSE(same_thread.load());
+  EXPECT_TRUE(Until([&]{return lifetime.expired();}));
+  auto item=Page()["items"][0];auto original=Image(item,true);
+  EXPECT_NEAR(cv::mean(original)[0],40,3);
+  EXPECT_EQ(*store->GetImage(item["image_id"]),*store->GetImage(item["image_id"],true));
+  EXPECT_EQ(store->GetStats()["last_download_bytes"],0);
+  Healthy(1);
+}
+
+TEST_F(HardwareArchive, FrameReleaseWakesAdmissionWithoutQueuePollingTimeout) {
+  Start();
+  cv::Mat frame(256,256,CV_8UC4,cv::Scalar::all(40));
+  Offer(frame,800,cfg,std::vector<Detection>(4,Det()));
+  ASSERT_TRUE(WaitCount(4));
+  std::promise<void> release;auto gate=release.get_future().share();
+  std::atomic<int> entered=0;
+  pipeline::SnapshotSink::FrameProvider provider{frame.size(),
+    [&](const cv::Rect& roi,cv::Mat& out){out=frame(roi);},[]{return false;},
+    [frame,gate,&entered](const cv::Rect& roi,cv::Mat& out){++entered;gate.wait();out=frame(roi);}};
+  for(int i=0;i<2;++i)store->Offer(provider,id,"admission-test",801+i,1700000001+i,
+    "hardware-fixture","object_detection",{Det()},{Det()},false,cfg);
+  EXPECT_TRUE(Until([&]{return entered.load()==2;}));
+  auto waiter=std::async(std::launch::async,[&]{store->WaitForCapacity([]{return false;});});
+  EXPECT_EQ(waiter.wait_for(std::chrono::milliseconds(20)),std::future_status::timeout);
+  auto start=std::chrono::steady_clock::now();release.set_value();waiter.get();
+  const auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+  RecordProperty("capture_release_wakeup_ms",std::to_string(ms));
+  EXPECT_LT(ms,75.0); // Old unrelated condition variable waits about 80ms here.
+  ASSERT_TRUE(WaitCount(6));Healthy(6);
+}
+
+TEST(HardwareJpegReuse, OddVisibleSizesReuseAlignedContextWithoutChangingPixels) {
+  std::vector<std::vector<uint8_t>> reference;
+  for (const cv::Size size : {cv::Size(65,65),cv::Size(67,67),cv::Size(71,69)}) {
+    cv::Mat image(size,CV_8UC4,cv::Scalar(31,93,171,255));
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(EncodeSnapshotRgbaJpeg(image,bytes,82));
+    const auto decoded=cv::imdecode(bytes,cv::IMREAD_COLOR);
+    ASSERT_EQ(decoded.size(),size);
+    reference.push_back(std::move(bytes));
+  }
+  const auto before=GetSnapshotJpegStats();
+  for (int pass=0;pass<3;++pass) {
+    int i=0;
+    for (const cv::Size size : {cv::Size(65,65),cv::Size(67,67),cv::Size(71,69)}) {
+      cv::Mat image(size,CV_8UC4,cv::Scalar(31,93,171,255));
+      std::vector<uint8_t> bytes;
+      ASSERT_TRUE(EncodeSnapshotRgbaJpeg(image,bytes,82));
+      EXPECT_EQ(bytes,reference[i++]);
+    }
+  }
+  EXPECT_EQ(GetSnapshotJpegStats().encoder_creates,before.encoder_creates);
+  EXPECT_EQ(GetSnapshotJpegStats().encoder_reuses,before.encoder_reuses+9);
+}

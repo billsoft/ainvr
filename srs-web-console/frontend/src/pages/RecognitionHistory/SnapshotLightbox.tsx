@@ -70,7 +70,7 @@ export function SnapshotLightbox({ channelId, item, onClose, onDelete }: Props) 
           </button>
           <button type="button" aria-pressed={variant === 'original'} onClick={() => setVariant('original')}
             className="rounded-base border border-line px-3 py-1 text-sm text-ink">原图</button>
-          <span className="text-xs text-ink-faint">{variant === 'original' ? '增强与亮度处理前' : item.enhanced ? 'GPEN 增强后的截图' : '归档截图'}</span>
+          <span className="text-xs text-ink-faint">{variant === 'original' ? '增强与亮度处理前' : item.enhanced ? '增强后的截图' : '归档截图'}</span>
         </div>
         <div className="h-[60vh] min-h-[240px] bg-surface-page">
           <AuthImage

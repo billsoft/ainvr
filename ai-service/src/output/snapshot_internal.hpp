@@ -28,9 +28,12 @@
 namespace ai_service::output {
 struct CapturedSnapshotFrame {
   cv::Mat rgba;
+  cv::Size size;
+  std::function<void(const cv::Rect&, cv::Mat&)> owned_download;
   std::function<void()> release;
   ~CapturedSnapshotFrame() {
     rgba.release();
+    owned_download = {};
     if (release) release();
   }
 };

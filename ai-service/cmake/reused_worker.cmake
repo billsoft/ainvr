@@ -9,6 +9,8 @@ if(AINVR_S100P)
     # Explicitly built hardware probes require CLI resources and are not
     # automatic ctest jobs; they never change a production channel themselves.
     foreach(pair IN ITEMS
+        "ainvr_throughput_probe;throughput_probe.cpp"
+        "ainvr_bpu_pipeline_probe;bpu_pipeline_probe.cpp"
         "ainvr_yoloe_channel_adapter_probe;yoloe_channel_adapter_probe.cpp"
         "ainvr_yoloe_reused_archive_probe;yoloe_reused_archive_probe.cpp"
         "ainvr_read_yoloe_live_sei;read_yoloe_live_sei.cpp"

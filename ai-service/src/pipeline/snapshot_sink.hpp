@@ -23,6 +23,9 @@ class SnapshotSink {
     cv::Size size;
     std::function<void(const cv::Rect&, cv::Mat&)> download;
     std::function<bool()> cancelled;
+    // Optional immutable, detached pixel owner. Safe on archive workers; never
+    // captures a decoder surface, inference-thread GLES context or worker this.
+    std::function<void(const cv::Rect&, cv::Mat&)> owned_download;
   };
   virtual void Offer(const FrameProvider& frame_provider, const std::string& channel_id,
                       const std::string& channel_name, int64_t frame_pts_ns, double timestamp,

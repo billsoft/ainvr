@@ -20,6 +20,10 @@ BpuImageRunner::BpuImageRunner(const std::string& path,BpuImageContract contract
 }
 BpuImageResult BpuImageRunner::Run(const Nv12Frame& frame,const ImageTransform& transform,
                                   const std::map<std::string,std::vector<float>>& auxiliary) {
+  return RunAsync(frame,transform,auxiliary).get();
+}
+std::future<BpuImageResult> BpuImageRunner::RunAsync(const Nv12Frame& frame,const ImageTransform& transform,
+                                  const std::map<std::string,std::vector<float>>& auxiliary) {
   if(owner_!=std::this_thread::get_id())throw std::logic_error("BPU image runner thread mismatch");
   auto begin=Clock::now();PreprocessedImage prepared;
   std::vector<std::vector<unsigned char>> inputs;
@@ -41,11 +45,14 @@ BpuImageResult BpuImageRunner::Run(const Nv12Frame& frame,const ImageTransform& 
   }
   if(prepared.backend.find("cpu")!=std::string::npos)
     throw std::logic_error("CPU image processing must not feed production BPU inference");
-  auto preprocessed=Clock::now();auto bytes=model_.Run(inputs);auto inferred=Clock::now();
-  BpuImageResult result;result.image_backend=prepared.backend;
-  for(size_t i=0;i<bytes.size();++i)result.outputs.push_back(DecodeTensor(bytes[i],description_["outputs"][i]));
-  auto decoded=Clock::now();result.preprocess_ms=Ms(preprocessed-begin);
-  result.inference_ms=Ms(inferred-preprocessed);result.output_decode_ms=Ms(decoded-inferred);
-  return result;
+  const double preprocess_ms=Ms(Clock::now()-begin);
+  return std::async(std::launch::async,[this,inputs=std::move(inputs),backend=std::move(prepared.backend),preprocess_ms]() {
+    std::lock_guard lock(inference_mutex_);
+    const auto start=Clock::now();auto bytes=model_.Run(inputs);auto inferred=Clock::now();
+    BpuImageResult result;result.image_backend=backend;
+    for(size_t i=0;i<bytes.size();++i)result.outputs.push_back(DecodeTensor(bytes[i],description_["outputs"][i]));
+    result.preprocess_ms=preprocess_ms;result.inference_ms=Ms(inferred-start);
+    result.output_decode_ms=Ms(Clock::now()-inferred);return result;
+  });
 }
 }

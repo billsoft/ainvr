@@ -4,8 +4,8 @@ import { DEFAULT_WIZARD_VALUE, fromChannel, toCreatePatch, toUpdatePatch } from 
 import type { AiChannel } from '@/types/aiChannel'
 
 describe('S100P 模型配置', () => {
-  it('新配置仅提供两种封闭检测，未完成 BPU 接入的开放模型不可选', () => {
-    expect(SELECTABLE_AI_MODEL_PRESET_KEYS).toEqual(['yolo26x', 'yolo26x-face'])
+  it('新配置提供已完成 BPU 接入的封闭检测和开放词汇模型', () => {
+    expect(SELECTABLE_AI_MODEL_PRESET_KEYS).toEqual(['yolo26x', 'yolo26x-face', 'yoloe-26x'])
     expect(DEFAULT_AI_MODEL_PRESET).toBe('yolo26x')
     const patch = toCreatePatch(DEFAULT_WIZARD_VALUE)
     expect(patch.model?.name).toBe('yolo26x')

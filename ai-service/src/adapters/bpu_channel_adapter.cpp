@@ -212,6 +212,9 @@ nlohmann::json BpuChannelAdapter::ResultMetadata() const{
   return result;
 }
 ainvr::BpuImageResult BpuChannelAdapter::RunFrame(const ainvr::Nv12Frame& frame,const pipeline::PreprocessConfig& p,bool bt709,bool full_range){
+  return RunFrameAsync(frame,p,bt709,full_range).get();
+}
+std::future<ainvr::BpuImageResult> BpuChannelAdapter::RunFrameAsync(const ainvr::Nv12Frame& frame,const pipeline::PreprocessConfig& p,bool bt709,bool full_range){
   if(!runner_)throw std::logic_error("BPU model has not been loaded");
   if(p.interpolation!="bilinear"&&p.interpolation!="nearest"&&p.interpolation!="bicubic"&&p.interpolation!="area"&&p.interpolation!="lanczos4")throw std::runtime_error("未知模型预处理插值方式");
   if(!p.letterbox)throw std::runtime_error("该任务当前要求 letterbox 预处理以保持原坐标还原契约");
@@ -227,8 +230,8 @@ ainvr::BpuImageResult BpuChannelAdapter::RunFrame(const ainvr::Nv12Frame& frame,
       throw std::runtime_error("嵌入预处理的 BPU 模型不允许重复或改变归一化");
     t.mean={0,0,0};t.divisor={1,1,1};t.bgr=false;
   }
-  if(config_.adapter=="yoloe_bpu")return runner_->Run(frame,t,{{"prompt_embeddings",prompt_values_}});
-  return runner_->Run(frame,t);
+  if(config_.adapter=="yoloe_bpu")return runner_->RunAsync(frame,t,{{"prompt_embeddings",prompt_values_}});
+  return runner_->RunAsync(frame,t);
 }
 std::vector<Detection> BpuChannelAdapter::Postprocess(const std::vector<float>& values,const pipeline::ScaleInfo& scale,double c,double i,int max){
   const auto& o=description_.at("outputs").at(0);

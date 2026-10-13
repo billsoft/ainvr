@@ -94,6 +94,21 @@ def memory_bytes(text: str):
     return round(float(match[1]) * scale[match[2]])
 
 
+def bpu_percent() -> float | None:
+    """S100/S100P driver utilization, already in percent (not TOPS or FPS).
+
+    Official interface: /sys/devices/system/bpu/ratio. Missing or invalid
+    samples remain unavailable; never substitute GPU load or a fabricated zero.
+    """
+    try:
+        raw = Path('/sys/devices/system/bpu/ratio').read_text().strip()
+        if len(raw) > 128: return None
+        value = float(raw)
+        return value if 0 <= value <= 100 else None
+    except (OSError, ValueError):
+        return None
+
+
 def ai_service_health(health: dict) -> tuple[bool, str]:
     detail = '运行通道 ' + str(health.get('channels_running', 0))
     business = health.get('business')
@@ -347,7 +362,7 @@ class Observer:
         try: gpu = int(Path('/sys/devices/platform/17000000.gpu/load').read_text())/10
         except (OSError,ValueError): pass
         host = {'cpuPercent':percent,'memoryBytes':mem['MemTotal']-mem['MemAvailable'],
-                'memoryTotalBytes':mem['MemTotal'],'gpuPercent':gpu,'cores':os.cpu_count(),
+                'memoryTotalBytes':mem['MemTotal'],'gpuPercent':gpu,'bpuPercent':bpu_percent(),'cores':os.cpu_count(),
                 'swapBytes':mem['SwapTotal']-mem['SwapFree']}
         disk = shutil.disk_usage(ROOT)
         host.update(diskUsedBytes=disk.used, diskTotalBytes=disk.total)

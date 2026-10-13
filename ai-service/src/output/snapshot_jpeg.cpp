@@ -29,10 +29,17 @@ struct Job {
 };
 class HardwareJpeg {
  public:
- HardwareJpeg():worker_([this]{Loop();}){}
+ HardwareJpeg(){
+  encoder_worker_=std::thread([this]{EncodeLoop();});
+  try {worker_=std::thread([this]{Loop();});}
+  catch(...) {
+   {std::lock_guard<std::mutex> lock(prepared_mutex_);conversion_done_=true;}
+   prepared_available_.notify_all();encoder_worker_.join();throw;
+  }
+ }
  ~HardwareJpeg(){
   {std::lock_guard<std::mutex> lock(mutex_);stopping_=true;}
-  available_.notify_all();worker_.join();
+  available_.notify_all();worker_.join();encoder_worker_.join();
  }
  std::vector<uint8_t> Run(const cv::Mat& input,int quality,bool rgba){
   auto job=std::make_unique<Job>();job->width=input.cols;job->height=input.rows;job->quality=quality;
@@ -51,8 +58,6 @@ class HardwareJpeg {
  void Loop(){
   // Construct, use and destroy the GLES context on this one worker thread.
   std::unique_ptr<ainvr::GlesPreprocessor> colors;
-  struct Slot { std::array<int,5> key;std::unique_ptr<ainvr::JpegEncoder> encoder; };
-  std::deque<Slot> encoders;
   while(true){
    std::unique_ptr<Job> job;
    {std::unique_lock<std::mutex> lock(mutex_);
@@ -71,15 +76,45 @@ class HardwareJpeg {
     auto nv12=job->rgba
       ? colors->RunRgbaJpegNv12(job->pixels,job->width,job->height,transform)
       : colors->RunBgrJpegNv12(job->pixels,job->width,job->height,transform);++gpu_count;
+    std::vector<uint8_t>().swap(job->pixels); // GPU has consumed the owned input.
+    {
+      std::unique_lock<std::mutex> lock(prepared_mutex_);
+      // One converted frame ahead: bounded overlap, no unbounded image queue.
+      prepared_available_.wait(lock,[&]{return prepared_.empty();});
+      prepared_.emplace_back(); // Allocate before transferring promise ownership.
+      auto& ready=prepared_.back();ready.job=std::move(job);ready.nv12=std::move(nv12);
+      ready.width=w;ready.height=h;
+    }
+    prepared_available_.notify_all();
+   }catch(...){colors.reset();++failure_count;job->result.set_exception(std::current_exception());}
+  }
+  {std::lock_guard<std::mutex> lock(prepared_mutex_);conversion_done_=true;}
+  prepared_available_.notify_all();
+ }
+ void EncodeLoop(){
+  struct Slot { std::array<int,5> key;std::unique_ptr<ainvr::JpegEncoder> encoder; };
+  std::deque<Slot> encoders;
+  for(;;){
+   Prepared next_job;
+   {
+    std::unique_lock<std::mutex> lock(prepared_mutex_);
+    prepared_available_.wait(lock,[&]{return conversion_done_||!prepared_.empty();});
+    if(prepared_.empty()&&conversion_done_)break;
+    next_job=std::move(prepared_.front());prepared_.pop_front();
+   }
+   prepared_available_.notify_all();
+   auto& job=next_job.job;auto& nv12=next_job.nv12;
+   const int w=next_job.width,h=next_job.height;
+   try {
     const std::array<int,5> next{w,h,job->quality,job->width,job->height};
     // Keep the validated single-context behavior for SDK-padded visible sizes.
     // Concurrent cached JPU contexts can change odd-crop bitstreams on this SDK.
     const bool cacheable=job->width%16==0&&job->height%16==0;
     if(cacheable&&std::any_of(encoders.begin(),encoders.end(),[](const Slot& slot){return slot.key[3]%16||slot.key[4]%16;}))encoders.clear();
     if(!cacheable)while(encoders.size()>1)encoders.pop_front();
-    auto cached=std::find_if(encoders.begin(),encoders.end(),[&](const Slot& slot){return slot.key==next;});
+    auto cached=std::find_if(encoders.begin(),encoders.end(),[&](const Slot& slot){return slot.key[0]==next[0]&&slot.key[1]==next[1]&&slot.key[2]==next[2];});
     if(cached!=encoders.end()){
-      auto slot=std::move(*cached);encoders.erase(cached);encoders.push_back(std::move(slot));++encoder_reuses;
+      auto slot=std::move(*cached);encoders.erase(cached);slot.key=next;encoders.push_back(std::move(slot));++encoder_reuses;
     }else{
       // Two small contexts cover original/enhanced image pairs. Large captures
       // retain only one context; changing sizes cannot grow the pool unbounded.
@@ -87,18 +122,27 @@ class HardwareJpeg {
       while(!encoders.empty()&&(encoders.size()>=(cacheable?2u:1u)||area()+size_t(w)*h>size_t(2)*1024*1024))encoders.pop_front();
       encoders.push_back({next,std::make_unique<ainvr::JpegEncoder>(w,h,job->quality,job->width,job->height)});++encoder_creates;
     }
-    auto bytes=encoders.back().encoder->EncodeFullRangeNv12(nv12);
+    auto bytes=encoders.back().encoder->EncodeFullRangeNv12(nv12,job->width,job->height);
     if(bytes.empty())throw std::runtime_error("JPU returned empty JPEG");
     ++hardware_count;job->result.set_value(std::move(bytes));
-   }catch(...){encoders.clear();colors.reset();++failure_count;job->result.set_exception(std::current_exception());}
+   } catch(...) {encoders.clear();++failure_count;job->result.set_exception(std::current_exception());}
   }
  }
+ struct Prepared {
+  std::unique_ptr<Job> job;
+  std::vector<uint8_t> nv12;
+  int width=0,height=0;
+ };
+ std::mutex prepared_mutex_;
+ std::condition_variable prepared_available_;
+ std::deque<Prepared> prepared_;
+ bool conversion_done_=false;
  std::mutex mutex_;
  std::condition_variable available_;
  std::deque<std::unique_ptr<Job>> jobs_;
  size_t queued_bytes_=0;
  bool stopping_=false;
- std::thread worker_;
+ std::thread worker_,encoder_worker_;
 };
 #endif
 }

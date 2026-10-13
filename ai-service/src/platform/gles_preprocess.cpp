@@ -167,6 +167,7 @@ struct EglBinding {
 }
 struct GlesPreprocessor::State {
   hw_gl context{}; GLuint program=0, texture=0, chroma=0, buffer=0;
+  uint64_t cached_source_tag=0; int cached_width=0,cached_height=0;
   std::thread::id owner=std::this_thread::get_id();
   ~State(){
     EglBinding saved;
@@ -217,9 +218,9 @@ std::vector<float> GlesPreprocessor::Run(const std::vector<uint8_t>& rgba,int w,
 std::vector<float> GlesPreprocessor::RunNv12(const std::vector<uint8_t>& nv12,int w,int h,const ImageTransform& t) {
   return RunImpl(nv12,w,h,t,true);
 }
-std::vector<uint8_t> GlesPreprocessor::RunNv12Rgba(const std::vector<uint8_t>& pixels,int w,int h,const ImageTransform& transform){
+std::vector<uint8_t> GlesPreprocessor::RunNv12Rgba(const std::vector<uint8_t>& pixels,int w,int h,const ImageTransform& transform,uint64_t immutable_source_tag){
   auto t=transform;t.mean={0,0,0};t.divisor={1,1,1};t.bgr=false;
-  std::vector<uint8_t> rgba;RunImpl(pixels,w,h,t,true,nullptr,false,&rgba);return rgba;
+  std::vector<uint8_t> rgba;RunImpl(pixels,w,h,t,true,nullptr,false,&rgba,immutable_source_tag);return rgba;
 }
 std::vector<uint8_t> GlesPreprocessor::RunJpegNv12(const std::vector<uint8_t>& pixels,int w,int h,const ImageTransform& transform){
   if(transform.width%2||transform.height%2)throw std::invalid_argument("JPEG NV12 needs even dimensions");
@@ -236,8 +237,10 @@ std::vector<uint8_t> GlesPreprocessor::RunRgbaJpegNv12(const std::vector<uint8_t
   auto t=transform;t.mean={0,0,0};t.divisor={1,1,1};t.bgr=false;
   std::vector<uint8_t> jpeg;RunImpl(pixels,w,h,t,false,&jpeg);return jpeg;
 }
-std::vector<float> GlesPreprocessor::RunImpl(const std::vector<uint8_t>& rgba,int w,int h,const ImageTransform& t,bool nv12,std::vector<uint8_t>* jpeg,bool bgr_input,std::vector<uint8_t>* rgba_output) {
+std::vector<float> GlesPreprocessor::RunImpl(const std::vector<uint8_t>& rgba,int w,int h,const ImageTransform& t,bool nv12,std::vector<uint8_t>* jpeg,bool bgr_input,std::vector<uint8_t>* rgba_output,uint64_t immutable_source_tag) {
   auto& s=*state_;
+  const bool cached=nv12 && immutable_source_tag && s.cached_source_tag==immutable_source_tag && s.cached_width==w && s.cached_height==h;
+  s.cached_source_tag=0; // Any failure or untagged call invalidates reuse.
   ValidateSourceRegion(t);
   if(s.owner!=std::this_thread::get_id())throw std::runtime_error("GLES context thread mismatch");
   EglBinding saved;
@@ -260,14 +263,14 @@ std::vector<float> GlesPreprocessor::RunImpl(const std::vector<uint8_t>& rgba,in
   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,t.erp_perspective?GL_REPEAT:GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
   glPixelStorei(GL_UNPACK_ALIGNMENT,1);
-  glTexImage2D(GL_TEXTURE_2D,0,nv12?GL_R8:(bgr_input?GL_RGB8:GL_RGBA8),w,h,0,nv12?GL_RED:(bgr_input?GL_RGB:GL_RGBA),GL_UNSIGNED_BYTE,rgba.data());
+  if(!cached)glTexImage2D(GL_TEXTURE_2D,0,nv12?GL_R8:(bgr_input?GL_RGB8:GL_RGBA8),w,h,0,nv12?GL_RED:(bgr_input?GL_RGB:GL_RGBA),GL_UNSIGNED_BYTE,rgba.data());
   glActiveTexture(GL_TEXTURE2);glBindTexture(GL_TEXTURE_2D,s.chroma);
   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,t.nearest?GL_NEAREST:GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,t.nearest?GL_NEAREST:GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,t.erp_perspective?GL_REPEAT:GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
   const uint8_t neutral[]={128,128};
-  glTexImage2D(GL_TEXTURE_2D,0,GL_RG8,nv12?w/2:1,nv12?h/2:1,0,GL_RG,GL_UNSIGNED_BYTE,nv12?rgba.data()+size_t(w)*h:neutral);
+  if(!cached)glTexImage2D(GL_TEXTURE_2D,0,GL_RG8,nv12?w/2:1,nv12?h/2:1,0,GL_RG,GL_UNSIGNED_BYTE,nv12?rgba.data()+size_t(w)*h:neutral);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER,s.buffer);glBufferData(GL_SHADER_STORAGE_BUFFER,bytes,nullptr,GL_STREAM_READ);
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER,3,s.buffer);
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER,1,s.buffer);glUseProgram(s.program);
@@ -302,6 +305,8 @@ std::vector<float> GlesPreprocessor::RunImpl(const std::vector<uint8_t>& rgba,in
     jpeg->resize(size_t(t.width)*t.height*3/2);
     for(int y=0;y<t.height*3/2;++y)std::memcpy(jpeg->data()+size_t(y)*t.width,static_cast<const uint8_t*>(data)+size_t(y)*stride,t.width);
   }else{result.resize(count);std::memcpy(result.data(),data,bytes);}
-  if(!glUnmapBuffer(GL_SHADER_STORAGE_BUFFER))throw std::runtime_error("GPU output invalidated");CheckGL();return result;
+  if(!glUnmapBuffer(GL_SHADER_STORAGE_BUFFER))throw std::runtime_error("GPU output invalidated");CheckGL();
+  s.cached_source_tag=nv12?immutable_source_tag:0;s.cached_width=w;s.cached_height=h;
+  return result;
 }
 }

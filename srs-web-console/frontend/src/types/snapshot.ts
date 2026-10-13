@@ -18,6 +18,7 @@ export interface SnapshotOverview {
     delivery?: {
       accepted: number; committed: number; outstanding: number; quarantined: number; deleted: number
       oldest_wait_seconds: number; stages: Record<string, number>
+      admission_to_commit?: { count: number; mean_ms: number; max_ms: number; recent_p95_ms: number; recent_count: number }
     }
   }
   enabled: boolean

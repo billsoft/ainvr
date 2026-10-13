@@ -71,8 +71,8 @@ class ArchiveExecutor {
 };
 
 inline size_t ArchiveWorkerCount() {
-  // Six workers improved isolated archive throughput, but reduced concurrent
-  // 8K inference throughput on the production Jetson. Keep four as the cap.
+  // S100P live archive trial: six workers increased GPU contention and memory
+  // without throughput benefit. Keep four; see S100P-ARCHIVE-PIPELINE.md.
   static const size_t count = [] {
     const auto cores = std::thread::hardware_concurrency();
     return std::clamp<size_t>(cores > 2 ? cores - 2 : 2, 2, 4);

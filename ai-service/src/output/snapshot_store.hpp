@@ -179,6 +179,9 @@ class SnapshotStore : public pipeline::SnapshotSink {
   struct TrackedJob { std::string stage; double since; };
   std::map<std::string, TrackedJob> outstanding_;
   uint64_t accepted_targets_ = 0, committed_targets_ = 0;
+  // Admission to Mongo acknowledgement; monotonic, excludes pre-admission work.
+  double committed_latency_sum_ms_ = 0, committed_latency_max_ms_ = 0;
+  std::deque<double> recent_committed_latency_ms_;
   uint64_t quarantined_targets_ = 0, deleted_targets_ = 0;
   void SetArchiveFault(const std::string& stage, const std::string& message);
   void ClearArchiveFault(const std::string& stage);
