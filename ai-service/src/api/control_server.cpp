@@ -123,7 +123,7 @@ std::map<std::string, std::string> ClassifyChannelPatch(const nlohmann::json& pa
     } else if (key == "snapshot") {
       applied_via[key] = KeysAreSubsetOf(it.value(), kSnapshotHotSubfields) ? "hot" : "restart";
     } else if (key == "model") {
-      applied_via[key] = KeysAreSubsetOf(it.value(), {"description", "label_id", "label_name", "max_new_tokens"})
+      applied_via[key] = KeysAreSubsetOf(it.value(), {"description", "label_id", "label_name", "max_new_tokens", "prompts", "class_names"})
                             ? "hot" : "restart";
     } else if (kHotTopLevelFields.count(key)) {
       applied_via[key] = "hot";
@@ -834,7 +834,7 @@ nlohmann::json ChannelManager::UpdateChannelConfig(const std::string& channel_id
   if (classified.count("model") && old_config->model.adapter != "yoloe_pt" &&
       old_config->model.adapter != "locateanything_trt") classified["model"] = "restart";
   if (patch.contains("model") && patch["model"].is_object() &&
-      (patch["model"].contains("description") || patch["model"].contains("max_new_tokens") ||
+      (patch["model"].contains("prompts") || patch["model"].contains("class_names") || patch["model"].contains("description") || patch["model"].contains("max_new_tokens") ||
        patch["model"].contains("adapter") || patch["model"].contains("path")))
     ValidatePromptBeforeSave(config::DeepMerge(config::ChannelConfigToJson(*old_config, true), patch));
   for (auto&& [k, v] : classified) {
@@ -862,7 +862,7 @@ nlohmann::json ChannelManager::UpdateChannelConfig(const std::string& channel_id
     // 清掉,由新模型族的默认值接管(ResolvePreprocess);缩放/灰边等与模型
     // 无关的设置保留。前端换模型时会连同预设的预处理一起发,不受影响。
     if (patch.contains("model") && !KeysAreSubsetOf(patch["model"],
-        {"description", "label_id", "label_name", "max_new_tokens"}) && !patch_keys.count("preprocess") &&
+        {"description", "label_id", "label_name", "max_new_tokens", "prompts", "class_names"}) && !patch_keys.count("preprocess") &&
         channels[idx].contains("preprocess") && channels[idx]["preprocess"].is_object()) {
       for (const char* k : {"normalize", "mean", "std", "rgb_order"}) {
         channels[idx]["preprocess"].erase(k);

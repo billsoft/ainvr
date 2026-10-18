@@ -111,6 +111,10 @@ class SnapshotStore : public pipeline::SnapshotSink {
              const std::vector<Detection>& crop_detections,
              const std::vector<Detection>& stored_detections, bool square_crop,
              const config::SnapshotConfig& snapshot_cfg) override;
+  void OfferResult(const FrameProvider& frame_provider, const FrameResult& result,
+                   const std::string& channel_name,
+                   const std::vector<Detection>& crop_detections, bool square_crop,
+                   const config::SnapshotConfig& snapshot_cfg) override;
 
   // 热更新入口:对应 v1 apply_hot_patch 里的 `self._snapshot_store.cfg =
   // new_cfg.snapshot`。只靠 Offer 带配置的话,热改 max_count 要等到下一次
@@ -145,6 +149,9 @@ class SnapshotStore : public pipeline::SnapshotSink {
     std::string model_name;
     std::string task_type;
     Detection detection;  // stored 坐标(rescale 之后)
+    // A point record has no detection bbox. crop_detection is only the internal
+    // full-frame context image ROI, never reported as a detected object.
+    nlohmann::json point = nullptr;
     cv::Mat crop;          // RGBA
     std::shared_ptr<CapturedSnapshotFrame> frame;
     Detection crop_detection;
@@ -157,6 +164,13 @@ class SnapshotStore : public pipeline::SnapshotSink {
   };
 
   void WriterLoop();
+  void OfferTargets(const FrameProvider& frame_provider, const std::string& channel_id,
+                    const std::string& channel_name, int64_t frame_pts_ns, double timestamp,
+                    const std::string& model_name, const std::string& task_type,
+                    const std::vector<Detection>& crop_detections,
+                    const std::vector<Detection>& stored_detections, bool square_crop,
+                    const config::SnapshotConfig& snapshot_cfg,
+                    const std::vector<nlohmann::json>& points);
   void SpoolLoop();
   void RemovePending(const std::string& image_id);
   void PrepareNextBatch(std::vector<ArchiveJob>& batch, size_t limit);
@@ -196,8 +210,9 @@ class SnapshotStore : public pipeline::SnapshotSink {
   std::string pending_dir_;
   mutable std::mutex pending_io_mutex_;
   std::map<std::string, uintmax_t> pending_sizes_;
-  uintmax_t pending_bytes_ = 0;
-  uintmax_t quarantined_bytes_ = 0;
+  // Statistics must not wait for durable disk IO. Writer bookkeeping stays locked.
+  std::atomic<uintmax_t> pending_bytes_{0};
+  std::atomic<uintmax_t> quarantined_bytes_{0};
   std::atomic<uint64_t> spooled_count_{0};
   std::atomic<bool> spool_blocked_{false};
   std::atomic<bool> backpressured_{false};

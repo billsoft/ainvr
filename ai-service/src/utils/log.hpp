@@ -22,6 +22,10 @@ enum class Level { kDebug = 10, kInfo = 20, kWarning = 30, kError = 40 };
 // name 取 server.log_level 的合法值;未知值保持当前级别不变(配置校验已
 // 在更早的位置拒绝非法值,这里不重复报错)。
 void SetLevel(const std::string& name);
+// Two private 4 MiB files on SSD, independent of noisy kernel journal rotation.
+// Only already-redacted structured warnings/errors are copied.
+void EnableWarningFileLog(const std::string& directory);
+uint64_t WarningFileFailures();
 bool Enabled(Level level);
 
 // ainvr_logging.safe() 的 C++ 版:脱敏 + 截断到 8192 字节(按 UTF-8 字符

@@ -51,6 +51,8 @@ const defaultSrsChannels: ChannelWithStatus[] = [
   makeSrsChannel('ch-main', '大门口', 'live', 'phase6_test', true),
   makeSrsChannel('ch-back', '后门', 'live', 'back_door', true),
   makeSrsChannel('ch-offline', '仓库', 'live', 'warehouse', false),
+  makeSrsChannel('ch-initial', '已登记默认输入', 'live', 'cam01', true),
+  makeSrsChannel('ch-locked', '已登记锁定输入', 'live', 'src_stream', false),
 ]
 
 function baseProps(overrides: Partial<ComponentProps<typeof AiChannelWizard>> = {}) {
@@ -107,7 +109,7 @@ describe('AiChannelWizard', () => {
     initial.config.publish.enabled = true
     const output = makeSrsChannel('ch-ai', '大门AI输出', 'live', 'ai-n2q08c', false)
     const onSubmit = vi.fn().mockResolvedValue(undefined)
-    const props = baseProps({ mode: 'edit', initial, srsChannels: [output], onSubmit })
+    const props = baseProps({ mode: 'edit', initial, srsChannels: [...defaultSrsChannels, output], onSubmit })
     const { rerender } = render(<AiChannelWizard {...props} />)
     await user.clear(screen.getByTestId('wizard-name'))
     await user.type(screen.getByTestId('wizard-name'), '用户修改的名称')
@@ -119,7 +121,7 @@ describe('AiChannelWizard', () => {
     for (let i = 0; i < 3; i++) {
       const refreshed = structuredClone(initial)
       refreshed.stats.frame_count += i + 1
-      rerender(<AiChannelWizard {...props} initial={refreshed} srsChannels={[{ ...output }]} />)
+      rerender(<AiChannelWizard {...props} initial={refreshed} srsChannels={[...defaultSrsChannels, { ...output }]} />)
       expect(screen.getByTestId('wizard-output-select')).toHaveValue(output.id)
     }
     await user.click(screen.getByTestId('wizard-submit'))
@@ -168,9 +170,9 @@ describe('AiChannelWizard', () => {
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     expect(screen.getByRole('option', { name: /大门（live\/xm）/ })).toBeDisabled()
     await user.click(screen.getByTestId('wizard-submit'))
-    expect(await screen.findByText(/请选择输出通道或新建一个输出通道/)).toBeInTheDocument()
+    expect(await screen.findByText(/请选择接入管理中的输入和输出 SRS 通道/)).toBeInTheDocument()
     await user.selectOptions(screen.getByTestId('wizard-output-select'), outputId)
-    expect(screen.queryByText(/请选择输出通道或新建一个输出通道/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/请选择接入管理中的输入和输出 SRS 通道/)).not.toBeInTheDocument()
     await user.click(screen.getByTestId('wizard-submit'))
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(onSubmit.mock.calls[0]![0].publish).toMatchObject({
@@ -178,21 +180,24 @@ describe('AiChannelWizard', () => {
     })
   })
 
-  it('手动输入模式同样拒绝空输出地址，切回列表选择后可以保存', async () => {
-    const user = userEvent.setup()
-    const onSubmit = vi.fn().mockResolvedValue(undefined)
-    render(<AiChannelWizard {...baseProps({ mode: 'edit', initial: makeChannel(), onSubmit })} />)
+  it('旧未登记输出保留显示且不能保存，选择接入管理通道后可保存', async () => {
+    const user = userEvent.setup(); const onSubmit = vi.fn().mockResolvedValue(undefined)
+    const initial = makeChannel(); initial.config.publish.enabled = true
+    initial.config.publish.target_url = 'rtmp://127.0.0.1:1935/live/unregistered'
+    render(<AiChannelWizard {...baseProps({ mode: 'edit', initial, onSubmit })} />)
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
-    await user.click(screen.getByTestId('wizard-publish-toggle'))
-    await user.click(screen.getByRole('button', { name: '手动输入地址' }))
+    expect(screen.getByTestId('wizard-output-select')).toHaveValue('')
+    expect(screen.queryByTestId('wizard-publish-url')).not.toBeInTheDocument()
+    expect(screen.queryByText('新建输出通道')).not.toBeInTheDocument()
+    expect(screen.getByText(/当前输出地址未登记/)).toBeInTheDocument()
+    expect(screen.getByText('推流目标：rtmp://127.0.0.1:1935/live/unregistered')).toBeInTheDocument()
     await user.click(screen.getByTestId('wizard-submit'))
-    expect(await screen.findByText(/请选择输出通道或新建一个输出通道/)).toBeInTheDocument()
     expect(onSubmit).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('button', { name: '改用接入通道选择' }))
     await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-offline')
     await user.click(screen.getByTestId('wizard-submit'))
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]![0].publish).toMatchObject({enabled: true, target_url: 'rtmp://127.0.0.1:1935/live/warehouse'})
   })
 
   it('编辑：缺少输出的提示在选择有效输出后清除，保存所选通道地址', async () => {
@@ -203,13 +208,12 @@ describe('AiChannelWizard', () => {
     const { rerender } = render(<AiChannelWizard {...props} />)
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
-    await user.click(screen.getByTestId('wizard-publish-toggle'))
     expect(screen.getByTestId('wizard-output-select')).toHaveValue('')
-    expect(screen.getByText('请先选择已有输出通道，或点击“新建输出通道”。')).toBeInTheDocument()
+    expect(screen.getByText('请选择接入管理中的输出 SRS 通道。')).toBeInTheDocument()
     await user.click(screen.getByTestId('wizard-submit'))
-    expect(await screen.findByText(/请选择输出通道或新建一个输出通道/)).toBeInTheDocument()
+    expect(await screen.findByText(/请选择接入管理中的输入和输出 SRS 通道/)).toBeInTheDocument()
     await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-offline')
-    expect(screen.queryByText(/请选择输出通道或新建一个输出通道/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/请选择接入管理中的输入和输出 SRS 通道/)).not.toBeInTheDocument()
     // 刷新通道状态不能覆盖用户已经选择的输出。
     rerender(<AiChannelWizard {...props} srsChannels={defaultSrsChannels.map((ch) => ({ ...ch }))} />)
     expect(screen.getByTestId('wizard-output-select')).toHaveValue('ch-offline')
@@ -231,7 +235,6 @@ describe('AiChannelWizard', () => {
     await user.selectOptions(screen.getByTestId('wizard-stream-select'), 'ch-main')
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
-    await user.click(screen.getByTestId('wizard-publish-toggle'))
     await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-offline')
     await user.click(screen.getByTestId('wizard-submit'))
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
@@ -259,7 +262,7 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps({ srsChannels: [] })} />)
     await user.type(screen.getByTestId('wizard-id'), 'cam01')
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
-    expect(await screen.findByText('请选择或输入源流地址')).toBeInTheDocument()
+    expect(await screen.findByText('请选择接入管理中的输入 SRS 通道')).toBeInTheDocument()
   })
 
   it('第①步：从 SRS 通道下拉选择源流，URL 正确回填', async () => {
@@ -274,20 +277,18 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps()} />)
     const select = screen.getByTestId('wizard-stream-select') as HTMLSelectElement
     // jsdom 下 option.textContent 不可靠，直接用 option 数量判断
-    expect(select.options.length).toBe(4) // 3 个 mock 通道 + 1 个禁用默认提示项
+    expect(select.options.length).toBe(defaultSrsChannels.length + 1) // 3 个 mock 通道 + 1 个禁用默认提示项
   })
 
-  it('手动输入源流地址并成功进入第②步（模型下拉包含多个预设）', async () => {
+  it('输入只提供接入管理通道选择，不提供手动地址', async () => {
     const user = userEvent.setup()
-    render(<AiChannelWizard {...baseProps({ srsChannels: [] })} />)
-    await user.type(screen.getByTestId('wizard-id'), 'cam01')
-    await user.click(screen.getByText('通道不在列表？手动输入'))
-    await user.type(screen.getByTestId('wizard-stream-url'), 'rtmp://x/live/y')
-    await user.click(screen.getByRole('button', { name: '下一步 →' }))
-
-    const select = await screen.findByTestId('wizard-model-select') as HTMLSelectElement
-    const values = Array.from(select.options).map((o) => o.value)
-    expect(values).toEqual(['yolo26x', 'yolo26x-face'])
+    render(<AiChannelWizard {...baseProps()} />)
+    expect(screen.queryByTestId('wizard-stream-url')).not.toBeInTheDocument()
+    expect(screen.queryByText('通道不在列表？手动输入')).not.toBeInTheDocument()
+    await user.type(screen.getByTestId('wizard-id'), 'processor')
+    await user.selectOptions(screen.getByTestId('wizard-stream-select'), 'ch-main')
+    await user.click(screen.getByRole('button', {name: '下一步 →'}))
+    expect(screen.getByTestId('wizard-model-select')).toBeInTheDocument()
   })
 
   describe('H.265 源提示按 ai-service 能力说话（设计 §8.4③）', () => {
@@ -367,24 +368,21 @@ describe('AiChannelWizard', () => {
     expect(Array.from(models.options, option => option.value)).toEqual(['yolo26x', 'yolo26x-face'])
     expect(screen.queryByLabelText('识别描述')).not.toBeInTheDocument()
     await user.selectOptions(types, 'open')
-    expect(Array.from(models.options, option => option.value)).toEqual(['yoloe-26x'])
-    expect(screen.getByLabelText('识别描述')).toBeInTheDocument()
-    expect(screen.getByLabelText('标签 ID')).toBeInTheDocument()
-    expect(screen.getByLabelText('标签名称')).toBeInTheDocument()
-    expect(screen.getByText(/^描述决定识别对象，标签用于检索与匹配。修改描述/)).toBeInTheDocument()
+    expect(Array.from(models.options).filter(option => !option.disabled).map(option => option.value)).toEqual(['yoloe-26x', 'yoloe-26x-32', 'locateanything-3b'])
+    expect(Array.from(models.options).find(option => option.value === 'yoloe-26x-32')).toHaveProperty('disabled', false)
+    expect(screen.getByLabelText('识别描述 1')).toBeInTheDocument()
+    expect(screen.getByLabelText('标签 ID 1')).toBeInTheDocument()
+    expect(screen.getByLabelText('标签名称 1')).toBeInTheDocument()
+    expect(screen.getByText(/^每行一个识别类别，可同时检测多个目标/)).toBeInTheDocument()
   })
 
-  it('第③步：源流非 RTMP 时推流开关禁用并展示跨步校验提示', async () => {
-    const user = userEvent.setup()
-    render(<AiChannelWizard {...baseProps({ srsChannels: [] })} />)
-    await user.type(screen.getByTestId('wizard-id'), 'cam01')
-    await user.click(screen.getByText('通道不在列表？手动输入'))
-    await user.type(screen.getByTestId('wizard-stream-url'), 'http://x/y.flv')
-    await user.click(screen.getByRole('button', { name: '下一步 →' }))
-    await user.click(await screen.findByRole('button', { name: '下一步 →' }))
-
-    expect(await screen.findByText(/仅 RTMP 源支持推流叠加/)).toBeInTheDocument()
-    expect(screen.getByTestId('wizard-publish-toggle')).toBeDisabled()
+  it('未登记的旧 HTTP 输入不能进入模型步骤', async () => {
+    const user = userEvent.setup(); const initial = makeChannel()
+    initial.config.stream.url = 'http://external/not-registered.flv'; initial.config.stream.protocol = 'flv'
+    render(<AiChannelWizard {...baseProps({mode: 'edit', initial})} />)
+    await user.click(screen.getByRole('button', {name: '下一步 →'}))
+    expect(screen.getByText('请选择接入管理中的输入 SRS 通道')).toBeInTheDocument()
+    expect(screen.queryByTestId('wizard-model-select')).not.toBeInTheDocument()
   })
 
   it('第③步：选择已有输出通道，publishTargetUrl 正确回填', async () => {
@@ -394,7 +392,6 @@ describe('AiChannelWizard', () => {
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
 
     // 开启推流
-    await user.click(screen.getByTestId('wizard-publish-toggle'))
     // 从下拉选输出通道
     await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-back')
 
@@ -411,41 +408,23 @@ describe('AiChannelWizard', () => {
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
 
     // 开启推流，但不选输出
-    await user.click(screen.getByTestId('wizard-publish-toggle'))
 
     await user.click(await screen.findByTestId('wizard-submit'))
-    expect(await screen.findByText(/请选择输出通道或新建一个输出通道/)).toBeInTheDocument()
+    expect(await screen.findByText(/请选择接入管理中的输入和输出 SRS 通道/)).toBeInTheDocument()
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
-  it('第③步：新建输出通道对话框，提交后 onCreateOutputChannel 被调用且通道被选中', async () => {
-    const onCreateOutputChannel = vi.fn().mockResolvedValue(
-      makeSrsChannel('ch-new', '大门口_AI输出', 'live', 'phase6_test_yolo', true),
-    )
+  it('AI 页面不创建 SRS 通道，输出必须从接入管理选择', async () => {
     const user = userEvent.setup()
-    render(<AiChannelWizard {...baseProps({ onCreateOutputChannel })} />)
+    render(<AiChannelWizard {...baseProps()} />)
+    await user.type(screen.getByTestId('wizard-id'), 'processor')
     await selectSourceAndNext(user)
-    await user.click(await screen.findByRole('button', { name: '下一步 →' }))
-
-    // 开启推流
-    await user.click(screen.getByTestId('wizard-publish-toggle'))
-    // 点"新建输出通道"按钮
-    await user.click(screen.getByTestId('wizard-create-output-btn'))
-
-    // 对话框出现，填写名称和流名（用输入框 testid 验证对话框已打开）
-    const nameInput = await screen.findByTestId('new-channel-name')
-    const streamInput = screen.getByTestId('new-channel-stream')
-    await user.clear(nameInput)
-    await user.type(nameInput, '大门口_AI输出')
-    await user.clear(streamInput)
-    await user.type(streamInput, 'phase6_test_yolo')
-
-    // 提交
-    await user.click(screen.getByRole('button', { name: '创建并选中' }))
-
-    await waitFor(() => expect(onCreateOutputChannel).toHaveBeenCalledWith('大门口_AI输出', 'phase6_test_yolo'))
-    // 新通道被选中：URL 里包含流名
-    expect(screen.getByText(/phase6_test_yolo/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', {name: '下一步 →'}))
+    expect(screen.getByTestId('wizard-output-select')).toBeInTheDocument()
+    expect(screen.queryByTestId('wizard-create-output-btn')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('wizard-publish-toggle')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', {name: '手动输入地址'})).not.toBeInTheDocument()
+    expect(screen.getByText(/AI 处理器不会创建 SRS 通道/)).toBeInTheDocument()
   })
 
   it('提交成功后调用 onSubmit 并传入创建 patch', async () => {
@@ -454,6 +433,7 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps({ onSubmit })} />)
     await selectSourceAndNext(user)
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
+    await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-offline')
     await user.click(await screen.findByTestId('wizard-submit'))
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
@@ -470,7 +450,6 @@ describe('AiChannelWizard', () => {
 
     // 打开推流开关并选一个输出通道（否则提交会被拦下）。输出不能选源流本身
     // （自己拉自己推是回环，向导会禁用该选项）。
-    await user.click(screen.getByTestId('wizard-publish-toggle'))
     await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-back')
 
     // 不再有模式单选（曾经的 wizard-publish-mode-passthrough/-osd 已随
@@ -489,6 +468,7 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps({ onSubmit })} />)
     await selectSourceAndNext(user)
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
+    await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-offline')
     await user.click(await screen.findByTestId('wizard-submit'))
 
     expect(await screen.findByText('通道已存在: cam01')).toBeInTheDocument()
@@ -591,7 +571,7 @@ describe('AiChannelWizard', () => {
     expect(screen.getByTestId('wizard-h265-note')).toHaveTextContent('不支持 H.265 源')
   })
 
-  it('竞态：编辑模式打开时 srsChannels 为空，列表到达后自动切回下拉模式', async () => {
+  it('竞态：编辑模式打开时 srsChannels 为空，列表到达后匹配已登记输入', async () => {
     // 模拟页面刚加载、SRS 通道列表还没到时就点开编辑向导
     const { rerender } = render(
       <AiChannelWizard
@@ -602,8 +582,8 @@ describe('AiChannelWizard', () => {
         })}
       />,
     )
-    // 初始：列表为空 → 匹配失败 → 手动输入模式
-    expect(screen.getByTestId('wizard-stream-url')).toBeInTheDocument()
+    // 列表未到时保留旧地址，不提供手动输入或隐式创建。
+    expect(screen.queryByTestId('wizard-stream-url')).not.toBeInTheDocument()
     expect(screen.queryByTestId('wizard-stream-select')).not.toBeInTheDocument()
 
     // SRS 列表到达（包含源流 URL 匹配的通道）→ 自动切回下拉模式
@@ -626,46 +606,13 @@ describe('AiChannelWizard', () => {
     expect(select.value).toBe('ch-cam01')
   })
 
-  it('竞态：用户主动切到手动输入后，srsChannels 到达不会翻回去', async () => {
-    const user = userEvent.setup()
-    // 复用同一个 initial 对象，避免 rerender 时引用变化导致初始化 effect 重跑
-    const ch = makeChannel()
-    const { rerender } = render(
-      <AiChannelWizard
-        {...baseProps({
-          mode: 'edit',
-          initial: ch,
-          srsChannels: [],
-        })}
-      />,
-    )
-    // 初始手动模式（列表为空，匹配失败）
-    expect(screen.getByTestId('wizard-stream-url')).toBeInTheDocument()
-
-    // 用户修改了 URL（在手动模式下主动输入，标记为已操作）
-    const urlInput = screen.getByTestId('wizard-stream-url')
-    await user.clear(urlInput)
-    await user.type(urlInput, 'rtmp://other/live/custom')
-
-    // SRS 列表到达，包含的正好是 initial 里的源流（能匹配上）
-    // 如果没有 userToggledManualUrl 防护，会被自动切回列表模式并重置 URL
-    rerender(
-      <AiChannelWizard
-        {...baseProps({
-          mode: 'edit',
-          initial: ch,
-          srsChannels: [
-            makeSrsChannel('ch-cam01', '大门摄像头', 'live', 'cam01', true),
-          ],
-        })}
-      />,
-    )
-    // 仍然是手动输入模式（用户已经主动操作过，不被迟到数据覆盖）
-    // URL 保持用户输入的值，而不是被切回列表模式
-    await waitFor(() => {
-      expect(screen.getByTestId('wizard-stream-url')).toBeInTheDocument()
-    })
-    expect(screen.getByTestId('wizard-stream-url')).toHaveValue('rtmp://other/live/custom')
-    expect(screen.queryByTestId('wizard-stream-select')).not.toBeInTheDocument()
+  it('接入管理列表刷新不会覆盖已明确选择的输入', async () => {
+    const user = userEvent.setup(); const initial = makeChannel()
+    const props = baseProps({mode: 'edit', initial})
+    const {rerender} = render(<AiChannelWizard {...props} />)
+    await user.selectOptions(screen.getByTestId('wizard-stream-select'), 'ch-main')
+    rerender(<AiChannelWizard {...props} srsChannels={defaultSrsChannels.map(ch => ({...ch}))} />)
+    expect(screen.getByTestId('wizard-stream-select')).toHaveValue('ch-main')
+    expect(screen.queryByTestId('wizard-stream-url')).not.toBeInTheDocument()
   })
 })

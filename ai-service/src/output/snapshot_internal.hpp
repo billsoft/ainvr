@@ -131,7 +131,7 @@ inline json DocToListItem(const json& doc) {
       {"image_height", image.contains("height") ? image["height"] : json(nullptr)},
       {"enhanced", doc.contains("enhanced") && doc["enhanced"].is_boolean() && doc["enhanced"].get<bool>()},
   };
-  for (const auto* key : {"label_id", "query_description", "model_extra"})
+  for (const auto* key : {"label_id", "query_description", "model_extra", "point", "geometry_type", "context_image"})
     if (doc.contains(key)) item[key] = doc[key];
   return item;
 }

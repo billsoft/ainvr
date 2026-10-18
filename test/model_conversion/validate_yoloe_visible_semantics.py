@@ -40,17 +40,19 @@ def main():
     assert raw['text_hbm_sha256'] == sha(args.text)
     assert raw['reprta_hbm_sha256'] == sha(args.reprta)
     assert raw['native_prompt_generation_verified']
+    slots = manifest.get('prompt_slots',8)
+    assert slots in (8,32)
     cases = manifest['samples']
     assert len(cases) == 4
     args.work.mkdir()
     request = args.work / 'request.json'
     vectors = args.work / 'vectors.bin'
-    request.write_text(json.dumps({'groups': [x['phrases'] for x in cases]}))
+    request.write_text(json.dumps({'prompt_slots':slots, 'groups': [x['phrases'] for x in cases]}))
     subprocess.run([str(args.native_probe), str(args.text), str(args.reprta),
                     str(args.python), str(args.helper), str(args.assets),
                     str(request), str(vectors)], check=True, capture_output=True,
                    text=True, timeout=30)
-    prompts = np.fromfile(vectors, dtype='<f4').reshape(4, 1, 8, 512)
+    prompts = np.fromfile(vectors, dtype='<f4').reshape(4, 1, slots, 512)
     runtime = hbm_runtime.HB_HBMRuntime(str(args.detector))
     assert len(runtime.model_names) == 1
     name = runtime.model_names[0]
@@ -63,7 +65,7 @@ def main():
         actual = next(iter(runtime.run({name: {
             'images': data['image'], 'prompt_embeddings': prompts[index]
         }})[name].values()))
-        assert actual.shape == ref.shape == (1, 12, 8400)
+        assert actual.shape == ref.shape == (1, 4+slots, 8400)
         assert np.isfinite(actual).all()
         labels = args.work / f'{index}-labels.json'
         labels.write_text(json.dumps(case['phrases']))
@@ -72,7 +74,7 @@ def main():
             binary = args.work / f'{index}-{kind}.bin'
             tensor.astype('<f4').tofile(binary)
             result = subprocess.run([str(args.decode_probe), str(binary),
-                                     str(labels)], check=True,
+                                     str(labels), str(slots)], check=True,
                                     capture_output=True, text=True, timeout=10)
             decoded.append(json.loads(result.stdout))
         reference, got = decoded

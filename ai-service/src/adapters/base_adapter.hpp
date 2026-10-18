@@ -2,7 +2,9 @@
 #pragma once
 
 #include <cctype>
+#include <cstdint>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -15,6 +17,12 @@
 #include "../pipeline/scale_info.hpp"
 
 namespace ai_service::adapters {
+
+struct EncodedFrameRetention {
+  double delay_seconds;
+  int64_t maximum_bytes,maximum_frames;
+  std::string spool_directory;
+};
 
 class BaseModelAdapter {
  public:
@@ -67,6 +75,9 @@ class BaseModelAdapter {
   // 模型族要求的归一化与通道顺序,通道配置没显式指定时使用
   // (pipeline::ResolvePreprocess)。默认 YOLO 系:pix/255、RGB。
   virtual pipeline::PreprocessConfig DefaultPreprocess() const { return {}; }
+  // Metadata only,available before Load(). Slow models may request bounded
+  // SSD retention so inference stamps its own original compressed frame.
+  virtual std::optional<EncodedFrameRetention> FrameRetention() const { return std::nullopt; }
 
   // 推理输入缓冲(device,float NCHW,InputSize 大小)与推理所用 stream:
   // 预处理直接写进来,再调 RunPrepared/RunPreparedMulti,全程不经 CPU。

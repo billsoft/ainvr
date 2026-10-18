@@ -1,5 +1,6 @@
 #include "vpu_decoder.hpp"
 #include "media_memory.hpp"
+#include "picture_tokens.hpp"
 #include <hb_media_codec.h>
 #include <hb_media_error.h>
 #include <hb_mem_mgr.h>
@@ -24,8 +25,7 @@ struct VpuDecoder::State {
   media_codec_context_t context{};
   AVCodecParserContext* parser=nullptr;
   AVCodecContext* parser_context=nullptr;
-  struct Pending {int poc;uint64_t token;};
-  std::deque<Pending> pending;
+  PictureTokens pending;
   bool initialized=false,started=false,finished=false,failed=false;int max_width=0,max_height=0;
   int output_fd=-1;
   ~State(){if(output_fd>=0)hb_mm_mc_close_fd(&context,output_fd);
@@ -38,12 +38,11 @@ struct VpuDecoder::State {
     media_codec_buffer_t in{};int rc=hb_mm_mc_dequeue_input_buffer(&context,&in,timeout);
     if(rc==HB_MEDIA_ERR_WAIT_TIMEOUT)return false;Check(rc,"dequeue compressed buffer");
     if(parser&&!eos){
-      if(pending.size()>=128)throw std::runtime_error("Too many unmatched decoded pictures");
       auto padded=bytes;padded.resize(bytes.size()+AV_INPUT_BUFFER_PADDING_SIZE);
       uint8_t* parsed=nullptr;int parsed_size=0;
       int consumed=av_parser_parse2(parser,parser_context,&parsed,&parsed_size,padded.data(),bytes.size(),AV_NOPTS_VALUE,AV_NOPTS_VALUE,0);
       if(consumed!=int(bytes.size())||parsed_size!=int(bytes.size()))throw std::runtime_error("Incomplete picture parser output");
-      pending.push_back({parser->output_picture_number,pts});
+      pending.Push(parser->output_picture_number,pts);
     }
     in.type=MC_VIDEO_STREAM_BUFFER;in.vstream_buf.size=bytes.size();in.vstream_buf.pts=pts;in.vstream_buf.stream_end=eos;
     if(!bytes.empty())std::memcpy(in.vstream_buf.vir_ptr,bytes.data(),bytes.size());
@@ -120,12 +119,9 @@ std::optional<Nv12Frame> VpuDecoder::Receive(int timeout){
     const auto& metadata=info.video_frame_info;
     if((metadata.decode_result!=1&&metadata.decode_result!=0x10)||metadata.frame_display_index<0||metadata.err_mb_in_frame_decoded>0)
       throw std::runtime_error("Cannot associate damaged or non-display picture");
-    // SDK vframe_buf.pts belongs to the decode command, not the displayed
-    // picture. POC follows display order. Across a GOP reset consume the oldest
-    // outstanding occurrence; never synthesize timestamps or use EOS tokens.
-    auto match=std::find_if(s.pending.begin(),s.pending.end(),[&](const State::Pending& p){return p.poc==metadata.display_poc;});
-    if(match==s.pending.end())throw std::runtime_error("Unmatched display POC; recreate decoder before resuming");
-    frame.pts=match->token;s.pending.erase(match);
+    // SDK vframe_buf.pts belongs to the decode command. Only an unambiguous
+    // displayed POC may select the original access-unit token.
+    frame.pts=s.pending.Take(metadata.display_poc);
   }
   frame.pixels.resize(size_t(w)*h*3/2);
   for(int y=0;y<h;++y)std::memcpy(frame.pixels.data()+size_t(y)*w,v.vir_ptr[0]+size_t(y)*ys,w);

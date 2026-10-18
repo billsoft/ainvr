@@ -18,6 +18,11 @@ struct ModelEvidence {
   std::thread::id loaded_on;std::atomic<bool> load_fail=false,run_fail=false;
   std::atomic<int> active=0;std::atomic<bool> async_fail=false,destroyed_active=false;
   std::atomic<int> runs=0,destroyed=0;std::atomic<bool> same_thread=true;
+  std::atomic<bool> pipeline_supported=true,block_for_cancellation=false;
+  std::atomic<bool> cancellation_assigned=false,cancellation_seen=false;
+  std::atomic<int> async_requests=0;
+  std::atomic<bool> generation_status=false,fail_once=false;
+  std::function<bool()> cancelled;
 };
 class ModelDouble : public adapters::BpuChannelAdapter {
  public:
@@ -25,15 +30,27 @@ class ModelDouble : public adapters::BpuChannelAdapter {
   ~ModelDouble(){e_->destroyed_active=e_->active.load()!=0;if(e_->loaded_on!=std::thread::id{})e_->same_thread=e_->same_thread&&std::this_thread::get_id()==e_->loaded_on;++e_->destroyed;}
   void Load(const std::string&,const std::string&,const std::string&) override {e_->loaded_on=std::this_thread::get_id();if(e_->load_fail)throw std::runtime_error("Test-only model load failure");}
   pipeline::PreprocessConfig DefaultPreprocess() const override {return {};}
+  bool SupportsFramePipeline() const override{return e_->pipeline_supported;}
+  bool ReportsGenerationStatus() const override{return e_->generation_status;}
+  void SetCancellationProbe(std::function<bool()> probe) override{e_->cancelled=std::move(probe);e_->cancellation_assigned=true;}
   std::string ActualProvider() const override {return "test-double";}
   nlohmann::json ResultMetadata() const override {return {{"test_only",true},{"model_inference_executed",false}};}
   ainvr::BpuImageResult RunFrame(const ainvr::Nv12Frame& f,const pipeline::PreprocessConfig&,bool,bool) override{
     e_->same_thread=e_->same_thread&&std::this_thread::get_id()==e_->loaded_on;++e_->runs;
-    if(e_->run_fail)throw std::runtime_error("Test-only execution failure");
+    if(e_->run_fail || e_->fail_once.exchange(false))throw std::runtime_error("Test-only execution failure");
+    if(e_->block_for_cancellation){
+      const auto deadline=Clock::now()+std::chrono::seconds(2);
+      ++e_->active;
+      while(Clock::now()<deadline && !(e_->cancelled && e_->cancelled()))
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      e_->cancellation_seen=e_->cancelled && e_->cancelled();--e_->active;
+      throw std::runtime_error("Test-only cooperative cancellation");
+    }
     if(f.width!=3840||f.height!=1920||f.pixels.size()!=size_t(3840)*1920*3/2)throw std::runtime_error("Invalid real VPU input");
     ainvr::BpuImageResult r;r.outputs={{0}};r.image_backend="test-double";return r;
   }
   std::future<ainvr::BpuImageResult> RunFrameAsync(const ainvr::Nv12Frame& f,const pipeline::PreprocessConfig& p,bool bt,bool full) override {
+    ++e_->async_requests;
     auto result=RunFrame(f,p,bt,full);
     return std::async(std::launch::async,[result=std::move(result),e=e_]() mutable {
       ++e->active;
@@ -301,6 +318,29 @@ TEST(ReusedWorker,RealVpuHotConfigGpuSnapshotAndModelThreadOwnership){
   EXPECT_TRUE(result->model_extra["test_only"].get<bool>());
   RecordProperty("hardware_snapshot_downloads",sink->downloads.load());RecordProperty("model_inference_executed","false");
 }
+TEST(ReusedWorker,GenerationFailureVisibleWithoutPromptedRouteAndRecoveryClearsIt){
+  auto cfg=Config();cfg.model.adapter="locateanything_bpu";
+  cfg.model.name="locateanything-3b";cfg.model.input_size={224,448};
+  cfg.inference_fps=.1;cfg.max_consecutive_failures=3;
+  auto evidence=std::make_shared<ModelEvidence>();
+  evidence->generation_status=true;evidence->pipeline_supported=false;evidence->fail_once=true;
+  WorkerDouble worker(cfg,evidence);worker.Start();
+  ASSERT_TRUE(Wait([&]{return evidence->runs.load()>=1;}));
+  ASSERT_TRUE(Wait([&]{return !worker.GetStats()["last_error"].is_null();}));
+  EXPECT_EQ(worker.State(),pipeline::ChannelState::kRunning);
+  EXPECT_EQ(worker.GetStats()["inference_count"],0);
+  EXPECT_EQ(worker.GetResultBuffer().Size(),0);
+  // The failure must observe the 10-second cadence, rather than busy-retry.
+  std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+  EXPECT_EQ(evidence->runs.load(),1);
+  ASSERT_TRUE(Wait([&]{return worker.GetStats()["inference_count"].get<int>()>=1;},12000));
+  EXPECT_TRUE(worker.GetStats()["last_error"].is_null());
+  EXPECT_EQ(worker.GetStats()["consecutive_errors"],0);
+  EXPECT_EQ(worker.GetResultBuffer().Size(),1);
+  worker.Stop();
+  RecordProperty("model_inference_executed","false");
+  RecordProperty("scope","Real VPU input; explicit test model failure and recovery; no neural inference or production mutation");
+}
 TEST(ReusedWorker,LoadFailureStopsSourceAndDestroysAdapterOnInferenceThread){
   auto e=std::make_shared<ModelEvidence>();e->load_fail=true;WorkerDouble w(Config(),e);w.Start();
   EXPECT_EQ(w.State(),pipeline::ChannelState::kError);EXPECT_EQ(e->runs,0);EXPECT_EQ(e->destroyed,1);EXPECT_TRUE(e->same_thread);
@@ -335,6 +375,23 @@ TEST(ReusedWorker,OriginalPublisherReceivesMatchingGenerationSeiOnlyOnIsolatedSt
   w.Stop();EXPECT_TRUE(e->same_thread);
 }
 
+TEST(ReusedWorker,SequentialSlowAdapterReceivesCancellationWithoutFramePrefetch) {
+  auto evidence=std::make_shared<ModelEvidence>();
+  evidence->pipeline_supported=false;evidence->block_for_cancellation=true;
+  WorkerDouble worker(Config(),evidence);
+  worker.Start();
+  ASSERT_TRUE(evidence->cancellation_assigned.load());
+  ASSERT_TRUE(Wait([&]{return evidence->active.load()>0;}));
+  const auto before=Clock::now();worker.Stop();
+  EXPECT_TRUE(evidence->cancellation_seen.load());
+  EXPECT_EQ(evidence->async_requests.load(),0);
+  EXPECT_EQ(evidence->active.load(),0);
+  EXPECT_FALSE(evidence->destroyed_active.load());
+  EXPECT_TRUE(evidence->same_thread.load());
+  EXPECT_LT(std::chrono::duration<double>(Clock::now()-before).count(),1.5);
+  RecordProperty("model_inference_executed","false");
+  RecordProperty("scope","Real VPU source with explicit test-only blocking model;worker cancellation and sequential dispatch only");
+}
 TEST(ReusedWorker,StopJoinsActualAsyncWorkAndFailureCanRestart) {
   auto evidence=std::make_shared<ModelEvidence>();
   WorkerDouble worker(Config(),evidence);

@@ -85,7 +85,10 @@ export function createMockAiChannelService(seed: AiChannel[] = []): AiChannelSer
             } : {}),
           },
           preprocess: {
-            letterbox: true, padding_color: [114, 114, 114], interpolation: 'bilinear', normalize: true,
+            letterbox: patch.preprocess?.letterbox ?? true,
+            padding_color: patch.preprocess?.padding_color ?? [114, 114, 114],
+            interpolation: patch.preprocess?.interpolation ?? 'bilinear',
+            normalize: patch.preprocess?.normalize ?? true,
             mean: patch.preprocess?.mean ?? [0, 0, 0],
             std: patch.preprocess?.std ?? [255, 255, 255],
             rgb_order: patch.preprocess?.rgb_order ?? true,

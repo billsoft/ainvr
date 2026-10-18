@@ -1,4 +1,5 @@
 #include "snapshot_internal.hpp"
+#include "grounding_snapshot.hpp"
 #include "face_enhancer.hpp"
 #include "exposure.hpp"
 #include "snapshot_jpeg.hpp"
@@ -94,11 +95,15 @@ void SnapshotStore::PrepareImage(ArchiveJob& job) {
   MaterializeCrop(job);
   if (job.crop.empty() || job.crop.type() != CV_8UC4)
     throw SnapshotEncodeError("snapshot crop must be nonempty 8-bit RGBA");
+  const auto visible_context_size = job.crop.size();
 #ifdef AINVR_ARCHIVE_JPU
   // Tiny targets keep their original pixels; GLES extends the minimum canvas
   // before both original JPEG and enhancement. Metadata uses actual dimensions.
   job.crop = EnsureSnapshotJpuCanvas(job.crop);
 #endif
+  if (!job.point.is_null())
+    PreserveSnapshotPointContext(job.point, visible_context_size.width, visible_context_size.height,
+                                 job.crop.cols, job.crop.rows);
   const double crop_end = NowMono();
   cv::Mat crop = job.crop;
   bool enhanced = false;

@@ -56,6 +56,9 @@ std::vector<uint8_t> inject_sei_annexb(const std::vector<uint8_t>& au,
 std::vector<uint8_t> build_result_payload(
     const std::string& channel_id, int64_t pts_ns, double age_ms,
     std::vector<Detection> detections,  // 按值传入,内部会排序,不改调用方的
-    int budget = SEI_PAYLOAD_BUDGET);
+    int budget = SEI_PAYLOAD_BUDGET,
+    // Optional common frame metadata. Empty preserves the legacy wire bytes.
+    // Normalized grounding points remain points,not fabricated detections.
+    const nlohmann::json& model_extra = nlohmann::json::object());
 
 }  // namespace ai_service::sei

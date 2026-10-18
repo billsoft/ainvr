@@ -113,7 +113,7 @@ ModelConfig ParseModel(const json& node) {
   if (node.is_null()) return m;
   RejectUnknownFields(node,
                        {"name", "adapter", "path", "input_size", "stride", "provider",
-                        "engine_cache", "class_names", "description", "label_id", "label_name", "max_new_tokens"},
+                        "engine_cache", "class_names", "description", "label_id", "label_name", "max_new_tokens", "prompts"},
                        {}, "model");
   m.name = GetS(node, "name", m.name);
   m.adapter = GetS(node, "adapter", m.adapter);
@@ -150,8 +150,31 @@ ModelConfig ParseModel(const json& node) {
   m.description = GetS(node, "description", "");
   m.label_id = GetS(node, "label_id", "");
   m.label_name = GetS(node, "label_name", "");
-  m.max_new_tokens = GetI(node, "max_new_tokens", 64);
-  if (m.adapter == "locateanything_bpu" || m.adapter == "yoloe_bpu") {
+  m.max_new_tokens = GetI(node, "max_new_tokens", m.adapter == "locateanything_bpu" ? 256 : 64);
+  if (node.contains("prompts") && !node["prompts"].is_null()) {
+    if (m.adapter != "yoloe_bpu" || !node["prompts"].is_array() ||
+        node["prompts"].empty() || node["prompts"].size() > (m.name=="yoloe-26x-32"?32u:8u))
+      Fail("标签数量超出所选模型容量，8 槽最多 8 项、32 槽最多 32 项");
+    std::set<std::string> ids, descriptions;
+    for (const auto& row : node["prompts"]) {
+      if (!row.is_object()) Fail("标签项必须是对象");
+      RejectUnknownFields(row, {"description", "label_id", "label_name"}, {}, "model.prompts");
+      PromptLabel item{GetS(row,"description",""),GetS(row,"label_id",""),GetS(row,"label_name","")};
+      if (item.description.find_first_not_of(" \t\r\n") == std::string::npos || item.description.size()>640 ||
+          std::any_of(item.description.begin(),item.description.end(),[](unsigned char c){return c<32||c==127||c=='<'||c=='>';}))
+        Fail("每个标签必须提供有效的单行识别描述");
+      if (item.label_id.empty() || item.label_id.size()>64 ||
+          item.label_id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:-")!=std::string::npos ||
+          !ids.insert(item.label_id).second)
+        Fail("标签 ID 必须有效且不能重复");
+      if (item.label_name.find_first_not_of(" \t\r\n")==std::string::npos || item.label_name.size()>192 ||
+          std::any_of(item.label_name.begin(),item.label_name.end(),[](unsigned char c){return c<32||c==127||c=='<'||c=='>';}))
+        Fail("每个标签必须提供有效名称");
+      if (!descriptions.insert(item.description).second) Fail("识别描述不能重复");
+      m.prompts.push_back(std::move(item));
+    }
+  }
+  if ((m.adapter == "locateanything_bpu" || m.adapter == "yoloe_bpu") && m.prompts.empty()) {
     if (m.description.find_first_not_of(" \t\r\n") == std::string::npos || m.description.size() > 640 ||
         std::any_of(m.description.begin(), m.description.end(), [](unsigned char c) {
           return c < 32 || c == 127 || c == '<' || c == '>';
@@ -161,10 +184,12 @@ ModelConfig ParseModel(const json& node) {
         m.label_id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos)
       Fail("开放词汇模型必须提供稳定标签 ID (字母、数字、下划线或短横线)");
     if (m.label_name.empty() || m.label_name.size() > 192) Fail("开放词汇模型必须提供标签名称");
-    if (m.max_new_tokens < 1 || m.max_new_tokens > 64) Fail("开放词汇生成上限必须为 1-64");
+    const int token_limit = m.adapter == "locateanything_bpu" ? 256 : 64;
+    if (m.max_new_tokens < 1 || m.max_new_tokens > token_limit)
+      Fail("开放词汇生成上限必须为 1-" + std::to_string(token_limit));
     if (m.adapter == "locateanything_bpu" &&
-        (m.input_size != std::vector<int>{448, 448} || m.provider != "bpu"))
-      Fail("开放词汇模型要求 448×448 BPU 输入契约，模型仍须通过编译及加载验证");
+        (m.input_size != std::vector<int>{224, 448} || m.provider != "bpu"))
+      Fail("开放词汇模型要求 224×448 BPU 输入契约，模型仍须通过编译及加载验证");
   }
   if (node.contains("class_names") && node["class_names"].is_array()) {
     std::vector<std::string> names;
@@ -402,8 +427,8 @@ ChannelConfig ChannelConfigFromJson(const json& node) {
   c.model = ParseModel(node.value("model", json()));
   if (c.model.adapter != "locateanything_bpu" && c.inference_fps > 0 && c.inference_fps < 0.1)
     Fail("固定类别模型的推理帧率不能低于 0.1");
-  if (c.model.adapter == "locateanything_bpu" && (c.inference_fps <= 0 || c.inference_fps > 0.1))
-    Fail("开放词汇模型采集间隔必须至少 10 秒，不支持跟随源流");
+  if (c.model.adapter == "locateanything_bpu" && (c.inference_fps <= 0 || c.inference_fps > 1.0))
+    Fail("开放词汇模型采集间隔须为 1-3600 秒，不支持跟随源流");
   c.preprocess = ParsePreprocess(node.value("preprocess", json()));
   c.postprocess = ParsePostprocess(node.value("postprocess", json()));
   if (c.postprocess.max_detections < 1 || c.postprocess.max_detections > 1000 ||
@@ -519,6 +544,11 @@ nlohmann::json ChannelConfigToJson(const ChannelConfig& c, bool include_id) {
     j["model"]["label_id"] = c.model.label_id;
     j["model"]["label_name"] = c.model.label_name;
     j["model"]["max_new_tokens"] = c.model.max_new_tokens;
+    if (!c.model.prompts.empty()) {
+      j["model"]["prompts"] = json::array();
+      for (const auto& row : c.model.prompts)
+        j["model"]["prompts"].push_back({{"description",row.description},{"label_id",row.label_id},{"label_name",row.label_name}});
+    }
   }
   j["preprocess"] = {
       {"letterbox", c.preprocess.letterbox},

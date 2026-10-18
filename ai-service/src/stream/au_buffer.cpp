@@ -1,4 +1,5 @@
 #include "au_buffer.hpp"
+#include "au_spool.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -7,6 +8,9 @@ namespace ai_service::stream {
 
 namespace {
 double round4(double v) { return std::nearbyint(v * 10000.0) / 10000.0; }
+int64_t PayloadSize(const BufferedAu& au) {
+  return static_cast<int64_t>(au.disk_payload?au.disk_payload->Size():au.data.size());
+}
 }  // namespace
 
 // ========== AdaptiveDelayController ==========
@@ -83,12 +87,13 @@ ControllerStats AdaptiveDelayController::stats() const {
 // ========== AuDelayBuffer ==========
 
 AuDelayBuffer::AuDelayBuffer(std::shared_ptr<AdaptiveDelayController> controller,
-                              double hold_factor, int64_t max_bytes, int64_t max_frames)
+                              double hold_factor, int64_t max_bytes, int64_t max_frames,
+                              std::shared_ptr<AuSpool> spool)
     : controller_(controller ? std::move(controller)
                               : std::make_shared<AdaptiveDelayController>()),
       hold_factor_(hold_factor),
       max_bytes_(max_bytes),
-      max_frames_(max_frames) {
+      max_frames_(max_frames),spool_(std::move(spool)) {
   if (hold_factor <= 1.0) {
     throw std::invalid_argument("hold_factor 必须 > 1:容量要留在延迟上方");
   }
@@ -108,6 +113,10 @@ void AuDelayBuffer::put(BufferedAu au) {
   int64_t pts_ns = au.pts_ns;
   double arrived_mono = au.arrived_mono;
   int64_t data_size = static_cast<int64_t>(au.data.size());
+  if(spool_){
+    au.disk_payload=spool_->Store(au.data);
+    std::vector<uint8_t>().swap(au.data);
+  }
 
   items_.push_back(std::move(au));
   BufferedAu* stored = &items_.back();
@@ -162,13 +171,20 @@ StampResult AuDelayBuffer::stamp(int64_t pts_ns, const SeiTransform& transform, 
   if (found->stamped) {
     return StampResult::kStamped;
   }
-  auto new_data = transform(found->data);
-  if (new_data == found->data) {
+  std::vector<uint8_t> restored;
+  if(found->disk_payload)restored=found->disk_payload->Read();
+  const auto& original=found->disk_payload?restored:found->data;
+  auto new_data = transform(original);
+  if (new_data == original) {
     unknown_count_++;
     return StampResult::kUnknown;
   }
-  bytes_ += static_cast<int64_t>(new_data.size()) - static_cast<int64_t>(found->data.size());
-  found->data = std::move(new_data);
+  const auto size_before=PayloadSize(*found);
+  if(spool_){
+    auto stored=spool_->Store(new_data);
+    found->disk_payload=std::move(stored);
+  }else found->data = std::move(new_data);
+  bytes_ += PayloadSize(*found)-size_before;
   found->stamped = true;
   stamped_count_++;
   controller_->on_stamp(now_mono - found->arrived_mono);
@@ -184,6 +200,13 @@ std::optional<BufferedAu> AuDelayBuffer::pop_ready(double now_mono) {
     if (age < controller_->delay_s()) {
       return std::nullopt;
     }
+  }
+  // Read before changing the queue,so an I/O error cannot return empty bytes
+  // or quietly publish a different frame. Anonymous files stay owned until
+  // their last retained AU is consumed or evicted.
+  if(items_.front().disk_payload){
+    items_.front().data=items_.front().disk_payload->Read();
+    items_.front().disk_payload.reset();
   }
   BufferedAu result = std::move(items_.front());
   items_.pop_front();
@@ -241,7 +264,7 @@ void AuDelayBuffer::evict_locked(double now_mono) {
     for (size_t k = 0; k < cut; ++k) {
       auto& a = items_[k];
       remove_index_locked(a.pts_ns);
-      bytes_ -= static_cast<int64_t>(a.data.size());
+      bytes_ -= PayloadSize(a);
       remember_gone_locked(a.pts_ns, StampResult::kDropped);
     }
     items_.erase(items_.begin(), items_.begin() + static_cast<std::ptrdiff_t>(cut));
@@ -269,6 +292,7 @@ void AuDelayBuffer::clear() {
 
 void AuDelayBuffer::clear_locked() {
   items_.clear();
+  if(spool_)spool_->Reset();
   index_.clear();
   pts_counts_.clear();
   gone_.clear();
@@ -285,6 +309,8 @@ BufferStats AuDelayBuffer::stats() const {
     s.held_s = round4(items_.back().arrived_mono - items_.front().arrived_mono);
   }
   s.bytes = bytes_;
+  s.resident_payload_bytes=spool_?0:bytes_;
+  s.ssd_allocated_bytes=spool_?spool_->AllocatedBytes():0;
   s.put = put_count_;
   s.popped = popped_count_;
   s.stamped = stamped_count_;

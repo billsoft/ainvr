@@ -1,5 +1,5 @@
 // Copyright AINVR. Bounded actual adapter validation, production untouched.
-#include "adapters/bpu_channel_adapter.hpp"
+#include "adapters/model_family_adapters.hpp"
 #include "stream/media_source.hpp"
 #include <chrono>
 #include <filesystem>
@@ -24,7 +24,11 @@ int main(int argc, char** argv) {
     if (argc != 5) throw std::invalid_argument("Expected source, HBM, prompt groups JSON, new report");
     if (std::filesystem::exists(argv[4])) throw std::runtime_error("Report exists");
     std::ifstream input(argv[3]);
-    const auto groups = nlohmann::json::parse(input).at("groups").get<std::vector<std::vector<std::string>>>();
+    const auto request = nlohmann::json::parse(input);
+    const auto groups = request.at("groups").get<std::vector<std::vector<std::string>>>();
+    const int slots = request.value("prompt_slots", 8);
+    const bool labeled = request.value("use_prompt_labels", false);
+    if (slots != 8 && slots != 32) throw std::invalid_argument("Expected 8 or 32 slots");
     if (groups.size() != 2) throw std::invalid_argument("Expected two runtime prompt groups");
     using Clock = std::chrono::steady_clock;
     auto deadline = Clock::now() + std::chrono::seconds(90);
@@ -37,10 +41,13 @@ int main(int argc, char** argv) {
     auto rows = nlohmann::json::array();
     for (const auto& phrases : groups) {
       ai_service::config::ModelConfig cfg;
-      cfg.name = "yoloe26x"; cfg.adapter = "yoloe_bpu";
+      cfg.name = slots == 32 ? "yoloe-26x-32" : "yoloe-26x"; cfg.adapter = "yoloe_bpu";
       cfg.provider = "bpu"; cfg.path = argv[2];
       cfg.class_names = phrases; cfg.label_id = "adapter-probe";
-      ai_service::adapters::BpuChannelAdapter adapter(cfg);
+      if (labeled) for (size_t i=0; i<phrases.size(); ++i)
+        cfg.prompts.push_back({phrases[i], "probe-id-"+std::to_string(i), "Probe "+std::to_string(i)});
+      auto adapter_owner=ai_service::adapters::CreateBpuRuntimeAdapter(cfg);
+      auto& adapter=*adapter_owner;
       const auto setup = Clock::now();
       adapter.Load(cfg.path, cfg.provider, "");
       const double setup_ms = std::chrono::duration<double, std::milli>(Clock::now() - setup).count();
@@ -59,15 +66,19 @@ int main(int argc, char** argv) {
         if (frames.size() >= 6) return;
         const auto begin = Clock::now();
         auto result = adapter.RunFrame(*frame, adapter.DefaultPreprocess(), info.bt709, info.full_range);
-        if (result.outputs.size() != 1 || result.outputs[0].size() != 12 * 8400)
+        if (result.outputs.size() != 1 || result.outputs[0].size() != size_t(4 + slots) * 8400)
           throw std::runtime_error("Unexpected adapter tensor output");
-        const auto scale = ai_service::pipeline::compute_scale(frame->width, frame->height, 640, 640);
+        const auto [input_height, input_width] = adapter.InputSize();
+        const auto scale = ai_service::pipeline::compute_scale(frame->width, frame->height, input_width, input_height);
         auto detections = adapter.Postprocess(result.outputs[0], scale, .25, .45, 300);
         auto encoded = nlohmann::json::array();
         for (const auto& item : detections) {
           if (item.class_id < 0 || size_t(item.class_id) >= phrases.size() ||
               item.query_description != phrases[size_t(item.class_id)])
             throw std::runtime_error("Detection/runtime prompt synchronization mismatch");
+          if (labeled && (item.label_id != "probe-id-"+std::to_string(item.class_id) ||
+              item.class_name != "Probe "+std::to_string(item.class_id)))
+            throw std::runtime_error("Stable label ID/name mapping mismatch");
           encoded.push_back({{"class_id",item.class_id},{"class_name",item.class_name},
                              {"query_description",item.query_description},{"label_id",item.label_id},
                              {"confidence",item.confidence},{"bbox",item.bbox}});
@@ -95,8 +106,8 @@ int main(int argc, char** argv) {
       rows.push_back({{"metadata",metadata},{"setup_ms",setup_ms},{"frames",frames}});
     }
     source.Cancel();
-    nlohmann::json report = {{"scope","Actual BpuChannelAdapter load, runtime prompts, VPU/GLES/BPU and metadata; isolated from production"},
-      {"passed",true},{"cpu_neural_fallback",false},{"cpu_image_processing",false},
+    nlohmann::json report = {{"scope","Actual model subclass load, runtime prompts, VPU/GLES/BPU and metadata; isolated from production"},
+      {"passed",true},{"prompt_slots",slots},{"prompt_labels_verified",labeled},{"cpu_neural_fallback",false},{"cpu_image_processing",false},
       {"source_size",{info.width,info.height}},{"groups",rows},
       {"same_hbm_runtime_prompt_reload_verified",true},{"service_and_web_ui_verified",false}};
     std::ofstream output(argv[4]); output << report.dump(2) << '\n'; output.close();

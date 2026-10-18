@@ -14,7 +14,7 @@ int main(int argc, char** argv) {
   try {
     const char* uri = std::getenv("AINVR_TEST_MONGO_URI");
     const char* database = std::getenv("AINVR_TEST_MONGO_DB");
-    if (argc != 3 || !uri || !database) throw std::invalid_argument("Expected model root and new SSD output plus private Mongo environment and allowed DB");
+    if ((argc != 3 && argc != 4) || !uri || !database) throw std::invalid_argument("Expected model root and new SSD output plus private Mongo environment and allowed DB");
     auto directory = std::filesystem::path(argv[2]);
     if (std::filesystem::exists(directory)) throw std::runtime_error("Output already exists");
     std::filesystem::create_directories(directory);
@@ -25,6 +25,11 @@ int main(int argc, char** argv) {
          {"path","models/derived/s100p/yoloe-26x.hbm"},{"description","person"},
          {"label_id","yoloe-test-person"},{"label_name","YOLOE 行人"}}},
       {"snapshot",{{"enabled",true},{"max_count",1000},{"face_enhance_model","none"}}}};
+    if (argc == 4) {
+      if (std::filesystem::file_size(argv[3]) > 32768) throw std::runtime_error("Model request too large");
+      std::ifstream model_file(argv[3]);input["model"] = nlohmann::json::parse(model_file);
+      if (input["model"].value("adapter", "") != "yoloe_bpu") throw std::runtime_error("Expected YOLOE model");
+    }
     auto cfg = ai_service::config::ChannelConfigFromJson(input);
     ai_service::config::SnapshotStoreConfig storage;
     storage.mongo_uri = uri; storage.db_name = database;
@@ -55,9 +60,13 @@ int main(int argc, char** argv) {
     const auto jpeg = ai_service::output::GetSnapshotJpegStats();
     auto ids = nlohmann::json::array();
     for (const auto& item : page.at("items")) {
-      if (item.at("model_name") != "yoloe-26x" || item.at("label_id") != "yoloe-test-person" ||
-          item.at("query_description") != "person")
-        throw std::runtime_error("YOLOE archive model/query/label metadata mismatch");
+      if (item.at("model_name") != cfg.model.name)
+        throw std::runtime_error("YOLOE archive model mismatch");
+      bool matched = cfg.model.prompts.empty() && item.at("label_id") == cfg.model.label_id &&
+        item.at("query_description") == cfg.model.description;
+      for (const auto& label : cfg.model.prompts)
+        matched |= item.at("label_id") == label.label_id && item.at("query_description") == label.description;
+      if (!matched) throw std::runtime_error("YOLOE archive per-row label/query mismatch");
       const auto image_id = item.at("image_id").get<std::string>();
       auto bytes = store->GetImage(image_id);
       if (!bytes || bytes->size()<4 || bytes->at(0)!=255 || bytes->at(1)!=216)

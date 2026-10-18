@@ -1,5 +1,5 @@
 import {
-  AI_MODEL_PRESETS, DEFAULT_AI_MODEL_PRESET, isOpenVocabularyPreset, type AiModelPresetKey, type AiModelAdapter, type AiChannel,
+  AI_MODEL_PRESETS, DEFAULT_AI_MODEL_PRESET, isOpenVocabularyPreset, isYoloePreset, promptSlotLimit, type AiPromptLabel, type AiModelPresetKey, type AiModelAdapter, type AiChannel,
   type AiChannelCreatePatch, type AiChannelUpdatePatch,
 } from '@/types/aiChannel'
 import { streamKey } from '@/utils/channelMatching'
@@ -29,6 +29,7 @@ export interface AiWizardFormValue {
    * 这样语义更简单：只要用户在这一步动过手，就按他的选择走。 */
   modelPresetTouched: boolean
   inferenceFps: number
+  prompts?: AiPromptLabel[]
   description?: string
   labelId?: string
   labelName?: string
@@ -63,7 +64,7 @@ export const DEFAULT_WIZARD_VALUE: AiWizardFormValue = {
 }
 
 export type FieldErrors = Partial<Record<
-  'id' | 'name' | 'streamUrl' | 'inferenceFps' | 'description' | 'labelId' | 'labelName'
+  'id' | 'name' | 'streamUrl' | 'inferenceFps' | 'prompts' | 'description' | 'labelId' | 'labelName'
   | 'confThreshold' | 'iouThreshold' | 'maxDetections' | 'resultBufferMaxFrames',
   string
 >>
@@ -155,13 +156,16 @@ export function validateStep2(v: AiWizardFormValue): FieldErrors {
   if (!Number.isFinite(v.inferenceFps) || v.inferenceFps < 0 || v.inferenceFps > 30) {
     errors.inferenceFps = '推理帧率必须在 0-30 之间（0 表示跟随源流帧率）'
   } else if (v.modelPreset === 'locateanything-3b') {
-    if (v.inferenceFps < 1 / 3600 || v.inferenceFps > 0.1)
-      errors.inferenceFps = '此模型采集间隔须为 10-3600 秒'
+    if (v.inferenceFps < 1 / 3600 || v.inferenceFps > 1)
+      errors.inferenceFps = '此模型采集间隔须为 1-3600 秒'
   } else if (v.inferenceFps > 0 && v.inferenceFps < 0.1) {
     // 与 ai-service 校验一致：推理线程按 1/fps 节拍睡眠，过小会让停止通道等很久
     errors.inferenceFps = '推理帧率不能低于 0.1（0 表示跟随源流帧率）'
   }
-  if (isOpenVocabularyPreset(v.modelPreset)) {
+  if (isYoloePreset(v.modelPreset) && v.prompts !== undefined) {
+    errors.prompts = validatePromptRows(v.prompts, promptSlotLimit(v.modelPreset))
+    if (!errors.prompts) delete errors.prompts
+  } else if (isOpenVocabularyPreset(v.modelPreset)) {
     if (!v.description?.trim() || v.description.length > 160 || /[<>\u0000-\u001f\u007f]/.test(v.description))
       errors.description = '请输入 1-160 字的单行识别描述，不允许控制标记'
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(v.labelId ?? '')) errors.labelId = '标签 ID 须为 1-64 位字母、数字、下划线或短横线'
@@ -182,7 +186,7 @@ export function validateStep3(v: AiWizardFormValue): FieldErrors {
   ) {
     errors.iouThreshold = 'IoU 阈值必须在 0.1-0.9 之间'
   }
-  const maxDetections = v.modelPreset === 'yoloe-26x' ? 300 : 1000
+  const maxDetections = isYoloePreset(v.modelPreset) ? 300 : 1000
   if (!Number.isInteger(v.maxDetections) || v.maxDetections < 1 || v.maxDetections > maxDetections) {
     errors.maxDetections = `最大检测数必须为 1-${maxDetections} 之间的整数`
   }
@@ -208,9 +212,9 @@ export function validatePublishRequiresRtmp(v: AiWizardFormValue): string | null
  * 错误的归一化参数产出垃圾结果且不报错，见架构方案 D6） */
 export function applyModelPreset(v: AiWizardFormValue, preset: AiModelPresetKey): AiWizardFormValue {
   return { ...v, modelPreset: preset, modelPresetTouched: true,
-    ...(preset === 'yoloe-26x' ? { inferenceFps: 5,
+    ...(isYoloePreset(preset) ? { inferenceFps: 5,
       description: v.description ?? '', labelId: v.labelId ?? '', labelName: v.labelName ?? '' } : {}),
-    ...(preset === 'locateanything-3b' ? { inferenceFps: 1 / 15,
+    ...(preset === 'locateanything-3b' ? { inferenceFps: 1 / 120,
       description: v.description ?? '', labelId: v.labelId ?? '', labelName: v.labelName ?? '' }
       : !isOpenVocabularyPreset(preset) && isOpenVocabularyPreset(v.modelPreset) ? { inferenceFps: 5 } : {}) }
 }
@@ -223,14 +227,19 @@ function buildModelAndPreprocess(preset: AiModelPresetKey, v: AiWizardFormValue)
     // 拷贝成普通数组，不是偷懒 as any 绕过去。
     model: {
       ...p.model,
+      ...(isYoloePreset(preset) ? {} : {prompts:null}),
       input_size: [...p.model.input_size] as [number, number],
       class_names: p.model.class_names ? [...p.model.class_names] : null,
-      ...(preset === 'locateanything-3b' || preset === 'yoloe-26x' ? { description: v.description?.trim(),
-        label_id: v.labelId?.trim(), label_name: v.labelName?.trim(), max_new_tokens: 64 } : {}),
+      ...(preset === 'locateanything-3b' || isYoloePreset(preset)
+        ? { ...promptPatch(v), max_new_tokens: preset === 'locateanything-3b' ? 256 : 64 } : {}),
     },
     preprocess: {
+      // Explicit model selection replaces the whole input profile, including
+      // resize settings inherited from another model or a historical channel.
+      letterbox: preset !== 'locateanything-3b',
+      interpolation: preset === 'locateanything-3b' ? 'bicubic' as const : 'bilinear' as const,
+      normalize: true,
       ...p.preprocess,
-      ...(preset === 'yoloe-26x' ? { letterbox: true } : {}),
       mean: [...p.preprocess.mean] as [number, number, number],
       std: [...p.preprocess.std] as [number, number, number],
     },
@@ -341,23 +350,27 @@ export function toUpdatePatch(
       target.model.provider !== om.provider ||
       target.model.engine_cache !== om.engine_cache ||
       JSON.stringify(target.model.class_names) !== JSON.stringify(om.class_names ?? null) ||
+      JSON.stringify(target.model.prompts) !== JSON.stringify(om.prompts) ||
       target.model.description !== om.description || target.model.label_id !== om.label_id ||
       target.model.label_name !== om.label_name || target.model.max_new_tokens !== om.max_new_tokens
     )
     const op = oc.preprocess
     const preprocessChanged = (
+      target.preprocess.letterbox !== op.letterbox ||
+      target.preprocess.interpolation !== op.interpolation ||
+      target.preprocess.normalize !== op.normalize ||
       JSON.stringify(target.preprocess.mean) !== JSON.stringify(op.mean) ||
       JSON.stringify(target.preprocess.std) !== JSON.stringify(op.std) ||
       target.preprocess.rgb_order !== op.rgb_order
     )
     if (modelChanged) {
-      const { description, label_id, label_name, max_new_tokens, ...structure } = target.model
+      const { description, label_id, label_name, max_new_tokens, prompts, ...structure } = target.model
       const { description: _description, label_id: _labelId, label_name: _labelName,
-        max_new_tokens: _tokens, ...oldStructure } = om
+        max_new_tokens: _tokens, prompts: _prompts, ...oldStructure } = om
       patch.model = isOpenVocabularyPreset(v.modelPreset)
         && (Object.keys(structure) as (keyof typeof structure)[]).every((key) =>
           JSON.stringify(structure[key]) === JSON.stringify(oldStructure[key]))
-        ? { description, label_id, label_name, max_new_tokens } : target.model
+        ? { description, label_id, label_name, max_new_tokens, prompts } : target.model
     }
     if (preprocessChanged) patch.preprocess = target.preprocess
   }
@@ -365,9 +378,9 @@ export function toUpdatePatch(
   // 只有用户主动切换模型，才重新生成部署预设。
   if (!includeModelFields && isOpenVocabularyPreset(v.modelPreset)) {
     const query = {
-      description: v.description?.trim(), label_id: v.labelId?.trim(), label_name: v.labelName?.trim(),
+      ...promptPatch(v),
     }
-    if (Object.entries(query).some(([key, val]) => val !== oc.model[key as keyof typeof oc.model])) {
+    if (Object.entries(query).some(([key, val]) => JSON.stringify(val) !== JSON.stringify(oc.model[key as keyof typeof oc.model]))) {
       patch.model = query
     }
   }
@@ -439,6 +452,11 @@ export function fromChannel(ch: AiChannel): AiWizardFormValue {
     originalAdapter: adapter,
     modelPresetTouched: false,
     inferenceFps: ch.config.inference_fps,
+    ...(adapter === 'yoloe_bpu' ? { prompts: ch.config.model.prompts?.map(row => ({...row})) ??
+      (ch.config.model.class_names?.length ? ch.config.model.class_names.map((description, i, all) => ({
+        description, label_id: (ch.config.model.label_id ?? 'label') + (all.length > 1 ? `:${i}` : ''),
+        label_name: all.length === 1 ? (ch.config.model.label_name ?? description) : description,
+      })) : [{description: ch.config.model.description ?? '', label_id: ch.config.model.label_id ?? '', label_name: ch.config.model.label_name ?? ''}]) } : {}),
     description: ch.config.model.description,
     labelId: ch.config.model.label_id,
     labelName: ch.config.model.label_name,
@@ -450,4 +468,29 @@ export function fromChannel(ch: AiChannel): AiWizardFormValue {
     publishTargetUrl: ch.config.publish.target_url ?? '',
     publishFlvFormat: ch.config.publish.flv_format ?? 'codec12',
   }
+}
+
+export function promptRows(v: AiWizardFormValue): AiPromptLabel[] {
+  return v.prompts ?? [{description: v.description ?? '', label_id: v.labelId ?? '', label_name: v.labelName ?? ''}]
+}
+export function validatePromptRows(rows: AiPromptLabel[], limit: number): string | undefined {
+  if (!rows.length || rows.length > limit) return `请保留 1-${limit} 个标签，切换小容量模型前请主动删除多余项`
+  const ids = new Set<string>(), phrases = new Set<string>()
+  for (let i=0; i<rows.length; i++) {
+    const row=rows[i]!, prefix=`第 ${i+1} 项：`
+    if (!row.description.trim() || row.description.length>160 || /[<>\u0000-\u001f\u007f]/.test(row.description)) return prefix+'请输入 1-160 字的单行识别描述'
+    if (!/^[a-zA-Z0-9_:-]{1,64}$/.test(row.label_id)) return prefix+'标签 ID 须为 1-64 位字母、数字、下划线、冒号或短横线'
+    if (ids.has(row.label_id)) return prefix+'标签 ID 不能重复'
+    if (!row.label_name.trim() || row.label_name.length>64 || /[<>\u0000-\u001f\u007f]/.test(row.label_name)) return prefix+'请输入有效的标签名称'
+    const phrase=row.description.trim().toLowerCase()
+    if (phrases.has(phrase)) return prefix+'识别描述不能重复'
+    ids.add(row.label_id); phrases.add(phrase)
+  }
+}
+function promptPatch(v: AiWizardFormValue) {
+  if (isYoloePreset(v.modelPreset) && v.prompts !== undefined) {
+    const rows=v.prompts.map(row=>({description:row.description.trim(),label_id:row.label_id.trim(),label_name:row.label_name.trim()}))
+    return {prompts:rows,description:rows[0]?.description ?? '',label_id:rows[0]?.label_id ?? '',label_name:rows[0]?.label_name ?? '',class_names:null}
+  }
+  return {description:v.description?.trim(),label_id:v.labelId?.trim(),label_name:v.labelName?.trim()}
 }

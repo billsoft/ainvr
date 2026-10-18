@@ -1,0 +1,462 @@
+# AINVR 待提交文件收录清单（2026-10-18）
+
+最终共 **441 项**。本清单是建议纳入版本管理的范围，不代替功能审查；没有自动提交或推送。旧研究文件已按精确路径忽略，仍在本机保留。
+
+状态：M为已有文件修改，??为新增文件，D为此前已停止跟踪的构建产物（工作区实际文件仍保留）。各组可分别审阅提交，模型工具需按列出的引用依赖一起收录。
+
+## Git收录规则与生成产物停止跟踪（10 项）
+
+- `M` `.gitignore`
+- `??` `test/model_conversion/.gitignore`
+- `D` `deploy/s100p/bin/ainvr_ai_service`
+- `D` `srs-web-console/frontend/dist.before-wizard-refresh-20261012/.gitkeep`
+- `D` `srs-web-console/frontend/dist.before-wizard-refresh-20261012/assets/index-BMs0Pl-u.js`
+- `D` `srs-web-console/frontend/dist.before-wizard-refresh-20261012/assets/index-waCWsal5.css`
+- `D` `srs-web-console/frontend/dist.before-wizard-refresh-20261012/assets/three.module-D4hFcVKg.js`
+- `D` `srs-web-console/frontend/dist.before-wizard-refresh-20261012/favicon.svg`
+- `D` `srs-web-console/frontend/dist.before-wizard-refresh-20261012/icons.svg`
+- `D` `srs-web-console/frontend/dist.before-wizard-refresh-20261012/index.html`
+
+## 交接、产品约定与研发记录（14 项）
+
+- `M` `AGENTS.md`
+- `M` `docs/S100P-HBM-COMPILATION.md`
+- `M` `docs/S100P-MODEL-READINESS.md`
+- `??` `docs/S100P-BPU-MONITORING.md`
+- `??` `docs/S100P-GIT-SUBMISSION-INVENTORY.md`
+- `??` `docs/S100P-LOCATEANYTHING-EXPERIMENTS-V2.md`
+- `??` `docs/S100P-LOCATEANYTHING-EXPERIMENTS-V3.md`
+- `??` `docs/S100P-LOCATEANYTHING-EXPERIMENTS-V4.md`
+- `??` `docs/S100P-LOCATEANYTHING-EXPERIMENTS.md`
+- `??` `docs/S100P-LOCATEANYTHING-HANDOFF-SCRIPTS.md`
+- `??` `docs/S100P-LOCATEANYTHING-HANDOFF.md`
+- `??` `docs/S100P-MULTI-LABEL-UI.md`
+- `??` `docs/S100P-RESEARCH-GIT-POLICY.md`
+- `??` `docs/S100P-WORKTREE-CLEANUP.md`
+
+## 生产功能、模型接线与部署（89 项）
+
+- `M` `ai-service/CMakeLists.txt`
+- `M` `ai-service/cmake/reused_worker.cmake`
+- `M` `ai-service/src/adapters/base_adapter.hpp`
+- `M` `ai-service/src/adapters/bpu_channel_adapter.cpp`
+- `M` `ai-service/src/adapters/bpu_channel_adapter.hpp`
+- `M` `ai-service/src/adapters/detection_decode.cpp`
+- `M` `ai-service/src/adapters/detection_decode.hpp`
+- `M` `ai-service/src/api/control_server.cpp`
+- `M` `ai-service/src/api/s100p_control_service.cpp`
+- `M` `ai-service/src/config/config.cpp`
+- `M` `ai-service/src/config/config.hpp`
+- `M` `ai-service/src/output/snapshot_internal.hpp`
+- `M` `ai-service/src/output/snapshot_pending.cpp`
+- `M` `ai-service/src/output/snapshot_pipeline.cpp`
+- `M` `ai-service/src/output/snapshot_processing.cpp`
+- `M` `ai-service/src/output/snapshot_repository.cpp`
+- `M` `ai-service/src/output/snapshot_store.cpp`
+- `M` `ai-service/src/output/snapshot_store.hpp`
+- `M` `ai-service/src/pipeline/reused_channel_worker.cpp`
+- `M` `ai-service/src/pipeline/snapshot_sink.hpp`
+- `M` `ai-service/src/platform/bpu.cpp`
+- `M` `ai-service/src/platform/bpu.hpp`
+- `M` `ai-service/src/platform/bpu_prompt_engine.cpp`
+- `M` `ai-service/src/platform/bpu_prompt_engine.hpp`
+- `M` `ai-service/src/platform/vpu_decoder.cpp`
+- `M` `ai-service/src/stream/au_buffer.cpp`
+- `M` `ai-service/src/stream/au_buffer.hpp`
+- `M` `ai-service/src/stream/publisher.cpp`
+- `M` `ai-service/src/stream/sei.cpp`
+- `M` `ai-service/src/stream/sei.hpp`
+- `M` `ai-service/src/utils/log.cpp`
+- `M` `ai-service/src/utils/log.hpp`
+- `M` `recording-service/src/recorder/sei_worker.py`
+- `M` `shared/host-restart-helper/observability.py`
+- `M` `srs-web-console/frontend/src/api/aiChannelService.ts`
+- `M` `srs-web-console/frontend/src/components/common/AuthImage.tsx`
+- `M` `srs-web-console/frontend/src/components/player/AiDetectionOverlay.tsx`
+- `M` `srs-web-console/frontend/src/components/player/PlayerViewControls.tsx`
+- `M` `srs-web-console/frontend/src/components/player/VideoPlayer.tsx`
+- `M` `srs-web-console/frontend/src/components/player/panoramaDetection.ts`
+- `M` `srs-web-console/frontend/src/components/player/seiDetections.ts`
+- `M` `srs-web-console/frontend/src/features/aiChannelForm.ts`
+- `M` `srs-web-console/frontend/src/pages/AiChannels/AiChannelCard.tsx`
+- `M` `srs-web-console/frontend/src/pages/AiChannels/AiChannelWizard.tsx`
+- `M` `srs-web-console/frontend/src/pages/AiChannels/AiResultModal.tsx`
+- `M` `srs-web-console/frontend/src/pages/AiChannels/index.tsx`
+- `M` `srs-web-console/frontend/src/pages/Channels/ChannelDetail.tsx`
+- `M` `srs-web-console/frontend/src/pages/Playback/RecordingDetectionOverlay.tsx`
+- `M` `srs-web-console/frontend/src/pages/RecognitionHistory/SnapshotGroupCard.tsx`
+- `M` `srs-web-console/frontend/src/pages/RecognitionHistory/SnapshotLightbox.tsx`
+- `M` `srs-web-console/frontend/src/types/aiChannel.ts`
+- `M` `srs-web-console/frontend/src/types/snapshot.ts`
+- `??` `ai-service/runtime/locateanything_bpu_compact_executor_v1.py` — dependency/reference from ai-service/runtime/locateanything_bpu_compact_resident_executor_v2.py
+- `??` `ai-service/runtime/locateanything_bpu_compact_resident_executor_v2.py` — dependency/reference from test/model_conversion/test_locateanything_compact_resident_backend_v2.py
+- `??` `ai-service/runtime/locateanything_bpu_executor.py` — dependency/reference from test/model_conversion/validate_locateanything_official_heldout_bpu_v2.py
+- `??` `ai-service/runtime/locateanything_bpu_executor_v2.py` — dependency/reference from ai-service/runtime/locateanything_bpu_official_executor_v5.py
+- `??` `ai-service/runtime/locateanything_bpu_official_executor_v5.py` — dependency/reference from test/model_conversion/evaluate_locateanything_independent_final_v2.py
+- `??` `ai-service/runtime/locateanything_bpu_prefill_all_executor_v10.py` — current executor / rollback baseline
+- `??` `ai-service/runtime/locateanything_bpu_prefill_groups_executor_v8.py` — dependency/reference from test/model_conversion/install_locateanything_prefill_three_groups_runtime_v217.py
+- `??` `ai-service/runtime/locateanything_bpu_prefill_groups_executor_v9.py` — dependency/reference from test/model_conversion/install_locateanything_prefill_three_groups_runtime_v217.py
+- `??` `ai-service/runtime/locateanything_bpu_prefill_o2_executor_v7.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `ai-service/runtime/locateanything_bpu_reused_io_executor_v6.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `ai-service/runtime/locateanything_bpu_vision_o2_executor_v11.py` — current executor / rollback baseline
+- `??` `ai-service/runtime/locateanything_compact_executor_health_v1.py` — dependency/reference from ai-service/runtime/locateanything_compact_resident_health_v2.py
+- `??` `ai-service/runtime/locateanything_compact_resident_health_v2.py` — dependency/reference from test/model_conversion/test_locateanything_compact_resident_health_v2.py
+- `??` `ai-service/runtime/locateanything_executor_health.py` — dependency/reference from test/model_conversion/test_locateanything_compact_health_v1.py
+- `??` `ai-service/runtime/locateanything_official_family_health_v1.py` — dependency/reference from deploy-package/install-locateanything-official-family-s100p-v2.py
+- `??` `ai-service/runtime/locateanything_persistent_request_worker_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `ai-service/runtime/locateanything_prompt.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `ai-service/runtime/locateanything_request_server.py` — dependency/reference from ai-service/runtime/locateanything_bpu_official_executor_v5.py
+- `??` `ai-service/src/adapters/locateanything_bpu_adapter.hpp`
+- `??` `ai-service/src/adapters/locateanything_result_decode.hpp`
+- `??` `ai-service/src/adapters/model_family_adapters.hpp`
+- `??` `ai-service/src/output/grounding_snapshot.hpp`
+- `??` `ai-service/src/platform/locateanything_channel_lease.hpp`
+- `??` `ai-service/src/platform/locateanything_executor_client.hpp`
+- `??` `ai-service/src/platform/locateanything_pillow_preprocess.hpp`
+- `??` `ai-service/src/platform/picture_tokens.hpp`
+- `??` `ai-service/src/stream/au_spool.hpp`
+- `??` `ai-service/src/utils/warning_log.hpp`
+- `??` `deploy-package/install-locateanything-official-family-s100p-v2.py` — dependency/reference from deploy/s100p/ainvr-ai-locateanything-official.conf
+- `??` `deploy-package/install-locateanything-official-family-s100p-v3.py` — current official-family base installation reference
+- `??` `deploy-package/install-yoloe32-s100p.py`
+- `??` `deploy/s100p/ainvr-ai-locateanything-official.conf`
+- `??` `deploy/s100p/ainvr-locateanything-official-bpu.service`
+- `??` `srs-web-console/frontend/src/components/player/groundingPoints.ts`
+- `??` `srs-web-console/frontend/src/pages/AiChannels/PromptLabelEditor.tsx`
+- `??` `srs-web-console/frontend/src/pages/RecognitionHistory/SnapshotImage.tsx`
+- `??` `srs-web-console/frontend/src/utils/snapshotPoint.ts`
+
+## 回归测试与硬件链路验证（53 项）
+
+- `M` `ai-service/tests/unit/au_buffer_test.cpp`
+- `M` `ai-service/tests/unit/config_test.cpp`
+- `M` `ai-service/tests/unit/detection_decode_test.cpp`
+- `M` `ai-service/tests/unit/s100p_config_test.cpp`
+- `M` `ai-service/tests/unit/sei_test.cpp`
+- `M` `ai-service/tests/unit/snapshot_store_test.cpp`
+- `M` `srs-web-console/frontend/src/test/AiChannelParallel.test.tsx`
+- `M` `srs-web-console/frontend/src/test/AiChannelRecoveryStatus.test.tsx`
+- `M` `srs-web-console/frontend/src/test/AiChannelWizard.test.tsx`
+- `M` `srs-web-console/frontend/src/test/openVocabularyForm.test.ts`
+- `M` `srs-web-console/frontend/src/test/s100pBpuPreset.test.ts`
+- `M` `test/ai_port/reused_worker_test.cpp`
+- `M` `test/ai_port/snapshot_hardware_archive_test.cpp`
+- `M` `test/ai_port/yoloe_bpu_prompt_probe.cpp`
+- `M` `test/ai_port/yoloe_channel_adapter_probe.cpp`
+- `M` `test/ai_port/yoloe_decode_output_probe.cpp`
+- `M` `test/ai_port/yoloe_reused_archive_probe.cpp`
+- `M` `test/test_bpu_observability.py`
+- `??` `recording-service/tests/test_point_sei.py`
+- `??` `srs-web-console/frontend/src/test/AiResultModalPoints.test.tsx`
+- `??` `srs-web-console/frontend/src/test/LocateAnythingInputContract.test.ts`
+- `??` `srs-web-console/frontend/src/test/PromptLabelEditor.test.tsx`
+- `??` `srs-web-console/frontend/src/test/SnapshotPointImage.test.tsx`
+- `??` `srs-web-console/frontend/src/test/fixtures/locateanythingPointSei.json`
+- `??` `srs-web-console/frontend/src/test/groundingSei.test.ts`
+- `??` `test/ai_port/adaptive_resize_dispatch_probe_v1.cpp`
+- `??` `test/ai_port/bpu_timeout_control_test.cpp`
+- `??` `test/ai_port/locateanything_adapter_test.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_channel_lease_test.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_executor_client_probe.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_geometry_probe.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_live_speed_probe_v3.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_live_speed_probe_v4.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_live_speed_probe_v5.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_official_native4k_probe_v1.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_official_native4k_probe_v2.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_pillow_nv12_probe_v1.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_pillow_preprocess_probe_v1.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_resample_probe.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_resample_probe_v2.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_reused_archive_probe_v1.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_reused_archive_probe_v2.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_reused_sei_archive_probe_v1.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_reused_sei_archive_probe_v2.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_reused_sei_archive_probe_v3.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_sei_fixture_v1.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/locateanything_start_contract_test_v1.cpp` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/picture_tokens_test.cpp`
+- `??` `test/ai_port/prepare_locateanything_point_browser_fixture_v1.mjs` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/run_locateanything_point_archive_hardware_v2.py` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/run_locateanything_point_archive_hardware_v3.py` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/serve_locateanything_point_fixture_v1.mjs` — native adapter, SEI, archive or input preprocessing test
+- `??` `test/ai_port/warning_log_test.cpp`
+
+## 模型复现、验收与必要依赖（275 项）
+
+- `M` `test/model_conversion/capture_yoloe_detector_validation.py`
+- `M` `test/model_conversion/compare_yoloe_component_optimization.py`
+- `M` `test/model_conversion/compare_yoloe_detector_validation.py`
+- `M` `test/model_conversion/compile_yoloe_component.py`
+- `M` `test/model_conversion/prepare_yoloe_free_text_semantics.py`
+- `M` `test/model_conversion/probe_yoloe_runtime_prompts.py`
+- `M` `test/model_conversion/validate_yoloe_free_text_semantics.py`
+- `M` `test/model_conversion/validate_yoloe_visible_semantics.py`
+- `??` `test/model_conversion/analyze_locateanything_official_hwperf_v126.py` — hardware/precision root-cause evidence
+- `??` `test/model_conversion/analyze_locateanything_passive_bpu_ddr_v262.py` — hardware/precision root-cause evidence
+- `??` `test/model_conversion/analyze_locateanything_runtime_phases_v144.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/audit_locateanything_official_layout_comparison_v1.py` — hardware/precision root-cause evidence
+- `??` `test/model_conversion/audit_locateanything_original_full_head_oracle_v1.py` — hardware/precision root-cause evidence
+- `??` `test/model_conversion/audit_locateanything_original_layer_oracle_v1.py` — hardware/precision root-cause evidence
+- `??` `test/model_conversion/audit_locateanything_physical_w4_packing_v1.py` — hardware/precision root-cause evidence
+- `??` `test/model_conversion/benchmark_locateanything_recovered_balance_v134.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/benchmark_locateanything_w8_prefill_v130.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/benchmark_official_qwen_omni_v1.cpp`
+- `??` `test/model_conversion/build_locateanything_mixed_decoder_block_v11.py` — dependency/reference from test/model_conversion/prepare_locateanything_all_head_fixtures_v1.py
+- `??` `test/model_conversion/build_locateanything_official_moonvit_block_probe_v3.py` — dependency/reference from test/model_conversion/compile_locateanything_official_vision_rest_v1.py
+- `??` `test/model_conversion/build_locateanything_official_qwen_group_v3.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/build_locateanything_official_qwen_w4_rowgptq_layer_v2.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/capture_locateanything_original_decoder_calibration_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/compare_locateanything_prefill_all_full_image_v249.py` — dependency/reference from test/model_conversion/install_locateanything_prefill_all_runtime_v251.py
+- `??` `test/model_conversion/compare_locateanything_prefill_full_image_v136.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/compare_locateanything_prefill_groups_full_image_v178.py` — dependency/reference from test/model_conversion/install_locateanything_prefill_groups_runtime_v189.py
+- `??` `test/model_conversion/compare_locateanything_prefill_three_groups_full_image_v213.py` — dependency/reference from test/model_conversion/install_locateanything_prefill_three_groups_runtime_v217.py
+- `??` `test/model_conversion/compare_locateanything_request_workspace_full_image_v271.py` — dependency/reference from test/model_conversion/test_locateanything_request_workspace_cleanup_v273.py
+- `??` `test/model_conversion/compare_locateanything_vision_o2_full_image_v287.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/compare_yoloe_saved_optimization.py`
+- `??` `test/model_conversion/compile_locateanything_compact_saved_bc_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/compile_locateanything_official_qwen_ar2_pref0_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/compile_locateanything_official_qwen_group_o2_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/compile_locateanything_official_vision_rest_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/compile_locateanything_w8_ar_balance_v119.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/compile_locateanything_w8_prefill_g18_v187.py` — four-group prefill reproducibility
+- `??` `test/model_conversion/compile_locateanything_w8_prefill_g27_v207.py` — four-group prefill reproducibility
+- `??` `test/model_conversion/compile_locateanything_w8_prefill_g9_v141.py` — four-group prefill reproducibility
+- `??` `test/model_conversion/continue_locateanything_prefill_serial_v208.py` — dependency/reference from test/model_conversion/probe_locateanything_verified_mtp_full160_v225.py
+- `??` `test/model_conversion/diagnose_yoloe_layers.py`
+- `??` `test/model_conversion/diagnose_yoloe_parity.py`
+- `??` `test/model_conversion/diagnose_yoloe_ptq.py`
+- `??` `test/model_conversion/download_official_qwen_omni_reference_v1.py`
+- `??` `test/model_conversion/evaluate_locateanything_independent_final_v2.py` — dependency/reference from test/model_conversion/regress_locateanything_reused_runtime_v111.py
+- `??` `test/model_conversion/guard_locateanything_compact_affine_decoder_job_v5.py` — dependency/reference from test/model_conversion/queue_locateanything_compact_remaining_ar_groups_v1.py
+- `??` `test/model_conversion/guard_locateanything_compact_affine_decoder_job_v6.py` — dependency/reference from test/model_conversion/launch_compact_pair18_cost_v1.py
+- `??` `test/model_conversion/guard_locateanything_owned_resources_v3.py` — dependency/reference from test/model_conversion/compile_locateanything_official_vision_rest_v1.py
+- `??` `test/model_conversion/guard_locateanything_prefill_all_v247.py` — dependency/reference from test/model_conversion/compare_locateanything_prefill_all_full_image_v249.py
+- `??` `test/model_conversion/guard_locateanything_prefill_groups_v177.py` — dependency/reference from test/model_conversion/compare_locateanything_prefill_groups_full_image_v178.py
+- `??` `test/model_conversion/guard_locateanything_prefill_groups_v205.py` — dependency/reference from test/model_conversion/compare_locateanything_prefill_three_groups_full_image_v213.py
+- `??` `test/model_conversion/guard_locateanything_prefill_o2_v135.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/guard_locateanything_vision_o2_v286.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/guard_selected_decoder_group_mask_centered_qkf32_v4_sdk448.py`
+- `??` `test/model_conversion/guard_selected_decoder_group_mask_centered_v3_sdk448.py`
+- `??` `test/model_conversion/guard_selected_decoder_group_mask_fp32_v2_sdk448.py`
+- `??` `test/model_conversion/guard_selected_decoder_group_v1_sdk448.py`
+- `??` `test/model_conversion/hold_locateanything_task_directory_v131.py` — current handoff named entry
+- `??` `test/model_conversion/install_locateanything_prefill_all_runtime_v251.py` — dependency/reference from test/model_conversion/test_locateanything_prefill_all_upgrade_v252.py
+- `??` `test/model_conversion/install_locateanything_prefill_groups_runtime_v189.py` — dependency/reference from test/model_conversion/test_locateanything_prefill_upgrade_v190.py
+- `??` `test/model_conversion/install_locateanything_prefill_runtime_v138.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/install_locateanything_prefill_three_groups_runtime_v217.py` — dependency/reference from test/model_conversion/test_locateanything_prefill_three_groups_upgrade_v219.py
+- `??` `test/model_conversion/install_locateanything_vision_o2_runtime_v288.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/launch_compact_pair18_cost_v1.py`
+- `??` `test/model_conversion/link_locateanything_saved_balance_hbo_v132.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_attn8_mlp4_candidate_v1.py` — dependency/reference from test/model_conversion/test_locateanything_attn8_mlp4_admission_v1.py
+- `??` `test/model_conversion/locateanything_bpu_compact_grouped_contract_v1.py` — dependency/reference from ai-service/runtime/locateanything_bpu_compact_executor_v1.py
+- `??` `test/model_conversion/locateanything_bpu_compact_grouped_decoder_v1.py` — dependency/reference from test/model_conversion/locateanything_bpu_compact_grouped_contract_v1.py
+- `??` `test/model_conversion/locateanything_bpu_components_v1.py` — dependency/reference from test/model_conversion/locateanything_bpu_contract_v1.py
+- `??` `test/model_conversion/locateanything_bpu_components_v2.py` — dependency/reference from test/model_conversion/validate_locateanything_official_heldout_bpu_v2.py
+- `??` `test/model_conversion/locateanything_bpu_contract_v1.py` — dependency/reference from ai-service/runtime/locateanything_bpu_executor.py
+- `??` `test/model_conversion/locateanything_bpu_decoder_v1.py` — dependency/reference from test/model_conversion/locateanything_bpu_contract_v1.py
+- `??` `test/model_conversion/locateanything_bpu_generation_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_bpu_grouped_contract_v1.py` — dependency/reference from test/model_conversion/validate_locateanything_official_heldout_bpu_v2.py
+- `??` `test/model_conversion/locateanything_bpu_grouped_decoder_v1.py` — dependency/reference from test/model_conversion/locateanything_bpu_grouped_contract_v1.py
+- `??` `test/model_conversion/locateanything_bpu_pinned_decoder_executor_v1.py` — dependency/reference from test/model_conversion/test_locateanything_pinned_cache_controls_v1.py
+- `??` `test/model_conversion/locateanything_bpu_vision_v1.py` — dependency/reference from test/model_conversion/locateanything_bpu_contract_v1.py
+- `??` `test/model_conversion/locateanything_bpu_vocabulary_v1.py` — dependency/reference from test/model_conversion/locateanything_bpu_contract_v1.py
+- `??` `test/model_conversion/locateanything_compact_compiler_origin_v1.py` — dependency/reference from test/model_conversion/prepare_locateanything_compact_profile_proof_v4.py
+- `??` `test/model_conversion/locateanything_compact_prefill_chunks_v1.py` — dependency/reference from test/model_conversion/locateanything_compact_quality_v1.py
+- `??` `test/model_conversion/locateanything_compact_prefix_pinned_executor_v2.py` — dependency/reference from test/model_conversion/test_locateanything_prefix_pinned_controls_v2.py
+- `??` `test/model_conversion/locateanything_compact_prefix_pinned_executor_v3.py` — dependency/reference from test/model_conversion/test_locateanything_prefix_pinned_controls_v3.py
+- `??` `test/model_conversion/locateanything_compact_quality_v1.py` — dependency/reference from test/model_conversion/test_locateanything_compact_quality_v1.py
+- `??` `test/model_conversion/locateanything_compact_residency_admission_v1.py` — dependency/reference from ai-service/runtime/locateanything_bpu_compact_resident_executor_v2.py
+- `??` `test/model_conversion/locateanything_compact_resident_executor_v1.py` — dependency/reference from ai-service/runtime/locateanything_bpu_compact_resident_executor_v2.py
+- `??` `test/model_conversion/locateanything_compact_resident_trace_v1.py` — dependency/reference from test/model_conversion/test_locateanything_compact_resident_shards_v2.py
+- `??` `test/model_conversion/locateanything_compile_memory_v1.py` — dependency/reference from test/model_conversion/test_locateanything_compile_memory_v1.py
+- `??` `test/model_conversion/locateanything_float_softmax_bpu.py` — dependency/reference from test/model_conversion/build_locateanything_mixed_decoder_block_v11.py
+- `??` `test/model_conversion/locateanything_generation_control_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_group_input_workspace_v268.py` — dependency/reference from test/model_conversion/compare_locateanything_request_workspace_full_image_v271.py
+- `??` `test/model_conversion/locateanything_normalized_rsqrt_bpu.py` — dependency/reference from test/model_conversion/build_locateanything_mixed_decoder_block_v11.py
+- `??` `test/model_conversion/locateanything_official_family_contract_v1.py` — dependency/reference from test/model_conversion/locateanything_official_family_dispatch_v3.py
+- `??` `test/model_conversion/locateanything_official_family_dispatch_v3.py` — dependency/reference from test/model_conversion/evaluate_locateanything_independent_final_v2.py
+- `??` `test/model_conversion/locateanything_official_family_head_optimization_v1.py` — dependency/reference from test/model_conversion/locateanything_official_family_dispatch_v3.py
+- `??` `test/model_conversion/locateanything_official_family_optimization_v1.py` — dependency/reference from test/model_conversion/locateanything_official_family_dispatch_v3.py
+- `??` `test/model_conversion/locateanything_official_family_prefill_optimization_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_official_family_profile_optimization_v1.py` — dependency/reference from test/model_conversion/locateanything_official_family_dispatch_v3.py
+- `??` `test/model_conversion/locateanything_official_family_profile_optimization_v2.py` — dependency/reference from test/model_conversion/locateanything_official_family_dispatch_v3.py
+- `??` `test/model_conversion/locateanything_official_family_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_official_group_routing_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_official_prefill_all_v243.py` — dependency/reference from test/model_conversion/install_locateanything_prefill_all_runtime_v251.py
+- `??` `test/model_conversion/locateanything_official_prefill_groups_v169.py` — dependency/reference from test/model_conversion/compare_locateanything_prefill_three_groups_full_image_v213.py
+- `??` `test/model_conversion/locateanything_official_prefill_groups_v204.py` — dependency/reference from test/model_conversion/install_locateanything_prefill_three_groups_runtime_v217.py
+- `??` `test/model_conversion/locateanything_official_program_executor_reused_io_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_official_program_executor_v1.py` — dependency/reference from test/model_conversion/locateanything_official_family_contract_v1.py
+- `??` `test/model_conversion/locateanything_official_rowmixed_family_contract_v1.py` — dependency/reference from test/model_conversion/test_locateanything_rowmixed_family_contract_v1.py
+- `??` `test/model_conversion/locateanything_official_vision_o2_v284.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/locateanything_owned_container_transport_v113.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_prefill_component_admission_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_prefill_g18_admission_v201.py` — dependency/reference from test/model_conversion/test_locateanything_prefill_g18_admission_v201.py
+- `??` `test/model_conversion/locateanything_prefill_g27_admission_v235.py` — dependency/reference from test/model_conversion/test_locateanything_prefill_g27_admission_v237.py
+- `??` `test/model_conversion/locateanything_prefill_g9_admission_v154.py` — dependency/reference from test/model_conversion/locateanything_official_prefill_groups_v169.py
+- `??` `test/model_conversion/locateanything_process_memory_v1.py` — dependency/reference from test/model_conversion/test_locateanything_process_memory_v2.py
+- `??` `test/model_conversion/locateanything_process_memory_v2.py` — dependency/reference from test/model_conversion/test_locateanything_process_memory_v3.py
+- `??` `test/model_conversion/locateanything_process_memory_v3.py` — dependency/reference from test/model_conversion/evaluate_locateanything_independent_final_v2.py
+- `??` `test/model_conversion/locateanything_process_memory_v4.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_request_workspace_generator_v270.py` — dependency/reference from test/model_conversion/test_locateanything_request_workspace_cleanup_v273.py
+- `??` `test/model_conversion/locateanything_reused_io_adapter_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_reused_io_runtime_v1.cpp` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_row_gptq_checkpoint_v1.py` — dependency/reference from test/model_conversion/test_locateanything_row_gptq_mixed_bridge_v2.py
+- `??` `test/model_conversion/locateanything_row_gptq_mixed_checkpoint_v2.py` — dependency/reference from test/model_conversion/test_locateanything_row_gptq_mixed_bridge_v2.py
+- `??` `test/model_conversion/locateanything_runtime_manifest_v1.py` — dependency/reference from deploy-package/install-locateanything-official-family-s100p-v2.py
+- `??` `test/model_conversion/locateanything_sampling_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/locateanything_verified_mtp_control_v161.py` — dependency/reference from test/model_conversion/probe_locateanything_verified_mtp_full160_v225.py
+- `??` `test/model_conversion/merge_locateanything_compact_heldout_v1.py` — dependency/reference from test/model_conversion/merge_locateanything_compact_heldout_v2.py
+- `??` `test/model_conversion/merge_locateanything_compact_heldout_v2.py` — dependency/reference from test/model_conversion/test_locateanything_compact_resident_shards_v2.py
+- `??` `test/model_conversion/observe_locateanything_1s_v293.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/observe_locateanything_2s_v291.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/observe_locateanything_prefill_postinstall_v139.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/official_build_compact_affine_decoder_group_v1_sdk448.py`
+- `??` `test/model_conversion/official_build_compact_affine_decoder_group_v2_sdk448.py`
+- `??` `test/model_conversion/official_build_original_decoder_group_v10_sdk448.py`
+- `??` `test/model_conversion/official_build_original_decoder_stack_v3.py`
+- `??` `test/model_conversion/official_build_original_decoder_stack_v5.py`
+- `??` `test/model_conversion/official_build_original_decoder_stack_v6.py`
+- `??` `test/model_conversion/official_build_original_decoder_stack_v9_sdk448.py`
+- `??` `test/model_conversion/official_build_selected_decoder_group_mask_centered_qkf32_v4_sdk448.py`
+- `??` `test/model_conversion/official_build_selected_decoder_group_mask_centered_v3_sdk448.py`
+- `??` `test/model_conversion/official_build_selected_decoder_group_mask_fp32_v2_sdk448.py`
+- `??` `test/model_conversion/official_build_selected_decoder_group_v1_sdk448.py`
+- `??` `test/model_conversion/official_compare_full_stack_native_saved_v1.py`
+- `??` `test/model_conversion/official_compare_full_stack_native_v1.py`
+- `??` `test/model_conversion/official_compare_original_stack_v1.py`
+- `??` `test/model_conversion/official_compile_all_decoder_groups_v10_sdk448.py`
+- `??` `test/model_conversion/official_compile_saved_stack36_v1.py`
+- `??` `test/model_conversion/official_guard_original_stack36_v1.py`
+- `??` `test/model_conversion/official_guard_original_stack36_v2.py`
+- `??` `test/model_conversion/official_guard_original_stack36_v3.py`
+- `??` `test/model_conversion/official_guard_saved_stack36_v1.py`
+- `??` `test/model_conversion/official_prepare_native_stack_reference_v1.py`
+- `??` `test/model_conversion/package_locateanything_vision_o2_board_v283.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/prepare_locateanything_all_head_fixtures_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/prepare_locateanything_compact_profile_proof_v4.py` — dependency/reference from test/model_conversion/test_locateanything_compact_chunk_fixtures_v1.py
+- `??` `test/model_conversion/prepare_locateanything_gptq_g32_actorder_v7.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/prepare_locateanything_gptq_reference_v4.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/prepare_locateanything_gptq_reference_v6_g16.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/prepare_locateanything_gptq_sequential_mixed_g32_v8.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/prepare_locateanything_official_head_o2_board_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/prepare_locateanything_official_vision_all27_v1.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/prepare_locateanything_prefill_g18_board_v201.py` — dependency/reference from test/model_conversion/continue_locateanything_prefill_serial_v208.py
+- `??` `test/model_conversion/prepare_locateanything_row_gptq_mixed_full36_v3.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/prepare_locateanything_w8_prefill_board_v130.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/prepare_yoloe_prompt_slots.py`
+- `??` `test/model_conversion/probe_locateanything_bpu_overlap_v292.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/probe_locateanything_decode_overlap_v294.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/probe_locateanything_official_hwperf_v125.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/probe_locateanything_verified_mtp_full160_v225.py` — dependency/reference from test/model_conversion/test_locateanything_mtp_full160_scoring_v226.py
+- `??` `test/model_conversion/profile_locateanything_runtime_phases_v143.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/protect_yoloe32_o2_deadline.py`
+- `??` `test/model_conversion/qualify_selected_decoder_group_mask_centered_qkf32_v4_sdk448.py`
+- `??` `test/model_conversion/qualify_selected_decoder_group_mask_centered_v3_sdk448.py`
+- `??` `test/model_conversion/qualify_selected_decoder_group_mask_fp32_v2_sdk448.py`
+- `??` `test/model_conversion/qualify_selected_decoder_group_v1_sdk448.py`
+- `??` `test/model_conversion/queue_locateanything_compact_remaining_ar_groups_v1.py` — dependency/reference from test/model_conversion/test_locateanything_compact_remaining_queue_gates_v1.py
+- `??` `test/model_conversion/read_locateanything_prefill_groups_health_v188.py` — dependency/reference from test/model_conversion/install_locateanything_prefill_groups_runtime_v189.py
+- `??` `test/model_conversion/read_locateanything_prefill_runtime_health_v138.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/read_locateanything_prefill_three_groups_health_v216.py` — current handoff named entry
+- `??` `test/model_conversion/read_locateanything_runtime_health_v112.py` — dependency/reference from test/model_conversion/install_locateanything_prefill_runtime_v138.py
+- `??` `test/model_conversion/reference_locateanything_independent_final_v2.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/reference_locateanything_native_hybrid_v146.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/regress_locateanything_prefill_all_v246.py` — dependency/reference from test/model_conversion/compare_locateanything_prefill_all_full_image_v249.py
+- `??` `test/model_conversion/regress_locateanything_prefill_groups_v177.py` — dependency/reference from test/model_conversion/compare_locateanything_prefill_groups_full_image_v178.py
+- `??` `test/model_conversion/regress_locateanything_prefill_groups_v205.py` — dependency/reference from test/model_conversion/compare_locateanything_prefill_three_groups_full_image_v213.py
+- `??` `test/model_conversion/regress_locateanything_prefill_o2_v135.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/regress_locateanything_reused_runtime_v111.py` — dependency/reference from test/model_conversion/regress_locateanything_prefill_groups_v205.py
+- `??` `test/model_conversion/regress_locateanything_vision_o2_v285.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/run_locateanything_complete_fresh_case_v3.py` — dependency/reference from test/model_conversion/test_locateanything_failure_telemetry_v1.py
+- `??` `test/model_conversion/run_locateanything_complete_fresh_case_v4.py` — dependency/reference from test/model_conversion/test_locateanything_failure_telemetry_v2.py
+- `??` `test/model_conversion/run_locateanything_grouped_development_case_v1.py` — dependency/reference from test/model_conversion/test_locateanything_grouped_evaluation_controls_v1.py
+- `??` `test/model_conversion/run_locateanything_official_heldout_case_v1.py` — dependency/reference from test/model_conversion/test_locateanything_official_heldout_controls_v1.py
+- `??` `test/model_conversion/run_locateanything_official_heldout_case_v2.py` — dependency/reference from test/model_conversion/test_locateanything_official_heldout_controls_v2.py
+- `??` `test/model_conversion/run_locateanything_vision_o2_board_v283.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/run_official_qwen_omni_benchmark_v1.py`
+- `??` `test/model_conversion/run_official_qwen_omni_memory_benchmark_v2.py`
+- `??` `test/model_conversion/score_locateanything_independent_final_v1.py` — dependency/reference from test/model_conversion/test_locateanything_independent_final_scoring_v1.py
+- `??` `test/model_conversion/score_locateanything_independent_final_v2.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/stage_locateanything_compact_decoder_package_v1.py` — dependency/reference from test/model_conversion/test_locateanything_compact_package_stage_v1.py
+- `??` `test/model_conversion/stage_yoloe32_contract.py`
+- `??` `test/model_conversion/test_locateanything_actorder_gptq_packing_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_attn8_mlp4_admission_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_chunk_fixtures_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_grouped_layout_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_health_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_package_stage_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_prefill_chunks_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_quality_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_remaining_queue_gates_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_resident_backend_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_resident_executor_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_resident_failed_shards_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_resident_health_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_resident_shards_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_resume_origin_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compact_shards_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_compile_memory_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_failure_telemetry_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_failure_telemetry_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_full160_qualification_v179.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_group_input_workspace_v269.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_grouped_decoder_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_grouped_evaluation_controls_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_independent_final_scoring_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_independent_final_scoring_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_mixed_gptq_packing_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_mtp_full160_scoring_v226.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_official_full_family_admission_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_official_heldout_controls_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_official_heldout_controls_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_official_optimization_admission_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_official_trial_v3_admission.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_official_trial_v3_admission_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_persistent_request_worker_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_pinned_cache_controls_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_admission_v135.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_all_full160_v250.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_all_upgrade_v252.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_all_v244.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_g18_admission_v201.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_g27_admission_v237.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_g9_admission_v154.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_groups_v170.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_groups_v204.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_three_groups_upgrade_v219.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefill_upgrade_v190.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefix_pinned_controls_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_prefix_pinned_controls_v3.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_process_memory_tasks_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_process_memory_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_process_memory_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_process_memory_v3.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_process_memory_v4.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_request_server_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_request_server_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_request_server_v3.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_request_server_v4.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_request_workspace_cleanup_v273.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_row_gptq_checkpoint_bridge_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_row_gptq_mixed_bridge_v2.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_rowmixed_family_contract_v1.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_three_groups_full160_v214.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/test_locateanything_verified_mtp_control_v161.py` — regression test and failure-case coverage
+- `??` `test/model_conversion/transfer_locateanything_w8_prefill_v130.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/validate_locateanything_compact_heldout_bpu_v1.py` — dependency/reference from test/model_conversion/merge_locateanything_compact_heldout_v1.py
+- `??` `test/model_conversion/validate_locateanything_compact_heldout_bpu_v2.py` — dependency/reference from test/model_conversion/merge_locateanything_compact_heldout_v2.py
+- `??` `test/model_conversion/validate_locateanything_complete_fresh_bpu_v3.py` — dependency/reference from test/model_conversion/test_locateanything_failure_telemetry_v2.py
+- `??` `test/model_conversion/validate_locateanything_complete_fresh_bpu_v4.py` — dependency/reference from test/model_conversion/test_locateanything_failure_telemetry_v2.py
+- `??` `test/model_conversion/validate_locateanything_complete_fresh_bpu_v5.py` — dependency/reference from test/model_conversion/test_locateanything_official_heldout_controls_v1.py
+- `??` `test/model_conversion/validate_locateanything_grouped_development_bpu_v1.py` — dependency/reference from test/model_conversion/test_locateanything_grouped_evaluation_controls_v1.py
+- `??` `test/model_conversion/validate_locateanything_independent_native_reference_v2.py` — curated handoff / reproducibility / historical quality anchor
+- `??` `test/model_conversion/validate_locateanything_official_heldout_bpu_v1.py` — dependency/reference from test/model_conversion/test_locateanything_official_heldout_controls_v1.py
+- `??` `test/model_conversion/validate_locateanything_official_heldout_bpu_v2.py` — dependency/reference from test/model_conversion/locateanything_compact_quality_v1.py
+- `??` `test/model_conversion/validate_locateanything_vision_o2_board_v283.py` — current vision-O2 verification and measured limits
+- `??` `test/model_conversion/validate_selected_decoder_group_v1.py`
+- `??` `test/model_conversion/validate_service_audit_hardware_v1.py`
+- `??` `test/model_conversion/watch_locateanything_prefill_g18_terminal_v197.py` — dependency/reference from test/model_conversion/continue_locateanything_prefill_serial_v208.py
+- `??` `test/model_conversion/watch_locateanything_prefill_terminal_v145.py` — curated handoff / reproducibility / historical quality anchor
+

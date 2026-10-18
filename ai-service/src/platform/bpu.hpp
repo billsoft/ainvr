@@ -4,10 +4,14 @@
 #include <hobot/hb_ucp.h>
 #include <nlohmann/json.hpp>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace ainvr {
+// Failed waits latch a process fault; the watchdog must restart the service.
+bool BpuRuntimeHealthy() noexcept;
+uint64_t BpuQuarantinedBytes() noexcept;
 class BpuModel {
  public:
   explicit BpuModel(const std::string& path, const std::string& name = "");
@@ -21,6 +25,9 @@ class BpuModel {
       const std::vector<std::vector<unsigned char>>& inputs);
  private:
   void Clear() noexcept;
+  struct Quarantine;
+  std::unique_ptr<Quarantine> quarantine_;
+  hbUCPTaskHandle_t inflight_ = nullptr;
   hbDNNPackedHandle_t packed_ = nullptr;
   hbDNNHandle_t model_ = nullptr;
   std::string name_;

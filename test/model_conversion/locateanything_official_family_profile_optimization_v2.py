@@ -1,0 +1,144 @@
+"""Admit separately optimized decode/prefill only after actual component proofs.
+
+Metadata admission does not load a model or approve quality, speed or release.
+The original complete O0 family remains immutable and independently checked.
+"""
+from pathlib import Path
+import copy
+from locateanything_official_family_contract_v1 import (
+    CODE, SOURCES, BASE, RESULTS, digest, checked, read_json, verified,
+    package, proof, program, load_official_generator as load_original,
+)
+
+ORIGINAL_FAMILY_SHA = '0acdacb1703511e12e0d9f90b1b9480cc4230606b72bac8479cfa65ef84d7cd9'
+O2_BUILDER_SHA = 'e3ed149369d804c110271b1b71ecbbe879498595084d7010c69c65a30bca3702'
+SELF = 'locateanything_official_family_profile_optimization_v2.py'
+LEGACY = 'locateanything_official_family_profile_optimization_v1.py'
+LEGACY_SHA = 'deae598806afa92ac8a114bb21edf721f4ad78dc8d8c7cb9390a1a5733941e05'
+AR_BUILDER_SHA = 'fafcbe8b4d9447ce10eb745f5c4ed1eba3c7edc267e5e96cd786f549a6ee5a8b'
+SCHEMA = 'locateanything_official_full_family_profile_optimization_v2'
+
+
+def verify_origin_status(candidate, original, original_status_sha):
+    assert digest(CODE / LEGACY) == LEGACY_SHA
+    if candidate['first'] == 0:
+        from locateanything_official_family_profile_optimization_v1 import verify_origin_status as legacy
+        return legacy(candidate, original, original_status_sha)
+    assert candidate['source_sha256'] == AR_BUILDER_SHA
+    assert original['source_sha256'] == '5e8bd1b7992143c8abdb005a1729f224bbddc4e9ad69b576e5dac6338e347091'
+    assert candidate['origin_status_sha256'] == original_status_sha
+    assert candidate['origin_hbm_sha256'] == original['hbm_sha256']
+    assert candidate['first'] == original['first'] and candidate['first'] in (9,18,27)
+    assert candidate['last'] == original['last'] == candidate['first'] + 8
+    assert candidate['profile_optimization'] == {'1':2,'256':0}
+    assert candidate['compile_jobs'] == 2
+    assert candidate['only_decode_recompiled'] is True
+    assert candidate['prefill_reused_without_recompilation'] is True
+    assert candidate['recompilation_executed'] is True
+    assert candidate['recalibration_executed'] is False
+    assert candidate['weights_or_graph_changed'] is False
+    assert candidate['maximum_compile_seconds'] is None
+    assert candidate['status'] == original['status'] == 'compiled_original_group_shared_profiles_bpu_only'
+    assert candidate['bpu_only'] is True
+    mutable = {'started','finished','pid','source_sha256','hbm_sha256',
+               'hbm_bytes','devices','compiler_memory','profiles'}
+    added = {'origin_status_sha256','origin_hbm_sha256','profile_optimization',
+             'compile_jobs','only_decode_recompiled','prefill_reused_without_recompilation',
+             'recompilation_executed','recalibration_executed','weights_or_graph_changed',
+             'maximum_compile_seconds','actual_board_verified','whole_model_verified',
+             'release_approved','link_seconds'}
+    assert set(candidate) == set(original) | added
+    assert {k:v for k,v in candidate.items() if k not in mutable|added} == {
+        k:v for k,v in original.items() if k not in mutable|added}
+    assert len(candidate['profiles']) == len(original['profiles']) == 2
+    assert [p['sequence_capacity'] for p in candidate['profiles']] == [1,256]
+    for current,old in zip(candidate['profiles'],original['profiles']):
+        ignore = {'compile_seconds','hbo_sha256'}
+        assert set(current) == set(old)
+        assert {k:v for k,v in current.items() if k not in ignore} == {
+            k:v for k,v in old.items() if k not in ignore}
+        assert current['status'] == 'compiled_hbo'
+        if current['sequence_capacity'] == 256:
+            assert current == old, 'O0 prefill must be unchanged'
+        else:
+            assert len(current['hbo_sha256']) == 64
+            assert isinstance(current['compile_seconds'],(int,float)) and current['compile_seconds'] >= 0
+    assert candidate['actual_board_verified'] is False
+    assert candidate['whole_model_verified'] is False and candidate['release_approved'] is False
+
+
+def load_optimized_group(entry, original_entry):
+    from locateanything_official_family_v1 import OfficialDecoderGroup
+    assert set(entry) == set(original_entry)
+    assert (entry['first'], entry['last']) == (original_entry['first'], original_entry['last'])
+    root, manifest = package(entry, 'locateanything_official_qwen_group_board_v1')
+    old_root, old_manifest = package(original_entry, 'locateanything_official_qwen_group_board_v1')
+    assert root != old_root, 'O0 candidate must not be overwritten'
+    verify_origin_status(manifest['source_status'], old_manifest['source_status'],
+                         old_manifest['files']['source-status.json']['sha256'])
+    assert manifest['profiles'] == old_manifest['profiles'], 'IO contract changed'
+    assert manifest['case_count'] == old_manifest['case_count'] == 8
+    assert manifest['layer_count'] == old_manifest['layer_count'] == 9
+    assert manifest['component_kind'] == old_manifest['component_kind'] == 'qwen_group9'
+    assert set(manifest['files']) == set(old_manifest['files'])
+    changed = {'official-q8/model.hbm', 'source-status.json', 'disas.json'}
+    for name, info in old_manifest['files'].items():
+        if name not in changed:
+            assert manifest['files'][name] == info, ('Original reference/input fixture changed', name)
+    guard, hardware = proof(entry['proof'])
+    assert guard['manifest_sha256'] == entry['manifest_sha256']
+    assert hardware['board_calls'] == 80 and hardware['all_outputs_compiler_bitwise_exact'] is True
+    stats = hardware['executor_stats']
+    assert stats['calls'] == 80 and stats['loads'] == stats['evictions'] == 1
+    assert stats['logical_programs'] == 2 and stats['physical_hbm_files'] == 1
+    metadata = dict(path=str(root / 'disas.json'), sha256=manifest['files']['disas.json']['sha256'])
+    profiles = {}
+    for profile in manifest['profiles']:
+        seq = profile['sequence']; kind = 'ar' if seq == 1 else 'prefill'
+        assert seq in (1, 256) and kind not in profiles
+        profiles[kind] = program(
+            f"decoder-group-{entry['first']:02d}-{entry['last']:02d}-{kind}",
+            root / 'official-q8/model.hbm', manifest['files']['official-q8/model.hbm']['sha256'],
+            metadata, profile['name'], profile['inputs'], profile['outputs'],
+            ['float32'] * 22, ['float32'] * 19)
+    return OfficialDecoderGroup(entry['first'], entry['last'], profiles)
+
+
+def load_official_generator(path, expected_sha256):
+    from locateanything_official_family_v1 import OfficialFullDecoder, OfficialFullBpuGenerator
+    path = checked(path)
+    assert digest(path) == expected_sha256
+    contract = read_json(path)
+    assert contract['schema'] == SCHEMA
+    assert contract['evaluation_only'] is True and contract['release_approved'] is False
+    assert contract['architecture'] == 'original36_qwen_moonvit27_shared_programs'
+    assert contract['enabled_generation_modes'] == ['slow']
+    pins = contract['runtime_source_sha256']
+    assert set(pins) == SOURCES | {SELF, LEGACY}
+    assert pins[LEGACY] == digest(CODE / LEGACY) == LEGACY_SHA
+    assert digest(CODE / SELF) == pins[SELF]
+    origin_ref = contract['original_family']
+    assert origin_ref['sha256'] == ORIGINAL_FAMILY_SHA
+    original_generator, origin = load_original(origin_ref['path'], origin_ref['sha256'])
+    assert {k: v for k, v in pins.items() if k not in {SELF, LEGACY}} == origin['runtime_source_sha256']
+    allowed = {'schema', 'groups', 'runtime_source_sha256', 'original_family',
+               'optimization_admission', 'builder_sha256', 'component_admission'}
+    assert set(contract) - set(origin) == {'original_family', 'optimization_admission'}
+    assert {k: v for k, v in contract.items() if k not in allowed} == {
+        k: v for k, v in origin.items() if k not in allowed}
+    admission = contract['optimization_admission']
+    assert admission['status'] == 'same_bc_profile_optimization_components_board_qualified'
+    assert admission['whole_model_verified'] is False and admission['release_approved'] is False
+    assert len(contract['groups']) == 4
+    groups = []; replaced = []
+    for index, (entry, old) in enumerate(zip(contract['groups'], origin['groups'])):
+        if entry == old:
+            groups.append(original_generator.decoder.groups[index])
+        else:
+            groups.append(load_optimized_group(entry, old)); replaced.append(entry['first'])
+    assert replaced and admission['replaced_first_layers'] == replaced
+    result = OfficialFullBpuGenerator(
+        original_generator.vision, OfficialFullDecoder(groups), original_generator.vocabulary,
+        original_generator.rope, original_generator.image_token_index, original_generator.token_ids)
+    assert len(result.specs) == 76 and len({str(s.path.resolve()) for s in result.specs}) == 46
+    return result, contract

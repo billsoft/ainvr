@@ -13,10 +13,12 @@
 #include <filesystem>
 
 #include "../adapters/factory.hpp"
+#include "../adapters/model_family_adapters.hpp"
 #include "../api/control_server.hpp"
 #include "../pipeline/frame_accounting.hpp"
 #include "../pipeline/postprocessor.hpp"
 #include "../stream/sei.hpp"
+#include "../stream/au_spool.hpp"
 #include "../stream/srs_codec_probe.hpp"
 #include "../utils/log.hpp"
 #include "../utils/user_facing_error.hpp"
@@ -59,7 +61,10 @@ void ReusedChannelWorker::ValidateStart() const {
   auto cfg=LoadCfg();auto model=cfg->model;
   if(!model_root_.empty()&&std::filesystem::path(model.path).is_relative())
     model.path=(std::filesystem::path(model_root_)/model.path).string();
-  try { adapters::BpuChannelAdapter::ValidateModel(model); }
+  try {
+    auto runtime=adapters::CreateBpuRuntimeAdapter(model);
+    runtime->ValidateStartContract();
+  }
   catch(const std::exception& e) {
     throw api::ApiError(422,"bpu_model_not_ready",utils::UserFacingError(e.what()));
   }
@@ -83,7 +88,7 @@ void ReusedChannelWorker::ValidateSnapshotResources(const config::ChannelConfig&
   }
 }
 std::unique_ptr<adapters::BpuChannelAdapter> ReusedChannelWorker::CreatePlatformAdapter(const config::ModelConfig& model){
-  return std::make_unique<adapters::BpuChannelAdapter>(model);
+  return adapters::CreateBpuRuntimeAdapter(model);
 }
 
 ReusedChannelWorker::ReusedChannelWorker(config::ChannelConfig cfg,
@@ -309,12 +314,12 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
         {"skip_classification", "heuristic; use archive_admission_wait for measured blocking"},
         {"overload_drop_count", overload_drop_count_},
         {"source_fps", std::round(source_fps * 100.0) / 100.0},
-        {"inference_fps_target", cfg->model.adapter == "locateanything_trt" ? target_fps : std::round(target_fps * 100.0) / 100.0},
+        {"inference_fps_target", (cfg->model.adapter == "locateanything_trt" || cfg->model.adapter == "locateanything_bpu") ? target_fps : std::round(target_fps * 100.0) / 100.0},
         {"under_capacity", under_capacity},
         {"last_error", nullptr},
         {"pull_timeout_count", pull_timeout_count_},
         {"consecutive_errors", consecutive_errors_},
-        {"inference_fps_actual", cfg->model.adapter == "locateanything_trt" ? inf_fps : std::round(inf_fps * 100.0) / 100.0},
+        {"inference_fps_actual", (cfg->model.adapter == "locateanything_trt" || cfg->model.adapter == "locateanything_bpu") ? inf_fps : std::round(inf_fps * 100.0) / 100.0},
         {"timing",
          {
              {"preprocess", stats_preprocess_.ToDict()},
@@ -375,6 +380,8 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
              {"level", ps.buffer.level},
              {"held_s", ps.buffer.held_s},
              {"bytes", ps.buffer.bytes},
+             {"resident_payload_bytes", ps.buffer.resident_payload_bytes},
+             {"ssd_allocated_bytes", ps.buffer.ssd_allocated_bytes},
              {"put", ps.buffer.put},
              {"popped", ps.buffer.popped},
              {"stamped", ps.buffer.stamped},
@@ -679,7 +686,8 @@ void ReusedChannelWorker::InferLoop() {
   // One previous inference overlaps preparation of the next frame. Results
   // remain FIFO; at most two BPU futures and one model's SDK buffers exist.
   const char* pipeline_setting=std::getenv("AINVR_BPU_PIPELINE");
-  const bool pipeline_enabled=!pipeline_setting || std::string(pipeline_setting)!="0";
+  const bool pipeline_enabled=adapter_->SupportsFramePipeline() &&
+      (!pipeline_setting || std::string(pipeline_setting)!="0");
   std::optional<CapturedFrame> queued_frame;
   std::future<ainvr::BpuImageResult> queued_result;
   double queued_start=0;
@@ -784,7 +792,7 @@ void ReusedChannelWorker::InferLoop() {
         errs = consecutive_errors_;
       }
       AI_LOG(kError, kLogModule, "[" << channel_id_ << "] 推理失败 #" << errs << ": " << e.what());
-      if (adapter_->IsPrompted()) SetLastError("本次识别未完成，请查看运行日志");
+      if (adapter_->ReportsGenerationStatus()) SetLastError("本次识别未完成，请查看运行日志");
       if (errs >= cfg->max_consecutive_failures) {
         log::Error(kLogModule, "[" + channel_id_ + "] 连续失败,进入 ERROR");
         SetLastError("推理连续失败 " + std::to_string(errs) + " 次: " + utils::UserFacingError(e.what()));
@@ -796,7 +804,7 @@ void ReusedChannelWorker::InferLoop() {
         break;
       }
       // 慢模型失败也遵守采集间隔，避免错误响应触发连续高负载重试。
-      if (adapter_->IsPrompted() && interval > 0.0)
+      if (adapter_->ReportsGenerationStatus() && interval > 0.0)
         next_deadline_ = NextInferenceDeadline(next_deadline_, NowMono(), interval);
       continue;
     }
@@ -806,7 +814,7 @@ void ReusedChannelWorker::InferLoop() {
       next_deadline_ = NextInferenceDeadline(next_deadline_, now3, interval);
     }
 
-    if (adapter_->IsPrompted()) {
+    if (adapter_->ReportsGenerationStatus()) {
       auto latest = result_buffer_.Latest();
       const bool complete = !latest || latest->model_extra.value("grounding", nlohmann::json::object())
                                       .value("complete", true);
@@ -931,7 +939,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     utils::Timer snapshot_timer;
     static std::atomic<uint64_t> next_snapshot_tag{1};
     const auto snapshot_tag=next_snapshot_tag.fetch_add(1);
-    snapshot_sink_->Offer({{frame.width,frame.height}, [this,&frame](const cv::Rect& region,cv::Mat& host) {
+    snapshot_sink_->OfferResult({{frame.width,frame.height}, [this,&frame](const cv::Rect& region,cv::Mat& host) {
       if(region.x<0||region.y<0||region.width<=0||region.height<=0||
          region.x+region.width>frame.width||region.y+region.height>frame.height)
         throw std::invalid_argument("Invalid snapshot download region");
@@ -960,8 +968,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
       } catch (...) { converter.reset(); throw; }
     }, {std::shared_ptr<const std::vector<uint8_t>>(frame.ref,&frame.ref->nv12.pixels),
         snapshot_tag,frame.ref->bt709,frame.ref->full_range}},
-      channel_id_,cfg->name,frame.pts_ns,result.timestamp,cfg->model.name,adapter_->TaskType(),
-      pre_rescale_detections,result.detections,adapter_->SquareSnapshotCrop(),cfg->snapshot);
+      result,cfg->name,pre_rescale_detections,adapter_->SquareSnapshotCrop(),cfg->snapshot);
     std::lock_guard<std::mutex> lock(stats_mutex_);
     stats_snapshot_offer_.Add(snapshot_timer.ElapsedMs());
   }
@@ -972,7 +979,8 @@ void ReusedChannelWorker::StampSei(const FrameResult& result, std::optional<int6
   auto cfg = LoadCfg();
   try {
     auto payload = sei::build_result_payload(channel_id_, result.frame_pts_ns, 0.0,
-                                              result.detections, cfg->publish.sei.max_payload_bytes);
+                                              result.detections, cfg->publish.sei.max_payload_bytes,
+                                              result.model_extra);
     if (payload.empty()) return;  // 预算裁剪后连一个目标都容不下,不写 det:[]
     // 按源编码构造:264 类型 6;265 前缀 SEI 类型 39(载荷一致,浏览器按 UUID 扫)
     auto stream = LoadStream();
@@ -1027,7 +1035,15 @@ void ReusedChannelWorker::InitComponents() {
 
   if (cfg->publish.enabled) {
     try {
-      if (cfg->model.adapter == "locateanything_trt") {
+      if (const auto retention=adapter_->FrameRetention()) {
+        // Delay follows the accepted model's request bound. Compressed bytes
+        // live in bounded anonymous SSD segments,not growing resident RAM.
+        auto spool=std::make_shared<stream::AuSpool>(retention->spool_directory,
+            retention->maximum_bytes+int64_t(128)*1024*1024);
+        au_buffer_=std::make_shared<stream::AuDelayBuffer>(
+            std::make_shared<stream::AdaptiveDelayController>(retention->delay_seconds,retention->delay_seconds),
+            1.2,retention->maximum_bytes,retention->maximum_frames,std::move(spool));
+      } else if (cfg->model.adapter == "locateanything_trt") {
         // 推理请求最多 28 秒；40 秒固定延迟从第一帧开始生效。
         // 768 MiB 支持 100 Mbps 约 48 秒压缩包及余量，绝不改动原始编码。
         au_buffer_ = std::make_shared<stream::AuDelayBuffer>(
@@ -1103,6 +1119,7 @@ void ReusedChannelWorker::InitModelComponents() {
   if(!model_root_.empty()&&std::filesystem::path(model.path).is_relative())
     model.path=(std::filesystem::path(model_root_)/model.path).string();
   adapter_->SetRequestedInputSize(model.input_size.at(0),model.input_size.at(1));
+  adapter_->SetCancellationProbe([this]{return stop_event_.load() || !LicenseAllowed();});
   adapter_->Load(model.path,model.provider,model.engine_cache);
   const auto [h,w]=adapter_->InputSize();
   if(h!=model.input_size.at(0)||w!=model.input_size.at(1))throw std::runtime_error("模型实际输入尺寸与通道配置不一致");

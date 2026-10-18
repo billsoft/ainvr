@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <fstream>
+#include <limits>
 #include <nlohmann/json.hpp>
 
 #include "../../src/stream/sei.hpp"
@@ -207,4 +208,77 @@ TEST(SeiPayload, EmptyInferenceIsExplicitButBudgetLossIsNotEmptyInference) {
   Detection d; d.class_name = std::string(200, 'x'); d.bbox = {1, 2, 3, 4};
   EXPECT_TRUE(sei::build_result_payload("ch", 123, 0.0, {d}, 100).empty());
   EXPECT_THROW(sei::build_result_payload("ch", 123, 0.0, {}, 1), std::runtime_error);
+}
+
+namespace {
+nlohmann::json grounding_metadata(size_t count) {
+  nlohmann::json points = nlohmann::json::array();
+  for (size_t i = 0; i < count; ++i) points.push_back({{"x", .5}, {"y", .25},
+      {"class_name", "定位 } \"点"}, {"label_id", "stable-id"},
+      {"query_description", "Point to: person."}, {"confidence", nullptr}});
+  return {{"grounding", {{"complete", true}, {"coordinate_space", "normalized_full_frame"},
+      {"points", points}}}};
+}
+}
+
+TEST(SeiGrounding, OptionalEmptyMetadataPreservesLegacyBytes) {
+  Detection d; d.class_name = "person"; d.confidence = .9; d.bbox = {1, 2, 3, 4};
+  EXPECT_EQ(sei::build_result_payload("ch", 1, 0, {d}),
+            sei::build_result_payload("ch", 1, 0, {d}, 1024, nlohmann::json::object()));
+}
+
+TEST(SeiGrounding, PointOnlyH264AndH265RoundtripPreservesCommonMetadata) {
+  const auto extra = grounding_metadata(1);
+  const auto payload = sei::build_result_payload("ch", 123, 0, {}, 1024, extra);
+  const auto value = nlohmann::json::parse(payload);
+  EXPECT_TRUE(value.at("det").empty());
+  EXPECT_EQ(value.at("model_extra"), extra);
+  for (const auto codec : {sei::VideoCodec::kH264, sei::VideoCodec::kH265}) {
+    const auto messages = sei::parse_sei_nal(sei::build_sei_nal(payload, codec), codec);
+    ASSERT_EQ(messages.size(), 1);
+    std::vector<uint8_t> expected = sei::SEI_UUID;
+    expected.insert(expected.end(), payload.begin(), payload.end());
+    EXPECT_EQ(messages[0].second, expected);
+  }
+}
+
+TEST(SeiGrounding, BoundedPointPrefixReportsLossWithoutChangingSourceOrInventingBoxes) {
+  const auto extra = grounding_metadata(40);
+  const auto payload = sei::build_result_payload("ch", 123, 0, {}, 1024, extra);
+  ASSERT_FALSE(payload.empty());
+  EXPECT_LE(payload.size() + sei::SEI_UUID.size(), 1024);
+  const auto value = nlohmann::json::parse(payload);
+  const auto& grounding = value.at("model_extra").at("grounding");
+  const size_t kept = grounding.at("points").size();
+  EXPECT_GT(kept, 0); EXPECT_LT(kept, 40);
+  EXPECT_EQ(grounding.at("sei_points_omitted"), 40 - kept);
+  EXPECT_EQ(extra.at("grounding").at("points").size(), 40);
+  EXPECT_TRUE(value.at("det").empty());
+  auto no_points = grounding_metadata(0);
+  no_points["grounding"]["sei_points_omitted"] = 40;
+  const auto foundation = sei::build_result_payload("ch", 123, 0, {}, 4096, no_points);
+  EXPECT_TRUE(sei::build_result_payload("ch", 123, 0, {},
+      static_cast<int>(foundation.size() + sei::SEI_UUID.size()), extra).empty());
+}
+
+TEST(SeiGrounding, MixedGeometryKeepsAnActualBoxAndReportsPointBudgetLoss) {
+  Detection d; d.class_name = "person"; d.confidence = .9; d.bbox = {1, 2, 3, 4};
+  const auto payload = sei::build_result_payload("ch", 1, 0, {d}, 1024, grounding_metadata(40));
+  ASSERT_FALSE(payload.empty());
+  const auto value = nlohmann::json::parse(payload);
+  ASSERT_EQ(value.at("det").size(), 1);
+  EXPECT_EQ(value.at("det")[0].at("b"), nlohmann::json::array({1, 2, 3, 4}));
+  EXPECT_GT(value.at("model_extra").at("grounding").at("sei_points_omitted").get<int>(), 0);
+  EXPECT_LE(payload.size() + sei::SEI_UUID.size(), 1024);
+}
+
+TEST(SeiGrounding, EmptyPointInferenceIsExplicitAndInvalidMetadataIsRejected) {
+  const auto payload = sei::build_result_payload("ch", 2, 0, {}, 1024, grounding_metadata(0));
+  ASSERT_FALSE(payload.empty());
+  EXPECT_TRUE(nlohmann::json::parse(payload).at("model_extra").at("grounding").at("points").empty());
+  EXPECT_THROW(sei::build_result_payload("ch", 1, 0, {}, 1024, nlohmann::json::array()), std::invalid_argument);
+  auto bad = grounding_metadata(1);
+  bad["grounding"]["points"][0]["x"] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_THROW(sei::build_result_payload("ch", 1, 0, {}, 1024, bad), std::invalid_argument);
+  EXPECT_THROW(sei::build_result_payload("ch", 1, 0, {}, 1, grounding_metadata(1)), std::runtime_error);
 }

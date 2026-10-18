@@ -41,12 +41,12 @@ describe('开放词汇通道契约', () => {
     expect(fast.labelName).toBe('人员')
     expect(fast.inferenceFps).toBe(5)
   })
-  it('识别描述和检索标签独立，默认每十五秒识别一次', () => {
+  it('识别描述和检索标签独立，试用默认每两分钟识别一次', () => {
     const value = { ...applyModelPreset(DEFAULT_WIZARD_VALUE, 'locateanything-3b'),
       description: 'adult woman', labelId: 'woman', labelName: '成年女性' }
     expect(validateStep2(value)).toEqual({})
     const patch = toCreatePatch(value)
-    expect(patch.inference_fps).toBeCloseTo(1 / 15)
+    expect(patch.inference_fps).toBeCloseTo(1 / 120)
     expect(patch.model?.description).toBe('adult woman')
     expect(patch.model?.label_id).toBe('woman')
     expect(patch.model?.label_name).toBe('成年女性')
@@ -55,6 +55,21 @@ describe('开放词汇通道契约', () => {
     const value = applyModelPreset(DEFAULT_WIZARD_VALUE, 'locateanything-3b')
     expect(validateStep2({ ...value, description: '', inferenceFps: 0 })).toHaveProperty('description')
     expect(validateStep2({ ...value, inferenceFps: 0 })).toHaveProperty('inferenceFps')
+  })
+  it('试用模型支持 1–3600 秒采集，更新间隔不改模型或推流绑定', async () => {
+    const value = { ...applyModelPreset(DEFAULT_WIZARD_VALUE, 'locateanything-3b'),
+      id: 'short-interval', name: 'short-interval', streamUrl: 'rtmp://localhost/live/cam',
+      description: 'helmet', labelId: 'helmet', labelName: '头盔', inferenceFps: 0.1 }
+    for (const seconds of [1, 2, 5, 10, 3600]) {
+      expect(validateStep2({ ...value, inferenceFps: 1 / seconds })).toEqual({})
+      expect(toCreatePatch({ ...value, inferenceFps: 1 / seconds }).inference_fps).toBe(1 / seconds)
+    }
+    for (const fps of [0, -1, 2, 1 / 3601, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(validateStep2({ ...value, inferenceFps: fps })).toHaveProperty('inferenceFps')
+    }
+    const original = await createMockAiChannelService().create(toCreatePatch(value))
+    const edit = fromChannel(original)
+    expect(toUpdatePatch({ ...edit, inferenceFps: 1 }, original)).toEqual({ inference_fps: 1 })
   })
   it('SEI 的未知置信度保留为 null，而不是伪造零分', () => {
     const result = parseSeiJson(JSON.stringify({ det: [{ c: 0, n: '成年女性', p: null, l: 'woman', b: [1, 2, 3, 4] }] }))
@@ -67,6 +82,8 @@ describe('开放词汇通道契约', () => {
       id: 'open', name: 'open', streamUrl: 'rtmp://localhost/live/cam' }
     const patch = toCreatePatch(v)
     const original = await createMockAiChannelService().create(patch)
+    // Existing installed channels keep their saved generation budget on a description-only edit.
+    original.config.model.max_new_tokens = 64
     original.config.model = Object.fromEntries(Object.entries(original.config.model).sort()) as typeof original.config.model
     const edit = fromChannel(original)
     const update = toUpdatePatch({ ...edit, description: 'woman carrying a bag' }, original)

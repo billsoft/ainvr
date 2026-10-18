@@ -27,6 +27,7 @@
 #include "../../src/output/snapshot_internal.hpp"
 #include "../../src/output/archive_executor.hpp"
 #include "../../src/output/archive_batch.hpp"
+#include "../../src/output/grounding_snapshot.hpp"
 #ifdef AINVR_CUDA_REFERENCE_TESTS
 #include "../../src/output/gpu_image.hpp"
 #endif
@@ -100,6 +101,94 @@ TEST(SnapshotArchiveBatch, StopJoinsNonstandardExceptionBeforeDestroyingJobs) {
 
 namespace ai_service::output {
 struct SnapshotStoreTestAccess {
+  static void CheckPointPendingRoundTrip(SnapshotStore& store) {
+    SnapshotStore::ArchiveJob job;
+    bson_oid_init(&job.oid, nullptr);
+    job.image_id = NewUuid4(); job.channel_id = store.channel_id_;
+    job.channel_name = "point-test"; job.timestamp = 123; job.frame_pts_ns = 456;
+    job.model_name = "locateanything"; job.task_type = "grounding";
+    job.point = {{"x", .5}, {"y", .25}, {"coordinate_space", "normalized_full_frame"}};
+    job.detection.class_id = -1; job.detection.class_name = "定位点";
+    job.detection.label_id = "stable-point";
+    job.detection.query_description = "Point to: person.";
+    job.detection.confidence_known = false;
+    job.detection.model_extra = {{"source", "point-contract"}};
+    job.config = store.cfg_;
+    job.crop = cv::Mat(16, 32, CV_8UC4, cv::Scalar(1, 2, 3, 255));
+    store.SavePending(job, false);
+    const auto file = std::filesystem::path(store.pending_dir_) / (job.image_id + ".cbor");
+    std::ifstream input(file, std::ios::binary);
+    auto raw = json::from_cbor(std::vector<uint8_t>((std::istreambuf_iterator<char>(input)), {}));
+    EXPECT_TRUE(raw.at("bbox").is_null());
+    EXPECT_EQ(raw.at("point"), job.point);
+    EXPECT_EQ(raw.at("context_image"), "full_frame");
+    const auto restored = store.ReadPending(file.string());
+    EXPECT_EQ(restored.image_id, job.image_id);
+    EXPECT_EQ(restored.point, job.point);
+    EXPECT_FALSE(restored.detection.confidence_known);
+    EXPECT_EQ(restored.detection.label_id, "stable-point");
+    EXPECT_EQ(restored.detection.model_extra, job.detection.model_extra);
+    EXPECT_EQ(cv::norm(restored.crop, job.crop, cv::NORM_INF), 0);
+    // Corrupted recovery metadata must fail rather than fabricate a box or empty point.
+    raw["point"]["x"] = -1;
+    const auto bad = json::to_cbor(raw);
+    std::ofstream output(file, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(bad.data()), bad.size()); output.close();
+    EXPECT_THROW(store.ReadPending(file.string()), std::exception);
+    store.RemovePending(job.image_id);
+  }
+  static void CheckPointOfferQueue(SnapshotStore& store) {
+    store.stop_event_.store(false); store.capture_enabled_.store(true);
+    // Joinable sentinel selects the real deferred-admission path,with no writer
+    // consuming it. Nothing invokes image callbacks or neural/hardware execution.
+    store.thread_ = std::thread([] {});
+    FrameResult result;
+    result.channel_id = store.channel_id_; result.model_name = "locateanything";
+    result.task_type = "grounding"; result.timestamp = 123; result.frame_pts_ns = 456;
+    result.model_extra = {{"grounding", {{"complete", true},
+      {"coordinate_space", "normalized_full_frame"}, {"points", json::array({
+        {{"x", .5}, {"y", .25}, {"class_name", "person"}, {"confidence", nullptr}},
+        {{"x", .75}, {"y", .5}, {"class_name", "car"}, {"confidence", .8}}
+      })}}}};
+    std::atomic<int> downloads{0};
+    pipeline::SnapshotSink::FrameProvider provider;
+    provider.size = {64, 32};
+    provider.download = provider.owned_download = [&](const cv::Rect&, cv::Mat&) { ++downloads; };
+    try {
+      store.OfferResult(provider, result, "point-test", {}, true, store.cfg_);
+    } catch (...) {
+      store.thread_.join(); store.stop_event_.store(true); throw;
+    }
+    store.thread_.join();
+    EXPECT_EQ(downloads.load(), 0);
+    EXPECT_TRUE(result.detections.empty());
+    EXPECT_EQ(store.queue_.size(), 2u);
+    for (const auto& job : store.queue_) {
+      EXPECT_FALSE(job.point.is_null());
+      EXPECT_EQ(job.point.at("coordinate_space"), "normalized_full_frame");
+      EXPECT_EQ(job.detection.bbox, (std::array<double, 4>{0, 0, 0, 0}));
+      EXPECT_EQ(job.crop_detection.bbox, (std::array<double, 4>{0, 0, 64, 32}));
+      EXPECT_FALSE(job.square);
+      EXPECT_EQ(job.config->projection_mode, "flat");
+      EXPECT_EQ(job.config->padding_ratio, 0);
+      EXPECT_EQ(job.config->face_enhance_model, "none");
+    }
+    EXPECT_EQ(store.cfg_.projection_mode, "erp_equirect");
+    store.queue_.clear(); store.stop_event_.store(true); store.capture_enabled_.store(false);
+  }
+  static void CheckStatsWhileDiskLocked(SnapshotStore& store) {
+    std::unique_lock<std::mutex> disk_lock(store.pending_io_mutex_);
+    store.pending_bytes_ = 123;
+    store.quarantined_bytes_ = 45;
+    auto stats = std::async(std::launch::async, [&store] { return store.GetStats(); });
+    const auto status = stats.wait_for(std::chrono::milliseconds(500));
+    disk_lock.unlock(); // Always release before joining, including the regression case.
+    const auto result = stats.get();
+    EXPECT_EQ(status, std::future_status::ready);
+    EXPECT_EQ(result.at("pending_bytes"), 123);
+    EXPECT_EQ(result.at("quarantined_bytes"), 45);
+  }
+
   static void PreserveOne(SnapshotStore& store) {
     SnapshotStore::ArchiveJob job;
     bson_oid_init(&job.oid, nullptr);
@@ -124,22 +213,22 @@ struct SnapshotStoreTestAccess {
     job.image_id=NewUuid4();job.channel_id="test";job.timestamp=1;
     job.config=store.cfg_;job.crop=cv::Mat(16,16,CV_8UC4,cv::Scalar(10,20,30,255));
     store.SavePending(job,false);
-    const auto bytes=store.pending_bytes_;
+    const auto bytes=store.pending_bytes_.load();
     ASSERT_GT(bytes,0u);
     store.QuarantineJob(job,"test quarantine");
-    EXPECT_EQ(store.pending_bytes_,0u);
-    EXPECT_EQ(store.quarantined_bytes_,bytes);
+    EXPECT_EQ(store.pending_bytes_.load(),0u);
+    EXPECT_EQ(store.quarantined_bytes_.load(),bytes);
     store.LoadPending();
-    EXPECT_EQ(store.pending_bytes_,0u);
-    EXPECT_EQ(store.quarantined_bytes_,bytes);
+    EXPECT_EQ(store.pending_bytes_.load(),0u);
+    EXPECT_EQ(store.quarantined_bytes_.load(),bytes);
     job.image_id=NewUuid4();store.SavePending(job,false);
     store.deletions_.Add(json::object());
     job.jpeg={1};
     std::vector<SnapshotStore::ArchiveJob> jobs{job};
     store.WriteBatch(jobs);
     EXPECT_TRUE(jobs.empty());
-    EXPECT_EQ(store.pending_bytes_,0u); // cleared history releases retry accounting
-    EXPECT_EQ(store.quarantined_bytes_,bytes); // isolated evidence still occupies disk
+    EXPECT_EQ(store.pending_bytes_.load(),0u); // cleared history releases retry accounting
+    EXPECT_EQ(store.quarantined_bytes_.load(),bytes); // isolated evidence still occupies disk
   }
   static void StartDisconnectedWriterForBackpressureTest(SnapshotStore& store) {
     // Isolate cancellation from the independently tested disk spool consumer.
@@ -199,6 +288,109 @@ TEST(SnapshotDeletion, UnavailableIsNotSuccessfulEmptyDeletion) {
   EXPECT_THROW(store.DeleteOne("missing"), SnapshotUnavailable);
   EXPECT_THROW(store.DeleteRange(1, 2), SnapshotUnavailable);
   EXPECT_THROW(store.Clear(), SnapshotUnavailable);
+}
+
+static FrameResult PointSnapshotResult(json points) {
+  FrameResult result;
+  result.model_extra = {{"grounding", {{"complete", true},
+    {"coordinate_space", "normalized_full_frame"}, {"points", std::move(points)}}}};
+  return result;
+}
+
+TEST(SnapshotGrounding, KeepsPointQueryAndUnknownConfidenceWithoutABox) {
+  const auto result = PointSnapshotResult(json::array({{{"x", .5}, {"y", .25},
+    {"class_name", "person"}, {"confidence", nullptr}, {"label_id", "stable"},
+    {"query_description", "Point to: person."}}}));
+  const auto targets = GroundingSnapshotTargets(result);
+  ASSERT_EQ(targets.size(), 1u);
+  EXPECT_TRUE(result.detections.empty());
+  EXPECT_EQ(targets[0].point.at("x"), .5);
+  EXPECT_EQ(targets[0].point.at("coordinate_space"), "normalized_full_frame");
+  EXPECT_EQ(targets[0].properties.class_id, -1);
+  EXPECT_FALSE(targets[0].properties.confidence_known);
+  EXPECT_EQ(targets[0].properties.label_id, "stable");
+  EXPECT_EQ(targets[0].properties.query_description, "Point to: person.");
+}
+
+TEST(SnapshotGrounding, RejectsInvalidCoordinatesConfidenceAndUnboundedCount) {
+  for (auto point : std::vector<json>{
+      {{"x", -1}, {"y", .5}}, {{"x", 1.1}, {"y", .5}},
+      {{"x", "0.5"}, {"y", .5}}, {{"x", .5}},
+      {{"x", .5}, {"y", .5}, {"confidence", 1.1}},
+      {{"x", .5}, {"y", std::numeric_limits<double>::infinity()}}}) {
+    EXPECT_THROW(GroundingSnapshotTargets(PointSnapshotResult(json::array({point}))), std::exception);
+  }
+  json points = json::array();
+  for (int i = 0; i < 1025; ++i) points.push_back({{"x", .5}, {"y", .5}});
+  EXPECT_THROW(GroundingSnapshotTargets(PointSnapshotResult(points)), std::invalid_argument);
+}
+
+TEST(SnapshotGrounding, EmptyAndIncompleteOutputsDoNotCreateRecords) {
+  auto result = PointSnapshotResult(json::array());
+  EXPECT_TRUE(GroundingSnapshotTargets(result).empty());
+  result.model_extra["grounding"]["points"] = json::array({{{"x", .5}, {"y", .5}}});
+  result.model_extra["grounding"]["complete"] = false;
+  EXPECT_TRUE(GroundingSnapshotTargets(result).empty());
+  result.model_extra["grounding"]["complete"] = true;
+  result.model_extra["grounding"]["coordinate_space"] = "pixels";
+  EXPECT_TRUE(GroundingSnapshotTargets(result).empty());
+}
+
+TEST(SnapshotGrounding, DeferredQueueUsesFullContextAndPreservesUserConfig) {
+  config::SnapshotConfig cfg;
+  cfg.enabled = true; cfg.projection_mode = "erp_equirect";
+  SnapshotStore store(cfg, "mongodb://127.0.0.1:1", "test", "test", "test", "", "", 64, false);
+  SnapshotStoreTestAccess::CheckPointOfferQueue(store);
+}
+
+TEST(SnapshotGrounding, PendingRoundTripRetainsGeometryAndRejectsCorruption) {
+  const auto dir = std::filesystem::temp_directory_path() / ("point-pending-" + NewUuid4());
+  config::SnapshotConfig cfg;
+  {
+    SnapshotStore store(cfg, "mongodb://127.0.0.1:1", "test", "test", "test", "", "", 64, false, dir.string());
+    SnapshotStoreTestAccess::CheckPointPendingRoundTrip(store);
+  }
+  std::filesystem::remove_all(dir);
+}
+
+TEST(SnapshotGrounding, HistoryPreservesPointAndDoesNotInventBbox) {
+  const json point = {{"x", .5}, {"y", .25}, {"coordinate_space", "normalized_full_frame"}};
+  const auto item = snapshot_detail::DocToListItem({{"bbox", nullptr}, {"point", point},
+    {"geometry_type", "point"}, {"context_image", "full_frame"}});
+  EXPECT_TRUE(item.at("bbox").is_null());
+  EXPECT_EQ(item.at("point"), point);
+  EXPECT_EQ(item.at("geometry_type"), "point");
+  EXPECT_EQ(item.at("context_image"), "full_frame");
+  const auto legacy = snapshot_detail::DocToListItem({{"bbox", {{"x", 1}, {"y", 2}, {"w", 3}, {"h", 4}}}});
+  EXPECT_FALSE(legacy.contains("point"));
+  EXPECT_FALSE(legacy.contains("geometry_type"));
+}
+
+TEST(SnapshotGrounding, ContextRectangleRetainsCoordinatesAcrossJpuPaddingAndRetries) {
+  json point = {{"x", .5}, {"y", .25}, {"coordinate_space", "normalized_full_frame"}};
+  PreserveSnapshotPointContext(point, 17, 1, 17, 17);
+  EXPECT_EQ(point.at("x"), .5);
+  EXPECT_EQ(point.at("y"), .25);
+  EXPECT_DOUBLE_EQ(point["context_image_rect"]["w"].get<double>(), 1);
+  EXPECT_DOUBLE_EQ(point["context_image_rect"]["h"].get<double>(), 1.0 / 17);
+  const auto original = point;
+  PreserveSnapshotPointContext(point, 17, 17, 17, 17);
+  EXPECT_EQ(point, original);  // Retry already owns the padded pixels.
+  EXPECT_THROW(PreserveSnapshotPointContext(point, 18, 17, 17, 17), std::invalid_argument);
+  point["context_image_rect"]["w"] = 1.1;
+  EXPECT_THROW(ValidateSnapshotPoint(point), std::invalid_argument);
+}
+
+TEST(SnapshotGrounding, ContextRectangleRejectsInvalidOffsetsAndExtents) {
+  for (const auto& rect : std::vector<json>{
+       {{"x", -.1}, {"y", 0}, {"w", 1}, {"h", 1}},
+       {{"x", .5}, {"y", 0}, {"w", .6}, {"h", 1}},
+       {{"x", 0}, {"y", 0}, {"w", 1}, {"h", 0}},
+       {{"x", 0}, {"y", 0}, {"w", 1}, {"h", "1"}}}) {
+    const json point = {{"x", .5}, {"y", .25}, {"coordinate_space", "normalized_full_frame"},
+                        {"context_image_rect", rect}};
+    EXPECT_THROW(ValidateSnapshotPoint(point), std::invalid_argument);
+  }
 }
 
 TEST(SnapshotSpool, QuarantineAndDeletionAccountingSurvivesReload) {
@@ -1773,3 +1965,9 @@ TEST(SnapshotAsyncArchive, ReusedBilateralCapacityMatchesChangingShapesAndBorder
   EXPECT_EQ(mismatches.load(),0);
 }
 #endif
+
+TEST(SnapshotSpool, StatsDoNotWaitForDiskIoLock) {
+  config::SnapshotConfig cfg;
+  SnapshotStore store(cfg, "mongodb://127.0.0.1:1", "test", "test", "test", "", "", 64, false);
+  SnapshotStoreTestAccess::CheckStatsWhileDiskLocked(store);
+}

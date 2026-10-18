@@ -19,18 +19,30 @@ p.add_argument('--research',type=Path,required=True)
 p.add_argument('--images',type=Path)
 p.add_argument('--output',type=Path,required=True)
 p.add_argument('--jobs',type=int,default=4)
+p.add_argument('--prompt-slots',type=int,choices=[8,32],default=8)
+p.add_argument('--detector-onnx',type=Path)
 p.add_argument('--reuse-calibration',type=Path)
 p.add_argument('--rewrite-float-clip',action='store_true')
 p.add_argument('--detector-float-prompt-norm',action='store_true')
 p.add_argument('--reprta-weight-ec',action='store_true')
 p.add_argument('--reprta-activation-headroom',type=float,default=1.)
 p.add_argument('--detector-matching-ec',action='store_true')
+p.add_argument('--detector-head-weight-ec',action='store_true')
+p.add_argument('--detector-all-weight-ec',action='store_true')
+p.add_argument('--detector-float-attention-tail',action='store_true')
+p.add_argument('--detector-attention-ec',action='store_true')
+p.add_argument('--ptq-only',action='store_true',help='Prepare diagnostic graph without HBM or production approval')
 a=p.parse_args();a.output.mkdir(exist_ok=False);assert 1<=a.jobs<=4
-assert not a.detector_float_prompt_norm or (a.kind=='detector' and a.reuse_calibration and a.rewrite_float_clip)
+assert not a.detector_float_prompt_norm or (a.kind=='detector' and a.rewrite_float_clip)
 assert not a.reprta_weight_ec or (a.kind=='reprta' and a.reuse_calibration and a.rewrite_float_clip)
 assert 1<=a.reprta_activation_headroom<=4
 assert a.reprta_activation_headroom==1 or (a.kind=='reprta' and a.reuse_calibration)
+assert not (a.detector_head_weight_ec and a.detector_all_weight_ec)
+assert not a.detector_all_weight_ec or (a.kind=='detector' and a.reuse_calibration and a.detector_float_prompt_norm)
+assert not a.detector_head_weight_ec or (a.kind=='detector' and a.reuse_calibration and a.detector_float_prompt_norm)
 assert not a.detector_matching_ec or (a.kind=='detector' and a.reuse_calibration and a.detector_float_prompt_norm)
+assert not a.detector_float_attention_tail or a.kind=='detector'
+assert not a.detector_attention_ec or (a.kind=='detector' and a.reuse_calibration)
 logging.basicConfig(level=logging.INFO)
 sha=lambda x:hashlib.sha256(x.read_bytes()).hexdigest()
 prepared=json.loads((a.prepared/'manifest.json').read_text());assert prepared['state']=='prepared' and not prepared['production_approved']
@@ -44,7 +56,7 @@ def bounded_cuda_provider(self,device_id=0):
     return provider,options
 ORTExecutor2._cuda_provider=bounded_cuda_provider
 r={'state':'preparing','kind':a.kind,'started_unix':time.time(),'target':'nash-m',
-   'jobs':a.jobs,'opt':0,'production_approved':False,'accuracy_verified':False,
+   'prompt_slots':a.prompt_slots,'jobs':a.jobs,'opt':0,'production_approved':False,'accuracy_verified':False,
    'offline_gpu_calibration_requested':True,'cuda_arena_limit_gib_per_session':4,
    'prepared_manifest_sha256':sha(a.prepared/'manifest.json'),'calibration_repeated':False}
 r['script_sha256']=sha(Path(__file__))
@@ -59,15 +71,18 @@ try:
         assert all(x.shape==(1,8,512) and x.dtype==np.float32 for x in data['text_embeddings'])
     else:
         assert a.images and prepared['calibration_images']==512
-        source=a.research/'onnx-probe-v1/yoloe26x-runtime-8prompts.onnx'
-        assert sha(source)==prepared['detector_onnx_sha256']=='951028bf70804f6c3c1a464bab9b522f6706d3a4c5efaeeeaa8c4b9f8073f5df'
+        source=a.detector_onnx or a.research/'onnx-probe-v1/yoloe26x-runtime-8prompts.onnx'
+        assert sha(source)==prepared['detector_onnx_sha256']
+        assert prepared.get('prompt_slots',8)==a.prompt_slots
+        if a.prompt_slots==8:
+            assert sha(source)=='951028bf70804f6c3c1a464bab9b522f6706d3a4c5efaeeeaa8c4b9f8073f5df'
         rows=[x for x in prepared['samples'] if x['split']=='calibration'];assert len(rows)==512
         data={'images':[],'prompt_embeddings':[]}
         for row in ([] if a.reuse_calibration else rows):
             image=a.images/row['image_tensor'];prompt=a.prepared/row['prompt_file']
             assert sha(image)==row['image_sha256'] and sha(prompt)==row['prompt_sha256']
             data['images'].append(np.fromfile(image,dtype='<f4').reshape(1,3,640,640))
-            data['prompt_embeddings'].append(np.fromfile(prompt,dtype='<f4').reshape(1,8,512))
+            data['prompt_embeddings'].append(np.fromfile(prompt,dtype='<f4').reshape(1,a.prompt_slots,512))
     count=64 if a.kind=='reprta' else len(rows)
     r.update(source_onnx_sha256=sha(source),calibration_samples=count,state='calibrating');save()
     if a.reuse_calibration:
@@ -120,6 +135,16 @@ try:
             # using a pixel-coordinate scale. Retain floating final structure.
             if '/model.23/Concat_4' in node.name or node.name.startswith('boxes_scores') or node.name.startswith('/Slice_'):
                 node.qtype='float32';node.switch='OFF';changes.append(node.name)
+    if a.detector_float_attention_tail:
+        attention_tail=[]
+        for node in calibrated.graph.nodes:
+            if (isinstance(node,CalibrationNode) and node.name.startswith('/model.10/')
+                    and 'Softmax' in node.name
+                    and node.name.endswith(('_reducesum_HzCalibration','_reciprocal_HzCalibration'))):
+                node.qtype='float32';node.switch='OFF';attention_tail.append(node.name)
+        assert len(attention_tail)==4,attention_tail
+        r.update(float_attention_tail_nodes=attention_tail)
+        changes.extend(attention_tail)
     if a.reprta_weight_ec:
         from hmct.common import QuantConfig
         from hmct.quantizer.calibrater.weight.compensate_weight import CompensateWeight
@@ -142,6 +167,50 @@ try:
         assert ranges
         r.update(reprta_activation_headroom=a.reprta_activation_headroom,activation_range_changes=ranges)
         changes.append('INT16 activation headroom from retained calibration; no validation samples added')
+    if a.detector_head_weight_ec or a.detector_all_weight_ec:
+        from hmct.common import QuantConfig
+        from hmct.quantizer.calibrater.weight.compensate_weight import CompensateWeight
+        names=[node.name for node in calibrated.graph.nodes if node.op_type=='Conv' and (a.detector_all_weight_ec or node.name.startswith('/model.23/cv3.'))]
+        assert len(names)>=15, names
+        if not a.detector_all_weight_ec: assert len(names)==15, names
+        config=QuantConfig('nash-m')
+        config.load_user_quant_config({'node_config':{name:{'input0':'int16','input1':'ec','output':'int16'} for name in names}})
+        count=CompensateWeight(config)(calibrated);assert count==len(names),(count,len(names))
+        r.update(compensated_detector_head_weights=names,weight_error_compensation_pass_changes=count)
+        changes.append(f'Official HMCT high/low INT8 weight EC on {len(names)} '+('all convolutions' if a.detector_all_weight_ec else 'classification-head convolutions'))
+    if a.detector_attention_ec:
+        from hmct.common import QuantConfig
+        from hmct.quantizer.calibrater.activation.compensate_activation import CompensateActivation
+        probability_nodes=[]
+        for node in calibrated.graph.nodes:
+            if (isinstance(node,CalibrationNode) and node.name.startswith(('/model.10/m/m.0/attn/','/model.10/m/m.1/attn/'))
+                    and node.name.endswith('Softmax_output_0_HzCalibration')):
+                node.qtype='int16';probability_nodes.append(node.name)
+        assert len(probability_nodes)==2,probability_nodes
+        names=[node.name for node in calibrated.graph.nodes if node.op_type=='MatMul' and node.name.startswith('/model.10/') and node.name.endswith('/MatMul_1')]
+        assert len(names)==2,names
+        config=QuantConfig('nash-m')
+        config.load_user_quant_config({'node_config':{name:{'input0':'int16','input1':'ec','output':'int16'} for name in names}})
+        count=CompensateActivation(config)(calibrated);assert count==2,count
+        # HMCT 2.6.5 may reuse an upstream calibration across Transpose
+        # for the EC residual. Subtract in the same tensor coordinate system.
+        proto=calibrated.proto
+        by_name={node.name:node for node in proto.graph.node}
+        producers={out:node for node in proto.graph.node for out in node.output}
+        repaired=[]
+        for name in names:
+            high=by_name[name]
+            high_calib=producers[high.input[1]]
+            sub=by_name[name+'_split_sub']
+            assert high_calib.op_type=='HzCalibration' and high_calib.input[0].endswith('/Transpose_1_output_0')
+            assert sub.input[1]==high.input[1]
+            source=high_calib.input[0]
+            repaired.append({'node':sub.name,'previous_input':sub.input[0],'correct_input':source})
+            sub.input[0]=source
+        calibrated=OnnxModel(proto)
+        r.update(attention_ec_coordinate_repairs=repaired)
+        r.update(attention_int16_boundary_nodes=probability_nodes,compensated_attention_matmuls=names)
+        changes.append('Preserve upstream INT16 attention probabilities; official EC inserts INT16 source before INT8 high/low MatMul branches')
     if a.detector_matching_ec:
         from hmct.common import QuantConfig
         from hmct.quantizer.calibrater.activation.compensate_activation import CompensateActivation
@@ -154,19 +223,22 @@ try:
         changes.append('Official HMCT activation EC on three dynamic image-feature matching inputs')
     calibrated.infer_shapes().check_validity();onnx.save(calibrated.proto,a.output/'calibrated-candidate.onnx')
     ptq=builder.quantize(calibrated);ptq.infer_shapes().check_validity();onnx.save(ptq.proto,a.output/'ptq.onnx')
-    r.update(state='converting',sensitive_precision_changes=changes);save()
-    module=export(proto=ptq.proto,name='yoloe_'+a.kind)
-    module=convert(module,march='nash-m',advice=True,advice_path=str(a.output)+'/')
-    ops=json.loads((a.output/('yoloe_'+a.kind+'_advice.json')).read_text())
-    cpu=[x for x in ops if x['backend']=='external_cpu']
-    # Both component interfaces have no token or post-detection index logic.
-    # Raw boxes/scores leave the graph; host NMS is implemented after inference.
-    r.update(external_cpu_ops=cpu,cpu_neural_fallback_rejected_ops=cpu);save()
-    assert ops and not cpu,'YOLOE component neural CPU fallback rejected'
-    save_bc(module,str(a.output/'quantized.bc'))
-    r.update(state='compiling',bc_sha256=sha(a.output/'quantized.bc'));save()
-    compile(module,str(a.output/(a.kind+'.hbm')),march='nash-m',opt=0,jobs=a.jobs,debug=False,
-            progress_bar=True,cache_mode='enable',cache_path=str(a.output/'compiler-cache'))
-    r.update(state='compiled_needs_validation',hbm_sha256=sha(a.output/(a.kind+'.hbm')))
+    if a.ptq_only:
+        r.update(state='ptq_diagnostic_only',sensitive_precision_changes=changes);save()
+    else:
+        r.update(state='converting',sensitive_precision_changes=changes);save()
+        module=export(proto=ptq.proto,name='yoloe_'+a.kind)
+        module=convert(module,march='nash-m',advice=True,advice_path=str(a.output)+'/')
+        ops=json.loads((a.output/('yoloe_'+a.kind+'_advice.json')).read_text())
+        cpu=[x for x in ops if x['backend']=='external_cpu']
+        # Both component interfaces have no token or post-detection index logic.
+        # Raw boxes/scores leave the graph; host NMS is implemented after inference.
+        r.update(external_cpu_ops=cpu,cpu_neural_fallback_rejected_ops=cpu);save()
+        assert ops and not cpu,'YOLOE component neural CPU fallback rejected'
+        save_bc(module,str(a.output/'quantized.bc'))
+        r.update(state='compiling',bc_sha256=sha(a.output/'quantized.bc'));save()
+        compile(module,str(a.output/(a.kind+'.hbm')),march='nash-m',opt=0,jobs=a.jobs,debug=False,
+                progress_bar=True,cache_mode='enable',cache_path=str(a.output/'compiler-cache'))
+        r.update(state='compiled_needs_validation',hbm_sha256=sha(a.output/(a.kind+'.hbm')))
 except BaseException as e:r.update(state='failed',error=repr(e));raise
 finally:r['finished_unix']=time.time();save()

@@ -110,6 +110,20 @@ class HardwareArchive : public testing::Test {
   json Page(int limit = 100, std::optional<std::string> cursor = std::nullopt) {
     return store->ListPage(cursor, limit, 0, std::nullopt, std::nullopt);
   }
+  void OfferPoints(cv::Mat& frame, int64_t pts, const json& points,
+                   const std::vector<Detection>& boxes = {}) {
+    FrameResult result;
+    result.channel_id = id; result.frame_pts_ns = pts; result.timestamp = 1700000000.125 + double(pts) / 1000;
+    result.frame_width = frame.cols; result.frame_height = frame.rows;
+    result.model_name = "point-contract-fixture"; result.task_type = "grounding";
+    result.detections = boxes;
+    result.model_extra = {{"grounding", {{"complete", true},
+      {"coordinate_space", "normalized_full_frame"}, {"points", points}}}};
+    pipeline::SnapshotSink::FrameProvider provider{frame.size(), [&frame](const cv::Rect& roi, cv::Mat& out) {
+      frame(roi).copyTo(out); // Synthetic source fixture ownership,not CPU scaling.
+    }};
+    store->OfferResult(provider, result, "isolated-hardware-test", boxes, false, cfg);
+  }
   bool WaitCount(size_t count) {
     return Until([&] {
       try { return store->GetOverview()["count"] == count &&
@@ -144,6 +158,87 @@ class HardwareArchive : public testing::Test {
     EXPECT_EQ(GetExposureBackendStats().cpu_runs, 0);
   }
 };
+TEST_F(HardwareArchive, PointOnlyFullContextMixedAndEmptyKeepExactGeometry) {
+  cfg.projection_mode = "erp_equirect";
+  const auto jpeg = GetSnapshotJpegStats(); const auto gpu = ainvr::GetGlesCropStats();
+  Start(); ASSERT_TRUE(store->GetOverview()["connected"].get<bool>());
+  cv::Mat frame(1920,3840,CV_8UC4,cv::Scalar(30,80,130,255));
+  const json point = {{"x", .5}, {"y", .25}, {"class_name", "person"},
+    {"confidence", nullptr}, {"label_id", "stable-point"}, {"query_description", "Point to: person."}};
+  OfferPoints(frame, 1100, json::array({point})); ASSERT_TRUE(WaitCount(1));
+  auto item = Page()["items"][0];
+  EXPECT_TRUE(item["bbox"].is_null()); EXPECT_EQ(item["geometry_type"],"point");
+  EXPECT_EQ(item["context_image"],"full_frame"); EXPECT_EQ(item["point"]["x"],.5);
+  EXPECT_EQ(item["point"]["y"],.25); EXPECT_TRUE(item["confidence"].is_null());
+  EXPECT_EQ(item["label_id"],"stable-point"); EXPECT_EQ(item["query_description"],"Point to: person.");
+  EXPECT_EQ(item["point"]["context_image_rect"],(json{{"x",0},{"y",0},{"w",1},{"h",1}}));
+  auto image = Image(item,false); EXPECT_EQ(image.size(),cv::Size(128,64));
+  EXPECT_NEAR(cv::mean(image)[0],130,5); EXPECT_NEAR(cv::mean(image)[2],30,5);
+  EXPECT_EQ(*store->GetImage(item["image_id"]),*store->GetImage(item["image_id"],true));
+  auto mixed_cfg = cfg; mixed_cfg.projection_mode = "none"; store->UpdateConfig(mixed_cfg); cfg = mixed_cfg;
+  OfferPoints(frame,1101,json::array({point}),{Det()}); ASSERT_TRUE(WaitCount(3));
+  int point_count=0,box_count=0;
+  // Own the response before iterating its subobject: C++20 does not extend
+  // Page()'s temporary lifetime through json::operator[].
+  const auto records=Page()["items"];ASSERT_EQ(records.size(),3u);
+  for(const auto& row:records){
+    if(row.value("geometry_type",std::string())=="point"){++point_count;EXPECT_TRUE(row["bbox"].is_null());}
+    else{++box_count;EXPECT_FALSE(row.contains("point"));EXPECT_EQ(row["bbox"]["w"],65);}
+  }
+  EXPECT_EQ(point_count,2); EXPECT_EQ(box_count,1);
+  OfferPoints(frame,1102,json::array()); EXPECT_TRUE(WaitCount(3));
+  Healthy(3);
+  EXPECT_GE(GetSnapshotJpegStats().jpu,jpeg.jpu+3);
+  EXPECT_GE(ainvr::GetGlesCropStats().crops,gpu.crops+3);
+  const auto saved_id=item["image_id"].get<std::string>();
+  EXPECT_TRUE(store->DeleteOne(saved_id)); EXPECT_FALSE(store->GetImage(saved_id));
+  EXPECT_EQ(store->GetOverview()["count"],2);
+}
+
+TEST_F(HardwareArchive, PointContextMinimumJpuCanvasKeepsOriginalCoordinates) {
+  Start(); cv::Mat frame(8,1024,CV_8UC4,cv::Scalar(20,90,160,255));
+  OfferPoints(frame,1200,json::array({{{"x",.5},{"y",.75},{"class_name","thin-frame"},{"confidence",nullptr}}}));
+  ASSERT_TRUE(WaitCount(1));auto item=Page()["items"][0];
+  EXPECT_TRUE(item["bbox"].is_null());EXPECT_EQ(item["point"]["y"],.75);
+  EXPECT_EQ(item["image_width"],128);EXPECT_EQ(item["image_height"],17);
+  const auto& rect=item["point"]["context_image_rect"];
+  EXPECT_EQ(rect["x"],0);EXPECT_EQ(rect["y"],0);EXPECT_EQ(rect["w"],1);
+  EXPECT_GT(rect["h"].get<double>(),0);EXPECT_LT(rect["h"].get<double>(),1);
+  auto image=Image(item,false);EXPECT_EQ(image.rows,17);EXPECT_NEAR(cv::mean(image)[0],160,5);
+  RecordProperty("visible_context_height",std::to_string(rect["h"].get<double>()*17));
+  Healthy(1);
+}
+
+TEST_F(HardwareArchive, PointPendingRestartReplayIsIdempotentAndKeepsQuery) {
+  Proxy(false);Start(false,true);cv::Mat frame(64,128,CV_8UC4,cv::Scalar(40,100,170,255));
+  const json point={{"x",.75},{"y",.5},{"class_name","pending-person"},
+    {"confidence",nullptr},{"label_id","stable-recovery"},{"query_description","Point to: person."}};
+  OfferPoints(frame,1300,json::array({point}));ASSERT_TRUE(Until([&]{return PendingCount()==1;}));
+  store->Stop();store.reset();fs::path file;
+  for(const auto& e:fs::directory_iterator(pending))if(e.path().extension()==".cbor")file=e.path();
+  ASSERT_FALSE(file.empty());std::ifstream input(file,std::ios::binary);
+  const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)),{});
+  const auto raw=json::from_cbor(bytes);EXPECT_TRUE(raw["bbox"].is_null());EXPECT_EQ(raw["point"]["x"],.75);
+  Proxy(true);Start(true);ASSERT_TRUE(WaitCount(1));auto first=Page()["items"][0];
+  EXPECT_EQ(first["label_id"],"stable-recovery");EXPECT_EQ(first["query_description"],"Point to: person.");
+  EXPECT_TRUE(first["bbox"].is_null());EXPECT_EQ(first["point"]["x"],.75);
+  Image(first,true);store->Stop();store.reset();
+  // Simulate an ambiguous acknowledgement leaving an identical pending file.
+  {std::ofstream output(file,std::ios::binary);output.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());}
+  Start(true);ASSERT_TRUE(WaitCount(1));auto second=Page()["items"][0];
+  EXPECT_EQ(first["image_id"],second["image_id"]);EXPECT_EQ(first["point"],second["point"]);
+  EXPECT_TRUE(Until([&]{return PendingCount()==0;}));
+  EXPECT_EQ(GetSnapshotJpegStats().cpu,0);EXPECT_EQ(GetExposureBackendStats().cpu_runs,0);
+}
+
+TEST_F(HardwareArchive, InvalidPointRejectsWholeMixedOfferBeforeAnyAdmission) {
+  Start();cv::Mat frame(64,128,CV_8UC4,cv::Scalar::all(70));
+  EXPECT_THROW(OfferPoints(frame,1400,json::array({{{"x",-1},{"y",.5}}}),{Det()}),std::invalid_argument);
+  EXPECT_TRUE(WaitCount(0));EXPECT_EQ(store->GetStats()["delivery"]["accepted"],0);
+  OfferPoints(frame,1401,json::array({{{"x",.5},{"y",.5},{"class_name","valid"}}}));
+  ASSERT_TRUE(WaitCount(1));Healthy(1);
+}
+
 TEST_F(HardwareArchive, Real4KErpQueueBrightnessDualImagesQueryDelete) {
   cfg.projection_mode = "erp_equirect"; cfg.brightness_enabled = true; cfg.brightness_target = 220;
   const auto crop = ainvr::GetGlesCropStats();

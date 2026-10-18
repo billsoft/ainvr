@@ -64,3 +64,52 @@ TEST(DetectionDecode, RawYoloeRejectsBadSignaturesAndScores){
   t.values[4]=std::numeric_limits<float>::quiet_NaN();EXPECT_THROW(DecodeYoloeRaw(t,scale,{"a"}),std::invalid_argument);
   t.values[4]=.9f;t.shape={5,1};EXPECT_THROW(DecodeYoloeRaw(t,scale,{"a"}),std::invalid_argument);
 }
+
+TEST(DetectionDecode, RawYoloeThirtyTwoSlots) {
+  DenseTensor t{"boxes_scores",{1,36,1},std::vector<float>(36,0)};
+  t.values[0]=30;t.values[1]=40;t.values[2]=20;t.values[3]=10;
+  t.values[4+31]=.9f;t.values[4+8]=.7f;
+  std::vector<std::string> names;for(int i=0;i<32;++i)names.push_back("slot"+std::to_string(i));
+  auto scale=ai_service::pipeline::compute_scale(64,64,64,64);
+  auto got=DecodeYoloeRaw(t,scale,names);
+  ASSERT_EQ(got.size(),1u);EXPECT_EQ(got[0].class_id,31);EXPECT_EQ(got[0].class_name,"slot31");
+  names.resize(9);got=DecodeYoloeRaw(t,scale,names);
+  ASSERT_EQ(got.size(),1u);EXPECT_EQ(got[0].class_id,8);
+  names.resize(8);EXPECT_TRUE(DecodeYoloeRaw(t,scale,names).empty());
+}
+
+TEST(DetectionDecode, ProbabilityRoundoffDoesNotDiscardValidFrame) {
+  const auto before=GetDetectionDecodeStats();
+  DenseTensor t{"detections",{1,3,6},{10,10,20,20,1.0001f,0,0,0,0,0,-.00001f,0,30,30,40,40,.8f,0}};
+  auto s=ai_service::pipeline::compute_scale(64,64,64,64);
+  auto got=DecodeEndToEnd(t,s,{"person"});
+  ASSERT_EQ(got.size(),2);EXPECT_EQ(got[0].confidence,1);
+  EXPECT_EQ(GetDetectionDecodeStats().clamped_probabilities-before.clamped_probabilities,2u);
+  t.values[4]=1.01f;EXPECT_THROW(DecodeEndToEnd(t,s,{"person"}),std::invalid_argument);
+  t.values[4]=-.01f;EXPECT_THROW(DecodeEndToEnd(t,s,{"person"}),std::invalid_argument);
+}
+TEST(DetectionDecode, BadGeometrySkipsOnlyItsCandidate) {
+  const auto before=GetDetectionDecodeStats();
+  DenseTensor t{"detections",{1,3,6},{20,10,10,20,.9f,0,10,10,20,20,.8f,0,10,10,10,20,.7f,0}};
+  auto s=ai_service::pipeline::compute_scale(64,64,64,64);
+  auto got=DecodeEndToEnd(t,s,{"person"});ASSERT_EQ(got.size(),1);
+  EXPECT_EQ(GetDetectionDecodeStats().rejected_geometry-before.rejected_geometry,2u);
+  t.values[0]=std::numeric_limits<float>::quiet_NaN();
+  EXPECT_THROW(DecodeEndToEnd(t,s,{"person"}),std::invalid_argument);
+}
+TEST(DetectionDecode, ScrfdDistanceRoundoffAndInvalidCandidateAreIsolated) {
+  auto out=Outputs();auto s=ai_service::pipeline::compute_scale(64,64,64,64);
+  const auto before=GetDetectionDecodeStats();
+  for(int i:{18,40}){out[0].values[i]=.9f;for(int j=0;j<4;++j)out[1].values[i*4+j]=1;}
+  out[1].values[18*4]=-.00001f;out[1].values[40*4]=-1;
+  auto got=DecodeScrfd(out,s);ASSERT_EQ(got.size(),1);EXPECT_GT(got[0].bbox[2],0);
+  EXPECT_EQ(GetDetectionDecodeStats().clamped_distances-before.clamped_distances,1u);
+  EXPECT_EQ(GetDetectionDecodeStats().rejected_geometry-before.rejected_geometry,1u);
+}
+TEST(DetectionDecode, YoloeRoundoffAndBadGeometryDoNotPoisonOtherAnchors) {
+  DenseTensor t{"boxes_scores",{1,5,3},{10,30,50,10,30,50,-1,4,4,4,4,4,1.0001f,.8f,-.00001f}};
+  auto s=ai_service::pipeline::compute_scale(64,64,64,64);
+  auto got=DecodeYoloeRaw(t,s,{"person"});ASSERT_EQ(got.size(),1);EXPECT_FLOAT_EQ(got[0].confidence,.8f);
+  t.values[14]=std::numeric_limits<float>::infinity();
+  EXPECT_THROW(DecodeYoloeRaw(t,s,{"person"}),std::invalid_argument);
+}

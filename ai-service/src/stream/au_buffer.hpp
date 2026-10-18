@@ -21,6 +21,9 @@
 
 namespace ai_service::stream {
 
+class AuSpool;
+class AuSpoolPayload;
+
 enum class StampResult {
   kStamped,
   // 包已经被推走了:推理来晚了 —— "延迟不够"的硬信号,应该调长
@@ -87,6 +90,9 @@ struct BufferedAu {
   int64_t dts_ns = 0;
   int64_t duration_ns = 0;
   std::vector<uint8_t> data;
+  // Pop restores bytes before returning an AU to the publisher. Only the
+  // optional slow-model SSD buffer fills this private retained payload.
+  std::shared_ptr<AuSpoolPayload> disk_payload;
   bool is_keyframe = false;
   // 到达时刻用单调钟,不用 PTS —— 原因见 Python 版注释:PTS 是内容时间轴,
   // 源管线重启会归零、长时间空洞会跳变。
@@ -118,6 +124,8 @@ struct BufferStats {
   int level = 0;
   double held_s = 0.0;
   int64_t bytes = 0;
+  int64_t resident_payload_bytes = 0;
+  int64_t ssd_allocated_bytes = 0;
   int64_t put = 0;
   int64_t popped = 0;
   int64_t stamped = 0;
@@ -142,7 +150,7 @@ class AuDelayBuffer {
  public:
   explicit AuDelayBuffer(std::shared_ptr<AdaptiveDelayController> controller = nullptr,
                           double hold_factor = 1.6, int64_t max_bytes = 256 * 1024 * 1024,
-                          int64_t max_frames = 8192);
+                          int64_t max_frames = 8192, std::shared_ptr<AuSpool> spool = nullptr);
 
   // ---- 拉流侧 ----
   void put(BufferedAu au);
@@ -178,6 +186,7 @@ class AuDelayBuffer {
   double hold_factor_;
   int64_t max_bytes_;
   int64_t max_frames_;
+  std::shared_ptr<AuSpool> spool_;
 
   mutable std::mutex mutex_;
   std::deque<BufferedAu> items_;                       // 按到达(解码)顺序

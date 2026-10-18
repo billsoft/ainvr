@@ -5,7 +5,7 @@ import type { AiChannel } from '@/types/aiChannel'
 
 describe('S100P 模型配置', () => {
   it('新配置提供已完成 BPU 接入的封闭检测和开放词汇模型', () => {
-    expect(SELECTABLE_AI_MODEL_PRESET_KEYS).toEqual(['yolo26x', 'yolo26x-face', 'yoloe-26x'])
+    expect(SELECTABLE_AI_MODEL_PRESET_KEYS).toEqual(['yolo26x', 'yolo26x-face', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b'])
     expect(DEFAULT_AI_MODEL_PRESET).toBe('yolo26x')
     const patch = toCreatePatch(DEFAULT_WIZARD_VALUE)
     expect(patch.model?.name).toBe('yolo26x')

@@ -292,11 +292,8 @@ json SnapshotStore::GetStats() const {
       faults.push_back({{"stage", stage}, {"message", fault.message},
                         {"duration_seconds", std::max(0.0, NowMono() - fault.since)}});
   }
-  uintmax_t pending_bytes, quarantined_bytes;
-  {
-    std::lock_guard<std::mutex> lock(pending_io_mutex_);
-    pending_bytes = pending_bytes_; quarantined_bytes = quarantined_bytes_;
-  }
+  const auto pending_bytes = pending_bytes_.load(std::memory_order_relaxed);
+  const auto quarantined_bytes = quarantined_bytes_.load(std::memory_order_relaxed);
   bool enabled;
   {
     std::lock_guard<std::mutex> lock(cfg_mutex_);

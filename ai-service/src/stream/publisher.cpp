@@ -1,5 +1,6 @@
 #include "../utils/log.hpp"
 #include "publisher.hpp"
+#include "au_spool.hpp"
 #include "flv_hevc_elements.hpp"
 
 #include <gst/app/gstappsink.h>
@@ -151,7 +152,12 @@ std::optional<std::string> StreamPublisher::LastError() const {
 
 void StreamPublisher::PublishLoop() {
   while (!stop_event_.load() && LicenseAllowed()) {
-    PublishLoopIteration();
+    try { PublishLoopIteration(); }
+    catch(const AuSpoolError& error) {
+      SetLastError(error.what());
+      AI_LOG(kError,"ai-service.publisher","["<<channel_id_<<"] "<<error.what());
+      stop_event_.store(true);
+    }
   }
 }
 
@@ -250,6 +256,10 @@ void StreamPublisher::PullLoop() {
   while (!stop_event_.load() && LicenseAllowed()) {
     try {
       PullLoopIteration();
+    } catch (const AuSpoolError& e) {
+      SetLastError(e.what());
+      AI_LOG(kError,"ai-service.publisher","["<<channel_id_<<"] "<<e.what());
+      stop_event_.store(true);
     } catch (const std::exception& e) {
       AI_LOG(kError, "ai-service.publisher", "[" << channel_id_ << "] 拉流线程异常: " << e.what());
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -316,8 +326,8 @@ void StreamPublisher::PullLoopIteration() {
   au.arrived_mono = NowMono();
   au.generation = generation;
 
-  buffer_->put(std::move(au));
   gst_sample_unref(sample);
+  buffer_->put(std::move(au));
   // 缓存锁已经释放;日志写入不能发生在拉流/推理/发布共享锁内。
   LogBufferPressure();
 }

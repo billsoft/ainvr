@@ -2,14 +2,27 @@
 #include <cstring>
 #include <stdexcept>
 #include <limits>
+#include <atomic>
 
 namespace ainvr {
 namespace {
+std::atomic<bool> runtime_healthy{true};
+std::atomic<uint64_t> quarantined_bytes{0};
 void Check(int rc, const char* operation) {
   if (rc != 0) throw std::runtime_error(std::string(operation) + ": " + std::to_string(rc));
 }
 }
+bool BpuRuntimeHealthy() noexcept { return runtime_healthy.load(); }
+uint64_t BpuQuarantinedBytes() noexcept { return quarantined_bytes.load(); }
+struct BpuModel::Quarantine {
+  hbDNNPackedHandle_t packed=nullptr;
+  hbUCPTaskHandle_t task=nullptr;
+  std::vector<hbDNNTensor> inputs,outputs;
+};
 BpuModel::BpuModel(const std::string& path, const std::string& name) {
+  if(!BpuRuntimeHealthy())throw std::runtime_error("BPU runtime fault; service restart required");
+  // Reserve custody before submitting work; timeout cleanup must not allocate.
+  quarantine_=std::make_unique<Quarantine>();
   try {
     const char* file = path.c_str();
     Check(hbDNNInitializeFromFiles(&packed_, &file, 1), "load HBM");
@@ -55,6 +68,17 @@ BpuModel::BpuModel(const std::string& path, const std::string& name) {
 }
 BpuModel::~BpuModel() { Clear(); }
 void BpuModel::Clear() noexcept {
+  if(inflight_){
+    quarantine_->packed=packed_;quarantine_->task=inflight_;
+    quarantine_->inputs=std::move(inputs_);quarantine_->outputs=std::move(outputs_);
+    for(const auto* tensors:{&quarantine_->inputs,&quarantine_->outputs})
+      for(const auto& t:*tensors)quarantined_bytes.fetch_add(t.properties.alignedByteSize);
+    // Preserve task, descriptor arrays, DMA buffers and HBM until process exit.
+    // Completion is unknown; freeing them here would allow DMA into freed RAM.
+    // The global fault prevents new work and stops watchdog notifications.
+    (void)quarantine_.release();packed_=nullptr;model_=nullptr;inflight_=nullptr;
+    return;
+  }
   for (auto* tensors : {&inputs_, &outputs_})
     for (auto& t : *tensors) if (t.sysMem.virAddr) hbUCPFree(&t.sysMem);
   if (packed_) hbDNNRelease(packed_);
@@ -87,6 +111,7 @@ nlohmann::json BpuModel::Describe() const {
 }
 std::vector<std::vector<unsigned char>> BpuModel::Run(const std::vector<std::vector<unsigned char>>& data) {
   std::lock_guard<std::mutex> lock(mutex_);
+  if(!BpuRuntimeHealthy())throw std::runtime_error("BPU runtime fault; service restart required");
   if (data.size() != inputs_.size()) throw std::invalid_argument("HBM input count mismatch");
   for (size_t i = 0; i < data.size(); ++i) {
     auto& t = inputs_[i];
@@ -101,11 +126,17 @@ std::vector<std::vector<unsigned char>> BpuModel::Run(const std::vector<std::vec
   sched.backend = HB_UCP_BPU_CORE_ANY;
   int rc = hbUCPSubmitTask(task, &sched);
   if (rc != 0) { hbUCPReleaseTask(task); Check(rc, "submit inference"); }
-  // Keep buffers alive until completion. Bound this worker process externally;
-  // timeout is not permission to free memory still used by hardware.
-  rc = hbUCPWaitTaskDone(task, 0);
-  hbUCPReleaseTask(task);
-  Check(rc, "wait inference");
+  inflight_=task;
+  // The SDK timeout is in milliseconds. Only success proves completion.
+  rc = hbUCPWaitTaskDone(task, 10000);
+  if(rc!=0){
+    runtime_healthy.store(false);
+    throw std::runtime_error("BPU wait failed; hardware resources retained until service restart: "+std::to_string(rc));
+  }
+  rc=hbUCPReleaseTask(task);
+  if(rc!=0)runtime_healthy.store(false);
+  Check(rc,"release completed inference");
+  inflight_=nullptr;
   std::vector<std::vector<unsigned char>> result;
   for (auto& t : outputs_) {
     Check(hbUCPMemFlush(&t.sysMem, HB_SYS_MEM_CACHE_INVALIDATE), "invalidate output cache");

@@ -42,6 +42,16 @@ class SnapshotSink {
                       const std::vector<Detection>& crop_detections,
                       const std::vector<Detection>& stored_detections, bool square_crop,
                       const config::SnapshotConfig& snapshot_cfg) = 0;
+  // Full frame result preserves non-box geometry for capable archive sinks.
+  // Existing box-only sinks retain their original interface and behavior.
+  virtual void OfferResult(const FrameProvider& frame_provider, const FrameResult& result,
+                           const std::string& channel_name,
+                           const std::vector<Detection>& crop_detections, bool square_crop,
+                           const config::SnapshotConfig& snapshot_cfg) {
+    Offer(frame_provider, result.channel_id, channel_name, result.frame_pts_ns, result.timestamp,
+          result.model_name, result.task_type, crop_detections, result.detections,
+          square_crop, snapshot_cfg);
+  }
 };
 
 }  // namespace ai_service::pipeline

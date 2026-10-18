@@ -73,7 +73,7 @@ try:
     rewrite_error=max(float(np.max(np.abs(native_a-changed_a))),float(np.max(np.abs(native_b-changed_b))))
     assert np.allclose(native_a,changed_a,rtol=1e-4,atol=1e-3) and np.allclose(native_b,changed_b,rtol=1e-4,atol=1e-3)
     report.update(state='exporting',head_rewrite_max_abs_error=rewrite_error);save()
-    model=a.output/'yoloe26x-runtime-8prompts.onnx'
+    model=a.output/f'yoloe26x-runtime-{a.max_prompts}prompts.onnx'
     torch.onnx.export(wrapper,(image,pa),str(model),input_names=['images','prompt_embeddings'],output_names=['boxes_scores'],opset_version=17,do_constant_folding=True,dynamo=False)
     import onnx
     import onnxruntime as ort

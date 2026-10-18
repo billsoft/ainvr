@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { Maximize2, Minimize2, RefreshCw } from 'lucide-react'
 import type { AiDetection } from '@/types/aiChannel'
 import { drawPanoramaDetections, type PanoramaCamera } from './panoramaDetection'
+import type { GroundingOverlay } from './groundingPoints'
 
 /** Presentation only: never owns a media connection or changes playback time. */
 export function usePlayerView(container: RefObject<HTMLDivElement | null>) {
@@ -12,8 +13,8 @@ export function usePlayerView(container: RefObject<HTMLDivElement | null>) {
   const [fullscreenError, setFullscreenError] = useState('')
   const camera = useRef<PanoramaCamera | null>(null)
   const receivePanoramaCamera = useCallback((value: PanoramaCamera | null) => { camera.current = value }, [])
-  const drawPanoramaFrame = useCallback((ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number) => {
-    drawPanoramaDetections(ctx, detections, camera.current, width, height, frameW, frameH)
+  const drawPanoramaFrame = useCallback((ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay) => {
+    drawPanoramaDetections(ctx, detections, camera.current, width, height, frameW, frameH, grounding)
   }, [])
   const panoramaFailed = useCallback((message: string) => {
     setPanorama(false); setPanoramaError(message)

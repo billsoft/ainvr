@@ -7,13 +7,100 @@
 #include <algorithm>
 #include <cmath>
 #include <string>
+#include <filesystem>
+#include <fstream>
+#include <unistd.h>
 
 #include "../../src/stream/au_buffer.hpp"
+#include "../../src/stream/au_spool.hpp"
 
 using ai_service::stream::AdaptiveDelayController;
 using ai_service::stream::AuDelayBuffer;
 using ai_service::stream::BufferedAu;
 using ai_service::stream::StampResult;
+
+namespace {
+struct SpoolDirectory {
+  std::filesystem::path path;
+  SpoolDirectory(){
+    static int next=0;
+    path=std::filesystem::path("/mnt/ainvr-ssd/model-compile-candidates/locateanything-3b-w4-v1/media-spool-control-fixtures-v1")/
+        (std::to_string(::getpid())+"-"+std::to_string(++next));
+    if(std::filesystem::exists(path))throw std::runtime_error("Control directory already exists");
+  }
+  ~SpoolDirectory(){std::error_code error;std::filesystem::remove(path,error);}
+};
+int64_t ResidentBytes(){
+  std::ifstream input("/proc/self/statm");int64_t total=0,resident=0;input>>total>>resident;
+  if(!input)throw std::runtime_error("Cannot inspect resident memory");return resident*::sysconf(_SC_PAGESIZE);
+}
+}
+
+TEST(AuSsdRetention, OriginalPtsDtsAndCompressedBytesSurviveLongInference){
+  SpoolDirectory directory;auto spool=std::make_shared<ai_service::stream::AuSpool>(directory.path.string(),64*1024*1024);
+  AuDelayBuffer buffer(std::make_shared<AdaptiveDelayController>(120,120),1.2,32*1024*1024,20000,spool);
+  BufferedAu frame;frame.pts_ns=123456789;frame.dts_ns=120000000;frame.duration_ns=33333333;
+  frame.arrived_mono=100;frame.is_keyframe=true;frame.generation=7;frame.data={0,0,0,1,0x65,1,2,3};
+  const auto original=frame.data;buffer.put(frame);
+  EXPECT_EQ(buffer.stats().resident_payload_bytes,0);
+  EXPECT_TRUE(std::filesystem::is_empty(directory.path));
+  EXPECT_FALSE(buffer.pop_ready(215));
+  ASSERT_EQ(buffer.stamp(frame.pts_ns,[](const auto& bytes){auto result=bytes;result.push_back(0x55);return result;},215,7),StampResult::kStamped);
+  auto result=buffer.pop_ready(220.01);ASSERT_TRUE(result);
+  EXPECT_EQ(result->pts_ns,frame.pts_ns);EXPECT_EQ(result->dts_ns,frame.dts_ns);EXPECT_EQ(result->duration_ns,frame.duration_ns);
+  auto expected=original;expected.push_back(0x55);EXPECT_EQ(result->data,expected);EXPECT_FALSE(result->disk_payload);
+  buffer.clear();EXPECT_EQ(spool->AllocatedBytes(),0);EXPECT_EQ(spool->Segments(),0);
+}
+
+TEST(AuSsdRetention, AQueued128MiBDoesNotBecomeResidentPacketMemory){
+  SpoolDirectory directory;auto spool=std::make_shared<ai_service::stream::AuSpool>(directory.path.string(),256*1024*1024);
+  AuDelayBuffer buffer(std::make_shared<AdaptiveDelayController>(120,120),1.2,192*1024*1024,10000,spool);
+  BufferedAu frame;frame.data.assign(65536,0x42);frame.generation=8;const auto before=ResidentBytes();
+  for(int i=0;i<2048;++i){frame.pts_ns=i*33333333LL;frame.dts_ns=frame.pts_ns;frame.arrived_mono=i/30.0;frame.is_keyframe=i%30==0;buffer.put(frame);}
+  const auto stats=buffer.stats();EXPECT_EQ(stats.bytes,128*1024*1024);EXPECT_EQ(stats.level,2048);
+  EXPECT_EQ(stats.resident_payload_bytes,0);EXPECT_LE(ResidentBytes()-before,32*1024*1024);
+  EXPECT_EQ(stats.ssd_allocated_bytes,128*1024*1024);EXPECT_TRUE(std::filesystem::is_empty(directory.path));
+  auto sent=buffer.pop_ready(120.01);ASSERT_TRUE(sent);EXPECT_EQ(sent->data,frame.data);
+  buffer.clear();EXPECT_EQ(spool->AllocatedBytes(),0);EXPECT_EQ(spool->Segments(),0);
+}
+
+TEST(AuSsdRetention, ReconnectClearsPrivateStorageAndRejectsOldGeneration){
+  SpoolDirectory directory;auto spool=std::make_shared<ai_service::stream::AuSpool>(directory.path.string(),64*1024*1024);
+  AuDelayBuffer buffer(std::make_shared<AdaptiveDelayController>(120,120),1.2,32*1024*1024,10000,spool);
+  BufferedAu frame;frame.data={1,2,3};frame.pts_ns=1;frame.arrived_mono=0;frame.generation=1;buffer.put(frame);
+  frame.pts_ns=2;frame.arrived_mono=1;frame.generation=2;buffer.put(frame);
+  EXPECT_EQ(buffer.stamp(1,[](const auto& input){return input;},2,1),StampResult::kUnknown);
+  EXPECT_EQ(buffer.stats().generation_reset_events,1);EXPECT_EQ(buffer.stats().level,1);
+  buffer.clear();EXPECT_EQ(spool->AllocatedBytes(),0);
+}
+
+TEST(AuSsdRetention, ExistingBytePressureDropsAtKeyframeWithoutIncreasingDelay){
+  SpoolDirectory directory;auto spool=std::make_shared<ai_service::stream::AuSpool>(directory.path.string(),64*1024*1024);
+  AuDelayBuffer buffer(std::make_shared<AdaptiveDelayController>(120,120),1.2,250,10000,spool);
+  BufferedAu frame;frame.data.assign(100,0x12);frame.arrived_mono=0;frame.pts_ns=1;frame.is_keyframe=true;buffer.put(frame);
+  frame.pts_ns=2;frame.arrived_mono=.03;frame.is_keyframe=false;buffer.put(frame);
+  frame.pts_ns=3;frame.arrived_mono=.06;frame.is_keyframe=true;buffer.put(frame);
+  auto stats=buffer.stats();EXPECT_EQ(stats.byte_limit_events,1);EXPECT_EQ(stats.level,1);EXPECT_EQ(stats.dropped,2);
+  EXPECT_EQ(buffer.stamp(1,[](const auto& input){return input;},10),StampResult::kDropped);
+  EXPECT_EQ(buffer.controller()->stats().miss_events,0);
+  auto sent=buffer.pop_ready(121);ASSERT_TRUE(sent);EXPECT_EQ(sent->pts_ns,3);EXPECT_EQ(sent->data,frame.data);
+}
+
+TEST(AuSsdRetention, StorageExhaustionIsExplicitAndExistingBytesRemainIntact){
+  SpoolDirectory directory;ai_service::stream::AuSpool spool(directory.path.string(),1024);
+  std::vector<uint8_t> expected(600,0x51);auto retained=spool.Store(expected);
+  EXPECT_THROW(spool.Store(expected),ai_service::stream::AuSpoolError);
+  EXPECT_EQ(retained->Read(),expected);EXPECT_EQ(spool.AllocatedBytes(),600);
+  retained.reset();spool.Reset();EXPECT_EQ(spool.AllocatedBytes(),0);
+}
+
+TEST(AuSsdRetention, CacheMustBePrivateAndOnTheDeclaredSsd){
+  SpoolDirectory directory;std::filesystem::create_directory(directory.path);::chmod(directory.path.c_str(),0777);
+  EXPECT_THROW(ai_service::stream::AuSpool(directory.path.string(),1024),ai_service::stream::AuSpoolError);
+  ::chmod(directory.path.c_str(),0700);
+  EXPECT_THROW(ai_service::stream::AuSpool("/tmp/ainvr-invalid-spool",1024),ai_service::stream::AuSpoolError);
+  EXPECT_FALSE(std::filesystem::exists("/tmp/ainvr-invalid-spool"));
+}
 
 TEST(AuDelayBuffer, FastOpenVocabularyKeepsColdInferenceWithinStartupMargin) {
   AuDelayBuffer buffer(std::make_shared<AdaptiveDelayController>(0.5, 3.0));

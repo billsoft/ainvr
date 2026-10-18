@@ -48,6 +48,10 @@ struct StreamConfig {
   std::optional<std::string> codec_override;
 };
 
+struct PromptLabel {
+  std::string description, label_id, label_name;
+};
+
 struct ModelConfig {
   std::string name = "yolo26m";
   // yolo26_end2end / yolo26_traditional / yolo26_bpu / yoloface_bpu / scrfd_bpu
@@ -61,6 +65,7 @@ struct ModelConfig {
   std::string description;
   std::string label_id;
   std::string label_name;
+  std::vector<PromptLabel> prompts;  // Stable per-category identity, independent of slot order.
   int max_new_tokens = 64;
 };
 

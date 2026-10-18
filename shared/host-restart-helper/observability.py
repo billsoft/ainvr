@@ -109,6 +109,40 @@ def bpu_percent() -> float | None:
         return None
 
 
+class BpuWindow:
+    """10s time-weighted driver occupancy; sample independently of AI jobs.
+
+    Missing samples/gaps stay unknown. Hold readings at most 1s and require
+    80% coverage. Occupancy is not MAC saturation or an inference rate limit.
+    """
+    def __init__(self):
+        self.samples = collections.deque(maxlen=64)
+        self.lock = threading.Lock()
+
+    def add(self, stamp, value):
+        with self.lock:
+            self.samples.append((stamp, value))
+
+    def mean(self, now=None):
+        now = time.monotonic() if now is None else now
+        begin = now - 10.0
+        with self.lock:
+            points = list(self.samples)
+        area = covered = 0.0
+        for i, (stamp, value) in enumerate(points):
+            end = points[i+1][0] if i+1 < len(points) else now
+            duration = max(0.0, min(end, now, stamp+1.0)-max(stamp, begin))
+            if value is None: continue
+            area += value * duration
+            covered += duration
+        return round(area/covered, 2) if covered >= 8.0 else None
+
+    def loop(self, stop):
+        while not stop.is_set():
+            self.add(time.monotonic(), bpu_percent())
+            stop.wait(.5)
+
+
 def ai_service_health(health: dict) -> tuple[bool, str]:
     detail = '运行通道 ' + str(health.get('channels_running', 0))
     business = health.get('business')
@@ -164,6 +198,10 @@ class Observer:
             except ValueError: pass
         self.last_compact = 0
         self.stop = threading.Event()
+        self.bpu_sampler = BpuWindow()
+        self.bpu_thread = threading.Thread(target=self.bpu_sampler.loop, args=(self.stop,),
+                                           name='bpu-observer', daemon=True)
+        self.bpu_thread.start()
         self.thread = threading.Thread(target=self.loop, name='host-observer', daemon=True)
         self.thread.start()
 
@@ -362,7 +400,7 @@ class Observer:
         try: gpu = int(Path('/sys/devices/platform/17000000.gpu/load').read_text())/10
         except (OSError,ValueError): pass
         host = {'cpuPercent':percent,'memoryBytes':mem['MemTotal']-mem['MemAvailable'],
-                'memoryTotalBytes':mem['MemTotal'],'gpuPercent':gpu,'bpuPercent':bpu_percent(),'cores':os.cpu_count(),
+                'memoryTotalBytes':mem['MemTotal'],'gpuPercent':gpu,'bpuPercent':self.bpu_sampler.mean(),'cores':os.cpu_count(),
                 'swapBytes':mem['SwapTotal']-mem['SwapFree']}
         disk = shutil.disk_usage(ROOT)
         host.update(diskUsedBytes=disk.used, diskTotalBytes=disk.total)

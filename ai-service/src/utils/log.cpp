@@ -1,9 +1,11 @@
 #include "log.hpp"
+#include "warning_log.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <iostream>
 #include <mutex>
+#include <memory>
 #include <regex>
 
 #include <nlohmann/json.hpp>
@@ -14,6 +16,8 @@ namespace {
 
 std::atomic<int> g_level{static_cast<int>(Level::kInfo)};
 std::mutex g_write_mutex;
+std::unique_ptr<WarningLog> g_warning_log;
+std::atomic<uint64_t> g_warning_file_failures{0};
 
 const char* LevelName(Level level) {
   switch (level) {
@@ -41,6 +45,12 @@ void SetLevel(const std::string& name) {
   else if (name == "warning") g_level.store(static_cast<int>(Level::kWarning));
   else if (name == "error") g_level.store(static_cast<int>(Level::kError));
 }
+
+void EnableWarningFileLog(const std::string& directory) {
+  std::lock_guard<std::mutex> lock(g_write_mutex);
+  g_warning_log=std::make_unique<WarningLog>(directory);
+}
+uint64_t WarningFileFailures(){return g_warning_file_failures.load();}
 
 bool Enabled(Level level) { return static_cast<int>(level) >= g_level.load(); }
 
@@ -81,6 +91,14 @@ void Write(Level level, const std::string& module, const std::string& message) {
   std::lock_guard<std::mutex> lock(g_write_mutex);
   std::cerr << line << '\n';
   std::cerr.flush();
+  if(g_warning_log&&level>=Level::kWarning){
+    try{g_warning_log->Append(line);}
+    catch(...){
+      // Keep the original stderr event even if the diagnostic SSD is unhealthy.
+      if(g_warning_file_failures.fetch_add(1)==0)
+        std::cerr<<"AINVR private warning log unavailable; inspect health counter\n";
+    }
+  }
 }
 
 }  // namespace ai_service::log

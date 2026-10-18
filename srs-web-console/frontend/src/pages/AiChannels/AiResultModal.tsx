@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X, ChevronDown, ChevronRight } from 'lucide-react'
 import type { AiDetection, AiFrameResult } from '@/types/aiChannel'
+import { parseGroundingOverlay } from '@/components/player/groundingPoints'
 
 interface Props {
   channelName: string
@@ -24,6 +25,10 @@ function summarize(taskType: string, detections: AiDetection[]): string {
 
 export function AiResultModal({ channelName, loading, result, onClose }: Props) {
   const [showRaw, setShowRaw] = useState(false)
+  const grounding = parseGroundingOverlay(result?.model_extra)
+  const pointSummary = grounding?.points.length
+    ? `定位到 ${grounding.points.length} 个目标点${grounding.omitted ? `（另有 ${grounding.omitted} 个未展示）` : ''}`
+    : ''
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="查看结果">
@@ -43,7 +48,9 @@ export function AiResultModal({ channelName, loading, result, onClose }: Props) 
           ) : (
             <>
               <p className="rounded-base border border-line bg-surface-page px-3 py-2.5 text-sm font-medium text-ink">
-                {summarize(result.task_type, result.detections)}
+                {pointSummary
+                  ? `${result.detections.length ? `${summarize(result.task_type, result.detections)}；` : ''}${pointSummary}`
+                  : summarize(result.task_type, result.detections)}
               </p>
               <p className="mt-2 text-xs text-ink-faint">
                 帧 #{result.frame_index} · {result.frame_width}×{result.frame_height} · 总耗时 {result.timing_ms.total.toFixed(1)}ms

@@ -1,6 +1,6 @@
 """AINVR compare complete raw YOLOE BPU detections with the original FP32 oracle.
 
-Eight runtime slots map to per-image class names. Inactive slots are ignored.
+Runtime slots map to per-image class names. Inactive slots are ignored.
 Agreement gates match the existing detector gates; this is not ground-truth AP.
 """
 import argparse
@@ -17,6 +17,8 @@ a = p.parse_args()
 assert not a.output.exists()
 reference = json.loads((a.reference / 'manifest.json').read_text())
 actual = json.loads((a.actual / 'manifest.json').read_text())
+slots=reference.get('prompt_slots',8)
+assert slots in (8,32) and actual.get('prompt_slots',8)==slots
 assert reference['backend'] == 'onnx-cuda' and actual['backend'] == 'bpu'
 assert reference['source_onnx_sha256'] == actual['source_onnx_sha256']
 assert reference['prepared_manifest_sha256'] == actual['prepared_manifest_sha256']
@@ -33,7 +35,7 @@ def iou(x, y):
     return area / np.maximum(ax[:, None] + ay[None, :] - area, 1e-12)
 
 def decode(raw, item):
-    assert raw.shape == (1, 12, 8400) and np.isfinite(raw).all()
+    assert raw.shape == (1, 4+slots, 8400) and np.isfinite(raw).all()
     raw = raw[0].T.astype(np.float64)
     scores = raw[:, 4:4 + item['active_count']]
     cls = np.argmax(scores, axis=1)
@@ -96,7 +98,8 @@ report = {'scope': 'Complete dual-input detector, offline FP32 prompt oracle; no
           'samples': 128, 'metrics': metrics, 'quantization_parity_passed': passed,
           'hbm_sha256': actual['model_sha256'], 'reference_onnx_sha256': reference['model_sha256'],
           'prepared_manifest_sha256': reference['prepared_manifest_sha256'],
-          'board_fps_with_production_running': actual['sequential_fps'],
+          'board_tensor_fps': actual['sequential_fps'],
+          'production_concurrently_running': actual.get('production_concurrently_running', True),
           'thresholds': {'confidence': .25, 'class_aware_nms_iou': .45,
                          'precision': .95, 'recall': .95, 'matched_iou': .9},
           'note': 'FP32 agreement is not labeled accuracy. Text encoder, semantic switch and real channel remain.',

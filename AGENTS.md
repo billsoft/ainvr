@@ -135,3 +135,12 @@
   the original pixels; metadata describes the actual encoded dimensions. No
   CPU image fallback is permitted. Old quarantined RGBA files are backed up
   before normal pending-file replay; respect the original deletion ledger.
+
+
+## SRS channel ownership (user direction, 2026-10-17)
+
+- All SRS input and output channels must be configured in Access Management.
+- An AI channel is an AI processor: select one existing input SRS channel and
+  one existing output SRS channel. Do not create SRS channels inside AI flows.
+- Preserve manually configured channels and bindings. Do not recreate deleted
+  agent-created trial channels or restore an earlier configuration.

@@ -1,6 +1,6 @@
 import { Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { AuthImage } from '@/components/common/AuthImage'
+import { SnapshotImage } from './SnapshotImage'
 import { formatRelativeTime } from '@/utils/format'
 import type { SnapshotItem } from '@/types/snapshot'
 
@@ -73,10 +73,9 @@ export function SnapshotLightbox({ channelId, item, onClose, onDelete }: Props) 
           <span className="text-xs text-ink-faint">{variant === 'original' ? '增强与亮度处理前' : item.enhanced ? '增强后的截图' : '归档截图'}</span>
         </div>
         <div className="h-[60vh] min-h-[240px] bg-surface-page">
-          <AuthImage
+          <SnapshotImage
             channelId={channelId}
-            imageId={item.image_id}
-            alt={item.class_name}
+            item={item}
             className="h-full w-full"
             objectFit="contain"
             variant={variant}

@@ -1,12 +1,13 @@
+import { PromptLabelEditor } from './PromptLabelEditor'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Plus, RefreshCw, X } from 'lucide-react'
+import { Check, RefreshCw, X } from 'lucide-react'
 import {
   DEFAULT_WIZARD_VALUE, aiServiceRtmpBase, applyModelPreset, findOutputConflict, fromChannel,
-  generateChannelId, needsIouThreshold,
+  generateChannelId, needsIouThreshold, promptRows,
   toCreatePatch, toUpdatePatch, validateStep1, validateStep2, validateStep3, validatePublishRequiresRtmp,
   type AiWizardFormValue, type FieldErrors,
 } from '@/features/aiChannelForm'
-import { AI_MODEL_PRESETS, DEFAULT_AI_MODEL_PRESET, SELECTABLE_AI_MODEL_PRESET_KEYS, isOpenVocabularyPreset, type AiChannel, type AiChannelCreatePatch, type AiChannelUpdatePatch, type AiStreamOption } from '@/types/aiChannel'
+import { AI_MODEL_PRESETS, DEFAULT_AI_MODEL_PRESET, SELECTABLE_AI_MODEL_PRESET_KEYS, isOpenVocabularyPreset, isYoloePreset, promptSlotLimit, type AiChannel, type AiChannelCreatePatch, type AiChannelUpdatePatch, type AiStreamOption } from '@/types/aiChannel'
 import type { ChannelWithStatus } from '@/types/channel'
 import { parseStreamPath, streamKey } from '@/utils/channelMatching'
 import type { AiServiceCapabilities } from '@/hooks/useAiServiceCapabilities'
@@ -38,7 +39,6 @@ interface Props {
   /** 锁定第①步源流为指定地址（只读），用于从通道详情页发起创建等场景 */
   lockedSource?: LockedSourceInfo
   onRefreshStreams: () => void
-  onCreateOutputChannel?: (name: string, streamName: string) => Promise<ChannelWithStatus>
   onClose: () => void
   onSubmit: (patch: AiChannelCreatePatch | AiChannelUpdatePatch) => Promise<void> | void
   /** ai-service 能力（/health 的 capabilities）；null = 还没取到/AI 服务不可达 */
@@ -75,15 +75,12 @@ export function AiChannelWizard({
   aiChannels = [],
   lockedSource,
   onRefreshStreams,
-  onCreateOutputChannel,
   onClose, onSubmit,
   aiCapabilities,
 }: Props) {
   const [step, setStep] = useState(0)
   const [value, setValue] = useState<AiWizardFormValue>(DEFAULT_WIZARD_VALUE)
   const [errors, setErrors] = useState<FieldErrors>({})
-  const [manualUrl, setManualUrl] = useState(false)
-  const [manualOutputUrl, setManualOutputUrl] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const initializedDraft = useRef<string | null>(null)
   useEffect(() => {
@@ -91,19 +88,6 @@ export function AiChannelWizard({
     // Refresh on opening/selection, not on periodic status-object replacement.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, mode, initial?.id])
-  // 用户是否主动切换过手动/列表模式。用于竞态防护：SRS 通道列表
-  // 迟到时，如果用户还没主动操作过，才允许自动重新匹配；用户主动
-  // 切换过就尊重用户选择，不被迟到数据覆盖。
-  const [userToggledManualUrl, setUserToggledManualUrl] = useState(false)
-  const [userToggledManualOutputUrl, setUserToggledManualOutputUrl] = useState(false)
-
-  // 新建输出通道对话框
-  const [createDialogOpen, setCreateDialogOpen] = useState(false)
-  const [newChannelName, setNewChannelName] = useState('')
-  const [newStreamName, setNewStreamName] = useState('')
-  const [newStreamNameDirty, setNewStreamNameDirty] = useState(false)
-  const [creatingChannel, setCreatingChannel] = useState(false)
-
   // 将 AI 服务 listStreams 的在线流按 app/name 建索引，
   // 用于标记 SRS 通道是否在线、是否 H.265（SRS 实测编码）。
   const onlineStreamMap = useMemo(() => {
@@ -142,18 +126,18 @@ export function AiChannelWizard({
 
   // Step 1 选中的 SRS 通道 id（用于下拉显示选中值）
   const selectedInputChannelId = useMemo(() => {
-    if (!value.streamUrl || manualUrl) return ''
+    if (!value.streamUrl) return ''
     const parsed = parseStreamPath(value.streamUrl)
     if (!parsed) return ''
     const ch = srsChannels.find(
       (c) => c.upstream.app === parsed.app && c.upstream.stream === parsed.stream,
     )
     return ch?.id ?? ''
-  }, [value.streamUrl, srsChannels, manualUrl])
+  }, [value.streamUrl, srsChannels])
 
   // Step 3 选中的输出 SRS 通道 id
   const selectedOutputChannelId = useMemo(() => {
-    if (!value.publishEnabled || manualOutputUrl) return ''
+    if (!value.publishEnabled) return ''
     // 未指定地址时显示占位项；编辑和新建都必须明确选择输出通道。
     if (!value.publishTargetUrl) return ''
     const parsed = parseStreamPath(value.publishTargetUrl)
@@ -162,10 +146,10 @@ export function AiChannelWizard({
       (c) => c.upstream.app === parsed.app && c.upstream.stream === parsed.stream,
     )
     return ch?.id ?? ''
-  }, [value.publishEnabled, value.publishTargetUrl, srsChannels, manualOutputUrl])
+  }, [value.publishEnabled, value.publishTargetUrl, srsChannels])
 
 
-  // 编辑模式初始化：解析 publishTargetUrl 判断是否进入手动模式
+  // AI 处理器只绑定接入管理已有通道；旧地址保留显示，用户明确重选后才变更。
   useEffect(() => {
     if (!open) {
       initializedDraft.current = null
@@ -179,38 +163,12 @@ export function AiChannelWizard({
     initializedDraft.current = draftKey
     if (open && mode === 'edit' && initial) {
       const v = fromChannel(initial)
-      setValue(v)
+      setValue({ ...v, publishEnabled: true })
       setStep(0)
       setErrors({})
       setSubmitError(null)
-      setManualUrl(false)
-      setManualOutputUrl(false)
-
-      // Step 1：如果源流 URL 无法匹配 SRS 通道，进入手动模式
-      const parsed = parseStreamPath(v.streamUrl)
-      if (parsed) {
-        const matched = srsChannels.some(
-          (c) => c.upstream.app === parsed.app && c.upstream.stream === parsed.stream,
-        )
-        if (!matched) setManualUrl(true)
-      } else if (v.streamUrl) {
-        setManualUrl(true)
-      }
-
-      // Step 3：如果输出 URL 非空且无法匹配 SRS 通道，进入手动模式
-      if (v.publishEnabled && v.publishTargetUrl) {
-        const parsedOut = parseStreamPath(v.publishTargetUrl)
-        if (parsedOut) {
-          const matched = srsChannels.some(
-            (c) => c.upstream.app === parsedOut.app && c.upstream.stream === parsedOut.stream,
-          )
-          if (!matched) setManualOutputUrl(true)
-        } else {
-          setManualOutputUrl(true)
-        }
-      }
     } else if (open && mode === 'create') {
-      const base: AiWizardFormValue = { ...DEFAULT_WIZARD_VALUE }
+      const base: AiWizardFormValue = { ...DEFAULT_WIZARD_VALUE, publishEnabled: true }
       // 如果传了 lockedSource，预填源流 URL 和默认名称
       if (lockedSource) {
         base.streamUrl = lockedSource.url
@@ -225,12 +183,7 @@ export function AiChannelWizard({
       setStep(0)
       setErrors({})
       setSubmitError(null)
-      setManualUrl(false)
-      setManualOutputUrl(false)
     }
-    // 重置用户手动切换标记，让首次匹配生效
-    setUserToggledManualUrl(false)
-    setUserToggledManualOutputUrl(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, mode, initial])
 
@@ -242,38 +195,6 @@ export function AiChannelWizard({
     const online = parsed ? onlineStreamMap.get(`${parsed.app}/${parsed.stream}`) : undefined
     if (online && online.h265 !== value.h265) setValue((prev) => ({ ...prev, h265: online.h265 }))
   }, [open, onlineStreamMap, value.streamUrl, value.h265])
-
-  // 竞态修复：SRS 通道列表晚到时，如果用户还没主动切换过手动/列表
-  // 模式，自动重新匹配。避免页面刚打开、列表还在加载时就点开向导
-  // 导致误判为手动 URL 模式。
-  useEffect(() => {
-    if (!open) return
-    if (srsChannels.length === 0) return
-
-    // 源流：用户没主动切换过才重新检测
-    if (!userToggledManualUrl && value.streamUrl) {
-      const parsed = parseStreamPath(value.streamUrl)
-      if (parsed) {
-        const matched = srsChannels.some(
-          (c) => c.upstream.app === parsed.app && c.upstream.stream === parsed.stream,
-        )
-        setManualUrl(!matched)
-      }
-    }
-
-    // 输出通道：同理
-    if (!userToggledManualOutputUrl && value.publishEnabled && value.publishTargetUrl) {
-      const parsedOut = parseStreamPath(value.publishTargetUrl)
-      if (parsedOut) {
-        const matched = srsChannels.some(
-          (c) => c.upstream.app === parsedOut.app && c.upstream.stream === parsedOut.stream,
-        )
-        setManualOutputUrl(!matched)
-      }
-    }
-    // 只在 srsChannels 到达时重新检测；用户改了 value 不算「迟到数据」
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [srsChannels, open])
 
   if (!open) return null
 
@@ -301,18 +222,12 @@ export function AiChannelWizard({
 
   function selectModel(key: keyof typeof AI_MODEL_PRESETS) {
     setValue((prev) => applyModelPreset(prev, key))
-    // 对话框已经打开时，模型切换应同步未手动修改过的默认输出流名；
-    // 用户一旦编辑过流名，就保留其明确输入。
-    if (createDialogOpen && !newStreamNameDirty) {
-      const parsedInput = parseStreamPath(value.streamUrl)
-      const inputStreamName = parsedInput?.stream ?? 'stream'
-      setNewStreamName(`${inputStreamName}_${AI_MODEL_PRESETS[key].streamSlug}`)
-    }
   }
 
   function handleNext() {
     if (step === 0) {
       const e = validateStep1(value, mode === 'create')
+      if (!selectedInputChannelId) e.streamUrl = '请选择接入管理中的输入 SRS 通道'
       const sourceConflict = findOutputConflict(
         { streamUrl: value.streamUrl, publishEnabled: false, publishTargetUrl: '' }, aiChannels, selfId,
       )
@@ -333,18 +248,18 @@ export function AiChannelWizard({
     setErrors(e)
     if (Object.keys(e).length > 0) return
 
-    // UI 层额外校验：开启推流 + 没选输出通道 → 拦截
-    // （所有输出通道必须先在接入管理创建，AI 服务只能从现有通道选择，
-    //  禁止自动派生产生脏数据）
-    if (
-      value.publishEnabled
-      && !value.publishTargetUrl.trim()
-    ) {
-      setSubmitError('请选择输出通道或新建一个输出通道（AI 回流必须有对应的接入通道记录）')
+    const input = srsChannels.find((ch) => ch.id === selectedInputChannelId)
+    const output = srsChannels.find((ch) => ch.id === selectedOutputChannelId)
+    if (!input || !output) {
+      setSubmitError('请选择接入管理中的输入和输出 SRS 通道；请先在接入管理中配置缺少的通道')
       return
     }
+    const outputBlocked = outputOptionBlockReason(output)
+    if (outputBlocked) { setSubmitError(outputBlocked); return }
 
-    const conflict = findOutputConflict(value, aiChannels, selfId)
+    const resolved = { ...value, streamUrl: srsUrl(input), streamProtocol: 'rtmp' as const,
+      publishEnabled: true, publishTargetUrl: srsUrl(output) }
+    const conflict = findOutputConflict(resolved, aiChannels, selfId)
     if (conflict) {
       setSubmitError(conflict)
       return
@@ -352,42 +267,13 @@ export function AiChannelWizard({
 
     setSubmitError(null)
     try {
-      await onSubmit(mode === 'create' ? toCreatePatch(value) : toUpdatePatch(value, initial ?? null))
+      await onSubmit(mode === 'create' ? toCreatePatch(resolved) : toUpdatePatch(resolved, initial ?? null))
     } catch (e: any) {
       setSubmitError(e?.message || '保存失败')
     }
   }
 
-  // 打开新建输出通道对话框，预填默认值
-  function openCreateDialog() {
-    const parsedInput = parseStreamPath(value.streamUrl)
-    const inputStreamName = parsedInput?.stream ?? 'stream'
-    const inputChannel = srsChannels.find(
-      (c) => c.upstream.app === parsedInput?.app && c.upstream.stream === parsedInput?.stream,
-    )
-    const defaultName = inputChannel ? `${inputChannel.name}_AI输出` : `${inputStreamName}_AI输出`
-    const modelShort = AI_MODEL_PRESETS[value.modelPreset].streamSlug
-    const defaultStream = `${inputStreamName}_${modelShort}`
-
-    setNewChannelName(defaultName)
-    setNewStreamName(defaultStream)
-    setNewStreamNameDirty(false)
-    setCreateDialogOpen(true)
-  }
-
-  async function handleCreateOutputChannel() {
-    if (!onCreateOutputChannel || !newChannelName.trim() || !newStreamName.trim()) return
-    setCreatingChannel(true)
-    try {
-      const ch = await onCreateOutputChannel(newChannelName.trim(), newStreamName.trim())
-      selectOutputChannel(ch)
-      setCreateDialogOpen(false)
-    } finally {
-      setCreatingChannel(false)
-    }
-  }
-
-  const publishBlockedByProtocol = validatePublishRequiresRtmp(value)
+  const publishBlockedByProtocol = selectedInputChannelId ? null : validatePublishRequiresRtmp(value)
 
   return (
     <div
@@ -395,7 +281,7 @@ export function AiChannelWizard({
       role="dialog" aria-modal="true"
       aria-label={mode === 'create' ? '新建 AI 通道' : '编辑 AI 通道'}
     >
-      <div className="flex max-h-[90vh] w-[560px] flex-col rounded-panel bg-surface shadow-modal">
+      <div className="flex max-h-[90vh] w-full max-w-[880px] flex-col rounded-panel bg-surface shadow-modal">
         <div className="border-b border-line px-6 pb-4 pt-5">
           <div className="flex items-center justify-between">
             <h3 className="text-base font-semibold text-ink">
@@ -419,6 +305,7 @@ export function AiChannelWizard({
               </li>
             ))}
           </ol>
+          <p className="mt-3 text-xs text-ink-subtle">AI 处理器：输入 SRS 通道 → 模型推理 → 输出 SRS 通道。通道统一在接入管理中配置。</p>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
@@ -474,7 +361,7 @@ export function AiChannelWizard({
                     </p>
                     {lockedSource.h265 && <H265SourceNote caps={aiCapabilities} />}
                   </div>
-                ) : !manualUrl ? (
+                ) : (
                   <>
                     {srsChannels.length === 0 ? (
                       <p className="mt-1.5 rounded-base border border-line bg-surface-page px-3 py-2 text-xs text-ink-faint">
@@ -506,33 +393,10 @@ export function AiChannelWizard({
                         })}
                       </select>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => { setManualUrl(true); setUserToggledManualUrl(true) }}
-                      className="mt-1.5 text-xs text-primary hover:underline"
-                    >
-                      通道不在列表？手动输入
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <input
-                      value={value.streamUrl}
-                      onChange={(e) => {
-                        set('streamUrl', e.target.value)
-                        setUserToggledManualUrl(true)
-                      }}
-                      placeholder="rtmp://host/app/stream"
-                      className={`mt-1.5 ${inputCls}`}
-                      data-testid="wizard-stream-url"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => { setManualUrl(false); setUserToggledManualUrl(true) }}
-                      className="mt-1.5 text-xs text-primary hover:underline"
-                    >
-                      改用接入通道选择
-                    </button>
+                    {value.streamUrl && !selectedInputChannelId && (
+                      <p className="mt-1.5 text-xs text-warning-700">当前输入地址未登记，请先到接入管理配置，再从列表选择。</p>
+                    )}
+                    <p className="mt-1.5 text-xs text-ink-faint">输入 SRS 通道统一在接入管理配置。</p>
                   </>
                 )}
                 {!lockedSource && value.streamUrl && (
@@ -575,10 +439,12 @@ export function AiChannelWizard({
                       </option>
                     )
                   })}
+                  {isOpenVocabularyPreset(value.modelPreset) && !SELECTABLE_AI_MODEL_PRESET_KEYS.includes('yoloe-26x-32') && <option value="yoloe-26x-32" disabled>开放词汇识别 · 32 槽（编译与验证中）</option>}
                 </select>
               </div>
 
-              {isOpenVocabularyPreset(value.modelPreset) && <>
+              {isYoloePreset(value.modelPreset) && <PromptLabelEditor rows={promptRows(value)} limit={promptSlotLimit(value.modelPreset)} error={errors.prompts} onChange={rows => set('prompts', rows)} />}
+              {value.modelPreset === 'locateanything-3b' && <>
                 <label className="text-sm">识别描述（必填，建议英文）
                   <input aria-label="识别描述" value={value.description ?? ''} maxLength={160}
                     onChange={(e) => set('description', e.target.value)} className={`mt-1.5 ${inputCls}`} />
@@ -594,9 +460,9 @@ export function AiChannelWizard({
                     onChange={(e) => set('labelName', e.target.value)} className={`mt-1.5 ${inputCls}`} />
                   {errors.labelName && <p className="text-danger">{errors.labelName}</p>}
                 </label>
-                <p className="text-xs text-ink-faint">{value.modelPreset === 'yoloe-26x'
+                <p className="text-xs text-ink-faint">{isYoloePreset(value.modelPreset)
                   ? '描述决定识别对象，标签用于检索与匹配。修改描述后会重新载入通道，无需重新编译模型；过长描述会提示缩短，实际效果请结合画面核对。'
-                  : '描述决定识别对象，标签用于检索与匹配。此模型不提供置信度；输出画面延后约 40 秒以匹配识别原帧，每个识别到的目标仍按归档配置保存。'}</p>
+                  : '描述决定识别对象，标签用于检索与匹配。此模型不提供置信度；此试用版本的 AI 输出画面延后约 95 秒以匹配识别原帧，原始录像不受此延迟影响，每个识别到的目标仍按归档配置保存。'}</p>
               </>}
 
               <div>
@@ -608,7 +474,7 @@ export function AiChannelWizard({
                 </div>
                 <p className="mt-1 text-xs text-ink-faint">{value.modelPreset === 'locateanything-3b'
                   ? '使用已安装的模型，首次载入需要等待。描述长度还受模型实际容量限制。目前每台设备仅允许一路开放词汇通道运行。'
-                  : value.modelPreset === 'yoloe-26x'
+                  : isYoloePreset(value.modelPreset)
                   ? '使用已安装的设备模型进行硬件加速推理。文字只在载入或修改描述时计算，逐帧识别复用本次结果。首次载入需要等待，运行帧率以实测为准。'
                   : '使用已安装并验证的设备模型进行硬件加速推理。模型未就绪时无法启动，页面不会自动编译模型。'}</p>
               </div>
@@ -616,7 +482,7 @@ export function AiChannelWizard({
               <div>
                 <label className="text-sm font-medium text-ink">{value.modelPreset === 'locateanything-3b' ? '采集间隔（秒）' : '推理帧率（FPS）'}</label>
                 <input
-                  type="number" step="any" min={value.modelPreset === 'locateanything-3b' ? 10 : 0}
+                  type="number" step="any" min={value.modelPreset === 'locateanything-3b' ? 1 : 0}
                   max={value.modelPreset === 'locateanything-3b' ? 3600 : 30}
                   value={Number.isFinite(value.inferenceFps) && (value.modelPreset !== 'locateanything-3b' || value.inferenceFps > 0)
                     ? (value.modelPreset === 'locateanything-3b' ? 1 / value.inferenceFps : value.inferenceFps) : ''}
@@ -626,7 +492,7 @@ export function AiChannelWizard({
                   className={`mt-1.5 ${inputCls}`}
                 />
                 <p className="mt-1 text-xs text-ink-faint">
-                  {value.modelPreset === 'locateanything-3b' ? '采集间隔决定从源视频取帧的频率。每个完成识别的目标仍按归档配置保存；实际间隔可能因推理或归档等待而变长。' : <>
+                  {value.modelPreset === 'locateanything-3b' ? '支持 1–3600 秒。较短间隔会增加设备负载；实际采集间隔受推理和归档速度限制，可能长于设定值。每个完成识别的目标仍按归档配置保存。' : <>
                   0 = 跟随源流帧率。不同模型的单帧推理耗时差异很大（同一分辨率下，
                   人脸检测高精度模型可能比通用检测模型慢数倍），设得比所选模型
                   实际跑得动的速度高不会报错，但会长期贴着算力上限运行、几乎没有
@@ -670,7 +536,7 @@ export function AiChannelWizard({
                 <div>
                   <label className="text-sm font-medium text-ink">最大检测数</label>
                   <input
-                    type="number" min={1} max={value.modelPreset === 'yoloe-26x' ? 300 : 1000}
+                    type="number" min={1} max={isYoloePreset(value.modelPreset) ? 300 : 1000}
                     value={value.maxDetections}
                     onChange={(e) => set('maxDetections', Number(e.target.value))}
                     className={`mt-1.5 ${inputCls}`}
@@ -690,25 +556,14 @@ export function AiChannelWizard({
               </div>
 
               <div className="rounded-base border border-line p-3">
-                <label className="flex items-center justify-between text-sm font-medium text-ink">
-                  推流叠加（生成 -ai 衍生流）
-                  <input
-                    type="checkbox"
-                    checked={value.publishEnabled}
-                    disabled={!!publishBlockedByProtocol}
-                    onChange={(e) => set('publishEnabled', e.target.checked)}
-                    data-testid="wizard-publish-toggle"
-                  />
-                </label>
+                <p className="text-sm font-medium text-ink">输出 SRS 通道</p>
                 {publishBlockedByProtocol && (
                   <p className="mt-1.5 text-xs text-warning-700">{publishBlockedByProtocol}</p>
                 )}
-                {value.publishEnabled && !publishBlockedByProtocol && (
+                {!publishBlockedByProtocol && (
                   <>
                     <div className="mt-3">
                       <label className="text-xs text-ink-subtle">输出通道</label>
-                      {!manualOutputUrl ? (
-                        <>
                           <select
                             value={selectedOutputChannelId}
                             onChange={(e) => {
@@ -731,42 +586,9 @@ export function AiChannelWizard({
                               )
                             })}
                           </select>
-                          <div className="mt-1.5 flex items-center justify-between">
-                            <button
-                              type="button"
-                              onClick={openCreateDialog}
-                              disabled={!onCreateOutputChannel}
-                              className="flex items-center gap-1 text-xs text-primary hover:underline disabled:opacity-50"
-                              data-testid="wizard-create-output-btn"
-                            >
-                              <Plus size={12} /> 新建输出通道
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => { setManualOutputUrl(true); setUserToggledManualOutputUrl(true) }}
-                              className="text-xs text-primary hover:underline"
-                            >
-                              手动输入地址
-                            </button>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <input
-                            value={value.publishTargetUrl}
-                            onChange={(e) => set('publishTargetUrl', e.target.value)}
-                            placeholder="rtmp://host/app/stream"
-                            className={`mt-1 ${inputCls}`}
-                            data-testid="wizard-publish-url"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => { setManualOutputUrl(false); setUserToggledManualOutputUrl(true) }}
-                            className="mt-1.5 text-xs text-primary hover:underline"
-                          >
-                            改用接入通道选择
-                          </button>
-                        </>
+                      <p className="mt-1.5 text-xs text-ink-faint">请先在接入管理中配置输出 SRS 通道，再从此处选择；AI 处理器不会创建 SRS 通道。</p>
+                      {value.publishTargetUrl && !selectedOutputChannelId && (
+                        <p className="mt-1.5 text-xs text-warning-700">当前输出地址未登记，请先到接入管理配置，再从列表选择。</p>
                       )}
                     </div>
                     {value.publishTargetUrl && (
@@ -776,13 +598,11 @@ export function AiChannelWizard({
                     )}
                     {!value.publishTargetUrl && (
                       <p className="mt-2 text-xs text-ink-faint">
-                        {manualOutputUrl
-                          ? '请输入输出地址，并在接入管理中创建对应的输出通道。'
-                          : '请先选择已有输出通道，或点击“新建输出通道”。'}
+                        请选择接入管理中的输出 SRS 通道。
                       </p>
                     )}
                     <p className="mt-3 text-xs text-ink-faint">
-                      画面原样输出，识别结果以 SEI 元数据形式携带在视频流里；
+                      AI 处理器读取所选输入通道，将原画面和 SEI 识别结果写入所选输出通道；
                       预览播放器会自动在画面上叠加检测框/关键点（浏览器端渲染，不占用设备编码资源）。
                     </p>
                     {(value.h265 || value.publishFlvFormat !== 'codec12') && (
@@ -839,71 +659,7 @@ export function AiChannelWizard({
         </div>
       </div>
 
-      {/* 新建输出通道对话框 */}
-      {createDialogOpen && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
-          role="dialog" aria-modal="true"
-          aria-label="新建输出通道"
-        >
-          <div className="w-[420px] rounded-panel bg-surface shadow-modal">
-            <div className="flex items-center justify-between border-b border-line px-5 pb-3 pt-4">
-              <h4 className="text-sm font-semibold text-ink">新建输出通道</h4>
-              <button
-                type="button"
-                onClick={() => setCreateDialogOpen(false)}
-                className="rounded-base p-1 text-ink-faint hover:bg-surface-page hover:text-ink"
-                aria-label="关闭"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <div className="flex flex-col gap-3 px-5 py-4">
-              <div>
-                <label className="text-sm font-medium text-ink">通道名称</label>
-                <input
-                  value={newChannelName}
-                  onChange={(e) => setNewChannelName(e.target.value)}
-                  placeholder="如：大门人脸识别_AI输出"
-                  className={`mt-1.5 ${inputCls}`}
-                  data-testid="new-channel-name"
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-ink">流名</label>
-                <input
-                  value={newStreamName}
-                  onChange={(e) => {
-                    setNewStreamName(e.target.value)
-                    setNewStreamNameDirty(true)
-                  }}
-                  placeholder={`如：stream_${AI_MODEL_PRESETS[value.modelPreset].streamSlug}`}
-                  className={`mt-1.5 ${inputCls}`}
-                  data-testid="new-channel-stream"
-                />
-                <p className="mt-1 text-xs text-ink-faint">应用名默认 live，协议 RTMP</p>
-              </div>
-            </div>
-            <div className="flex items-center justify-end gap-2 border-t border-line px-5 py-3">
-              <button
-                type="button"
-                onClick={() => setCreateDialogOpen(false)}
-                className="rounded-base border border-line px-4 py-1.5 text-sm text-ink-subtle hover:bg-surface-page"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                disabled={creatingChannel || !newChannelName.trim() || !newStreamName.trim()}
-                onClick={handleCreateOutputChannel}
-                className="rounded-base bg-primary px-4 py-1.5 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
-              >
-                {creatingChannel ? '创建中…' : '创建并选中'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+
     </div>
   )
 }

@@ -7,6 +7,9 @@
 #include "config/config_center_client.hpp"
 #include "utils/crash_handler.hpp"
 #include "utils/systemd_watchdog.hpp"
+#include "utils/log.hpp"
+#include "platform/bpu.hpp"
+#include "adapters/detection_decode.hpp"
 #include <httplib.h>
 #include <csignal>
 #include <filesystem>
@@ -35,6 +38,7 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (argc != 5) throw std::runtime_error("usage: ainvr_ai_service CONFIG OVERLAY MODEL_ROOT LICENSE_ENV");
+    ai_service::log::EnableWarningFileLog("/mnt/ainvr-ssd/ainvr-ai-diagnostics");
     auto store = std::make_shared<cfg::ConfigStore>(argv[1], argv[2]);
     auto config = store->Load();
     // The reused archive writes relative data/snapshot-pending; keep it on SSD.
@@ -72,7 +76,12 @@ int main(int argc, char** argv) {
       auto business = manager->BusinessHealth();
       business["license_phase"] = license.Phase();
       business["license_error"] = license.LastError();
+      const auto decode=ainvr::GetDetectionDecodeStats();
       return nlohmann::json{{"version",kServiceVersion},
+        {"bpu",{{"healthy",ainvr::BpuRuntimeHealthy()},{"quarantined_bytes",ainvr::BpuQuarantinedBytes()}}},
+        {"warning_file_failures",ai_service::log::WarningFileFailures()},
+        {"detection_decode",{{"clamped_probabilities",decode.clamped_probabilities},
+          {"clamped_distances",decode.clamped_distances},{"rejected_geometry",decode.rejected_geometry}}},
         {"media",{{"ffmpeg",FfmpegRuntimeInfo()}}},
         {"disk_free_bytes",space.free},{"disk_total_bytes",space.capacity},
         {"business",std::move(business)},
@@ -96,7 +105,7 @@ int main(int argc, char** argv) {
       manager->StopAll(); server.stop();
     });
     ai_service::utils::SystemdWatchdog watchdog([&] {
-      if(!server.is_running())return false;
+      if(!server.is_running() || !ainvr::BpuRuntimeHealthy())return false;
       httplib::Client probe(config.server.host,config.server.port);
       probe.set_connection_timeout(1,0);probe.set_read_timeout(2,0);probe.set_write_timeout(1,0);
       const auto response=probe.Get("/livez");

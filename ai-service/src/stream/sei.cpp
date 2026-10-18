@@ -281,8 +281,22 @@ std::vector<uint8_t> inject_sei_annexb(const std::vector<uint8_t>& au,
 std::vector<uint8_t> build_result_payload(const std::string& channel_id,
                                            int64_t pts_ns, double age_ms,
                                            std::vector<Detection> detections,
-                                           int budget) {
+                                           int budget,
+                                           const nlohmann::json& model_extra) {
   int json_budget = std::max(0, budget - static_cast<int>(SEI_UUID.size()));
+  if (!model_extra.is_object()) throw std::invalid_argument("SEI frame metadata must be an object");
+  const auto validate_numbers = [](const auto& self, const nlohmann::json& value) -> void {
+    if (value.is_number_float() && !std::isfinite(value.get<double>()))
+      throw std::invalid_argument("SEI frame metadata contains a nonfinite number");
+    if (value.is_structured()) for (const auto& item : value) self(self, item);
+  };
+  validate_numbers(validate_numbers, model_extra);
+  const bool has_points = model_extra.contains("grounding") &&
+      model_extra.at("grounding").is_object() &&
+      model_extra.at("grounding").contains("points") &&
+      model_extra.at("grounding").at("points").is_array();
+  const size_t point_count = has_points ? model_extra.at("grounding").at("points").size() : 0;
+  size_t retained_points = point_count;
 
   auto build_envelope = [&](const std::vector<std::string>& det_jsons) {
     std::string s = "{\"v\":1,\"ch\":";
@@ -296,7 +310,19 @@ std::vector<uint8_t> build_result_payload(const std::string& channel_id,
       if (i) s += ",";
       s += det_jsons[i];
     }
-    s += "]}";
+    s += "]";
+    if (!model_extra.empty()) {
+      auto wire_extra = model_extra;
+      if (has_points && retained_points < point_count) {
+        auto& grounding = wire_extra["grounding"];
+        auto& points = grounding["points"];
+        points.erase(points.begin() + static_cast<std::ptrdiff_t>(retained_points), points.end());
+        // This describes transport loss,not unfinished model generation.
+        grounding["sei_points_omitted"] = point_count - retained_points;
+      }
+      s += ",\"model_extra\":" + wire_extra.dump();
+    }
+    s += "}";
     return s;
   };
 
@@ -315,10 +341,19 @@ std::vector<uint8_t> build_result_payload(const std::string& channel_id,
   det_jsons.reserve(detections.size());
   for (const auto& d : detections) det_jsons.push_back(det_to_json(d));
 
+  // Preserve a bounded prefix of generated points. For mixed geometry,leave
+  // room for at least one actual detection before applying the legacy box
+  // budget policy. Never turn complete transport loss into a negative result.
+  const std::vector<std::string> minimum_detections =
+      det_jsons.empty() ? std::vector<std::string>{} : std::vector<std::string>{det_jsons.front()};
+  while (retained_points > 0 &&
+         static_cast<int>(build_envelope(minimum_detections).size()) > json_budget) --retained_points;
+
   std::string empty_env = build_envelope({});
   if (static_cast<int>(empty_env.size()) > json_budget) {
     throw std::runtime_error("SEI 预算不足以容纳基础元数据");
   }
+  if (detections.empty() && point_count > 0 && retained_points == 0) return {};
 
   std::string full = build_envelope(det_jsons);
   if (static_cast<int>(full.size()) <= json_budget) {

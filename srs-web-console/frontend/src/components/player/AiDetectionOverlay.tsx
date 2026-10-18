@@ -3,11 +3,12 @@ import type { AiDetection } from '@/types/aiChannel'
 import { drawDetections } from './detectionDrawing'
 import { reportOverlayDiag } from '@/api/diagService'
 import { computeContainLayout } from './overlayGeometry'
+import { drawGroundingPoints, type GroundingOverlay } from './groundingPoints'
 
-type DisplayResult = { detections: AiDetection[]; displayAgeMs?: number }
+type DisplayResult = { detections: AiDetection[]; displayAgeMs?: number; grounding?: GroundingOverlay }
 
 interface Props {
-  drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number) => void
+  drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay) => void
   /** The video element whose displayed frames are annotated. */
   video: HTMLVideoElement | null
   enabled: boolean
@@ -161,15 +162,15 @@ export function AiDetectionOverlay({
       if (performance.now() >= expiresRef.current) frameRef.current = null
       const frame = frameRef.current
       context.globalAlpha = (frame?.displayAgeMs ?? 0) > 0 ? 0.65 : 1
-      if (frame?.detections.length) countersRef.current.drawn++
-      if (drawFrame) drawFrame(context, frame?.detections ?? [], rect.width, rect.height, video.videoWidth, video.videoHeight)
-      else drawDetections(
-        context,
-        frame?.detections ?? [],
-        computeContainLayout(video.videoWidth, video.videoHeight, rect.width, rect.height),
-        video.videoWidth,
-        video.videoHeight,
-      )
+      if (frame?.detections.length || frame?.grounding?.points.length) countersRef.current.drawn++
+      if (drawFrame) {
+        if (frame?.grounding) drawFrame(context, frame.detections, rect.width, rect.height, video.videoWidth, video.videoHeight, frame.grounding)
+        else drawFrame(context, frame?.detections ?? [], rect.width, rect.height, video.videoWidth, video.videoHeight)
+      } else {
+        const layout = computeContainLayout(video.videoWidth, video.videoHeight, rect.width, rect.height)
+        drawDetections(context, frame?.detections ?? [], layout, video.videoWidth, video.videoHeight)
+        drawGroundingPoints(context, frame?.grounding, layout)
+      }
       context.globalAlpha = 1
     }
     animation = requestAnimationFrame(draw)

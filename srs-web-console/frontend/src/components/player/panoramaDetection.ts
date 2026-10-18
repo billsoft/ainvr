@@ -1,4 +1,5 @@
 import type { AiDetection } from '@/types/aiChannel'
+import { drawGroundingMarker, drawGroundingNotice, type GroundingOverlay } from './groundingPoints'
 
 export type PanoramaCamera = { view: readonly number[]; projection: readonly number[] }
 type Point = [number, number, number]
@@ -31,7 +32,7 @@ export function clipNear(a: Point, b: Point): [Point, Point] | null {
   return [a, b]
 }
 export function drawPanoramaDetections(ctx: CanvasRenderingContext2D, detections: AiDetection[],
-  camera: PanoramaCamera | null, width: number, height: number, frameW: number, frameH: number) {
+  camera: PanoramaCamera | null, width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay) {
   if (!camera || frameW <= 0 || frameH <= 0) return
   const point = (x: number, y: number) => transform(erpPoint(x, y, frameW, frameH), camera.view)
   const visiblePoint = (x: number, y: number) => {
@@ -80,6 +81,14 @@ export function drawPanoramaDetections(ctx: CanvasRenderingContext2D, detections
       const p = visiblePoint(lm.x, lm.y)
       if (p) { ctx.beginPath(); ctx.arc(...p, 3, 0, 2 * Math.PI); ctx.fill() }
     }
+  }
+  if (grounding) {
+    const bounds = { dispW: width, dispH: height, offsetX: 0, offsetY: 0 }
+    for (const p of grounding.points) {
+      const at = visiblePoint(p.x * frameW, p.y * frameH)
+      if (at) drawGroundingMarker(ctx, p, at[0], at[1], bounds)
+    }
+    drawGroundingNotice(ctx, grounding.omitted, bounds)
   }
   ctx.restore()
 }

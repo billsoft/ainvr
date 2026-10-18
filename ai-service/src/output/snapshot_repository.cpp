@@ -149,13 +149,24 @@ void SnapshotStore::AppendWrite(mongoc_bulk_operation_t* bulk, const ArchiveJob&
     bson_destroy(extra);
   }
 
-  bson_t bbox_doc;
-  BSON_APPEND_DOCUMENT_BEGIN(&doc, "bbox", &bbox_doc);
-  BSON_APPEND_DOUBLE(&bbox_doc, "x", d.bbox[0]);
-  BSON_APPEND_DOUBLE(&bbox_doc, "y", d.bbox[1]);
-  BSON_APPEND_DOUBLE(&bbox_doc, "w", d.bbox[2]);
-  BSON_APPEND_DOUBLE(&bbox_doc, "h", d.bbox[3]);
-  bson_append_document_end(&doc, &bbox_doc);
+  if (job.point.is_null()) {
+    bson_t bbox_doc;
+    BSON_APPEND_DOCUMENT_BEGIN(&doc, "bbox", &bbox_doc);
+    BSON_APPEND_DOUBLE(&bbox_doc, "x", d.bbox[0]);
+    BSON_APPEND_DOUBLE(&bbox_doc, "y", d.bbox[1]);
+    BSON_APPEND_DOUBLE(&bbox_doc, "w", d.bbox[2]);
+    BSON_APPEND_DOUBLE(&bbox_doc, "h", d.bbox[3]);
+    bson_append_document_end(&doc, &bbox_doc);
+  } else {
+    BSON_APPEND_NULL(&doc, "bbox");
+    BSON_APPEND_UTF8(&doc, "geometry_type", "point");
+    BSON_APPEND_UTF8(&doc, "context_image", "full_frame");
+    const auto text = job.point.dump();
+    bson_t* point = bson_new_from_json(reinterpret_cast<const uint8_t*>(text.data()), text.size(), nullptr);
+    if (!point) { bson_destroy(&doc); throw std::runtime_error("Invalid archive point metadata"); }
+    BSON_APPEND_DOCUMENT(&doc, "point", point);
+    bson_destroy(point);
+  }
 
   if (d.landmarks.has_value() && !d.landmarks->empty()) {
     bson_t lm_arr;

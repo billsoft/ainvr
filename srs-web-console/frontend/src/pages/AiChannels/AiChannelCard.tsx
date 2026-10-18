@@ -24,6 +24,7 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
   const canStop = channel.state === 'running' || channel.state === 'reconnecting' ||
     (channel.state === 'error' && !config.manually_stopped)
   const receiving = channel.state === 'running'
+  const slowOpenVocabulary = ['locateanything_bpu', 'locateanything_trt'].includes(config.model.adapter)
 
   return (
     <div className="rounded-panel border border-line bg-surface p-6 shadow-sm">
@@ -93,7 +94,7 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
 
       <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm text-ink-subtle">
         <span>模型：{getAiModelDisplayName(config.model)}</span>
-        <span>{config.model.adapter === 'locateanything_trt'
+        <span>{slowOpenVocabulary
           ? `采集：每 ${(1 / config.inference_fps).toFixed(1)} 秒一次（${receiving && stats.inference_fps_actual > 0 ? `实测约 ${(1 / stats.inference_fps_actual).toFixed(1)} 秒` : '等待识别结果'}）`
           : `推理：${config.inference_fps > 0 ? `${config.inference_fps} FPS` : '跟随源流'}（${receiving ? `实测 ${stats.inference_fps_actual?.toFixed?.(1) ?? '0.0'}` : '等待视频恢复'}）`}</span>
         <span>处理耗时 p95：{receiving ? `${stats.timing?.total?.p95_ms?.toFixed?.(1) ?? '0.0'}ms` : '—'}</span>
@@ -105,14 +106,14 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
             ? `抽帧 ${stats.sampled_skip_count} · 过载丢帧 ${stats.overload_drop_count} · 归档反压跳帧 ${stats.archive_backpressure_skip_count ?? 0}`
             : `跳帧 ${stats.dropped_count ?? 0}`}
           {receiving && stats.source_fps && stats.inference_fps_target
-            ? config.model.adapter === 'locateanything_trt'
+            ? slowOpenVocabulary
               ? `（源 ${Math.round(stats.source_fps)} FPS → 每 ${(1 / stats.inference_fps_target).toFixed(1)} 秒采集）`
               : `（源 ${Math.round(stats.source_fps)} → 推理 ${Math.round(stats.inference_fps_target)} FPS）`
             : ''}
         </span>
       </div>
 
-      {(channel.state === 'error' || channel.state === 'reconnecting' || config.model.adapter === 'locateanything_trt' || config.model.adapter === 'yoloe_pt') && stats.last_error && (
+      {(channel.state === 'error' || channel.state === 'reconnecting' || slowOpenVocabulary || ['yoloe_bpu', 'yoloe_pt'].includes(config.model.adapter)) && stats.last_error && (
         <p className="mt-3 rounded-base border border-danger-200 bg-danger-50 px-3 py-2 text-sm text-danger-700"
            data-testid="ai-card-last-error">
           ⚠ {stats.last_error}
@@ -137,7 +138,7 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
       {stats.under_capacity && (
         <p className="mt-3 rounded-base border border-warning-200 bg-warning-50 px-3 py-2 text-sm text-warning-700"
            data-testid="ai-card-under-capacity">
-          ⚠ 处理速度未达到目标：实测 {stats.inference_fps_actual.toFixed(config.model.adapter === 'locateanything_trt' ? 3 : 1)} / 目标 {stats.inference_fps_target?.toFixed(config.model.adapter === 'locateanything_trt' ? 3 : 1)} FPS。
+          ⚠ 处理速度未达到目标：实测 {stats.inference_fps_actual.toFixed(slowOpenVocabulary ? 3 : 1)} / 目标 {stats.inference_fps_target?.toFixed(slowOpenVocabulary ? 3 : 1)} FPS。
           请检查解码、帧映射和推理耗时；可降低推理帧率或减少并行通道数。
         </p>
       )}

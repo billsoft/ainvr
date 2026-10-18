@@ -11,3 +11,38 @@ ai-service/models/
 
 # Local recoverable cleanup archives
 /.Codex-trash/
+
+# Local Python environments and downloaded dependency packages
+.venv-*/
+*.whl
+
+# Editor backups and transfer staging (not first-party source)
+*.before-*
+*.initial-*
+*.registry-*-initial
+*.incoming
+*.incoming-*
+*.upload
+/recording-service/tests/.*.fragment-*-upload
+
+# Temporary source copies, research snapshots and frontend build candidates
+/test/tmp/
+/test/model_conversion/source_snapshots/
+/srs-web-console/frontend/dist.*/
+
+# Generated deployment executable; build/install scripts remain versioned
+/deploy/s100p/bin/ainvr_ai_service
+
+# Reviewed obsolete LocateAnything executor/installer versions (files retained)
+/ai-service/runtime/locateanything_bpu_grouped_executor_v3.py
+/ai-service/runtime/locateanything_bpu_official_executor_v1.py
+/ai-service/runtime/locateanything_bpu_official_executor_v2.py
+/ai-service/runtime/locateanything_bpu_official_executor_v3.py
+/ai-service/runtime/locateanything_bpu_official_executor_v4.py
+/ai-service/runtime/locateanything_bpu_rowmixed_complete_executor_v2.py
+/ai-service/runtime/locateanything_bpu_rowmixed_complete_executor_v3.py
+/ai-service/runtime/locateanything_bpu_rowmixed_diagnostic_executor_v1.py
+/deploy-package/install-locateanything-compact-resident-s100p-v2.py
+/deploy-package/install-locateanything-compact-s100p.py
+/deploy-package/install-locateanything-official-family-s100p-v1.py
+/deploy-package/install-locateanything-s100p.py

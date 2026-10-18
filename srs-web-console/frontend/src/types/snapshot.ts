@@ -50,6 +50,14 @@ export interface SnapshotLandmark {
   y: number
 }
 
+export interface SnapshotPoint {
+  x: number
+  y: number
+  coordinate_space: 'normalized_full_frame'
+  /** Visible source content inside the encoded image after minimum-size padding. */
+  context_image_rect?: { x: number; y: number; w: number; h: number }
+}
+
 export interface SnapshotItem {
   image_id: string
   channel_id: string
@@ -63,7 +71,11 @@ export interface SnapshotItem {
   confidence: number | null
   label_id?: string
   query_description?: string
-  bbox: SnapshotBbox
+  bbox: SnapshotBbox | null
+  point?: SnapshotPoint
+  geometry_type?: 'point'
+  context_image?: 'full_frame'
+  model_extra?: Record<string, unknown>
   landmarks: SnapshotLandmark[] | null
   image_width: number | null
   image_height: number | null

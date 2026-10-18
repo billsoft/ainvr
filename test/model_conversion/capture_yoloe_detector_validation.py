@@ -18,6 +18,7 @@ p.add_argument('--prepared', type=Path, required=True)
 p.add_argument('--images', type=Path, required=True)
 p.add_argument('--output', type=Path, required=True)
 p.add_argument('--status', type=Path)
+p.add_argument('--production-paused', action='store_true', help='Record isolated timing with AI production paused')
 p.add_argument('--baseline-status', type=Path,
                help='O0 placement/source contract for an optimized HBM from exactly the same BC')
 p.add_argument('--bpu-text', type=Path)
@@ -34,6 +35,8 @@ dynamic_text=all(text_options)
 sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
 prepared = json.loads((a.prepared / 'manifest.json').read_text())
 assert prepared['state'] == 'prepared'
+slots=prepared.get('prompt_slots',8)
+assert slots in (8,32)
 samples = [x for x in prepared['samples'] if x['split'] == 'validation']
 assert len(samples) == 128
 assert len({x['image_tensor'] for x in samples}) == 128
@@ -63,7 +66,7 @@ if a.backend == 'bpu':
     name = runtime.model_names[0]
     assert set(runtime.input_names[name]) == {'images', 'prompt_embeddings'}
     assert tuple(runtime.input_shapes[name]['images']) == (1, 3, 640, 640)
-    assert tuple(runtime.input_shapes[name]['prompt_embeddings']) == (1, 8, 512)
+    assert tuple(runtime.input_shapes[name]['prompt_embeddings']) == (1, slots, 512)
     runtime.set_scheduling_params(bpu_cores={name: [0]})
     def run(inputs):
         result = runtime.run({name: inputs})[name]
@@ -98,7 +101,7 @@ if a.backend == 'bpu':
         rep_runtime.set_scheduling_params(bpu_cores={rep_name:[0]})
         text_cache={};text_times=[];rep_times=[]
         def encode_prompts(item):
-            raw=np.zeros((1,8,512),np.float32)
+            raw=np.zeros((1,slots,512),np.float32)
             for i,phrase in enumerate(item['class_names'][:item['active_count']]):
                 if phrase not in text_cache:
                     ids=[tokenizer.encoder['<|startoftext|>']]+tokenizer.encode(phrase)+[tokenizer.encoder['<|endoftext|>']]
@@ -112,17 +115,20 @@ if a.backend == 'bpu':
                     assert encoded.shape==(1,512) and np.isfinite(encoded).all()
                     text_cache[phrase]=encoded.copy()
                 raw[0,i]=text_cache[phrase][0]
-            begin=time.perf_counter()
-            result=rep_runtime.run({rep_name:{'text_embeddings':raw}})[rep_name]
-            rep_times.append((time.perf_counter()-begin)*1000)
-            assert len(result)==1
-            encoded=next(iter(result.values()))
-            assert encoded.shape==(1,8,512) and np.isfinite(encoded).all()
-            encoded=np.ascontiguousarray(encoded,dtype=np.float32).copy()
-            # Learned FFN biases mean RepRTA(0) is not generally zero. Empty
-            # slots are an interface mask, applied AFTER the learned network,
-            # exactly as in preparation of the FP32 dynamic prompt oracle.
-            encoded[:,item['active_count']:]=0
+            encoded=np.zeros((1,slots,512),np.float32)
+            for begin_slot in range(0,item['active_count'],8):
+                block=np.zeros((1,8,512),np.float32)
+                count=min(8,item['active_count']-begin_slot)
+                block[:,:count]=raw[:,begin_slot:begin_slot+count]
+                begin=time.perf_counter()
+                result=rep_runtime.run({rep_name:{'text_embeddings':block}})[rep_name]
+                rep_times.append((time.perf_counter()-begin)*1000)
+                assert len(result)==1
+                value=next(iter(result.values()))
+                assert value.shape==(1,8,512) and np.isfinite(value).all()
+                # Never retain nonzero learned bias from unused slots.
+                encoded[:,begin_slot:begin_slot+count]=value[:,:count]
+
             return encoded
 else:
     import onnxruntime as ort
@@ -149,8 +155,8 @@ def inputs_for(item):
     assert sha(image) == item['image_sha256']
     assert sha(prompt) == item['prompt_sha256']
     values = {'images': np.fromfile(image, dtype='<f4').reshape(1, 3, 640, 640),
-              'prompt_embeddings': np.fromfile(prompt, dtype='<f4').reshape(1, 8, 512)}
-    assert 1 <= item['active_count'] <= 8
+              'prompt_embeddings': np.fromfile(prompt, dtype='<f4').reshape(1, slots, 512)}
+    assert 1 <= item['active_count'] <= slots
     assert np.all(values['prompt_embeddings'][:, item['active_count']:] == 0)
     if dynamic_text:
         values['prompt_embeddings']=encode_prompts(item)
@@ -168,7 +174,7 @@ for i, item in enumerate(samples):
     start = time.perf_counter()
     output = run(inputs)
     latency = (time.perf_counter() - start) * 1000
-    assert output.shape == (1, 12, 8400)
+    assert output.shape == (1, 4+slots, 8400)
     assert np.isfinite(output).all()
     key = Path(item['image_tensor']).stem
     np.savez_compressed(a.output / (key + '.npz'), output=output)
@@ -181,13 +187,14 @@ for i, item in enumerate(samples):
     if i % 32 == 0:
         print('captured', i, flush=True)
 report = {'scope': 'Complete image+prompt detector only; FP32 oracle prompt vectors',
-          'model_sha256': sha(a.model), 'source_onnx_sha256': prepared['detector_onnx_sha256'],
+          'prompt_slots':slots, 'model_sha256': sha(a.model), 'source_onnx_sha256': prepared['detector_onnx_sha256'],
           'prepared_manifest_sha256': sha(a.prepared / 'manifest.json'),
           'backend': a.backend, 'samples': rows, 'warmup': 5,
           'sequential_fps': 1000 / float(np.mean(latencies)),
           'median_ms': float(np.median(latencies)),
           'p95_ms': float(np.percentile(latencies, 95)),
-          'timing': 'Tensor inference only, production may run concurrently; excludes loading and IO',
+          'timing': 'Tensor inference only; excludes loading and IO',
+          'production_concurrently_running': not a.production_paused,
           'accuracy_verified': False, 'production_approved': False,
           'full_dynamic_text_pipeline_verified': False}
 if dynamic_text:

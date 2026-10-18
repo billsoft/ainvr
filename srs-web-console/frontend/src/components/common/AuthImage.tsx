@@ -11,6 +11,7 @@ interface Props {
    * 审计场景要看清完整截图，不能被 cover 裁掉边缘。 */
   objectFit?: 'cover' | 'contain'
   variant?: 'processed' | 'original'
+  onImageLoaded?: () => void
 }
 
 /**
@@ -25,7 +26,7 @@ interface Props {
  * 时显示占位图标，不是让整张卡片跟着崩掉：浏览页面是异步游标分页，允许
  * 列表加载完之后、用户实际看到某一条之前，这条记录已经被淘汰。
  */
-export function AuthImage({ channelId, imageId, alt, className, objectFit = 'cover', variant = 'processed' }: Props) {
+export function AuthImage({ channelId, imageId, alt, className, objectFit = 'cover', variant = 'processed', onImageLoaded }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [inView, setInView] = useState(false)
   const [url, setUrl] = useState<string | null>(null)
@@ -84,7 +85,7 @@ export function AuthImage({ channelId, imageId, alt, className, objectFit = 'cov
   return (
     <div ref={containerRef} className={className}>
       {status === 'ok' && url ? (
-        <img src={url} alt={alt} className={`h-full w-full ${objectFit === 'contain' ? 'object-contain' : 'object-cover'}`} />
+        <img src={url} alt={alt} onLoad={onImageLoaded} className={`h-full w-full ${objectFit === 'contain' ? 'object-contain' : 'object-cover'}`} />
       ) : status === 'missing' || status === 'error' ? (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-surface-page text-ink-faint" title={status === 'error' ? '图片暂时无法加载' : variant === 'original' ? '这条历史记录未保存原图或已被淘汰' : '记录已被淘汰'}>
           <ImageOff size={20} aria-hidden />

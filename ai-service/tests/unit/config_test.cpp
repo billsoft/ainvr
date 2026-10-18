@@ -47,13 +47,24 @@ TEST(Config, YoloeDynamicPromptSupportsCustomDescriptionAndLabels) {
 TEST(Config, OpenVocabularyHasExplicitQueryAndFractionalSchedule) {
   json source = {{"id", "open"}, {"stream", {{"url", "rtmp://localhost/live/cam"}}},
     {"inference_fps", 1.0 / 15.0}, {"model", {{"adapter", "locateanything_bpu"},
-    {"input_size", {448, 448}}, {"description", "adult woman"},
+    {"input_size", {224, 448}}, {"description", "adult woman"},
     {"label_id", "woman"}, {"label_name", "成年女性"}}}};
   auto cfg = ChannelConfigFromJson(source);
   EXPECT_DOUBLE_EQ(cfg.inference_fps, 1.0 / 15.0);
   EXPECT_EQ(cfg.model.description, "adult woman");
   auto roundtrip = ChannelConfigFromJson(ChannelConfigToJson(cfg));
   EXPECT_EQ(roundtrip.model.label_id, "woman");
+  for (double seconds : {1.0, 2.0, 5.0, 10.0, 3600.0}) {
+    source["inference_fps"] = 1.0 / seconds;
+    auto scheduled = ChannelConfigFromJson(source);
+    auto saved = ChannelConfigFromJson(ChannelConfigToJson(scheduled));
+    EXPECT_DOUBLE_EQ(saved.inference_fps, 1.0 / seconds);
+    EXPECT_EQ(saved.model.description, "adult woman");
+  }
+  for (double invalid : {-1.0, 2.0, 1.0 / 3601.0}) {
+    source["inference_fps"] = invalid;
+    EXPECT_THROW(ChannelConfigFromJson(source), ConfigValidationError);
+  }
   source["inference_fps"] = 0;
   EXPECT_THROW(ChannelConfigFromJson(source), ConfigValidationError);
   source["inference_fps"] = 0.1;
@@ -531,4 +542,34 @@ TEST(ConfigValidation, OperatorStopRoundTripsOnlyWhenSet) {
   auto parsed = ChannelConfigFromJson(ch);
   EXPECT_TRUE(parsed.manually_stopped);
   EXPECT_TRUE(ChannelConfigToJson(parsed, true)["manually_stopped"].get<bool>());
+}
+
+
+TEST(Config, LocateAnythingNativeProfileAndTokenBudgetRoundTrip) {
+  json source = {{"id", "native-locate"}, {"stream", {{"url", "rtmp://localhost/live/cam"}}},
+    {"inference_fps", 1.0 / 60.0}, {"model", {{"name", "locateanything-3b"},
+    {"adapter", "locateanything_bpu"}, {"provider", "bpu"},
+    {"path", "models/derived/s100p/locateanything-3b.hbm"}, {"input_size", {224, 448}},
+    {"description", "person"}, {"label_id", "person"}, {"label_name", "人物"}}}};
+  auto parsed = ChannelConfigFromJson(source);
+  EXPECT_EQ(parsed.model.max_new_tokens, 256);
+  auto roundtrip = ChannelConfigFromJson(ChannelConfigToJson(parsed));
+  EXPECT_EQ(roundtrip.model.max_new_tokens, 256);
+  EXPECT_EQ(roundtrip.model.input_size, (std::vector<int>{224, 448}));
+  EXPECT_EQ(roundtrip.model.label_id, "person");
+  for (int invalid : {0, 257}) {
+    source["model"]["max_new_tokens"] = invalid;
+    EXPECT_THROW(ChannelConfigFromJson(source), ConfigValidationError);
+  }
+  source["model"]["max_new_tokens"] = 256;
+  source["model"]["input_size"] = {448, 448};
+  EXPECT_THROW(ChannelConfigFromJson(source), ConfigValidationError);
+  source["model"]["input_size"] = {640, 640};
+  source["inference_fps"] = 10;
+  source["model"]["name"] = "yoloe-26x";
+  source["model"]["adapter"] = "yoloe_bpu";
+  source["model"]["max_new_tokens"] = 64;
+  EXPECT_NO_THROW(ChannelConfigFromJson(source));
+  source["model"]["max_new_tokens"] = 65;
+  EXPECT_THROW(ChannelConfigFromJson(source), ConfigValidationError);
 }

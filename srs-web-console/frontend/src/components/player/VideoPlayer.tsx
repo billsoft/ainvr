@@ -595,7 +595,7 @@ export function VideoPlayer({
               const counters = receiveStatsRef.current
               counters.encoded++
               if (parsed) counters.parsed++
-              if (parsed?.detections.length) counters.withTargets++
+              if (parsed?.detections.length || parsed?.grounding?.points.length) counters.withTargets++
               // Worker sends an empty buffer when there is no UUID. Legacy tap
               // sends the complete frame; only count malformed identified SEI.
               if (!parsed && present) counters.malformed++

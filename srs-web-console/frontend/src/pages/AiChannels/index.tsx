@@ -6,10 +6,8 @@ import { useChannelsStore } from '@/store/channels'
 import { usePolling } from '@/hooks/usePolling'
 import { useSettingsStore } from '@/store/settings'
 import { aiChannelService } from '@/api/aiChannelService'
-import { channelService } from '@/api/channelService'
 import { isAiChannelOf } from '@/utils/channelMatching'
 import { getAiModelDisplayName } from '@/types/aiChannel'
-import type { ChannelWithStatus } from '@/types/channel'
 import { toast } from '@/store/toast'
 import { useAiServiceCapabilities } from '@/hooks/useAiServiceCapabilities'
 import { Toaster } from '@/components/ui/Toaster'
@@ -84,23 +82,7 @@ export default function AiChannelsPage() {
     }
   }
 
-  async function handleCreateOutputChannel(name: string, streamName: string): Promise<ChannelWithStatus> {
-    const ch = await channelService.create({
-      name,
-      description: 'AI 识别输出流',
-      upstream: {
-        protocol: 'rtmp',
-        app: 'live',
-        stream: streamName,
-      },
-      downstream: {
-        protocols: ['webrtc', 'flv', 'hls', 'rtmp'],
-        primary: 'webrtc',
-      },
-    })
-    await fetchSrsChannels()
-    return ch
-  }
+
 
   function closeWizard() {
     setWizardOpen(false)
@@ -367,8 +349,7 @@ export default function AiChannelsPage() {
         srsChannels={srsChannels}
         aiChannels={channels}
         onRefreshStreams={refreshStreams}
-        onCreateOutputChannel={handleCreateOutputChannel}
-        onClose={closeWizard}
+                onClose={closeWizard}
         onSubmit={handleWizardSubmit}
         aiCapabilities={aiCapabilities}
       />

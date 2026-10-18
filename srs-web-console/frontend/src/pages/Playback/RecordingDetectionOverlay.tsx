@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { AiDetection } from '@/types/aiChannel'
 import { drawDetections } from '@/components/player/detectionDrawing'
+import { drawGroundingPoints, type GroundingOverlay } from '@/components/player/groundingPoints'
 import { computeContainLayout } from '@/components/player/overlayGeometry'
 import { request } from '@/api/httpClient'
 import { parseRecordingSei, pickRecordingSei, type RecordingSeiFrame } from './recordingSei'
@@ -10,7 +11,7 @@ interface Props {
   segmentId: string
   currentTime: number
   enabled?: boolean
-  drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number) => void
+  drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay) => void
 }
 
 /** File playback has no WebRTC encoded-frame tap. Metadata uses MP4 PTS and
@@ -91,8 +92,14 @@ export function RecordingDetectionOverlay({ videoRef, segmentId, currentTime, dr
       const rows = windows.current.get(Math.floor(seconds / 10)) ?? []
       const hit = pickRecordingSei(rows, seconds * 1000)
       ctx.globalAlpha = (hit?.displayAgeMs ?? 0) > 1 ? 0.65 : 1
-      if (drawFrame) drawFrame(ctx, hit?.detections ?? [], rect.width, rect.height, video.videoWidth, video.videoHeight)
-      else drawDetections(ctx, hit?.detections ?? [], computeContainLayout(video.videoWidth, video.videoHeight, rect.width, rect.height), video.videoWidth, video.videoHeight)
+      if (drawFrame) {
+        if (hit?.grounding) drawFrame(ctx, hit.detections, rect.width, rect.height, video.videoWidth, video.videoHeight, hit.grounding)
+        else drawFrame(ctx, hit?.detections ?? [], rect.width, rect.height, video.videoWidth, video.videoHeight)
+      } else {
+        const layout = computeContainLayout(video.videoWidth, video.videoHeight, rect.width, rect.height)
+        drawDetections(ctx, hit?.detections ?? [], layout, video.videoWidth, video.videoHeight)
+        drawGroundingPoints(ctx, hit?.grounding, layout)
+      }
       ctx.globalAlpha = 1
     }
     paint = requestAnimationFrame(draw)

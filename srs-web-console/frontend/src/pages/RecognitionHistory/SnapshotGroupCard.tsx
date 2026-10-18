@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { AuthImage } from '@/components/common/AuthImage'
+import { SnapshotImage } from './SnapshotImage'
 import { formatRelativeTime } from '@/utils/format'
 import { SnapshotLightbox } from './SnapshotLightbox'
 import type { SnapshotItem } from '@/types/snapshot'
@@ -51,7 +51,7 @@ export function SnapshotGroupCard({ channelId, group, onDeleteOne }: Props) {
             className="relative h-20 w-20 shrink-0 overflow-hidden rounded-base border border-line"
             aria-label={`放大查看：${item.class_name}`}
           >
-            <AuthImage channelId={channelId} imageId={item.image_id} alt={item.class_name} className="h-full w-full" />
+            <SnapshotImage channelId={channelId} item={item} className="h-full w-full" />
             {item.enhanced && (
               <span className="absolute left-0 top-0 rounded-br bg-primary/90 px-1 py-px text-[9px] leading-tight text-white">
                 增强

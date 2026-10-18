@@ -29,6 +29,12 @@ export interface AiStreamConfig {
 export type AiModelAdapter = 'yolo26_bpu' | 'yoloface_bpu' | 'scrfd_bpu' | 'locateanything_bpu' | 'yoloe_bpu'
   | 'yolo26_end2end' | 'yolo26_traditional' | 'yolo26_trt' | 'yoloface_trt' | 'scrfd_trt' | 'locateanything_trt' | 'yoloe_pt'
 
+export interface AiPromptLabel {
+  description: string
+  label_id: string
+  label_name: string
+}
+
 export interface AiModelConfig {
   name: string
   adapter: AiModelAdapter
@@ -41,6 +47,7 @@ export interface AiModelConfig {
   description?: string
   label_id?: string
   label_name?: string
+  prompts?: AiPromptLabel[] | null
   max_new_tokens?: number
 }
 
@@ -360,8 +367,8 @@ export interface AiServiceHealth {
  * 见架构方案 D6）。provider 统一 tensorrt——cuda EP 本机实测不可用。 */
 export const AI_MODEL_PRESETS = {
   'yoloe-26x': {
-    displayName: '开放词汇模型', streamSlug: 'grounding-fast',
-    needsIouThreshold: true, label: '开放词汇识别',
+    displayName: '开放词汇模型 · 8 槽', streamSlug: 'grounding-fast',
+    needsIouThreshold: true, label: '开放词汇识别 · 8 槽',
     description: '按文字描述检测目标，修改描述无需重新编译模型',
     model: {
       name: 'yoloe-26x', adapter: 'yoloe_bpu' as AiModelAdapter,
@@ -372,13 +379,26 @@ export const AI_MODEL_PRESETS = {
     preprocess: { mean: [0, 0, 0] as [number, number, number],
       std: [255, 255, 255] as [number, number, number], rgb_order: true },
   },
+  'yoloe-26x-32': {
+    displayName: '开放词汇模型 · 32 槽', streamSlug: 'grounding-32',
+    needsIouThreshold: true, label: '开放词汇识别 · 32 槽',
+    description: '按文字描述检测目标，修改描述无需重新编译模型',
+    model: {
+      name: 'yoloe-26x-32', adapter: 'yoloe_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/yoloe-26x-32.hbm', input_size: [640, 640] as [number, number],
+      stride: 32, provider: 'bpu' as const, engine_cache: '',
+      class_names: null,
+    },
+    preprocess: { mean: [0, 0, 0] as [number, number, number],
+      std: [255, 255, 255] as [number, number, number], rgb_order: true },
+  },
   'locateanything-3b': {
-    displayName: '开放词汇模型（高级）', streamSlug: 'grounding',
-    needsIouThreshold: false, label: '开放词汇模型（高级）',
+    displayName: '开放词汇模型（试用）', streamSlug: 'grounding',
+    needsIouThreshold: false, label: '开放词汇模型（试用）',
     description: '按文字描述定位目标，适合低频采集训练素材',
     model: {
       name: 'locateanything-3b', adapter: 'locateanything_bpu' as AiModelAdapter,
-      path: 'models/derived/s100p/locateanything-3b.hbm', input_size: [448, 448] as [number, number],
+      path: 'models/derived/s100p/locateanything-3b.hbm', input_size: [224, 448] as [number, number],
       stride: 32, provider: 'bpu' as const, engine_cache: '', class_names: null,
     },
     preprocess: { mean: [127.5, 127.5, 127.5] as [number, number, number],
@@ -503,11 +523,11 @@ export const AI_MODEL_PRESETS = {
 
 export type AiModelPresetKey = keyof typeof AI_MODEL_PRESETS
 export function isOpenVocabularyPreset(preset: AiModelPresetKey): boolean {
-  return preset === 'locateanything-3b' || preset === 'yoloe-26x'
+  return preset === 'locateanything-3b' || isYoloePreset(preset)
 }
 
 export const SELECTABLE_AI_MODEL_PRESET_KEYS: readonly AiModelPresetKey[] = [
-  'yolo26x', 'yolo26x-face', 'yoloe-26x',
+  'yolo26x', 'yolo26x-face', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b',
 ]
 export const DEFAULT_AI_MODEL_PRESET: AiModelPresetKey = 'yolo26x'
 
@@ -526,4 +546,11 @@ export function getAiModelDisplayName(model: Pick<AiModelConfig, 'name' | 'adapt
 /** 识别记录里只有模型名（model_name）时的显示名 */
 export function getAiModelDisplayNameByName(name: string | null | undefined): string {
   return getAiModelPresetByName(name ?? '')?.displayName ?? (name ? '自定义模型' : '-')
+}
+
+export function isYoloePreset(preset: AiModelPresetKey): boolean {
+  return preset === 'yoloe-26x' || preset === 'yoloe-26x-32'
+}
+export function promptSlotLimit(preset: AiModelPresetKey): number {
+  return preset === 'yoloe-26x-32' ? 32 : 8
 }

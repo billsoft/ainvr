@@ -102,16 +102,7 @@ export default function ChannelDetailPage() {
     setShowAddWizard(true)
   }
 
-  async function handleCreateOutputChannel(name: string, streamName: string): Promise<ChannelWithStatus> {
-    const newCh = await channelService.create({
-      name,
-      description: 'AI 识别输出流',
-      upstream: { protocol: 'rtmp', app: 'live', stream: streamName },
-      downstream: { protocols: ['webrtc', 'flv', 'hls', 'rtmp'], primary: 'webrtc' },
-    })
-    await fetchSrsChannels()
-    return newCh
-  }
+
 
   // 筛选归属本通道的 AI 处理
   const myAiChannels = ch && !serviceUnreachable
@@ -286,7 +277,6 @@ export default function ChannelDetailPage() {
           onRefreshStreams={async () => {
             try { setStreams(await listStreams()) } catch { setStreams([]) }
           }}
-          onCreateOutputChannel={handleCreateOutputChannel}
           onClose={() => setShowAddWizard(false)}
           onSubmit={async (patch) => {
             await useAiChannelsStore.getState().createChannel(patch as import('@/types/aiChannel').AiChannelCreatePatch)

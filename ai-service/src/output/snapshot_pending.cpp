@@ -1,4 +1,5 @@
 #include "snapshot_internal.hpp"
+#include "grounding_snapshot.hpp"
 #include <cstring>
 
 namespace ai_service::output {
@@ -40,6 +41,13 @@ void SnapshotStore::SavePending(const ArchiveJob& input, bool enqueue) {
   data["rgba"] = json::binary(pixels); data["pending_version"] = 3;
 #endif
   if (!j.detection.confidence_known) data["confidence"] = nullptr;
+  if (!j.point.is_null()) {
+    ValidateSnapshotPoint(j.point);
+    data["point"] = j.point;
+    data["bbox"] = nullptr;
+    data["geometry_type"] = "point";
+    data["context_image"] = "full_frame";
+  }
   data["label_id"] = j.detection.label_id;
   data["query_description"] = j.detection.query_description;
   if (!j.detection.model_extra.empty()) data["model_extra"] = j.detection.model_extra;
@@ -130,7 +138,7 @@ void SnapshotStore::QuarantinePending(const std::string& name) {
     const auto previous = std::filesystem::exists(bad) ? std::filesystem::file_size(bad) : 0;
     const auto size = std::filesystem::file_size(file);
     std::filesystem::rename(file, bad);
-    quarantined_bytes_ = quarantined_bytes_ - std::min(quarantined_bytes_, previous) + size;
+    quarantined_bytes_ = quarantined_bytes_ - std::min(quarantined_bytes_.load(), previous) + size;
   }
   if (it != pending_sizes_.end()) {
     pending_bytes_ -= it->second;
@@ -206,7 +214,16 @@ SnapshotStore::ArchiveJob SnapshotStore::ReadPending(const std::string& file) {
   j.detection.label_id = d.value("label_id", std::string());
   j.detection.query_description = d.value("query_description", std::string());
   j.detection.model_extra = d.value("model_extra", json::object());
-  j.detection.bbox = d.at("bbox").get<std::array<double, 4>>();
+  if (d.contains("point")) {
+    j.point = d.at("point");
+    ValidateSnapshotPoint(j.point);
+    if (!d.at("bbox").is_null() || d.value("geometry_type", std::string()) != "point" ||
+        d.value("context_image", std::string()) != "full_frame")
+      throw std::runtime_error("Invalid pending point archive geometry");
+    j.detection.bbox = {0, 0, 0, 0};
+  } else {
+    j.detection.bbox = d.at("bbox").get<std::array<double, 4>>();
+  }
   if (d.contains("landmarks")) j.detection.landmarks = d.at("landmarks").get<std::vector<std::array<double, 2>>>();
   if (j.channel_id != channel_id_) throw std::runtime_error("invalid pending channel");
   if (d.contains("rgba")) {

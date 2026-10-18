@@ -11,8 +11,8 @@ class BpuPromptEngine {
   explicit BpuPromptEngine(BpuPromptResources resources);
   static void ValidatePhrases(const BpuPromptResources& resources,
                               const std::vector<std::string>& phrases);
-  // Returns eight final prompt slots; unused slots are zero after RepRTA.
-  std::vector<float> Encode(const std::vector<std::string>& phrases);
+  // Returns 8 or 32 final prompt slots; unused slots are zero after RepRTA.
+  std::vector<float> Encode(const std::vector<std::string>& phrases, size_t slots=8);
  private:
   BpuPromptResources resources_;
   BpuModel text_,reprta_;

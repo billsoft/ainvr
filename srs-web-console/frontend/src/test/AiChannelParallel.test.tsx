@@ -108,7 +108,6 @@ async function toStep3(user: ReturnType<typeof userEvent.setup>, source = 'ch-ca
   await user.selectOptions(screen.getByTestId('wizard-stream-select'), source)
   await user.click(screen.getByRole('button', { name: '下一步 →' }))
   await user.click(screen.getByRole('button', { name: '下一步 →' }))
-  await user.click(screen.getByTestId('wizard-publish-toggle'))
 }
 
 describe('AiChannelWizard 并行防冲突', () => {
@@ -147,15 +146,14 @@ describe('AiChannelWizard 并行防冲突', () => {
     expect(Array.from(select.options).find((o) => o.value === 'ch-out-new')!.disabled).toBe(true)
   })
 
-  it('手动填了冲突的输出地址:提交被拦下并显示原因', async () => {
-    const user = userEvent.setup()
-    const onSubmit = vi.fn()
-    render(<AiChannelWizard {...props({ onSubmit })} />)
-    await toStep3(user)
-    await user.click(screen.getByText('手动输入地址'))
-    await user.type(screen.getByTestId('wizard-publish-url'), 'rtmp://127.0.0.1:1935/live/cam1_ai')
+  it('保存时再次拒绝被其他 AI 占用的旧输出，不能靠旧配置绕过列表限制', async () => {
+    const user = userEvent.setup(); const onSubmit = vi.fn()
+    const initial = makeAi('new', 'rtmp://127.0.0.1:1935/live/cam2', 'rtmp://127.0.0.1:1935/live/cam1_ai')
+    render(<AiChannelWizard {...props({mode: 'edit', initial, onSubmit})} />)
+    await user.click(screen.getByRole('button', {name: '下一步 →'}))
+    await user.click(screen.getByRole('button', {name: '下一步 →'}))
     await user.click(screen.getByTestId('wizard-submit'))
-    expect(await screen.findByText(/door-名称/)).toBeInTheDocument()
+    expect(screen.getByText((text, element) => element?.tagName === 'P' && text.includes('door-名称'))).toBeInTheDocument()
     expect(onSubmit).not.toHaveBeenCalled()
   })
 })

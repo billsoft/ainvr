@@ -1,0 +1,23 @@
+# Managed by AINVR install-locateanything-official-family-s100p-v2.py
+[Unit]
+Description=AINVR complete LocateAnything76 BPU trial backend
+After=local-fs.target
+
+[Service]
+Type=exec
+Environment=LD_LIBRARY_PATH=/usr/hobot/lib
+Environment=GSETTINGS_BACKEND=memory
+User=sunrise
+Group=sunrise
+WorkingDirectory=/home/sunrise/ainvr/ai-service
+ExecStart=/home/sunrise/ainvr/ai-service/runtime/.venv-locateanything/bin/python /home/sunrise/ainvr/ai-service/runtime/locateanything_bpu_official_executor_v5.py --contract /mnt/ainvr-ssd/model-compile-candidates/locateanything-3b-w4-v1/official-trial-releases/1d0850210d9472a0d4d304a0905e8e675c408b8c82ef1edbd00cb6b34b7dea34/model-contract.json --contract-sha256 fd3e01f51bc36edaa62b3f5f45fc8507f03ae263ed53420fbc3df3cfb1fed042 --tokenizer /mnt/ainvr-ssd/model-compile-candidates/locateanything-3b-w4-v1/tokenizer-original-v1.json --tokenizer-sha256 f56587c1c7b4d69be60b018606b1bf2f90e46ca9d51fb2689090997281df7e40 --socket /home/sunrise/ainvr/data/ai/locateanything-official-bpu.sock --mode slow --maximum-seconds 90
+ExecStartPost=/home/sunrise/ainvr/ai-service/runtime/.venv-locateanything/bin/python /home/sunrise/ainvr/ai-service/runtime/locateanything_official_family_health_v1.py --socket /home/sunrise/ainvr/data/ai/locateanything-official-bpu.sock --contract-sha256 fd3e01f51bc36edaa62b3f5f45fc8507f03ae263ed53420fbc3df3cfb1fed042 --mode slow --maximum-seconds 90 --wait-seconds 600
+Restart=on-failure
+RestartSec=3
+TimeoutStartSec=610
+TimeoutStopSec=30
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=4096

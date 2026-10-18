@@ -125,8 +125,12 @@ BpuPromptEngine::BpuPromptEngine(BpuPromptResources resources)
   if(reprta_description_.at("outputs").at(0).at("shape")!=nlohmann::json::array({1,8,512}))
     throw std::runtime_error("RepRTA must emit eight 512-dimensional vectors");
 }
-std::vector<float> BpuPromptEngine::Encode(const std::vector<std::string>& phrases) {
-  auto rows=Tokenize(resources_,phrases);std::vector<float> embeddings(8*512,0);
+std::vector<float> BpuPromptEngine::Encode(const std::vector<std::string>& phrases, size_t slots) {
+  if((slots!=8&&slots!=32)||phrases.empty()||phrases.size()>slots)throw std::invalid_argument("Prompt capacity mismatch");
+  std::vector<float> result(slots*512,0);
+  for(size_t begin=0;begin<phrases.size();begin+=8) {
+    const std::vector<std::string> group(phrases.begin()+begin,phrases.begin()+std::min(begin+8,phrases.size()));
+  auto rows=Tokenize(resources_,group);std::vector<float> embeddings(8*512,0);
   const auto& input=text_description_.at("inputs").at(0);
   const size_t bytes=input.at("aligned_bytes").get<size_t>();
   if(bytes<77*sizeof(int32_t)||bytes>4*1024*1024||input.at("byte_strides").at(1)!=4)
@@ -142,11 +146,14 @@ std::vector<float> BpuPromptEngine::Encode(const std::vector<std::string>& phras
   auto prompts=DecodeTensor(outputs.at(0),reprta_description_.at("outputs").at(0));
   if(prompts.size()!=8*512)throw std::runtime_error("Final prompt size mismatch");
   for(float x:prompts)if(!std::isfinite(x))throw std::runtime_error("Non-finite prompt embedding");
-  std::fill(prompts.begin()+phrases.size()*512,prompts.end(),0.f);
-  return prompts;
+  std::copy_n(prompts.begin(),group.size()*512,result.begin()+begin*512);
+  }
+  return result;
 }
 void BpuPromptEngine::ValidatePhrases(const BpuPromptResources& resources,
                                     const std::vector<std::string>& phrases) {
-  Tokenize(resources,phrases);
+  if(phrases.empty()||phrases.size()>32)throw std::invalid_argument("Prompt capacity mismatch");
+  for(size_t begin=0;begin<phrases.size();begin+=8)
+    Tokenize(resources,{phrases.begin()+begin,phrases.begin()+std::min(begin+8,phrases.size())});
 }
 }

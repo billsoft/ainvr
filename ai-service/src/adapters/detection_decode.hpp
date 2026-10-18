@@ -5,6 +5,11 @@
 namespace ainvr {
 struct DenseTensor {std::string name;std::vector<int64_t> shape;std::vector<float> values;};
 struct DetectionOptions {double confidence=.25,iou=.45;int maximum=300;};
+struct DetectionDecodeStats {
+  uint64_t clamped_probabilities=0,clamped_distances=0,rejected_geometry=0;
+};
+// Process totals; malformed shapes, non-finite values and invalid classes remain fatal.
+DetectionDecodeStats GetDetectionDecodeStats();
 std::vector<ai_service::Detection> DecodeScrfd(const std::vector<DenseTensor>& outputs,
     const ai_service::pipeline::ScaleInfo& scale,const DetectionOptions& options={});
 // Explicit contract: each row is [x1,y1,x2,y2,confidence,class_id], already NMSed.

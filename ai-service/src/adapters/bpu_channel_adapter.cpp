@@ -25,8 +25,9 @@ std::string Digest(const std::filesystem::path& path){
 }
 std::vector<std::string> RuntimePrompts(const config::ModelConfig& cfg) {
   auto phrases=cfg.class_names.value_or(std::vector<std::string>{});
+  if(!cfg.prompts.empty()){phrases.clear();for(const auto& row:cfg.prompts)phrases.push_back(row.description);}
   if(phrases.empty()&&!cfg.description.empty())phrases.push_back(cfg.description);
-  if(phrases.empty()||phrases.size()>8)throw std::runtime_error("开放词汇需要 1 到 8 个识别描述");
+  if(phrases.empty()||phrases.size()>32)throw std::runtime_error("开放词汇需要 1 到 32 个识别描述");
   for(const auto& phrase:phrases)if(phrase.empty()||phrase.size()>4096||phrase.find_first_not_of(" \r\n\t")==std::string::npos)
     throw std::runtime_error("识别描述为空或过长");
   return phrases;
@@ -48,7 +49,8 @@ ainvr::BpuPromptResources PromptResources(const config::ModelConfig& cfg,const n
 void ValidateDynamicText(const config::ModelConfig& cfg,const nlohmann::json& manifest) {
   RuntimePrompts(cfg);
   const auto& text=manifest.at("dynamic_text");const auto resources=PromptResources(cfg,text);
-  if(text.at("prompt_slots")!=8||text.at("embedding_size")!=512||text.at("neural_backend")!="bpu")
+  const int slots=text.at("prompt_slots").get<int>();
+  if((slots!=8&&slots!=32)||RuntimePrompts(cfg).size()>size_t(slots)||text.at("embedding_size")!=512||text.at("neural_backend")!="bpu")
     throw std::runtime_error("开放词汇组件接口与 S100P 不一致");
   const auto& validation=manifest.at("validation");
   if(manifest.value("production_approved",false)!=true||validation.value("full_pipeline_accuracy_verified",false)!=true||
@@ -91,7 +93,7 @@ std::pair<int64_t,int64_t> OutputMatrix(const nlohmann::json& output){
     throw std::runtime_error("BPU 输出需要固定的单批次矩阵");
   return {shape[0],shape[1]};
 }
-void ValidateOutputSignatures(const config::ModelConfig& cfg,const nlohmann::json& outputs){
+void ValidateOutputSignatures(const config::ModelConfig& cfg,const nlohmann::json& outputs,int prompt_slots=8){
   std::set<std::string> names;
   std::set<std::pair<int64_t,int64_t>> expected,actual;
   const bool scrfd=cfg.adapter=="scrfd_bpu";
@@ -112,8 +114,8 @@ void ValidateOutputSignatures(const config::ModelConfig& cfg,const nlohmann::jso
     if(scrfd){
       if(!actual.insert(matrix).second)throw std::runtime_error("SCRFD BPU 输出头形状重复");
     }else if(yoloe){
-      if(cfg.input_size!=std::vector<int>{640,640}||matrix!=std::pair<int64_t,int64_t>{12,8400}||name!="boxes_scores")
-        throw std::runtime_error("YOLOE BPU 输出必须匹配 640 输入、八词槽的原始检测头");
+      if(cfg.input_size!=std::vector<int>{640,640}||matrix!=std::pair<int64_t,int64_t>{4+prompt_slots,8400}||name!="boxes_scores")
+        throw std::runtime_error("YOLOE BPU 输出必须匹配 640 输入、对应词槽的原始检测头");
     }else if(matrix.second!=6){
       throw std::runtime_error("YOLO BPU 输出必须为 [N,6] 或 [1,N,6] 的端到端矩阵");
     }
@@ -124,6 +126,7 @@ void ValidateOutputSignatures(const config::ModelConfig& cfg,const nlohmann::jso
 BpuChannelAdapter::BpuChannelAdapter(config::ModelConfig cfg):config_(std::move(cfg)){
   if(config_.adapter!="yoloe_bpu")ApplyTaskTypeHint(config_.class_names.value_or(std::vector<std::string>{}),config_.name,config_.path);
 }
+std::string BpuChannelAdapter::ModelFileDigest(const std::string& path){return Digest(path);}
 nlohmann::json BpuChannelAdapter::ValidateModel(const config::ModelConfig& cfg){
   if(cfg.input_size.size()!=2||cfg.input_size[0]<=0||cfg.input_size[1]<=0)
     throw std::runtime_error("Invalid model input dimensions");
@@ -156,7 +159,7 @@ nlohmann::json BpuChannelAdapter::ValidateModel(const config::ModelConfig& cfg){
     throw std::runtime_error("BPU 模型输出数量与任务不一致");
   // Same layouts accepted by the reused decoders; reject incompatible compiled
   // artifacts before SDK allocation, source opening, or operator-stop changes.
-  ValidateOutputSignatures(cfg,m.at("outputs"));
+  ValidateOutputSignatures(cfg,m.at("outputs"),yoloe?m.at("dynamic_text").at("prompt_slots").get<int>():8);
   const auto& pre=m.at("preprocess");
   pre.at("rgb_order").get<bool>();pre.at("normalize").get<bool>();
   const auto mean=pre.at("mean").get<std::array<double,3>>();
@@ -172,7 +175,7 @@ void BpuChannelAdapter::Load(const std::string& path,const std::string& provider
   if(yoloe) {
     prompt_names_=RuntimePrompts(config_);
     ainvr::BpuPromptEngine encoder(PromptResources(config_,manifest_.at("dynamic_text")));
-    prompt_values_=encoder.Encode(prompt_names_);
+    prompt_values_=encoder.Encode(prompt_names_,manifest_.at("dynamic_text").at("prompt_slots").get<size_t>());
   }
   const bool nv12=manifest_["input_contract"]=="nv12_full_range_bt601_embedded";
   runner_=std::make_unique<ainvr::BpuImageRunner>(path,nv12?ainvr::BpuImageContract::Nv12EmbeddedPreprocess:ainvr::BpuImageContract::FloatNchw,yoloe?"images":"");
@@ -184,7 +187,7 @@ void BpuChannelAdapter::Load(const std::string& path,const std::string& provider
   if(yoloe) {
     const auto& inputs=description_.at("inputs");if(inputs.size()!=2)throw std::runtime_error("YOLOE requires image and prompt inputs");
     const auto& prompt=inputs.at(1-index);
-    if(prompt.at("name")!="prompt_embeddings"||prompt.at("shape")!=nlohmann::json::array({1,8,512})||prompt.at("dtype_id")!=HB_DNN_TENSOR_TYPE_F32||prompt.at("quantization")!=NONE)
+    if(prompt.at("name")!="prompt_embeddings"||prompt.at("shape")!=nlohmann::json::array({1,manifest_.at("dynamic_text").at("prompt_slots").get<int>(),512})||prompt.at("dtype_id")!=HB_DNN_TENSOR_TYPE_F32||prompt.at("quantization")!=NONE)
       throw std::runtime_error("YOLOE prompt SDK signature mismatch");
   }
   const auto& expected=manifest_.at("outputs");const auto& actual=description_.at("outputs");
@@ -207,7 +210,7 @@ nlohmann::json BpuChannelAdapter::ResultMetadata() const{
     const auto& text=manifest_.at("dynamic_text");
     result.update({{"prompt_phrases",prompt_names_},{"text_hbm_sha256",text.at("text_hbm_sha256")},
       {"reprta_hbm_sha256",text.at("reprta_hbm_sha256")},{"text_execution_backend","s100p_bpu"},
-      {"prompt_slots",8},{"active_prompts",prompt_names_.size()}});
+      {"prompt_slots",text.at("prompt_slots")},{"active_prompts",prompt_names_.size()}});
   }
   return result;
 }
@@ -239,7 +242,12 @@ std::vector<Detection> BpuChannelAdapter::Postprocess(const std::vector<float>& 
   auto detections=config_.adapter=="yoloe_bpu"?ainvr::DecodeYoloeRaw(tensor,scale,prompt_names_,{c,i,max}):
       ainvr::DecodeEndToEnd(tensor,scale,manifest_.at("class_names").get<std::vector<std::string>>(),{c,i,max});
   if(config_.adapter=="yoloe_bpu")for(auto& d:detections) {
-    d.query_description=prompt_names_.at(size_t(d.class_id));d.label_id=config_.label_id;
+    d.query_description=prompt_names_.at(size_t(d.class_id));
+    if(!config_.prompts.empty()) {
+      const auto& label=config_.prompts.at(size_t(d.class_id));
+      d.label_id=label.label_id;d.class_name=label.label_name;continue;
+    }
+    d.label_id=config_.label_id;
     if(prompt_names_.size()>1&&!d.label_id.empty())d.label_id+=":"+std::to_string(d.class_id);
     if(prompt_names_.size()==1&&!config_.label_name.empty())d.class_name=config_.label_name;
   }

@@ -1,4 +1,5 @@
 import type { AiDetection } from '@/types/aiChannel'
+import { parseGroundingOverlay, type GroundingOverlay } from './groundingPoints'
 
 /**
  * 从 WebRTC 编码帧里解出 ai-service 注入的检测结果（SEI）。
@@ -55,6 +56,8 @@ export interface SeiFrameDetections {
   /** 这条结果相对产出时刻有多旧（毫秒），ai-service 侧的口径 */
   ageMs: number | null
   detections: AiDetection[]
+  modelExtra?: Record<string, unknown>
+  grounding?: GroundingOverlay
 }
 
 /** SEI 载荷里单个检测的紧凑编码（sei.py::_det_json）：
@@ -144,7 +147,7 @@ export function parseSeiJson(json: string): SeiFrameDetections | null {
     return null
   }
   if (!raw || typeof raw !== 'object') return null
-  const obj = raw as { pts?: unknown; age_ms?: unknown; det?: unknown }
+  const obj = raw as { pts?: unknown; age_ms?: unknown; det?: unknown; model_extra?: unknown }
   const detections: AiDetection[] = []
   if (Array.isArray(obj.det)) {
     for (const item of obj.det) {
@@ -152,10 +155,15 @@ export function parseSeiJson(json: string): SeiFrameDetections | null {
       if (d) detections.push(d)
     }
   }
+  const modelExtra = obj.model_extra && typeof obj.model_extra === 'object' && !Array.isArray(obj.model_extra)
+    ? obj.model_extra as Record<string, unknown> : undefined
+  const grounding = parseGroundingOverlay(modelExtra)
   return {
     ptsNs: typeof obj.pts === 'number' ? obj.pts : null,
     ageMs: typeof obj.age_ms === 'number' ? obj.age_ms : null,
     detections,
+    ...(modelExtra ? { modelExtra } : {}),
+    ...(grounding ? { grounding } : {}),
   }
 }
 

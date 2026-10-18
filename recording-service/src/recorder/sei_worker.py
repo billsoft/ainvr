@@ -43,9 +43,37 @@ def read_ainvr_sei(nal: bytes, hevc: bool = False) -> dict | None:
     return None
 
 
+def _has_targets(data: dict) -> bool:
+    """Index real boxes or completed normalized points;empty clears are not hits."""
+    if data.get('det'):
+        return True
+    extra = data.get('model_extra')
+    if not isinstance(extra, dict):
+        return False
+    grounding = extra.get('grounding')
+    if (not isinstance(grounding, dict) or grounding.get('complete') is not True
+            or grounding.get('coordinate_space') != 'normalized_full_frame'):
+        return False
+    points = grounding.get('points')
+    if not isinstance(points, list):
+        return False
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        xy = [point.get('x'), point.get('y')]
+        if not all(type(v) in (int, float) and 0 <= v <= 1 and math.isfinite(v) for v in xy):
+            continue
+        confidence = point.get('confidence')
+        if confidence is not None and not (type(confidence) in (int, float)
+                and 0 <= confidence <= 1 and math.isfinite(confidence)):
+            continue
+        return True
+    return False
+
+
 def has_ainvr_sei(nal: bytes, hevc: bool = False) -> bool:
     data = read_ainvr_sei(nal, hevc)
-    return data is not None and bool(data['det'])
+    return data is not None and _has_targets(data)
 
 
 def packet_has_sei(packet: bytes, length_size: int, hevc: bool) -> bool:
@@ -83,7 +111,7 @@ def packet_prefix_metadata(handle, pos: int, size: int, length_size: int, hevc: 
 
 def packet_prefix_has_sei(handle, pos: int, size: int, length_size: int, hevc: bool) -> bool:
     data = packet_prefix_metadata(handle, pos, size, length_size, hevc)
-    return data is not None and bool(data['det'])
+    return data is not None and _has_targets(data)
 
 
 def scan_frames(path: str, start_ms: int, end_ms: int) -> list[dict]:

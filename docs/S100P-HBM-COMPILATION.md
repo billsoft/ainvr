@@ -119,3 +119,18 @@ GPEN 原图包含动态调制卷积，原编译尝试失败。`rewrite_gpen_stat
 
 线程配置只影响可并行阶段，不能强迫串行优化使用多核，也不是 GPU 代码生成开关。新任务先用 jobs=4 和内存保护；既有 COCO 任务保持 jobs=2 并完成，避免为了改线程重编。文本编码器拆词表已能编译和执行，但 128 条真实词的量化准确性失败，不能因为 84.6 FPS 就应用；先诊断敏感浮点层，再编译通过的候选。保留全部失败证据，禁止用速度替代质量门槛。
 
+
+
+## YOLOE 32 槽最终配方与 O2 验收（2026-10-14）
+
+最终复用 512 图校准，175 个卷积使用官方 high/low INT8 权重 EC；两处注意力概率×value 的 MatMul 使用 activation EC，上游概率保持 INT16。
+官方 EC 复用转置前校准源，曾使残差相减跨越不同坐标布局；按目标 high 分支校准的真实输入修正 residual Sub 的第一个输入，保留 high/low 量化结构。必须先用浮点/PTQ 中间输出验证改善，不能只凭相同矩阵尺寸判断正确。实现位于 `test/model_conversion/compile_yoloe_component.py` 的 `--detector-all-weight-ec --detector-attention-ec` 路径；失败 r1-r4 和 v1-v6 报告保留。
+
+先 O0 完整 BPU 质量通过，再 `compile_saved_bc.py --opt 2 --jobs 2 --filename detector.hbm` 复用 BC `3b8738559f637d8065d56c56e4bf3a89c93f34f15be84e2f603c8dff3d6d1e10`，不重复校准。GPU 镜像并不把最终 CPU 编译阶段变成 CUDA 编译。
+O2 文件 1,282,071,984 字节，SHA `74700b38a0c62e81838b43a9e11bd7eec84f46f64b4d45e3e7e961e691162073`。
+同 128 输入纯 BPU 推理逐位相同：O0 3.5254 FPS、O2 9.4894 FPS，2.6917 倍；完整适配器预热后约 8.2389 FPS。与 8 槽采用的补偿配方不同，不能将性能差异全部归因于槽位数量。
+
+同时装入 O0/O2 超过 BPU 专用内存。最终采用 `capture_yoloe_detector_validation.py` 分别在独立进程保存输出，再由 `compare_yoloe_saved_optimization.py` 检查相同图像、提示哈希、同 BC、全部输出逐位一致；没有降低检查标准。隔离测速使用 `--production-paused` 正确记录 AI 暂停条件，录像保持运行，finally 恢复 AI。首次旧报告的错误并发字段与原始副本保留，最终使用 r2 质量/r4 优化报告。
+
+部署入口是 `stage_yoloe32_contract.py`、`deploy-package/install-yoloe32-s100p.py` 和现有事务式 `install-ai-s100p.py`。本轮另发现保留时间戳导致构建复用旧适配器 object；源码支持32不等于实际二进制支持，必须重建并实测 >8 标签，再核对安装 binary hash。
+最终证据见 `test/results/yoloe32-final-delivery-v7.json`，包含原生、GLES/JPU/Mongo、真实页面和原配置恢复。完整独立图精度合格，但自由词逐网格检查仍失败；最终检测框四案例通过只是有限功能验收。

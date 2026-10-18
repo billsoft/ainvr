@@ -13,15 +13,17 @@ p.add_argument('--helper',type=Path,required=True)
 p.add_argument('--assets',type=Path,required=True)
 p.add_argument('--native-probe',type=Path,required=True)
 p.add_argument('--output',type=Path,required=True)
+p.add_argument('--work',type=Path)
 a=p.parse_args();assert not a.output.exists()
 sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
-manifest=json.loads((a.references/'manifest.json').read_text());cases=manifest['samples'];assert len(cases)==4
-request=a.references/'native-request.json';vectors=a.references/'native-vectors.bin';assert not request.exists() and not vectors.exists()
-request.write_text(json.dumps({'groups':[x['phrases'] for x in cases]}))
+manifest=json.loads((a.references/'manifest.json').read_text());slots=manifest.get('prompt_slots',8);assert slots in (8,32);cases=manifest['samples'];assert len(cases)==4
+work=a.work or a.output.parent/(a.output.stem+'-work');work.mkdir(exist_ok=False)
+request=work/'native-request.json';vectors=work/'native-vectors.bin'
+request.write_text(json.dumps({'prompt_slots':slots,'groups':[x['phrases'] for x in cases]}))
 command=[str(a.native_probe),str(a.text),str(a.reprta),str(a.python),str(a.helper),str(a.assets),str(request),str(vectors)]
 begin=time.perf_counter();result=subprocess.run(command,capture_output=True,text=True,timeout=30,check=True)
 setup_ms=(time.perf_counter()-begin)*1000
-prompts=np.fromfile(vectors,dtype='<f4').reshape(4,1,8,512)
+prompts=np.fromfile(vectors,dtype='<f4').reshape(4,1,slots,512)
 rt=hbm_runtime.HB_HBMRuntime(str(a.detector));assert len(rt.model_names)==1;name=rt.model_names[0];rt.set_scheduling_params(bpu_cores={name:[0]})
 rows=[];actuals=[];passed=True;limitations=[]
 def box(raw,index):
@@ -31,7 +33,7 @@ def overlap(x,y):
     return float(area/max(np.maximum(x[2:]-x[:2],0).prod()+np.maximum(y[2:]-y[:2],0).prod()-area,1e-12))
 for i,item in enumerate(cases):
     data=np.load(a.references/item['file']);ref=data['reference'];inputs={'images':data['image'],'prompt_embeddings':prompts[i]}
-    got=next(iter(rt.run({name:inputs})[name].values()));assert got.shape==ref.shape==(1,12,8400) and np.isfinite(got).all()
+    got=next(iter(rt.run({name:inputs})[name].values()));assert got.shape==ref.shape==(1,4+slots,8400) and np.isfinite(got).all()
     maxima=[float(got[0,4+k].max()) for k in range(len(item['phrases']))]
     reference_max=item['fp32_max_scores'];delta=float(np.abs(got[:,4:4+len(maxima)]-ref[:,4:4+len(maxima)]).max())
     passed &= delta<=.15

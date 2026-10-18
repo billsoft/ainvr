@@ -1,4 +1,5 @@
 #include "snapshot_internal.hpp"
+#include "grounding_snapshot.hpp"
 
 namespace ai_service::output {
 using namespace snapshot_detail;
@@ -8,8 +9,58 @@ void SnapshotStore::Offer(const FrameProvider& frame_provider, const std::string
                           const std::vector<Detection>& crop_detections,
                           const std::vector<Detection>& stored_detections, bool square_crop,
                           const config::SnapshotConfig& snapshot_cfg) {
+  OfferTargets(frame_provider, channel_id, channel_name, frame_pts_ns, timestamp,
+               model_name, task_type, crop_detections, stored_detections, square_crop,
+               snapshot_cfg, {});
+}
+
+void SnapshotStore::OfferResult(const FrameProvider& provider, const FrameResult& result,
+                                const std::string& channel_name,
+                                const std::vector<Detection>& crop_detections, bool square_crop,
+                                const config::SnapshotConfig& cfg) {
+  if (!cfg.enabled) return;
+  // Validate every point before accepting any box or point from this result.
+  const auto targets = GroundingSnapshotTargets(result);
+  if (!targets.empty() && (provider.size.width <= 0 || provider.size.height <= 0))
+    throw std::invalid_argument("Snapshot point context requires a valid source frame");
+  Offer(provider, result.channel_id, channel_name, result.frame_pts_ns, result.timestamp,
+        result.model_name, result.task_type, crop_detections, result.detections, square_crop, cfg);
+  if (targets.empty()) return;
+  std::vector<Detection> contexts, properties;
+  std::vector<json> points;
+  for (const auto& target : targets) {
+    Detection context;
+    // This is an internal image region only. The record explicitly has bbox=null.
+    context.bbox = {0, 0, double(provider.size.width), double(provider.size.height)};
+    contexts.push_back(context);
+    properties.push_back(target.properties);
+    points.push_back(target.point);
+  }
+  OfferTargets(provider, result.channel_id, channel_name, result.frame_pts_ns, result.timestamp,
+               result.model_name, result.task_type, contexts, properties, false, cfg, points);
+}
+
+void SnapshotStore::OfferTargets(const FrameProvider& frame_provider, const std::string& channel_id,
+                          const std::string& channel_name, int64_t frame_pts_ns, double timestamp,
+                          const std::string& model_name, const std::string& task_type,
+                          const std::vector<Detection>& crop_detections,
+                          const std::vector<Detection>& stored_detections, bool square_crop,
+                          const config::SnapshotConfig& snapshot_cfg,
+                          const std::vector<json>& points) {
   if (!snapshot_cfg.enabled) return;
   if (crop_detections.empty()) return;
+  const bool point_records = !points.empty();
+  if (point_records && (points.size() != crop_detections.size() || points.size() != stored_detections.size()))
+    throw std::invalid_argument("Snapshot point target count mismatch");
+  auto crop_cfg = snapshot_cfg;
+  if (point_records) {
+    // A point does not define an object extent or an ERP perspective crop.
+    // Preserve the complete source frame as its explicitly described context.
+    crop_cfg.projection_mode = "flat";
+    crop_cfg.padding_ratio = 0;
+    crop_cfg.face_enhance_model = "none";
+    square_crop = false;
+  }
   // One producer at a time: after capacity is checked, the writer can only free slots.
   std::lock_guard<std::mutex> offer_lock(offer_mutex_);
   const auto epoch = capture_epoch_.load();
@@ -47,13 +98,13 @@ void SnapshotStore::Offer(const FrameProvider& frame_provider, const std::string
       return std::isfinite(v) && std::abs(v) <= 32760;
     }) && b[2] > 0 && b[3] > 0;
     // Validate without allocating maps; invalid targets keep existing accounting.
-    if (deferred && snapshot_cfg.projection_mode == "erp_equirect")
-      deferred = BboxToErpView(b, snapshot_cfg.padding_ratio, frame_provider.size.width,
-          frame_provider.size.height, snapshot_cfg.max_crop_dimension, 9, square_crop).has_value();
+    if (deferred && crop_cfg.projection_mode == "erp_equirect")
+      deferred = BboxToErpView(b, crop_cfg.padding_ratio, frame_provider.size.width,
+          frame_provider.size.height, crop_cfg.max_crop_dimension, 9, square_crop).has_value();
     else if (deferred)
       deferred = b[0] < frame_provider.size.width && b[1] < frame_provider.size.height &&
           b[0] + b[2] > 0 && b[1] + b[3] > 0 &&
-          (!square_crop || std::pow(std::max(b[2], b[3]) * (1 + 2 * snapshot_cfg.padding_ratio), 2) * 4 <= (size_t(256) << 20));
+          (!square_crop || std::pow(std::max(b[2], b[3]) * (1 + 2 * crop_cfg.padding_ratio), 2) * 4 <= (size_t(256) << 20));
   }
   auto disabled = [&] { return !capture_enabled_.load() || epoch != capture_epoch_.load(); };
   auto cancelled = [&] { return disabled() || stop_event_.load() ||
@@ -109,8 +160,9 @@ void SnapshotStore::Offer(const FrameProvider& frame_provider, const std::string
       job.image_id = NewUuid4(); job.channel_id = channel_id; job.channel_name = channel_name;
       job.frame_pts_ns = frame_pts_ns; job.timestamp = timestamp; job.model_name = model_name;
       job.task_type = task_type; job.detection = stored_detections[i];
+      if (point_records) job.point = points[i];
       job.crop_detection = crop_detections[i]; job.square = square_crop;
-      job.config = snapshot_cfg; job.frame = captured;
+      job.config = crop_cfg; job.frame = captured;
       Track(job.image_id, "queued");
       std::unique_lock<std::mutex> lock(queue_mutex_);
       while (queue_.size() >= queue_maxsize_ && !cancelled()) {
@@ -148,7 +200,7 @@ void SnapshotStore::Offer(const FrameProvider& frame_provider, const std::string
   try {
     crops = cropper_.Crop(frame_provider,
         std::vector<Detection>(crop_detections.begin() + offset, crop_detections.begin() + offset + n),
-        square_crop, snapshot_cfg);
+        square_crop, crop_cfg);
     backpressured_.store(false);
     ClearArchiveFault("capture");
     break;
@@ -225,8 +277,9 @@ void SnapshotStore::Offer(const FrameProvider& frame_provider, const std::string
     job.model_name = model_name;
     job.task_type = task_type;
     job.detection = stored_detections[offset + i];
+    if (point_records) job.point = points[offset + i];
     job.crop = crop;
-    job.config = snapshot_cfg;
+    job.config = crop_cfg;
     Track(job.image_id, "queued");
 
     {
