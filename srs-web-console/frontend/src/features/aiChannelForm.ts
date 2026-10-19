@@ -69,7 +69,7 @@ export const DEFAULT_WIZARD_VALUE: AiWizardFormValue = {
 
 export type FieldErrors = Partial<Record<
   'id' | 'name' | 'streamUrl' | 'inferenceFps' | 'prompts' | 'description' | 'labelId' | 'labelName'
-  | 'analytics' | 'confThreshold' | 'iouThreshold' | 'maxDetections' | 'resultBufferMaxFrames',
+  | 'analytics' | 'coastSeconds' | 'confThreshold' | 'iouThreshold' | 'maxDetections' | 'resultBufferMaxFrames',
   string
 >>
 
@@ -205,8 +205,12 @@ export function validateStep3(v: AiWizardFormValue): FieldErrors {
 /** 只校验当前阶段界面上能看到的分析设置；未开放功能的旧配置（可能不完整）
  * 原样保留，不得阻止保存跟踪开关。 */
 export function validateVisibleAnalytics(v: AiWizardFormValue): FieldErrors {
-  return ANALYTICS_PHASE.rulesAndEvents || ANALYTICS_PHASE.review || ANALYTICS_PHASE.notification
+  const errors: FieldErrors = ANALYTICS_PHASE.rulesAndEvents || ANALYTICS_PHASE.review || ANALYTICS_PHASE.notification
     ? validateAnalyticsStep(v) : {}
+  const coast = v.analytics?.coast_seconds
+  if (v.analytics?.enabled && coast !== undefined && (!Number.isFinite(coast) || coast < 0 || coast > 2))
+    errors.coastSeconds = '推算显示时长须为 0–2 秒（0 表示不推算）'
+  return errors
 }
 
 export function validateAnalyticsStep(v: AiWizardFormValue): FieldErrors {

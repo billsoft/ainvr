@@ -3,6 +3,7 @@
 #include "../../third_party/bytetrack_service/include/BYTETracker.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <set>
 #include <tuple>
 #include <map>
@@ -27,7 +28,7 @@ class ByteTrackAdapter {
     if(!std::isfinite(gap_) || gap_<=0 || gap_>60 || fps_<1 || fps_>120)
       throw std::invalid_argument("Invalid ByteTrack timing");
   }
-  void Reset() { groups_.clear(); last_=-1; alias_.clear(); recent_.clear(); }
+  void Reset() { groups_.clear(); last_=-1; alias_.clear(); identities_.clear(); next_id_=0; }
   std::vector<ByteTrackMatch> Process(double pts,const std::vector<ScoredBox>& boxes) {
     if(!std::isfinite(pts)||pts<0||pts<=last_)
       throw std::invalid_argument("Source time must increase");
@@ -70,75 +71,109 @@ class ByteTrackAdapter {
         labels.push_back(label);
       }
     }
-    Recover(pts,boxes,result,labels);
+    Identify(pts,boxes,result);
     last_=pts;
     return result;
   }
  private:
   struct Group { std::unique_ptr<BYTETracker> tracker; double seen=-1; };
-  // Last real observation of an emitted identity, for lost-track recovery.
-  struct Recent { std::string label; cv::Rect_<float> box; double pts; float vx=0,vy=0; };
+  // ---- Identity layer ----------------------------------------------------
+  // ByteTrack associates by overlap only: a low-score detection must overlap
+  // the prediction by IoU>=0.5, and a target missed for a few frames reappears
+  // with little overlap and gets a new internal ID. Public identities are this
+  // layer's own (never ByteTrack's internal numbers, which ByteTrack may revive):
+  // every frame, ByteTrack's new internal tracks and the detections it left
+  // unmatched (scores >= 0.1) may continue a lost identity of the same label
+  // when they fit its motion-predicted box. Low scores never start an identity.
+  // Classes are separate channels. All limits are in seconds, not frames.
+  struct Identity { std::string label; cv::Rect_<float> box; double pts=0; float vx=0,vy=0; };
   static float Cx(const cv::Rect_<float>& b){return b.x+b.width/2;}
   static float Cy(const cv::Rect_<float>& b){return b.y+b.height/2;}
-  // ByteTrack associates by overlap. At low frame rates a fast target that was
-  // missed for a few frames reappears with zero overlap and gets a new internal
-  // ID. A new ID may continue a lost identity of the same label when its centre
-  // lies within one box diagonal of that identity's motion-extrapolated centre
-  // and the size is similar. Closest pairs first, one-to-one; identities seen in
-  // this frame are never taken; nothing older than max_gap_seconds.
-  void Recover(double pts,const std::vector<ScoredBox>& boxes,std::vector<ByteTrackMatch>& result,
-               const std::vector<std::string>& labels) {
-    for(auto it=recent_.begin();it!=recent_.end();)
-      if(pts-it->second.pts>gap_) it=recent_.erase(it); else ++it;
-    std::set<int> present;
+  static float Iou(const cv::Rect_<float>& a,const cv::Rect_<float>& b) {
+    const float w=std::max(0.f,std::min(a.x+a.width,b.x+b.width)-std::max(a.x,b.x));
+    const float h=std::max(0.f,std::min(a.y+a.height,b.y+b.height)-std::max(a.y,b.y));
+    const float inter=w*h,uni=a.width*a.height+b.width*b.height-inter;
+    return uni>0?inter/uni:0;
+  }
+  // Same target: similar aspect ratio and size, and the box overlaps the
+  // constant-velocity prediction (IoU>=0.3) or its centre lies within a distance
+  // that grows with the time lost. Returns a cost (lower is better) or <0.
+  static float Fit(const Identity& s,const cv::Rect_<float>& d,double pts) {
+    const float lost=static_cast<float>(pts-s.pts);
+    const cv::Rect_<float> p{s.box.x+s.vx*lost,s.box.y+s.vy*lost,s.box.width,s.box.height};
+    const float aspect=(d.width/d.height)/(p.width/p.height),area=(d.width*d.height)/(p.width*p.height);
+    if(aspect>1.6f || aspect<1/1.6f || area>2.5f || area<1/2.5f) return -1;
+    const float iou=Iou(p,d),diagonal=std::hypot(p.width,p.height);
+    const float distance=std::hypot(Cx(d)-Cx(p),Cy(d)-Cy(p))/diagonal;
+    if(iou<0.3f && distance>0.6f+0.6f*std::min(lost,1.f)) return -1;
+    return distance-iou+1;
+  }
+  void Identify(double pts,const std::vector<ScoredBox>& boxes,std::vector<ByteTrackMatch>& result) {
+    for(auto it=identities_.begin();it!=identities_.end();)
+      if(pts-it->second.pts>gap_) it=identities_.erase(it); else ++it;
+    for(auto it=alias_.begin();it!=alias_.end();)
+      if(!identities_.count(it->second)) it=alias_.erase(it); else ++it;
+    std::set<int> used;
     std::vector<size_t> fresh;
     for(size_t i=0;i<result.size();++i) {
+      // A revived internal track whose identity is already taken this frame
+      // competes like a new one, so no identity is ever emitted twice.
       auto alias=alias_.find(result[i].track_id);
-      // Two internal IDs may map to one identity when ByteTrack later revives the
-      // original:the first keeps it, the other continues as its own identity.
-      if(alias!=alias_.end() && !present.count(alias->second)) {result[i].track_id=alias->second;present.insert(alias->second);}
+      if(alias!=alias_.end() && !used.count(alias->second)) {result[i].track_id=alias->second;used.insert(alias->second);}
       else fresh.push_back(i);
     }
+    constexpr size_t kNone=static_cast<size_t>(-1);
+    struct Candidate {size_t result,observation;};
+    std::vector<Candidate> candidates;
+    std::set<size_t> matched;
+    for(const auto& r:result) matched.insert(r.observation);
+    for(size_t i:fresh) candidates.push_back({i,result[i].observation});
+    for(size_t o=0;o<boxes.size();++o)
+      if(!matched.count(o) && boxes[o].score>=0.1f) candidates.push_back({kNone,o});
     std::vector<std::tuple<float,size_t,int>> pairs;
-    for(size_t i:fresh) {
-      const auto& now=boxes[result[i].observation].box;
-      for(const auto& [id,r]:recent_) {
-        if(present.count(id) || r.label!=labels[i] || r.pts>=pts) continue;
-        const float area=now.width*now.height,old=r.box.width*r.box.height;
-        if(area>old*2.25f || old>area*2.25f) continue;
-        const float dt=static_cast<float>(pts-r.pts);
-        const float dx=Cx(now)-(Cx(r.box)+r.vx*dt),dy=Cy(now)-(Cy(r.box)+r.vy*dt);
-        const float diagonal=std::hypot(r.box.width,r.box.height);
-        const float ratio=std::hypot(dx,dy)/diagonal;
-        if(ratio<=1.0f) pairs.emplace_back(ratio,i,id);
+    for(size_t c=0;c<candidates.size();++c) {
+      const auto& box=boxes[candidates[c].observation];
+      for(const auto& [id,s]:identities_) {
+        if(used.count(id) || s.label!=box.label || s.pts>=pts) continue;
+        const float cost=Fit(s,box.box,pts);
+        if(cost>=0) pairs.emplace_back(cost,c,id);
       }
     }
     std::sort(pairs.begin(),pairs.end());
-    std::set<size_t> taken;
-    for(const auto& [ratio,i,id]:pairs) {
-      if(taken.count(i) || present.count(id)) continue;
-      alias_[result[i].track_id]=id;result[i].track_id=id;taken.insert(i);present.insert(id);
+    std::vector<char> taken(candidates.size(),0);
+    std::vector<ByteTrackMatch> continued;
+    for(const auto& [cost,c,id]:pairs) {
+      if(taken[c] || used.count(id)) continue;
+      taken[c]=1;used.insert(id);
+      const auto& candidate=candidates[c];
+      if(candidate.result!=kNone) {alias_[result[candidate.result].track_id]=id;result[candidate.result].track_id=id;}
+      else continued.push_back({candidate.observation,id,boxes[candidate.observation].box});
     }
-    for(size_t i:fresh) if(!taken.count(i)) {
-      int own=result[i].track_id;
-      // A revived duplicate keeps its own internal ID (globally unique, never an alias target).
-      alias_[own]=own;result[i].track_id=own;present.insert(own);
+    for(size_t c=0;c<candidates.size();++c) {
+      if(taken[c] || candidates[c].result==kNone) continue;
+      auto& r=result[candidates[c].result];
+      if(next_id_==std::numeric_limits<int>::max()) throw std::overflow_error("Tracking identity space exhausted");
+      alias_[r.track_id]=++next_id_;r.track_id=next_id_;used.insert(next_id_);
     }
-    for(size_t i=0;i<result.size();++i) {
-      const auto& now=boxes[result[i].observation].box;
-      Recent next{labels[i],now,pts};
-      auto old=recent_.find(result[i].track_id);
-      if(old!=recent_.end() && pts>old->second.pts) {
-        const float dt=static_cast<float>(pts-old->second.pts);
-        next.vx=(Cx(now)-Cx(old->second.box))/dt;next.vy=(Cy(now)-Cy(old->second.box))/dt;
+    result.insert(result.end(),continued.begin(),continued.end());
+    for(const auto& r:result) {
+      const auto& now=boxes[r.observation];
+      Identity next{now.label,now.box,pts};
+      auto old=identities_.find(r.track_id);
+      if(old!=identities_.end() && pts>old->second.pts) {
+        // Smoothed velocity:a single 0.1 s step amplifies box jitter.
+        const float dt=static_cast<float>(pts-old->second.pts),gain=std::min(1.f,dt/0.5f);
+        next.vx=old->second.vx+gain*((Cx(now.box)-Cx(old->second.box))/dt-old->second.vx);
+        next.vy=old->second.vy+gain*((Cy(now.box)-Cy(old->second.box))/dt-old->second.vy);
+        const float limit=3*std::hypot(now.box.width,now.box.height),speed=std::hypot(next.vx,next.vy);
+        if(speed>limit) {next.vx*=limit/speed;next.vy*=limit/speed;}
       }
-      recent_[result[i].track_id]=next;
+      identities_[r.track_id]=next;
     }
-    for(auto it=alias_.begin();it!=alias_.end();)
-      if(!recent_.count(it->second)) it=alias_.erase(it); else ++it;
   }
   std::map<int,int> alias_;
-  std::map<int,Recent> recent_;
+  std::map<int,Identity> identities_;
+  int next_id_=0;
   std::map<std::string,Group> groups_;
   double gap_,last_=-1;
   int fps_;

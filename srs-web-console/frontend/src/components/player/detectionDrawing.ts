@@ -19,9 +19,13 @@ export function drawDetections(
   for (const d of detections) {
     const box = projectDetectionBox(d, layout, frameW, frameH)
     ctx.strokeStyle = BOX_COLOR
+    // 短时丢失的推算框用虚线，与真实检测区分。
+    ctx.setLineDash?.(d.predicted || d.lowConfidence ? [6, 4] : [])
     ctx.strokeRect(box.x, box.y, box.w, box.h)
     const identity = d.track_id ? ` #${d.track_id.split(':').at(-1)}` : ''
-    const label = (d.confidence === null ? d.class_name : `${d.class_name} ${(d.confidence * 100).toFixed(0)}%`) + identity
+    const label = d.predicted ? `${d.class_name}${identity} 推算`
+      : d.lowConfidence ? `${d.class_name}${identity} 低置信`
+      : (d.confidence === null ? d.class_name : `${d.class_name} ${(d.confidence * 100).toFixed(0)}%`) + identity
     const metrics = ctx.measureText(label)
     const labelY = box.y > 16 ? box.y - 4 : box.y + 16
     ctx.fillStyle = BOX_COLOR
@@ -38,5 +42,6 @@ export function drawDetections(
       }
     }
   }
+  ctx.setLineDash?.([])
 }
 

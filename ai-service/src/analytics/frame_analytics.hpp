@@ -4,7 +4,9 @@
 #include "bytetrack_adapter.hpp"
 #include "../output/result.hpp"
 #include <chrono>
+#include <algorithm>
 #include <random>
+#include <set>
 namespace ai_service::analytics {
 class FrameAnalytics {
  public:
@@ -64,8 +66,11 @@ class FrameAnalytics {
     }
     last_pts_=result.frame_pts_ns;
     auto tracks=nlohmann::json::array(),events=nlohmann::json::array();
-    for(size_t i=0;i<indices.size();++i) if(update.observation_tracks[i])
-      result.detections[indices[i]].track_id=session_+":"+std::to_string(update.observation_tracks[i]);
+    for(size_t i=0;i<indices.size();++i) if(update.observation_tracks[i]) {
+      auto& d=result.detections[indices[i]];
+      d.track_id=session_+":"+std::to_string(update.observation_tracks[i]);
+      classes_[update.observation_tracks[i]]={d.class_id,d.class_name,d.label_id};
+    }
     std::map<uint64_t,int64_t> retained_pts;
     for(const auto& t:update.tracks) {
       const int64_t observed_pts=t.observed?result.frame_pts_ns:observed_pts_.at(t.id);
@@ -79,7 +84,27 @@ class FrameAnalytics {
           {"w",t.box[2]*result.frame_width},{"h",t.box[3]*result.frame_height}}},
         {"velocity",{{"x",t.velocity[0]*result.frame_width},{"y",t.velocity[1]*result.frame_height},
           {"unit","pixels_per_second"}}}});
+      if(auto c=classes_.find(t.id);c!=classes_.end()) {
+        tracks.back()["class_id"]=c->second.id;tracks.back()["class_name"]=c->second.name;
+      }
+      // Briefly lost confirmed targets coast along their Kalman motion for display
+      // ("dead reckoning"). Marked as prediction;never a detection, archive or rule input.
+      const double lost=seconds-t.seen;
+      if(!t.observed && t.confirmed && config_.coast_seconds>0 && lost<=config_.coast_seconds+1e-9) {
+        if(auto p=tracker_.PredictedBoxAt(t.id,seconds)) {
+          const double x0=std::clamp((*p)[0],0.0,1.0),y0=std::clamp((*p)[1],0.0,1.0);
+          const double x1=std::clamp((*p)[0]+(*p)[2],0.0,1.0),y1=std::clamp((*p)[1]+(*p)[3],0.0,1.0);
+          if(x1-x0>1e-6 && y1-y0>1e-6) {
+            auto& entry=tracks.back();
+            entry["predicted_bbox"]={{"x",x0*result.frame_width},{"y",y0*result.frame_height},
+              {"w",(x1-x0)*result.frame_width},{"h",(y1-y0)*result.frame_height}};
+            entry["predicted_age_ms"]=lost*1000;
+          }
+        }
+      }
     }
+    for(auto it=classes_.begin();it!=classes_.end();)
+      if(!retained_pts.count(it->first)) it=classes_.erase(it); else ++it;
     observed_pts_=std::move(retained_pts);
     for(const auto& e:update.events) {
       nlohmann::json event={{"schema_version","1.0"},{"event_id",e.id},
@@ -109,6 +134,8 @@ class FrameAnalytics {
       {"algorithm",algorithm_},{"stream_session_id",session_},{"tracks",tracks},{"events",events}};
   }
  private:
+  struct ClassOf {int id=0;std::string name,label;};
+  std::map<uint64_t,ClassOf> classes_;
   std::map<uint64_t,int64_t> observed_pts_;
   Config config_;
   Tracker tracker_;
@@ -118,4 +145,44 @@ class FrameAnalytics {
   std::string instance_,key_,session_;
   uint64_t reset_=0;
 };
+// A confirmed target observed this frame only through a tracking candidate below
+// the display threshold would vanish from the overlay. Mark that observed box for
+// display as low confidence;result.detections (archive input) is unchanged.
+inline void MarkHiddenObservations(FrameResult& result) {
+  if(!result.model_extra.is_object() || !result.model_extra.contains("analytics")) return;
+  auto& analytics=result.model_extra["analytics"];
+  if(!analytics.is_object() || !analytics.contains("tracks")) return;
+  std::set<std::string> visible;
+  for(const auto& d:result.detections) if(!d.track_id.empty()) visible.insert(d.track_id);
+  for(auto& t:analytics["tracks"]) {
+    if(t.value("observation","")!="detected" || t.value("state","")!="confirmed" || !t.contains("bbox")) continue;
+    if(visible.count(t.value("track_id",""))) continue;
+    t["display_bbox"]=t["bbox"];t["display_kind"]="low_confidence";
+  }
+}
+
+// Display-only boxes (SEI overlay):predictions for briefly lost targets and
+// low-confidence observations. They are never added to result.detections, so
+// archives, snapshots, statistics and rules ignore them.
+inline std::vector<Detection> CoastDetections(const FrameResult& result) {
+  std::vector<Detection> out;
+  if(!result.model_extra.is_object() || !result.model_extra.contains("analytics")) return out;
+  const auto& analytics=result.model_extra.at("analytics");
+  if(!analytics.is_object() || !analytics.contains("tracks")) return out;
+  for(const auto& t:analytics.at("tracks")) {
+    const bool predicted=t.contains("predicted_bbox");
+    if(!predicted && !t.contains("display_bbox")) continue;
+    const auto& b=t.at(predicted?"predicted_bbox":"display_bbox");
+    Detection d;
+    d.bbox={b.at("x").get<double>(),b.at("y").get<double>(),b.at("w").get<double>(),b.at("h").get<double>()};
+    d.track_id=t.at("track_id").get<std::string>();
+    d.label_id=t.value("label_id",std::string());
+    d.class_id=t.value("class_id",0);d.class_name=t.value("class_name",d.label_id);
+    d.confidence=0;d.confidence_known=false;
+    d.model_extra=predicted?nlohmann::json{{"predicted",true},{"predicted_age_ms",t.value("predicted_age_ms",0.0)}}
+                           :nlohmann::json{{"display_kind","low_confidence"}};
+    out.push_back(std::move(d));
+  }
+  return out;
+}
 } // namespace ai_service::analytics

@@ -59,6 +59,9 @@ std::vector<uint8_t> build_result_payload(
     int budget = SEI_PAYLOAD_BUDGET,
     // Optional common frame metadata. Empty preserves the legacy wire bytes.
     // Normalized grounding points remain points,not fabricated detections.
-    const nlohmann::json& model_extra = nlohmann::json::object());
+    const nlohmann::json& model_extra = nlohmann::json::object(),
+    // Display-only predicted boxes ("pr":1), appended after observed boxes so a
+    // tight budget drops them first;they never replace an observation.
+    const std::vector<Detection>& predicted = {});
 
 }  // namespace ai_service::sei

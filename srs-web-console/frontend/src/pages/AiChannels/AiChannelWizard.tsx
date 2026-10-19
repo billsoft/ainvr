@@ -515,14 +515,24 @@ export function AiChannelWizard({
                   <p className="mt-2 text-sm text-ink">
                     {value.modelPreset === 'locateanything-3b'
                       ? '跟踪方式：运动关联（模型不提供置信度）'
-                      : '跟踪方式：ByteTrack'}
+                      : '跟踪方式：按检测框关联（区分高低置信度）'}
                   </p>
                   <p className="mt-2 text-xs text-ink-faint" data-testid="tracking-sampling-guidance">
                     {value.inferenceFps > 0
                       ? `计划每 ${(1 / value.inferenceFps).toFixed(2)} 秒检测一次；实际间隔可能更长。`
                       : '计划跟随源流检测；实际检测频率取决于设备处理速度。'}
                     {' '}检测间隔越长，快速移动的目标越容易换编号或轨迹断开，请结合实际画面判断效果。
-                    {' '}短时预测只用于帮助关联目标，画面上只画真实检测到的位置，不补造越线或进入事件。
+                    {' '}短时预测用于帮助关联目标，不补造越线或进入事件。
+                  </p>
+                  <label className="mt-3 block text-sm text-ink">短时丢失时推算显示（秒）
+                    <input aria-label="短时丢失推算秒数" type="number" min={0} max={2} step={0.1}
+                      value={value.analytics?.coast_seconds ?? 1}
+                      onChange={(e) => set('analytics', { ...value.analytics, enabled: true, coast_seconds: Number(e.target.value) })}
+                      className="mt-1.5 block w-28 rounded-base border border-line bg-surface px-3 py-2" />
+                  </label>
+                  {errors.coastSeconds && <p role="alert" className="text-xs text-danger">{errors.coastSeconds}</p>}
+                  <p className="mt-1 text-xs text-ink-faint">
+                    目标被遮挡或漏检时，在这段时间内按原来的运动方向推算，用虚线框和虚线轨迹显示并标“推算”，不是真实检测，不进入识别记录、统计和告警。0 表示不推算。
                   </p>
                   <p className="mt-1 text-xs text-ink-faint">
                     实时预览中的“轨迹”按钮只控制显示，不会重启处理器。

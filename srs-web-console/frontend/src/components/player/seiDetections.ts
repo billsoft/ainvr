@@ -68,6 +68,8 @@ interface CompactDetection {
   p?: unknown
   l?: unknown
   t?: unknown
+  pr?: unknown
+  lc?: unknown
   b?: unknown
   k?: unknown
 }
@@ -178,6 +180,8 @@ function toDetection(c: CompactDetection): AiDetection | null {
     confidence: typeof c.p === 'number' ? c.p : c.p === null ? null : 0,
     ...(typeof c.l === 'string' ? { label_id: c.l } : {}),
     ...(typeof c.t === 'string' && c.t.length <= 256 ? { track_id: c.t } : {}),
+    ...(c.pr === 1 ? { predicted: true } : {}),
+    ...(c.lc === 1 ? { lowConfidence: true } : {}),
     bbox: { x: x as number, y: y as number, w: w as number, h: h as number },
   }
   if (Array.isArray(c.k)) {

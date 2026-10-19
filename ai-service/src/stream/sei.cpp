@@ -115,6 +115,8 @@ std::string det_to_json(const Detection& d) {
     s += format_num_1dp(d.bbox[i]);
   }
   s += "]";
+  if (d.model_extra.is_object() && d.model_extra.value("predicted", false)) s += ",\"pr\":1";
+  if (d.model_extra.is_object() && d.model_extra.value("display_kind", "") == "low_confidence") s += ",\"lc\":1";
   // 空关键点与缺省同等对待(v1 `if d.landmarks:`;API/Mongo 同规则)。
   if (d.landmarks && !d.landmarks->empty()) {
     s += ",\"k\":[";
@@ -283,7 +285,8 @@ std::vector<uint8_t> build_result_payload(const std::string& channel_id,
                                            int64_t pts_ns, double age_ms,
                                            std::vector<Detection> detections,
                                            int budget,
-                                           const nlohmann::json& model_extra) {
+                                           const nlohmann::json& model_extra,
+                                           const std::vector<Detection>& predicted) {
   int json_budget = std::max(0, budget - static_cast<int>(SEI_UUID.size()));
   if (!model_extra.is_object()) throw std::invalid_argument("SEI frame metadata must be an object");
   const auto validate_numbers = [](const auto& self, const nlohmann::json& value) -> void {
@@ -344,6 +347,12 @@ std::vector<uint8_t> build_result_payload(const std::string& channel_id,
   std::vector<std::string> det_jsons;
   det_jsons.reserve(detections.size());
   for (const auto& d : detections) det_jsons.push_back(det_to_json(d));
+  for (auto d : predicted) {
+    if (!d.model_extra.is_object()) d.model_extra = nlohmann::json::object();
+    if (!d.model_extra.contains("display_kind")) d.model_extra["predicted"] = true;
+    d.confidence_known = false;
+    det_jsons.push_back(det_to_json(d));
+  }
 
   // Preserve a bounded prefix of generated points. For mixed geometry,leave
   // room for at least one actual detection before applying the legacy box

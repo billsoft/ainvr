@@ -10,7 +10,7 @@ const SOURCES = import.meta.glob(['../**/*.ts', '../**/*.tsx', '!../test/**', '!
   query: '?raw', import: 'default', eager: true,
 }) as Record<string, string>
 
-const TECH = /(?<![A-Za-z0-9_])(SRS|srs|Mongo(DB)?|mongo(db)?|Postgre(SQL|s)?|postgres|PG|GStreamer|FFmpeg|ffmpeg|TensorRT|CUDA|ONNX|Jetson|NVIDIA|Docker|systemd|nginx|Fastify|React|hls\.js|flv\.js|mpegts|YOLO\w*|yolo\w*|SCRFD|scrfd|GPEN|CodeFormer|NetworkManager|SQLite|Redis|FastAPI|uvicorn)(?![A-Za-z0-9_])/
+const TECH = /(?<![A-Za-z0-9_])(SRS|srs|Mongo(DB)?|mongo(db)?|Postgre(SQL|s)?|postgres|PG|GStreamer|FFmpeg|ffmpeg|TensorRT|CUDA|ONNX|Jetson|NVIDIA|Docker|systemd|nginx|Fastify|React|hls\.js|flv\.js|mpegts|YOLO\w*|yolo\w*|SCRFD|scrfd|GPEN|CodeFormer|NetworkManager|SQLite|Redis|FastAPI|uvicorn|ByteTrack|BYTETracker)(?![A-Za-z0-9_])/
 const CJK = /[一-鿿]/
 const STR = /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/gs
 const JSX_TEXT = />([^<>{}]+)</g

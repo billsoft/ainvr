@@ -1019,6 +1019,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     analytics_->Apply(tracked,frame.epoch,frame.stream_generation.value_or(-1));
     result.model_extra=std::move(tracked.model_extra);
     analytics::CopyTrackIdentities(tracked.detections,result.detections);
+    analytics::MarkHiddenObservations(result);
     analytics::LinkEventArchive(result,cfg->snapshot.enabled);
   }
 
@@ -1100,7 +1101,7 @@ void ReusedChannelWorker::StampSei(const FrameResult& result, std::optional<int6
   try {
     auto payload = sei::build_result_payload(channel_id_, result.frame_pts_ns, 0.0,
                                               result.detections, cfg->publish.sei.max_payload_bytes,
-                                              result.model_extra);
+                                              result.model_extra, analytics::CoastDetections(result));
     if (payload.empty()) return;  // 预算裁剪后连一个目标都容不下,不写 det:[]
     // 按源编码构造:264 类型 6;265 前缀 SEI 类型 39(载荷一致,浏览器按 UUID 扫)
     auto stream = LoadStream();

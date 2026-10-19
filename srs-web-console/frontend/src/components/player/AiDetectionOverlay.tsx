@@ -3,9 +3,10 @@ import type { AiDetection } from '@/types/aiChannel'
 import { drawDetections } from './detectionDrawing'
 import { reportOverlayDiag } from '@/api/diagService'
 import { computeContainLayout, projectLandmark } from './overlayGeometry'
-import { TrackTrailBuffer, type TrackTrail } from './trackTrails'
+import { TrackTrailBuffer, trailSegments, type TrackTrail } from './trackTrails'
 import { drawGroundingPoints, type GroundingOverlay } from './groundingPoints'
 
+const TRAIL_IDLE_MS = 3000
 type DisplayResult = { detections: AiDetection[]; ptsNs?: number | null; displayAgeMs?: number; grounding?: GroundingOverlay }
 
 interface Props {
@@ -47,6 +48,9 @@ export function AiDetectionOverlay({
   const expiresRef = useRef(0)
   const trailBuffer = useRef(new TrackTrailBuffer())
   const trails = useRef<TrackTrail[]>([])
+  // Trails are history:drawn whether or not the current frame has its own result,
+  // until no result has arrived for TRAIL_IDLE_MS (stream stalled or AI stopped).
+  const lastResultRef = useRef(Number.NEGATIVE_INFINITY)
   const countersRef = useRef({ displayed: 0, matched: 0, held: 0, missing: 0, drawn: 0 })
   const modeSeenRef = useRef<'exact' | 'approx' | null>(null)
   const lastHeartbeatRef = useRef(0)
@@ -57,6 +61,7 @@ export function AiDetectionOverlay({
     expiresRef.current = 0
     trailBuffer.current.clear()
     trails.current = []
+    lastResultRef.current = Number.NEGATIVE_INFINITY
   }, [resetKey, video, enabled, channelId])
 
   useEffect(() => {
@@ -80,7 +85,10 @@ export function AiDetectionOverlay({
     let handle = 0
     const apply = (hit: DisplayResult | null, mode: 'exact' | 'approx') => {
       frameRef.current = hit
-      if (hit) trails.current = trailBuffer.current.update(hit.ptsNs, hit.detections)
+      if (hit) {
+        trails.current = trailBuffer.current.update(hit.ptsNs, hit.detections)
+        lastResultRef.current = performance.now()
+      }
       expiresRef.current = performance.now() + Math.max(0, 300 - (hit?.displayAgeMs ?? 0))
       const counters = countersRef.current
       counters.displayed++
@@ -112,7 +120,7 @@ export function AiDetectionOverlay({
             signedGapMs: null,
             protocol,
             matchType: mode === 'exact' ? 'sei' : 'sei-approx',
-            detCount: hit?.detections.length ?? 0,
+            detCount: hit?.detections.filter(d => !d.predicted && !d.lowConfidence).length ?? 0,
           })
         }
       }
@@ -176,21 +184,25 @@ export function AiDetectionOverlay({
         else drawFrame(context, frame?.detections ?? [], rect.width, rect.height, video.videoWidth, video.videoHeight)
       } else {
         const layout = computeContainLayout(video.videoWidth, video.videoHeight, rect.width, rect.height)
-        if (showTrails && frame && !drawFrame) {
+        if (showTrails && !drawFrame && performance.now() - lastResultRef.current <= TRAIL_IDLE_MS) {
           context.lineWidth = 2
           for (const trail of trails.current) {
             if (trail.points.length < 2) continue
             let hash = 0
             for (const char of trail.id) hash = (hash * 31 + char.charCodeAt(0)) | 0
             context.strokeStyle = `hsl(${Math.abs(hash) % 360} 85% 65%)`
-            context.beginPath()
-            trail.points.forEach((point, index) => {
-              const p = projectLandmark(point, layout, video.videoWidth, video.videoHeight)
-              if (index === 0) context.moveTo(p.x, p.y)
-              else context.lineTo(p.x, p.y)
-            })
-            context.stroke()
+            // 推算段虚线，真实观测段实线。
+            for (const segment of trailSegments(trail.points)) {
+              const a = projectLandmark(segment.from, layout, video.videoWidth, video.videoHeight)
+              const b = projectLandmark(segment.to, layout, video.videoWidth, video.videoHeight)
+              context.setLineDash?.(segment.predicted ? [6, 4] : [])
+              context.beginPath()
+              context.moveTo(a.x, a.y)
+              context.lineTo(b.x, b.y)
+              context.stroke()
+            }
           }
+          context.setLineDash?.([])
         }
         if (showDetections) {
           drawDetections(context, frame?.detections ?? [], layout, video.videoWidth, video.videoHeight)

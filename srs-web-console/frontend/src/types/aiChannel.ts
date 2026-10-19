@@ -177,6 +177,8 @@ export interface AiAnalyticsConfig {
 
   save_events?: boolean
   retention_days?: number
+  /** 目标短时丢失时按运动推算显示的最长时间（秒，0–2，0 关闭，默认 1） */
+  coast_seconds?: number
   enabled: boolean
   max_gap_seconds?: number
   association_distance?: number
@@ -335,6 +337,10 @@ export interface AiDetection {
   confidence: number | null
   label_id?: string
   track_id?: string
+  /** 目标短时丢失期间按运动推算的框（仅实时叠加显示，不是检测结果，不进归档/统计/告警） */
+  predicted?: boolean
+  /** 已跟踪目标本帧只有低于显示阈值的检测（真实观测，仅叠加显示，不进归档/统计/告警） */
+  lowConfidence?: boolean
   bbox: { x: number; y: number; w: number; h: number }
   /** 仅 scrfd_trt（人脸检测）填充，顺序固定 [左眼,右眼,鼻尖,左嘴角,右嘴角] */
   landmarks?: { x: number; y: number }[]

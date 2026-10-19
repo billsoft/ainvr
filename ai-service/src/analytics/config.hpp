@@ -21,6 +21,8 @@ struct Config {
   bool enabled=false;
   bool save_events=true;
   int retention_days=30;
+  // Display-only coasting of briefly lost targets (seconds; 0 disables).
+  double coast_seconds=1.0;
   Options options;
 };
 inline void Keys(const nlohmann::json& j,const std::set<std::string>& allowed) {
@@ -46,7 +48,7 @@ inline Config FromJson(const nlohmann::json& j) {
   Config c;
   if(j.is_null()) return c;
   Keys(j,{"save_events","retention_days","enabled","max_gap_seconds","association_distance","line_hysteresis",
-          "confirmation_hits","maximum_tracks","rules","review","notification"});
+          "confirmation_hits","maximum_tracks","rules","review","notification","coast_seconds"});
   if(j.contains("enabled")) {
     if(!j["enabled"].is_boolean()) throw std::invalid_argument("analytics.enabled must be boolean");
     c.enabled=j["enabled"].get<bool>();
@@ -120,6 +122,9 @@ inline Config FromJson(const nlohmann::json& j) {
     }
   }
   Tracker validated(o);
+  c.coast_seconds=Number(j,"coast_seconds",c.coast_seconds);
+  if(c.coast_seconds<0||c.coast_seconds>2||c.coast_seconds>o.max_gap_seconds)
+    throw std::invalid_argument("coast_seconds must be 0 to 2 and not exceed max_gap_seconds");
   return c;
 }
 inline nlohmann::json ToJson(const Config& c) {
@@ -130,7 +135,7 @@ inline nlohmann::json ToJson(const Config& c) {
   return {{"notification",{{"enabled",c.notification.enabled},{"require_review",c.notification.require_review},
     {"endpoint",c.notification.endpoint}}},{"review",{{"enabled",c.review.enabled},{"model_path",c.review.model_path},
     {"description",c.review.description},{"max_new_tokens",c.review.max_new_tokens},
-    {"timeout_seconds",c.review.timeout_seconds}}},{"save_events",c.save_events},{"retention_days",c.retention_days},{"enabled",c.enabled},{"max_gap_seconds",o.max_gap_seconds},
+    {"timeout_seconds",c.review.timeout_seconds}}},{"save_events",c.save_events},{"retention_days",c.retention_days},{"coast_seconds",c.coast_seconds},{"enabled",c.enabled},{"max_gap_seconds",o.max_gap_seconds},
     {"association_distance",o.association_distance},{"line_hysteresis",o.line_hysteresis},
     {"confirmation_hits",o.confirmation_hits},{"maximum_tracks",o.maximum_tracks},
     {"rules",rules}};

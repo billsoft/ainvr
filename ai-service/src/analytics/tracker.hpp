@@ -1,5 +1,6 @@
 // Copyright AINVR. Source-time tracking and rule state; no image/model inference.
 #pragma once
+#include <optional>
 #include "assignment.hpp"
 #include "motion_filter.hpp"
 #include "geometry.hpp"
@@ -154,6 +155,8 @@ class Tracker {
         t.seen=pts;t.hits=1;t.observed=true;
         t.confirmed=options_.confirmation_hits==1;
         it=tracks_.emplace(id,t).first;
+        MotionState motion;motion.filter.Initialize(o.box);motion.pts=pts;
+        filters_.insert_or_assign(id,std::move(motion));
       } else {
         auto& t=it->second;
         const auto anchor=Anchor(o.box);
@@ -161,12 +164,29 @@ class Tracker {
         t.velocity={(anchor[0]-t.anchor[0])/dt,(anchor[1]-t.anchor[1])/dt};
         t.anchor=anchor;t.box=o.box;t.seen=pts;t.observed=true;
         t.confirmed=++t.hits>=options_.confirmation_hits;
+        auto motion=filters_.find(id);
+        if(motion==filters_.end()) {
+          MotionState fresh;fresh.filter.Initialize(o.box);fresh.pts=pts;filters_.emplace(id,std::move(fresh));
+        } else {
+          motion->second.filter.Predict(pts-motion->second.pts);
+          motion->second.filter.Correct(o.box);motion->second.pts=pts;
+        }
       }
       out.observation_tracks[i]=id;
       Evaluate(it->second,pts,out.events);
     }
     for(const auto& [id,t]:tracks_) out.tracks.push_back(t);
     return out;
+  }
+  // Constant-velocity Kalman prediction of a retained track's box at `pts`
+  // (normalized). Display/association aid only, never an observation.
+  std::optional<Box> PredictedBoxAt(uint64_t id,double pts) const {
+    auto motion=filters_.find(id);
+    if(motion==filters_.end()||!std::isfinite(pts)||pts<motion->second.pts) return std::nullopt;
+    auto filter=motion->second.filter;
+    filter.Predict(pts-motion->second.pts);
+    const auto b=filter.PredictedBox();
+    return Box{b[0],b[1],b[2],b[3]};
   }
  private:
   struct RuleState {

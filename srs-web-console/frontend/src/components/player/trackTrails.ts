@@ -1,7 +1,12 @@
 import type { AiDetection } from '@/types/aiChannel'
 
-export interface TrailPoint { x: number; y: number; ptsNs: number }
+export interface TrailPoint { x: number; y: number; ptsNs: number; predicted?: boolean }
 export interface TrackTrail { id: string; points: TrailPoint[] }
+
+/** A result older than the last one by at most this much is alignment jitter
+ * (approximate alignment re-estimates its delay every few seconds):it is dropped,
+ * the trails stay. Larger backward jumps are a seek or a restart:trails reset. */
+const STALE_BACKSTEP_SECONDS = 5
 
 /** Track identities are "<session>:<number>"; a new session starts after the
  * service resets tracking (restart, stream reconnect, model change). */
@@ -10,7 +15,17 @@ export function trackSession(id: string): string {
   return cut < 0 ? '' : id.slice(0, cut)
 }
 
-/** Observations only. Feed displayed-frame metadata, never latest API results. */
+/** Segments between consecutive points;a segment touching a predicted point is drawn dashed. */
+export function trailSegments(points: TrailPoint[]): { from: TrailPoint; to: TrailPoint; predicted: boolean }[] {
+  const out: { from: TrailPoint; to: TrailPoint; predicted: boolean }[] = []
+  for (let i = 1; i < points.length; i++) {
+    const from = points[i - 1]!, to = points[i]!
+    out.push({ from, to, predicted: !!from.predicted || !!to.predicted })
+  }
+  return out
+}
+
+/** Observations and flagged short-loss predictions. Feed displayed-frame metadata, never latest API results. */
 export class TrackTrailBuffer {
   private tracks = new Map<string, TrailPoint[]>()
   private lastPts: number | null = null
@@ -37,7 +52,11 @@ export class TrackTrailBuffer {
   clear() { this.tracks.clear(); this.lastPts = null; this.session = null }
   update(ptsNs: number | null | undefined, detections: AiDetection[]): TrackTrail[] {
     if (ptsNs == null || !Number.isFinite(ptsNs) || ptsNs < 0) return []
-    if (this.lastPts !== null && (ptsNs < this.lastPts || ptsNs - this.lastPts > this.maxGapSeconds * 1e9)) this.clear()
+    if (this.lastPts !== null && ptsNs < this.lastPts) {
+      if (this.lastPts - ptsNs <= STALE_BACKSTEP_SECONDS * 1e9) return this.snapshot()
+      this.clear()
+    }
+    if (this.lastPts !== null && ptsNs - this.lastPts > this.maxGapSeconds * 1e9) this.clear()
     // Held metadata is not another observation.
     if (ptsNs === this.lastPts) return this.snapshot()
     this.lastPts = ptsNs
@@ -65,7 +84,7 @@ export class TrackTrailBuffer {
       const last = points.at(-1)
       if (last && ptsNs - last.ptsNs > this.maxGapSeconds * 1e9) points = []
       // The trail follows the centre of the drawn box.
-      points.push({ x: x + w/2, y: y + h/2, ptsNs })
+      points.push({ x: x + w/2, y: y + h/2, ptsNs, ...(detection.predicted ? { predicted: true } : {}) })
       this.tracks.delete(id)
       this.tracks.set(id, points.slice(-this.maxPoints))
       while (this.tracks.size > this.maxTracks) this.tracks.delete(this.tracks.keys().next().value!)

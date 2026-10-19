@@ -13,7 +13,7 @@
 - AI设置可开启/关闭跟踪；实时播放器有独立“显示轨迹”开关。
 - 轨迹跟随正在显示的视频帧，不能把最新推理结果直接画在延迟画面上。
 
-卡尔曼预测等只是跟踪器内部实现手段，不另做“运动估计”产品功能或速度面板。默认只绘制真实观测轨迹，不为了看起来连续而把预测线冒充真实观测。
+卡尔曼预测等只是跟踪器内部实现手段，不另做“运动估计”产品功能或速度面板。用户要求短时丢失按运动推算补框（4.9）：推算框与推算轨迹段一律虚线并标“推算”，不冒充真实观测，不进归档/统计/告警。
 
 **本阶段明确不做：** 流量统计、区域布防、出现/接近/接触或碰撞/进入/穿越判断、规则编辑、事件中心、轨迹历史查询与独立轨迹存储产品、大模型复核、报警和通知。已有实验和代码保留，不再继续扩展，也不作为第一阶段上线的前置条件。
 
@@ -104,6 +104,50 @@
 - **5fps 断裂修复**：`bytetrack_adapter.hpp` 新增丢失轨迹二次关联——ByteTrack 新内部ID与同类别、未超 max_gap_seconds、本帧未出现的丢失身份，按运动外推中心距离≤1个框对角线且面积比≤2.25 一对一贪心匹配；复活的重复内部ID保留自身ID，避免同帧重复。测试 `test/ai_port/bytetrack_recovery_test.cpp`（4例：跳跃恢复/过远新ID/不抢在跟目标/超时不恢复，先红后绿）。BPU 重跑楼梯视频：`corridor-bpu-tracking-recovery-stride5-v5.json`、`...-stride1-v5.json`，按人工标注对比 `corridor-recovery-comparison-v5.json`：两种帧率均 6人6ID、0断裂、0互换，检测数与此前一致。
 - 验证：服务7、跟踪8、分析核心3、前端915项全部通过，`git diff --check` 干净；服务与前端已事务部署，大门通道 running、配置不变。
 - **提交方案**（未执行）：`/home/sunrise/ainvr-commit-plan-20261019/`（本机副本 `D:\codex-task-staging\ainvr-analytics\commit-plan-20261019\`）。第1笔 LocateAnything 多类别 = 独立工作树 `/home/sunrise/ainvr-la-multi` 相对HEAD的补丁（共享文件只含LA代码块）+6个LA新文件；第2笔 = 其余全部（含 analytics 源码、trackTrails、阶段开关、第三方 ByteTrack 源码与 LICENSE/UPSTREAM）。`.gitignore` 新增 `deploy/s100p/rollback-ai-*/`，新回滚二进制不入库（历史已入库的不受影响）；test/results 本就忽略。`check` 演练通过，暂存区为空。
+
+### 4.8 跟踪身份层重构（2026-10-19 晚，已上线，未提交）
+
+**用户反馈**：10fps 下轨迹经常断、ID 变化。**现网录制分析**（`test/results/analytics/live-gate-10fps-record-v1.json`，3分钟1809帧）：27 次“ID消失后附近出现新ID”，其中25次期间该人一直被检测到但未分到ID；21%人员框无ID（82%为置信度<0.5）。结论：不是帧率高或丢失保留太短（已按时间保留2秒、卡尔曼按时间推算），而是 ByteTrack 低分框接续要求 IoU≥0.5、新建要求≥0.6，中间形成空档；旧恢复用两点估速且对外ID直接借用 ByteTrack 内部编号，回放发现同帧编号重复（`Duplicate tracker identity`，旧代码在现网录制回放中72帧失败）。
+
+**设计/实现**（`ai-service/src/analytics/bytetrack_adapter.hpp` 身份层 `Identify`）：
+- 对外ID由身份层自有计数器分配，ByteTrack内部编号只作映射；同帧已用ID不再分配，结构上无重复。
+- 每帧候选 = ByteTrack 新内部轨迹 + 其未匹配的检测（≥0.1）；只能接续**同类别**（类别即独立频道）、本帧未出现、丢失≤max_gap_seconds 的身份；低分框永不新建身份。
+- 判定：按平滑速度（增益 dt/0.5s，速度上限3倍对角线/秒）外推的预测框；宽高比相差≤1.6倍、面积相差≤2.5倍，且 IoU≥0.3 或中心距离≤(0.6+0.6×min(丢失秒,1))×对角线；按代价一对一贪心。全部参数按秒，与帧率无关。ByteTrack 自身的首轮关联不加形状约束（鱼眼姿态变化大，加了会更碎）。
+- 测试 `test/ai_port/bytetrack_recovery_test.cpp` 10例（原4例+惯导预测/低分接续不新建/形状门/类别隔离/5·10·15fps一致/200帧随机无重复），先红后绿。
+
+**回放与守门**：`test/ai_port/tracking_replay.cpp`（注册于 test/bytetrack，离线回放检测结果）+ `test/ai_port/eval_replay.py`，数据在 `test/results/analytics/replay/`（输入仅含≥0.25的显示框，偏保守）。同输入对比旧代码（HEAD）：现网录制带ID占比 73.5%→82.0%、失败帧 72→0、轨迹中位长 65→73.5；楼梯视频 5fps/逐帧均 6人6ID、0断裂、0互换（守门通过），带ID占比 83.8%→87.8%、84.8%→93.7%。新代码剩余17次疑似断裂**全部是形状剧变**（面积比0.06–0.4或1.6–4.3），无门内漏接；是否同一人需看画面。
+
+**现网复测**（部署后同通道再录3分钟，`live-gate-10fps-record-v2-identity.json`）：带ID占比 78.9%→83.4%，低分框得ID 705→1269，断裂 27→10，轨迹 152→139、中位长 64.5→73；通道 running、0错误、SEI与推理一一对应。部署前二进制备份 `deploy/s100p/rollback-ai-20261019-*`（取最新）。
+
+**未提交**：`bytetrack_adapter.hpp`、`bytetrack_recovery_test.cpp`、`test/bytetrack/CMakeLists.txt`、新增 `tracking_replay.cpp`/`eval_replay.py`/`record_gate_results_v1.py`。工作区另有其他会话的 `alarm-service/` 与报警设计文档，不属本项。
+
+### 4.9 短时丢失惯导补框与低置信显示（2026-10-19 晚，已上线，未提交）
+
+**用户需求**：目标短时丢失（默认1秒，可设置）不要马上消失，按原运动方向推算补框。**现网数据**：同ID中断3分钟369次，83%≤1秒，占轨迹时长17.7%。
+
+**实现**：
+- 配置 `analytics.coast_seconds`（默认1，0–2，≤max_gap_seconds，0关闭）；向导“目标跟踪”步可设置，校验在 `validateVisibleAnalytics`。
+- `tracker.hpp`：ByteTrack 路径也维护按源时间的 `MotionFilter`（卡尔曼），`PredictedBoxAt(id,pts)`。`frame_analytics.hpp`：丢失≤coast_seconds 的已确认目标输出 `predicted_bbox`（裁到画面内，出画即停）；`MarkHiddenObservations`：本帧只被低于显示阈值的跟踪候选接住的已确认目标标 `display_kind=low_confidence`（现网复测发现这类占缺框的约45%，单靠推算覆盖仅55%）。`CoastDetections` 生成仅供显示的框。
+- SEI：推算框 `"pr":1`、低置信框 `"lc":1`，无置信度，排在真实框之后，预算不足先丢；**从不进入 result.detections**，所以归档、快照、统计、规则/告警都不受影响。
+- 前端：`pr`/`lc` 解析；推算框与低置信框虚线，标签“#ID 推算”/“#ID 低置信”；轨迹中触及推算点的段为虚线（`trailSegments`）；诊断计数不含推算框。
+- 测试：`test/ai_port/analytics_coast_test.cpp`（配置边界、沿运动推进、超时停止、0关闭、出画裁剪、不进检测、低置信、SEI标记与预算顺序）、`frontend/src/test/trackingCoast.test.ts`，均先红后绿；后端跟踪9项、前端955项通过（唯一失败为他人告警配置页“MongoDB 连接”文字）。
+- 大门通道 SEI 上限 1024→2048（用户批准，热更新）。
+
+**验证**：回放（只含≥0.25显示框）≤1秒中断缺帧推算覆盖98.6%，恢复时推算框与真实框 IoU 中位0.62；楼梯视频 ID 结果不变（0互换0断裂）。现网复测：≤1秒中断缺帧画面有框比例 55.2%（仅推算）→97.8%（推算511+低置信433，余21）；SEI 与推理一一对应、0错误。数据 `test/results/analytics/live-gate-10fps-record-v3-coast.json`、`v4-lowconf.json`。
+
+**部署教训（重要）**：
+- 主工作树含其他会话未提交改动，**不能在主树编译部署**。首次部署把告警会话的 `label_catalog`（每帧80类标签目录写进 model_extra）一并带上线，SEI 基础信封超1024字节，每帧“SEI 预算不足以容纳基础元数据”，事务脚本自动回滚。**提醒告警会话：label_catalog 不能进 SEI wire（应像 analytics 一样在 sei.cpp 擦除），否则上线即全量 SEI 失败。**
+- 改用干净工作树 `/home/sunrise/ainvr-track-deploy`（HEAD + 本项文件 + worker 中本项两行）。cmake 必须带 `-DAINVR_LICENSE_SERVICE_USER=sunrise`（默认 ainvr 会导致许可校验失败、通道静默不启动，第二次部署因此回滚）。
+- 回滚备份 `deploy/s100p/rollback-ai-20261019-*`（取最新）；前端旧 dist 在 `/home/sunrise/ainvr-merge-backup-20261019/`。
+
+**未提交**：本项与 4.8 的跟踪文件（bytetrack_adapter/config/frame_analytics/tracker/sei.cpp/sei.hpp、worker 中 SEI 与 MarkHiddenObservations 两行、前端7个文件与2个测试、test/bytetrack/CMakeLists.txt、回放/录制工具）。worker.cpp 与告警会话共用，提交时需按代码块拆分。
+
+### 4.10 轨迹滑动窗口修复（2026-10-19 晚，前端已上线，未提交）
+
+**用户反馈**：轨迹约每2秒整条消失再重画；应随目标移动从尾部擦除、头部续接。
+**原因（前端）**：① `AiDetectionOverlay` 只在当前显示帧匹配到 SEI 结果时才画轨迹（`showTrails && frame`），识别10fps/视频15fps，未匹配或沿用超300ms即整层不画；② `TrackTrailBuffer.update` 收到时间早于上一次的结果即全清，近似对齐每2秒（WebRTC getStats 轮询）重估延迟会产生小幅回退，触发整条清空。
+**修复**：轨迹独立于当前帧，最近3秒内收到过识别结果就持续绘制（`TRAIL_IDLE_MS`），超过则视为停流不画；回退≤5秒视为对齐抖动丢弃该过时结果、轨迹保留，>5秒（回放拖动/重启）才清空；滑动窗口按最新时间逐点擦除（30秒/360点），会话变化、单目标>3秒未见、换通道仍清空。框仍只画当前帧结果。
+**测试**：`frontend/src/test/trackTrailWindow.test.tsx`（小回退不清空、大回退/停顿清空、尾部单调滚动不坍缩、未匹配帧仍画轨迹、停流后不画），先红后绿；前端全量967通过（唯一失败为告警会话“MongoDB 连接”文字）。经干净工作树构建上线（旧 dist：`/home/sunrise/ainvr-merge-backup-20261019/frontend-dist-before-trailwindow`）。未做浏览器实看（需登录），对齐模式（精确/近似）未现场确认。
 
 ## 5. 第一阶段完成标准
 

@@ -71,3 +71,18 @@ target_compile_options(bytetrack_recovery PRIVATE -UNDEBUG)
 target_link_libraries(bytetrack_recovery PRIVATE bytetrack_service)
 add_test(NAME bytetrack_recovery COMMAND bytetrack_recovery)
 set_tests_properties(bytetrack_recovery PROPERTIES TIMEOUT 30)
+
+# Offline tracking replay of recorded detections (no BPU) for A/B regression.
+add_executable(tracking_replay ../ai_port/tracking_replay.cpp
+ ../../ai-service/src/output/result.cpp ../../ai-service/src/stream/sei.cpp
+ ../../ai-service/src/stream/video_codec.cpp)
+target_link_libraries(tracking_replay PRIVATE bytetrack_service nlohmann_json::nlohmann_json)
+
+# Short-loss coasting:display-only predicted boxes, never detections, last in SEI.
+add_executable(analytics_coast ../ai_port/analytics_coast_test.cpp
+ ../../ai-service/src/output/result.cpp ../../ai-service/src/stream/sei.cpp
+ ../../ai-service/src/stream/video_codec.cpp)
+target_compile_options(analytics_coast PRIVATE -UNDEBUG)
+target_link_libraries(analytics_coast PRIVATE bytetrack_service nlohmann_json::nlohmann_json)
+add_test(NAME analytics_coast COMMAND analytics_coast)
+set_tests_properties(analytics_coast PROPERTIES TIMEOUT 30)
