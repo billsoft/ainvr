@@ -83,6 +83,8 @@ export function createMockAiChannelService(seed: AiChannel[] = []): AiChannelSer
               description: patch.model.description, label_id: patch.model.label_id,
               label_name: patch.model.label_name, max_new_tokens: patch.model.max_new_tokens,
             } : {}),
+            // 与后端一致：多标签配置非空时原样回显。
+            ...(patch.model?.prompts?.length ? { prompts: patch.model.prompts.map(row => ({ ...row })) } : {}),
           },
           preprocess: {
             letterbox: patch.preprocess?.letterbox ?? true,

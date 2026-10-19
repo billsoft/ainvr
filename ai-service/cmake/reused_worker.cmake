@@ -54,6 +54,12 @@ if(AINVR_S100P)
     add_test(NAME locateanything_adapter COMMAND locateanything_adapter_test
       ${CMAKE_CURRENT_SOURCE_DIR}/../test/results/locateanything-geometry-fixtures-v1.json)
     set_tests_properties(locateanything_adapter PROPERTIES TIMEOUT 20)
+    add_executable(locateanything_multicategory_test ../test/ai_port/locateanything_multicategory_test.cpp)
+    target_link_libraries(locateanything_multicategory_test PRIVATE ainvr_reused_worker)
+    set_target_properties(locateanything_multicategory_test PROPERTIES BUILD_RPATH /usr/hobot/lib)
+    add_test(NAME locateanything_multicategory COMMAND locateanything_multicategory_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/../test/results/locateanything-multicategory-fixture-v326.json)
+    set_tests_properties(locateanything_multicategory PROPERTIES TIMEOUT 20)
     add_executable(nv12_rgba_test ../test/ai_port/nv12_rgba_test.cpp)
     target_include_directories(nv12_rgba_test PRIVATE src/platform)
     target_link_libraries(nv12_rgba_test PRIVATE ainvr_gles GTest::gtest_main)

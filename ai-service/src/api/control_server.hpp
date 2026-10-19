@@ -47,6 +47,8 @@ class ApiError : public std::runtime_error {
 
 // 给 patch 里出现过的每个顶层字段判定生效方式(hot/restart/rejected),
 // 供 API 响应的 applied_via 用。§1.2 的三档热更新协议。
+// Model root for resolving relative LocateAnything paths during save-time validation.
+void SetLocateAnythingModelRoot(std::string root);
 std::map<std::string, std::string> ClassifyChannelPatch(const nlohmann::json& patch);
 
 // 写入入口(创建/修改)的输出流冲突检查,只检查涉及 changed_id 这个通道

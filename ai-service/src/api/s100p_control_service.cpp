@@ -44,6 +44,7 @@ int main(int argc, char** argv) {
     // The reused archive writes relative data/snapshot-pending; keep it on SSD.
     std::filesystem::current_path(std::filesystem::path(argv[2]).parent_path());
     ai_service::output::RegisterFaceEnhancerBpu(argv[3]);
+    ai_service::api::SetLocateAnythingModelRoot(argv[3]);
     if (config.server.host != "127.0.0.1") throw std::runtime_error("Control API must bind loopback");
     if (!config.server.api_key || config.server.api_key->size() < 32)
       throw std::runtime_error("Control API key of at least 32 characters required");

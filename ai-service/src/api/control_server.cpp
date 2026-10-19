@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <set>
@@ -14,6 +15,8 @@
 
 #include "../adapters/factory.hpp"
 #include "../adapters/prompted_socket.hpp"
+#include "../adapters/locateanything_result_decode.hpp"
+#include "../platform/locateanything_executor_client.hpp"
 #include "../utils/log.hpp"
 
 namespace ai_service::api {
@@ -97,10 +100,40 @@ bool KeysAreSubsetOf(const json& obj, const std::set<std::string>& allowed) {
   }
   return true;
 }
+// Relative model paths resolve against the model root given to the service,
+// as the channel workers do (the process cwd is the overlay directory).
+std::string& LocateAnythingModelRoot() { static std::string root; return root; }
+
+// Multi-category LocateAnything sends every label in one request;its total
+// length must fit the compiled prefill profile, checked before saving.
+void ValidateLocateAnythingQuery(const config::ModelConfig& model) {
+  const std::string query = adapters::LocateAnythingQuery(model);
+  std::filesystem::path path(model.path);
+  if (path.is_relative() && !LocateAnythingModelRoot().empty())
+    path = std::filesystem::path(LocateAnythingModelRoot()) / path;
+  std::optional<ainvr::LocateAnythingExecutorClient> client;
+  try {
+    std::ifstream file(path.string() + ".ainvr.json");
+    const auto generation = json::parse(file).at("generation");
+    client.emplace(generation.at("socket").get<std::string>(),
+                   generation.at("contract_sha256").get<std::string>(),
+                   generation.at("maximum_seconds").get<double>());
+    client->Health();
+  } catch (const std::exception&) {
+    throw ApiError(503, "runtime_unavailable", "开放词汇执行器不可用，无法校验识别描述，请检查服务状态");
+  }
+  bool valid = false;
+  try { valid = client->Validate(query, model.max_new_tokens).value("valid", false); }
+  catch (const std::exception&) {}
+  if (!valid)
+    throw ApiError(422, "invalid_prompt", "识别标签的描述总长度超过模型容量，请减少标签数量或缩短描述");
+}
+
 void ValidatePromptBeforeSave(const json& channel) {
   config::ChannelConfig cfg;
   try { cfg = config::ChannelConfigFromJson(channel); }
   catch (const config::ConfigValidationError& e) { throw ApiError(422, "invalid_config", e.what()); }
+  if (cfg.model.adapter == "locateanything_bpu") return ValidateLocateAnythingQuery(cfg.model);
   if (cfg.model.adapter != "yoloe_pt" && cfg.model.adapter != "locateanything_trt") return;
   json result;
   try { result = adapters::PromptedSocketAdapter::ValidatePrompt(cfg.model.path, cfg.model.description,
@@ -112,6 +145,8 @@ void ValidatePromptBeforeSave(const json& channel) {
     throw ApiError(422, "invalid_prompt", "识别描述或生成长度超过模型容量，请缩短描述或降低生成长度");
 }
 }  // namespace
+
+void SetLocateAnythingModelRoot(std::string root) { LocateAnythingModelRoot() = std::move(root); }
 
 std::map<std::string, std::string> ClassifyChannelPatch(const nlohmann::json& patch) {
   std::map<std::string, std::string> applied_via;

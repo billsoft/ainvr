@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, RefreshCw, X } from 'lucide-react'
 import {
   DEFAULT_WIZARD_VALUE, aiServiceRtmpBase, applyModelPreset, findOutputConflict, fromChannel,
-  generateChannelId, needsIouThreshold, promptRows,
+  generateChannelId, needsIouThreshold, promptRows, usesPromptSlots,
   toCreatePatch, toUpdatePatch, validateStep1, validateStep2, validateStep3, validatePublishRequiresRtmp,
   type AiWizardFormValue, type FieldErrors,
 } from '@/features/aiChannelForm'
@@ -443,27 +443,10 @@ export function AiChannelWizard({
                 </select>
               </div>
 
-              {isYoloePreset(value.modelPreset) && <PromptLabelEditor rows={promptRows(value)} limit={promptSlotLimit(value.modelPreset)} error={errors.prompts} onChange={rows => set('prompts', rows)} />}
-              {value.modelPreset === 'locateanything-3b' && <>
-                <label className="text-sm">识别描述（必填，建议英文）
-                  <input aria-label="识别描述" value={value.description ?? ''} maxLength={160}
-                    onChange={(e) => set('description', e.target.value)} className={`mt-1.5 ${inputCls}`} />
-                  {errors.description && <p className="text-danger">{errors.description}</p>}
-                </label>
-                <label className="text-sm">标签 ID
-                  <input aria-label="标签 ID" value={value.labelId ?? ''} maxLength={64}
-                    onChange={(e) => set('labelId', e.target.value)} className={`mt-1.5 ${inputCls}`} />
-                  {errors.labelId && <p className="text-danger">{errors.labelId}</p>}
-                </label>
-                <label className="text-sm">标签名称
-                  <input aria-label="标签名称" value={value.labelName ?? ''} maxLength={64}
-                    onChange={(e) => set('labelName', e.target.value)} className={`mt-1.5 ${inputCls}`} />
-                  {errors.labelName && <p className="text-danger">{errors.labelName}</p>}
-                </label>
-                <p className="text-xs text-ink-faint">{isYoloePreset(value.modelPreset)
-                  ? '描述决定识别对象，标签用于检索与匹配。修改描述后会重新载入通道，无需重新编译模型；过长描述会提示缩短，实际效果请结合画面核对。'
-                  : '描述决定识别对象，标签用于检索与匹配。此模型不提供置信度；此试用版本的 AI 输出画面延后约 95 秒以匹配识别原帧，原始录像不受此延迟影响，每个识别到的目标仍按归档配置保存。'}</p>
-              </>}
+              {usesPromptSlots(value.modelPreset) && <PromptLabelEditor rows={promptRows(value)} limit={promptSlotLimit(value.modelPreset)} error={errors.prompts ?? errors.description ?? errors.labelId ?? errors.labelName} onChange={rows => set('prompts', rows)} />}
+              {usesPromptSlots(value.modelPreset) && <p className="text-xs text-ink-faint">{isYoloePreset(value.modelPreset)
+                ? '描述决定识别对象，标签用于检索与匹配。修改描述后会重新载入通道，无需重新编译模型；过长描述会提示缩短，实际效果请结合画面核对。'
+                : '描述决定识别对象，标签用于检索与匹配。此模型每帧一次识别全部标签，每多一个标签单帧耗时就会增加（实测中位：1 类约 2 秒、2 类约 4 秒、4 类约 6 秒，画面目标越多越慢），实际采集间隔会随之拉长。画面非常拥挤、标签又多时，一帧最多输出约 40 个目标，超出部分本帧不再列出。描述请用简洁的英文名词（如 person、car、helmet）；中文描述可能被模型改写成英文，这类目标会被忽略并记入运行日志。此模型不提供置信度；此试用版本的 AI 输出画面延后约 95 秒以匹配识别原帧，原始录像不受此延迟影响，每个识别到的目标仍按归档配置保存。'}</p>}
 
               <div>
                 <label className="text-sm font-medium text-ink">推理方式</label>

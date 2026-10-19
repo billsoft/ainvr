@@ -162,7 +162,7 @@ export function validateStep2(v: AiWizardFormValue): FieldErrors {
     // 与 ai-service 校验一致：推理线程按 1/fps 节拍睡眠，过小会让停止通道等很久
     errors.inferenceFps = '推理帧率不能低于 0.1（0 表示跟随源流帧率）'
   }
-  if (isYoloePreset(v.modelPreset) && v.prompts !== undefined) {
+  if (usesPromptSlots(v.modelPreset) && v.prompts !== undefined) {
     errors.prompts = validatePromptRows(v.prompts, promptSlotLimit(v.modelPreset))
     if (!errors.prompts) delete errors.prompts
   } else if (isOpenVocabularyPreset(v.modelPreset)) {
@@ -227,7 +227,7 @@ function buildModelAndPreprocess(preset: AiModelPresetKey, v: AiWizardFormValue)
     // 拷贝成普通数组，不是偷懒 as any 绕过去。
     model: {
       ...p.model,
-      ...(isYoloePreset(preset) ? {} : {prompts:null}),
+      ...(usesPromptSlots(preset) ? {} : {prompts:null}),
       input_size: [...p.model.input_size] as [number, number],
       class_names: p.model.class_names ? [...p.model.class_names] : null,
       ...(preset === 'locateanything-3b' || isYoloePreset(preset)
@@ -452,6 +452,10 @@ export function fromChannel(ch: AiChannel): AiWizardFormValue {
     originalAdapter: adapter,
     modelPresetTouched: false,
     inferenceFps: ch.config.inference_fps,
+    // 只有已保存为多标签的 LocateAnything 通道才回填 prompts；旧的单描述通道
+    // 保持原字段，未改动时不会被改写成标签数组。
+    ...(adapter === 'locateanything_bpu' && ch.config.model.prompts?.length
+      ? { prompts: ch.config.model.prompts.map(row => ({...row})) } : {}),
     ...(adapter === 'yoloe_bpu' ? { prompts: ch.config.model.prompts?.map(row => ({...row})) ??
       (ch.config.model.class_names?.length ? ch.config.model.class_names.map((description, i, all) => ({
         description, label_id: (ch.config.model.label_id ?? 'label') + (all.length > 1 ? `:${i}` : ''),
@@ -487,8 +491,13 @@ export function validatePromptRows(rows: AiPromptLabel[], limit: number): string
     ids.add(row.label_id); phrases.add(phrase)
   }
 }
+/** 可添加多个识别标签的模型：YOLOE 各槽位并行匹配；LocateAnything 每帧一次
+ * 查询所有类别，类别越多单帧越慢（由用户决定是否接受）。 */
+export function usesPromptSlots(preset: AiModelPresetKey): boolean {
+  return isYoloePreset(preset) || preset === 'locateanything-3b'
+}
 function promptPatch(v: AiWizardFormValue) {
-  if (isYoloePreset(v.modelPreset) && v.prompts !== undefined) {
+  if (usesPromptSlots(v.modelPreset) && v.prompts !== undefined) {
     const rows=v.prompts.map(row=>({description:row.description.trim(),label_id:row.label_id.trim(),label_name:row.label_name.trim()}))
     return {prompts:rows,description:rows[0]?.description ?? '',label_id:rows[0]?.label_id ?? '',label_name:rows[0]?.label_name ?? '',class_names:null}
   }
