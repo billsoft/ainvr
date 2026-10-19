@@ -20,7 +20,8 @@ export function drawDetections(
     const box = projectDetectionBox(d, layout, frameW, frameH)
     ctx.strokeStyle = BOX_COLOR
     ctx.strokeRect(box.x, box.y, box.w, box.h)
-    const label = d.confidence === null ? d.class_name : `${d.class_name} ${(d.confidence * 100).toFixed(0)}%`
+    const identity = d.track_id ? ` #${d.track_id.split(':').at(-1)}` : ''
+    const label = (d.confidence === null ? d.class_name : `${d.class_name} ${(d.confidence * 100).toFixed(0)}%`) + identity
     const metrics = ctx.measureText(label)
     const labelY = box.y > 16 ? box.y - 4 : box.y + 16
     ctx.fillStyle = BOX_COLOR

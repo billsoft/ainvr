@@ -214,6 +214,7 @@ export function VideoPlayer({
   // 默认开——这路流已经被判定为 AI 输出流（aiChannelId 有值）时，用户大概率
   // 就是为了看识别框才点进来的，不用每次都手动开一遍；不想看直接点掉。
   const [overlayEnabled, setOverlayEnabled] = useState(true)
+  const [showTrails, setShowTrails] = useState(false)
   // WebRTC 自动重连节流：记录最近自动重连的时间戳（ms），见常量注释。
   // 用 ref 不用 state——纯事件节流，不需要触发渲染。
   const autoReconnectsRef = useRef<number[]>([])
@@ -809,7 +810,9 @@ export function VideoPlayer({
       {aiChannelId && (
         <AiDetectionOverlay
           video={videoEl}
-          enabled={overlayEnabled}
+          enabled={overlayEnabled || showTrails}
+          showDetections={overlayEnabled}
+          showTrails={showTrails && !panorama}
           drawFrame={panorama ? drawPanoramaFrame : undefined}
           channelId={aiChannelId}
           getSeiForFrame={getSeiForFrame}
@@ -925,6 +928,8 @@ export function VideoPlayer({
           aiChannelId={aiChannelId}
           overlayEnabled={overlayEnabled}
           setOverlayEnabled={setOverlayEnabled}
+          showTrails={showTrails}
+          setShowTrails={setShowTrails}
           chain={chain}
           selectedProtocol={proto ?? state.chain[state.index] ?? ''}
           onProtocol={(protocol) => dispatch({ type: 'switch', protocol })}

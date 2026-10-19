@@ -46,3 +46,6 @@ ai-service/models/
 /deploy-package/install-locateanything-compact-s100p.py
 /deploy-package/install-locateanything-official-family-s100p-v1.py
 /deploy-package/install-locateanything-s100p.py
+
+# Deployment rollback binaries are local recovery copies, not source.
+deploy/s100p/rollback-ai-*/

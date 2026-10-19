@@ -130,8 +130,21 @@ class LocateAnythingBpuAdapter final : public BpuChannelAdapter {
     // Preserve original RGB8 resize semantics,including antialiasing and
     // intermediate byte rounding;generic bicubic/PYM are not equivalent.
     auto image=images_->RunNv12(frame.pixels,frame.width,frame.height,bt709,full_range);
+    const auto preprocess_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-before).count();
+    auto result=RunPreparedRgb(image);
+    result.preprocess_ms=preprocess_ms;
+    return result;
+  }
+  // Archived JPEG review uses the same verified executor and generation decoder.
+  // Caller must use the declared Pillow RGB8 preprocessing, on the GLES owner thread.
+  ainvr::BpuImageResult RunPreparedRgb(const std::vector<float>& image) {
+    complete_=false;points_=nlohmann::json::array();
+    if(!client_ || !images_)throw std::logic_error("LocateAnything is not loaded");
+    if(image.size()!=3U*224*448)throw std::invalid_argument("Invalid LocateAnything RGB tensor shape");
+    for(float value:image)if(!std::isfinite(value)||value < -1.00001f||value > 1.00001f)
+      throw std::invalid_argument("Invalid LocateAnything normalized RGB value");
+    if(cancelled_&&cancelled_())throw std::runtime_error("LocateAnything request cancelled");
     ainvr::BpuImageResult result;result.image_backend="gles-pillow9-rgb8";
-    result.preprocess_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-before).count();
     const auto infer=std::chrono::steady_clock::now();
     const auto response=client_->Generate(image,query_,ModelConfig().max_new_tokens,cancelled_);
     result.inference_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-infer).count();

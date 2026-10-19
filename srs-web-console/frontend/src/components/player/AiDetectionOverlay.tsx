@@ -2,16 +2,19 @@ import { useEffect, useRef } from 'react'
 import type { AiDetection } from '@/types/aiChannel'
 import { drawDetections } from './detectionDrawing'
 import { reportOverlayDiag } from '@/api/diagService'
-import { computeContainLayout } from './overlayGeometry'
+import { computeContainLayout, projectLandmark } from './overlayGeometry'
+import { TrackTrailBuffer, type TrackTrail } from './trackTrails'
 import { drawGroundingPoints, type GroundingOverlay } from './groundingPoints'
 
-type DisplayResult = { detections: AiDetection[]; displayAgeMs?: number; grounding?: GroundingOverlay }
+type DisplayResult = { detections: AiDetection[]; ptsNs?: number | null; displayAgeMs?: number; grounding?: GroundingOverlay }
 
 interface Props {
   drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay) => void
   /** The video element whose displayed frames are annotated. */
   video: HTMLVideoElement | null
   enabled: boolean
+  showTrails?: boolean
+  showDetections?: boolean
   channelId?: string
   protocol?: string
   /** Changes whenever the player opens a new transport session. */
@@ -37,11 +40,13 @@ const DIAG_HEARTBEAT_MS = 15_000
  * - 不取未来帧；过期、断流和重建清框，不以墙钟猜视频时间。
  */
 export function AiDetectionOverlay({
-  video, enabled, channelId, protocol, resetKey, getSeiForFrame, getSeiApprox, getReceiveStats, diagnostics = false, onMode, drawFrame,
+  video, enabled, channelId, protocol, resetKey, getSeiForFrame, getSeiApprox, getReceiveStats, diagnostics = false, onMode, drawFrame, showTrails = false, showDetections = true,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const frameRef = useRef<DisplayResult | null>(null)
   const expiresRef = useRef(0)
+  const trailBuffer = useRef(new TrackTrailBuffer())
+  const trails = useRef<TrackTrail[]>([])
   const countersRef = useRef({ displayed: 0, matched: 0, held: 0, missing: 0, drawn: 0 })
   const modeSeenRef = useRef<'exact' | 'approx' | null>(null)
   const lastHeartbeatRef = useRef(0)
@@ -50,6 +55,8 @@ export function AiDetectionOverlay({
     frameRef.current = null
     modeSeenRef.current = null
     expiresRef.current = 0
+    trailBuffer.current.clear()
+    trails.current = []
   }, [resetKey, video, enabled, channelId])
 
   useEffect(() => {
@@ -73,6 +80,7 @@ export function AiDetectionOverlay({
     let handle = 0
     const apply = (hit: DisplayResult | null, mode: 'exact' | 'approx') => {
       frameRef.current = hit
+      if (hit) trails.current = trailBuffer.current.update(hit.ptsNs, hit.detections)
       expiresRef.current = performance.now() + Math.max(0, 300 - (hit?.displayAgeMs ?? 0))
       const counters = countersRef.current
       counters.displayed++
@@ -163,19 +171,37 @@ export function AiDetectionOverlay({
       const frame = frameRef.current
       context.globalAlpha = (frame?.displayAgeMs ?? 0) > 0 ? 0.65 : 1
       if (frame?.detections.length || frame?.grounding?.points.length) countersRef.current.drawn++
-      if (drawFrame) {
+      if (drawFrame && showDetections) {
         if (frame?.grounding) drawFrame(context, frame.detections, rect.width, rect.height, video.videoWidth, video.videoHeight, frame.grounding)
         else drawFrame(context, frame?.detections ?? [], rect.width, rect.height, video.videoWidth, video.videoHeight)
       } else {
         const layout = computeContainLayout(video.videoWidth, video.videoHeight, rect.width, rect.height)
-        drawDetections(context, frame?.detections ?? [], layout, video.videoWidth, video.videoHeight)
-        drawGroundingPoints(context, frame?.grounding, layout)
+        if (showTrails && frame && !drawFrame) {
+          context.lineWidth = 2
+          for (const trail of trails.current) {
+            if (trail.points.length < 2) continue
+            let hash = 0
+            for (const char of trail.id) hash = (hash * 31 + char.charCodeAt(0)) | 0
+            context.strokeStyle = `hsl(${Math.abs(hash) % 360} 85% 65%)`
+            context.beginPath()
+            trail.points.forEach((point, index) => {
+              const p = projectLandmark(point, layout, video.videoWidth, video.videoHeight)
+              if (index === 0) context.moveTo(p.x, p.y)
+              else context.lineTo(p.x, p.y)
+            })
+            context.stroke()
+          }
+        }
+        if (showDetections) {
+          drawDetections(context, frame?.detections ?? [], layout, video.videoWidth, video.videoHeight)
+          drawGroundingPoints(context, frame?.grounding, layout)
+        }
       }
       context.globalAlpha = 1
     }
     animation = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(animation)
-  }, [enabled, video, drawFrame])
+  }, [enabled, video, drawFrame, showTrails, showDetections])
 
   return enabled ? <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" data-testid="ai-detection-overlay" /> : null
 }

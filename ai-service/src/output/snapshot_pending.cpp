@@ -49,6 +49,7 @@ void SnapshotStore::SavePending(const ArchiveJob& input, bool enqueue) {
     data["context_image"] = "full_frame";
   }
   data["label_id"] = j.detection.label_id;
+  if (!j.detection.track_id.empty()) data["track_id"] = j.detection.track_id;
   data["query_description"] = j.detection.query_description;
   if (!j.detection.model_extra.empty()) data["model_extra"] = j.detection.model_extra;
   if (j.config) data["processing"] = {
@@ -212,6 +213,7 @@ SnapshotStore::ArchiveJob SnapshotStore::ReadPending(const std::string& file) {
   j.detection.confidence_known = !d.at("confidence").is_null();
   j.detection.confidence = j.detection.confidence_known ? d.at("confidence").get<double>() : 0.0;
   j.detection.label_id = d.value("label_id", std::string());
+  j.detection.track_id = d.value("track_id", std::string());
   j.detection.query_description = d.value("query_description", std::string());
   j.detection.model_extra = d.value("model_extra", json::object());
   if (d.contains("point")) {

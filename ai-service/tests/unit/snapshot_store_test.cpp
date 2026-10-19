@@ -110,6 +110,7 @@ struct SnapshotStoreTestAccess {
     job.point = {{"x", .5}, {"y", .25}, {"coordinate_space", "normalized_full_frame"}};
     job.detection.class_id = -1; job.detection.class_name = "定位点";
     job.detection.label_id = "stable-point";
+    job.detection.track_id = "channel:session:17";
     job.detection.query_description = "Point to: person.";
     job.detection.confidence_known = false;
     job.detection.model_extra = {{"source", "point-contract"}};
@@ -127,8 +128,18 @@ struct SnapshotStoreTestAccess {
     EXPECT_EQ(restored.point, job.point);
     EXPECT_FALSE(restored.detection.confidence_known);
     EXPECT_EQ(restored.detection.label_id, "stable-point");
+    EXPECT_EQ(restored.detection.track_id, job.detection.track_id);
+    EXPECT_EQ(raw.at("track_id"), job.detection.track_id);
     EXPECT_EQ(restored.detection.model_extra, job.detection.model_extra);
     EXPECT_EQ(cv::norm(restored.crop, job.crop, cv::NORM_INF), 0);
+    // Old pending files without identity remain readable, without fabricated IDs.
+    raw.erase("track_id");
+    const auto legacy = json::to_cbor(raw);
+    {
+      std::ofstream output(file, std::ios::binary | std::ios::trunc);
+      output.write(reinterpret_cast<const char*>(legacy.data()), legacy.size());
+    }
+    EXPECT_TRUE(store.ReadPending(file.string()).detection.track_id.empty());
     // Corrupted recovery metadata must fail rather than fabricate a box or empty point.
     raw["point"]["x"] = -1;
     const auto bad = json::to_cbor(raw);

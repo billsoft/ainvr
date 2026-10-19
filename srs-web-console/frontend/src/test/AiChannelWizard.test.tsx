@@ -103,6 +103,53 @@ async function selectSourceAndNext(user: ReturnType<typeof userEvent.setup>, cha
 }
 
 describe('AiChannelWizard', () => {
+  it.each([[5, '0.20 秒'], [0.5, '2.00 秒'], [0, '跟随源流']] as const)(
+    'tracking explains configured sampling without promising accurate counts (%s FPS)', async (fps, expected) => {
+      const user=userEvent.setup()
+      render(<AiChannelWizard {...baseProps({mode:'edit',initial:makeChannel({inference_fps:fps,analytics:{enabled:true}})})}/>)
+      await user.click(screen.getByRole('button',{name:'下一步 →'}))
+      await user.click(screen.getByRole('button',{name:'下一步 →'}))
+      expect(screen.getByTestId('tracking-sampling-guidance')).toHaveTextContent(expected)
+      expect(screen.getByTestId('tracking-sampling-guidance')).toHaveTextContent('不补造越线或进入事件')
+      await user.click(screen.getByLabelText('开启目标跟踪'))
+      expect(screen.queryByTestId('tracking-sampling-guidance')).not.toBeInTheDocument()
+    },
+  )
+  it('tracking has its own step;phase-1 hides later-stage settings and preserves them through save', async () => {
+    const user=userEvent.setup()
+    const onSubmit=vi.fn().mockResolvedValue(undefined)
+    // A stored, still-invalid rule (no points) and later-stage settings must not block saving tracking.
+    const initial=makeChannel({analytics:{enabled:true,rules:[{id:'待绘制',type:'line',points:[]}],
+      review:{enabled:true,model_path:'',description:'',max_new_tokens:64,timeout_seconds:60},
+      notification:{enabled:true,require_review:true,endpoint:'http://127.0.0.1:9/hook'}}})
+    render(<AiChannelWizard {...baseProps({mode:'edit',initial,onSubmit})}/>)
+    await user.click(screen.getByRole('button',{name:'下一步 →'}))
+    await user.click(screen.getByRole('button',{name:'下一步 →'}))
+    expect(screen.getByText('目标跟踪')).toBeInTheDocument()
+    expect(screen.queryByText('跟踪与规则')).not.toBeInTheDocument()
+    expect(screen.getByRole('region',{name:'目标跟踪设置'})).toBeInTheDocument()
+    expect(screen.queryByTestId('wizard-output-select')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('规则名称')).not.toBeInTheDocument()
+    expect(screen.queryByText('保存区域事件')).not.toBeInTheDocument()
+    expect(screen.queryByText(/复核/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/通知/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/区域规则/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button',{name:'下一步 →'}))
+    expect(screen.getByTestId('wizard-output-select')).toBeInTheDocument()
+    await user.click(screen.getByRole('button',{name:'← 上一步'}))
+    await user.click(screen.getByLabelText('开启目标跟踪'))
+    await user.click(screen.getByRole('button',{name:'下一步 →'}))
+    await user.selectOptions(screen.getByTestId('wizard-output-select'),'ch-offline')
+    await user.click(screen.getByRole('button',{name:'← 上一步'}))
+    expect(screen.getByLabelText('开启目标跟踪')).not.toBeChecked()
+    await user.click(screen.getByRole('button',{name:'下一步 →'}))
+    expect(screen.getByTestId('wizard-output-select')).toHaveValue('ch-offline')
+    await user.click(screen.getByTestId('wizard-submit'))
+    await waitFor(()=>expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]![0].analytics).toMatchObject({enabled:false,rules:initial.config.analytics!.rules,
+      review:initial.config.analytics!.review,notification:initial.config.analytics!.notification})
+  })
+
   it('同一通道状态刷新不能重置步骤、输出选择和未保存的配置', async () => {
     const user = userEvent.setup()
     const initial = makeChannel()
@@ -113,6 +160,7 @@ describe('AiChannelWizard', () => {
     const { rerender } = render(<AiChannelWizard {...props} />)
     await user.clear(screen.getByTestId('wizard-name'))
     await user.type(screen.getByTestId('wizard-name'), '用户修改的名称')
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.selectOptions(screen.getByTestId('wizard-output-select'), output.id)
@@ -168,11 +216,12 @@ describe('AiChannelWizard', () => {
     })} />)
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
     expect(screen.getByRole('option', { name: /大门（live\/xm）/ })).toBeDisabled()
     await user.click(screen.getByTestId('wizard-submit'))
-    expect(await screen.findByText(/请选择接入管理中的输入和输出 SRS 通道/)).toBeInTheDocument()
+    expect(await screen.findByText(/请选择接入管理中的输入和输出 流媒体通道/)).toBeInTheDocument()
     await user.selectOptions(screen.getByTestId('wizard-output-select'), outputId)
-    expect(screen.queryByText(/请选择接入管理中的输入和输出 SRS 通道/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/请选择接入管理中的输入和输出 流媒体通道/)).not.toBeInTheDocument()
     await user.click(screen.getByTestId('wizard-submit'))
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
     expect(onSubmit.mock.calls[0]![0].publish).toMatchObject({
@@ -185,6 +234,7 @@ describe('AiChannelWizard', () => {
     const initial = makeChannel(); initial.config.publish.enabled = true
     initial.config.publish.target_url = 'rtmp://127.0.0.1:1935/live/unregistered'
     render(<AiChannelWizard {...baseProps({ mode: 'edit', initial, onSubmit })} />)
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     expect(screen.getByTestId('wizard-output-select')).toHaveValue('')
@@ -208,12 +258,13 @@ describe('AiChannelWizard', () => {
     const { rerender } = render(<AiChannelWizard {...props} />)
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
     expect(screen.getByTestId('wizard-output-select')).toHaveValue('')
-    expect(screen.getByText('请选择接入管理中的输出 SRS 通道。')).toBeInTheDocument()
+    expect(screen.getByText('请选择接入管理中的输出 流媒体通道。')).toBeInTheDocument()
     await user.click(screen.getByTestId('wizard-submit'))
-    expect(await screen.findByText(/请选择接入管理中的输入和输出 SRS 通道/)).toBeInTheDocument()
+    expect(await screen.findByText(/请选择接入管理中的输入和输出 流媒体通道/)).toBeInTheDocument()
     await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-offline')
-    expect(screen.queryByText(/请选择接入管理中的输入和输出 SRS 通道/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/请选择接入管理中的输入和输出 流媒体通道/)).not.toBeInTheDocument()
     // 刷新通道状态不能覆盖用户已经选择的输出。
     rerender(<AiChannelWizard {...props} srsChannels={defaultSrsChannels.map((ch) => ({ ...ch }))} />)
     expect(screen.getByTestId('wizard-output-select')).toHaveValue('ch-offline')
@@ -233,6 +284,7 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps({ mode: 'edit', initial, onSubmit })} />)
     expect(screen.getByTestId('wizard-stream-select')).toHaveValue('ch-main')
     await user.selectOptions(screen.getByTestId('wizard-stream-select'), 'ch-main')
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-offline')
@@ -262,7 +314,7 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps({ srsChannels: [] })} />)
     await user.type(screen.getByTestId('wizard-id'), 'cam01')
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
-    expect(await screen.findByText('请选择接入管理中的输入 SRS 通道')).toBeInTheDocument()
+    expect(await screen.findByText('请选择接入管理中的输入 流媒体通道')).toBeInTheDocument()
   })
 
   it('第①步：从 SRS 通道下拉选择源流，URL 正确回填', async () => {
@@ -348,11 +400,12 @@ describe('AiChannelWizard', () => {
     expect(screen.queryByTestId('wizard-model-select')).toBeInTheDocument() // 仍停在第②步没跳走
   })
 
-  it('第③步：yolo26m 预设不展示 IoU 阈值（端到端 NMS 内嵌）', async () => {
+  it('第④步：yolo26m 预设不展示 IoU 阈值（端到端 NMS 内嵌）', async () => {
     const user = userEvent.setup()
     render(<AiChannelWizard {...baseProps()} />)
     await selectSourceAndNext(user)
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
 
     expect(screen.getByText(/置信度阈值/)).toBeInTheDocument()
     expect(screen.queryByText(/IoU 阈值/)).not.toBeInTheDocument()
@@ -381,15 +434,16 @@ describe('AiChannelWizard', () => {
     initial.config.stream.url = 'http://external/not-registered.flv'; initial.config.stream.protocol = 'flv'
     render(<AiChannelWizard {...baseProps({mode: 'edit', initial})} />)
     await user.click(screen.getByRole('button', {name: '下一步 →'}))
-    expect(screen.getByText('请选择接入管理中的输入 SRS 通道')).toBeInTheDocument()
+    expect(screen.getByText('请选择接入管理中的输入 流媒体通道')).toBeInTheDocument()
     expect(screen.queryByTestId('wizard-model-select')).not.toBeInTheDocument()
   })
 
-  it('第③步：选择已有输出通道，publishTargetUrl 正确回填', async () => {
+  it('第④步：选择已有输出通道，publishTargetUrl 正确回填', async () => {
     const user = userEvent.setup()
     render(<AiChannelWizard {...baseProps()} />)
     await selectSourceAndNext(user)
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
 
     // 开启推流
     // 从下拉选输出通道
@@ -400,17 +454,18 @@ describe('AiChannelWizard', () => {
     expect(urlTexts.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('第③步：开启推流但未选输出通道时，提交被拦截', async () => {
+  it('第④步：开启推流但未选输出通道时，提交被拦截', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined)
     const user = userEvent.setup()
     render(<AiChannelWizard {...baseProps({ onSubmit, srsChannels: [defaultSrsChannels[0]!] })} />)
     await selectSourceAndNext(user, 'ch-main')
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
 
     // 开启推流，但不选输出
 
     await user.click(await screen.findByTestId('wizard-submit'))
-    expect(await screen.findByText(/请选择接入管理中的输入和输出 SRS 通道/)).toBeInTheDocument()
+    expect(await screen.findByText(/请选择接入管理中的输入和输出 流媒体通道/)).toBeInTheDocument()
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
@@ -420,11 +475,12 @@ describe('AiChannelWizard', () => {
     await user.type(screen.getByTestId('wizard-id'), 'processor')
     await selectSourceAndNext(user)
     await user.click(screen.getByRole('button', {name: '下一步 →'}))
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
     expect(screen.getByTestId('wizard-output-select')).toBeInTheDocument()
     expect(screen.queryByTestId('wizard-create-output-btn')).not.toBeInTheDocument()
     expect(screen.queryByTestId('wizard-publish-toggle')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', {name: '手动输入地址'})).not.toBeInTheDocument()
-    expect(screen.getByText(/AI 处理器不会创建 SRS 通道/)).toBeInTheDocument()
+    expect(screen.getByText(/AI 处理器不会创建 流媒体通道/)).toBeInTheDocument()
   })
 
   it('提交成功后调用 onSubmit 并传入创建 patch', async () => {
@@ -433,6 +489,7 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps({ onSubmit })} />)
     await selectSourceAndNext(user)
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-offline')
     await user.click(await screen.findByTestId('wizard-submit'))
 
@@ -441,12 +498,13 @@ describe('AiChannelWizard', () => {
     expect(patch.stream.url).toContain('phase6_test')
   })
 
-  it('第③步：提交的 patch 不再带 publish.mode 字段（osd_encode 模式已下线，没有可选项）', async () => {
+  it('第④步：提交的 patch 不再带 publish.mode 字段（osd_encode 模式已下线，没有可选项）', async () => {
     const onSubmit = vi.fn().mockResolvedValue(undefined)
     const user = userEvent.setup()
     render(<AiChannelWizard {...baseProps({ onSubmit, srsChannels: defaultSrsChannels.slice(0, 2) })} />)
     await selectSourceAndNext(user, 'ch-main')
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
 
     // 打开推流开关并选一个输出通道（否则提交会被拦下）。输出不能选源流本身
     // （自己拉自己推是回环，向导会禁用该选项）。
@@ -468,6 +526,7 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps({ onSubmit })} />)
     await selectSourceAndNext(user)
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
     await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-offline')
     await user.click(await screen.findByTestId('wizard-submit'))
 
@@ -494,6 +553,7 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps({ submitting: true })} />)
     await selectSourceAndNext(user)
     await user.click(await screen.findByRole('button', { name: '下一步 →' }))
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
 
     const submitBtn = await screen.findByTestId('wizard-submit')
     expect(submitBtn).toBeDisabled()

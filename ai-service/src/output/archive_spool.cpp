@@ -41,7 +41,7 @@ std::vector<uint8_t> Read(int directory,const std::string& id){
 }
 }
 struct ArchiveSpool::State {
-  Fd directory,lock;size_t max_bytes,max_records,bytes=0;std::map<std::string,size_t> pending;std::mutex mutex;
+  Fd directory,lock;size_t max_bytes,max_records,bytes=0;std::map<std::string,size_t> pending;std::mutex mutex,delivery_mutex;
   State(size_t b,size_t n):max_bytes(b),max_records(n){}
 };
 ArchiveSpool::ArchiveSpool(const std::string& directory,size_t max_bytes,size_t max_records):state_(std::make_unique<State>(max_bytes,max_records)){
@@ -88,8 +88,16 @@ void ArchiveSpool::Stage(const std::string& id,const std::vector<uint8_t>& bytes
 }
 std::vector<std::string> ArchiveSpool::Pending(){auto& s=*state_;std::lock_guard guard(s.mutex);std::vector<std::string> ids;for(auto& p:s.pending)ids.push_back(p.first);return ids;}
 void ArchiveSpool::Deliver(const std::string& id,const std::function<void(const std::vector<uint8_t>&)>& callback){
-  Id(id);auto& s=*state_;std::lock_guard guard(s.mutex);auto it=s.pending.find(id);if(it==s.pending.end())throw std::invalid_argument("Unknown pending ID");
-  auto bytes=Read(s.directory.value,id);callback(bytes);
+  Id(id);auto& s=*state_;
+  // Serialize consumers, but never hold the producer lock during network I/O.
+  std::lock_guard consumer(s.delivery_mutex);
+  std::unique_lock guard(s.mutex);
+  auto it=s.pending.find(id);if(it==s.pending.end())throw std::invalid_argument("Unknown pending ID");
+  auto bytes=Read(s.directory.value,id);
+  guard.unlock();
+  callback(bytes); // On failure the durable pending record is untouched.
+  guard.lock();
+  it=s.pending.find(id);
   Check(unlinkat(s.directory.value,(id+".pending").c_str(),0)==0);s.bytes-=it->second;s.pending.erase(it);Check(fsync(s.directory.value)==0);
 }
 }  // namespace ainvr

@@ -23,6 +23,7 @@ struct Detection {
   std::optional<std::vector<std::array<double, 2>>> landmarks;
   bool confidence_known = true;
   std::string label_id;
+  std::string track_id;  // Session-qualified object identity, never a label ID.
   std::string query_description;
   nlohmann::json model_extra = nlohmann::json::object();
 };

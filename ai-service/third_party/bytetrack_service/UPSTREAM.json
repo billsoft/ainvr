@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/FoundationVision/ByteTrack",
+  "commit": "d1bf0191adff59bc8fcfeaa0b33d3d1642552a99",
+  "files": {
+    "LICENSE": "e9d83751678cbaba6dfba902ea39215c423d93425e58f8450d6001f7261696f9",
+    "include/BYTETracker.h": "009ca5da576d5981bbda299d2d79c2434ca0c777de9f384749165714c522c249",
+    "include/STrack.h": "ff4141ed68f4ece770e4e80f78f838fab637c47e485c931fb61af48e7c3ecad5",
+    "include/dataType.h": "9f3143d48535b0ccb1b092d3bc59e6d72321893b7a0d86fa4af3f9877495b7fb",
+    "include/kalmanFilter.h": "f4a2884262d4f77877fc2e9f3f1a6bf7284178be2ac596926e9594b118cee946",
+    "include/lapjv.h": "f89cff1b5d1858217956fd022bf807c309b82443622f13a6e8c7fcf584cc5790",
+    "src/BYTETracker.cpp": "0047c805608d9b7aa098c3e616363e7cd45f20f04fe251ef558a72ad8d58b3dc",
+    "src/STrack.cpp": "b4eb9c5b2f6b403fee80581f3387fdacb6dc008a35b407082b292f840e6e440c",
+    "src/kalmanFilter.cpp": "3efeac165a03955382cc157582f6e85173e264015dc5a1f70b0d2ff370df2fe6",
+    "src/lapjv.cpp": "8714e7e1204d4daeb1349f3310ef73cf5dcd848e387664700d3370d0bd301157",
+    "src/utils.cpp": "25907e02630e63d785f82a594700581f47c2c730c52e1355803a246728df8af2"
+  }
+}

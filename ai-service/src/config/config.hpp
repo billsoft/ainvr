@@ -21,6 +21,7 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include "../pipeline/preprocess_config.hpp"  // 复用 pipeline::PreprocessConfig
+#include "../analytics/config.hpp"
 
 namespace ai_service::config {
 
@@ -129,6 +130,7 @@ struct ChannelConfig {
   ResultBufferConfig result_buffer;
   PublishConfig publish;
   SnapshotConfig snapshot;
+  analytics::Config analytics;
 };
 
 struct ServerConfig {

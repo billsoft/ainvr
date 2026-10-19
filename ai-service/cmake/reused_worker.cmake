@@ -1,8 +1,17 @@
 # Copyright AINVR. Original worker business; S100P hardware executes behind adapters.
 if(AINVR_S100P)
+  find_package(Eigen3 REQUIRED)
+  add_library(ainvr_bytetrack
+    third_party/bytetrack_service/src/BYTETracker.cpp
+    third_party/bytetrack_service/src/STrack.cpp
+    third_party/bytetrack_service/src/kalmanFilter.cpp
+    third_party/bytetrack_service/src/lapjv.cpp
+    third_party/bytetrack_service/src/utils.cpp)
+  target_include_directories(ainvr_bytetrack PUBLIC third_party/bytetrack_service/include ${OpenCV_INCLUDE_DIRS})
+  target_link_libraries(ainvr_bytetrack PUBLIC Eigen3::Eigen ${OpenCV_LIBS})
   add_library(ainvr_reused_worker src/pipeline/reused_channel_worker.cpp
     src/adapters/bpu_channel_adapter.cpp src/utils/user_facing_error.cpp)
-  target_link_libraries(ainvr_reused_worker PUBLIC ainvr_reused_controller ainvr_stream_source ainvr_bpu_images)
+  target_link_libraries(ainvr_reused_worker PUBLIC ainvr_reused_controller ainvr_stream_source ainvr_bpu_images ainvr_bytetrack ainvr_analytics_events ainvr_archive_spool)
   target_link_libraries(ainvr_s100p_control_service PRIVATE ainvr_reused_worker)
   target_sources(ainvr_s100p_control_service PRIVATE src/utils/crash_handler.cpp)
   if(BUILD_TESTING)

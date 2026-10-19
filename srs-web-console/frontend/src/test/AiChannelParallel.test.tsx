@@ -104,8 +104,9 @@ function props(overrides: Partial<ComponentProps<typeof AiChannelWizard>> = {}) 
   }
 }
 
-async function toStep3(user: ReturnType<typeof userEvent.setup>, source = 'ch-cam2') {
+async function toOutputStep(user: ReturnType<typeof userEvent.setup>, source = 'ch-cam2') {
   await user.selectOptions(screen.getByTestId('wizard-stream-select'), source)
+  await user.click(screen.getByRole('button', { name: '下一步 →' }))
   await user.click(screen.getByRole('button', { name: '下一步 →' }))
   await user.click(screen.getByRole('button', { name: '下一步 →' }))
 }
@@ -127,7 +128,7 @@ describe('AiChannelWizard 并行防冲突', () => {
   it('输出下拉里,已被占用 / 是别人源流 / 是自己源流的选项都不可选并注明原因', async () => {
     const user = userEvent.setup()
     render(<AiChannelWizard {...props()} />)
-    await toStep3(user)
+    await toOutputStep(user)
     const select = screen.getByTestId('wizard-output-select') as HTMLSelectElement
     const byValue = (v: string) => Array.from(select.options).find((o) => o.value === v)!
     expect(byValue('ch-cam1-ai').disabled).toBe(true)   // door 通道在推
@@ -141,7 +142,7 @@ describe('AiChannelWizard 并行防冲突', () => {
     const user = userEvent.setup()
     const streams: AiStreamOption[] = [{ app: 'live', name: 'cam2_ai', clients: 1, bitrateKbps: 2000, videoCodec: 'H264', h265: false }]
     render(<AiChannelWizard {...props({ streams })} />)
-    await toStep3(user)
+    await toOutputStep(user)
     const select = screen.getByTestId('wizard-output-select') as HTMLSelectElement
     expect(Array.from(select.options).find((o) => o.value === 'ch-out-new')!.disabled).toBe(true)
   })
@@ -150,6 +151,7 @@ describe('AiChannelWizard 并行防冲突', () => {
     const user = userEvent.setup(); const onSubmit = vi.fn()
     const initial = makeAi('new', 'rtmp://127.0.0.1:1935/live/cam2', 'rtmp://127.0.0.1:1935/live/cam1_ai')
     render(<AiChannelWizard {...props({mode: 'edit', initial, onSubmit})} />)
+    await user.click(screen.getByRole('button', {name: '下一步 →'}))
     await user.click(screen.getByRole('button', {name: '下一步 →'}))
     await user.click(screen.getByRole('button', {name: '下一步 →'}))
     await user.click(screen.getByTestId('wizard-submit'))
@@ -172,6 +174,13 @@ describe('AiChannelCard 抽帧与过载', () => {
     expect(screen.getByTestId('ai-card-frames')).toHaveTextContent('过载丢帧 0')
     expect(screen.getByTestId('ai-card-frames')).toHaveTextContent('源 30 → 推理 15 FPS')
     expect(screen.queryByTestId('ai-card-under-capacity')).not.toBeInTheDocument()
+  })
+
+  it('第一阶段卡片不显示区域事件入口与待保存提示', () => {
+    const ch = makeAi('door', 'rtmp://h/live/cam1', null, { analytics_storage: { pending: 3, stage_failures: 1 } } as never)
+    render(<AiChannelCard channel={ch} {...cardProps} />)
+    expect(screen.queryByRole('button', { name: '区域事件' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/区域事件待保存/)).not.toBeInTheDocument()
   })
 
   it('通道出错时显示原因(如模型输入尺寸与配置不符)', () => {

@@ -108,6 +108,7 @@ std::string det_to_json(const Detection& d) {
   s += ",\"p\":";
   s += d.confidence_known ? format_confidence_4dp(d.confidence) : "null";
   if (!d.label_id.empty()) s += ",\"l\":" + json_escape_string(d.label_id);
+  if (!d.track_id.empty()) s += ",\"t\":" + json_escape_string(d.track_id);
   s += ",\"b\":[";
   for (size_t i = 0; i < d.bbox.size(); ++i) {
     if (i) s += ",";
@@ -313,6 +314,9 @@ std::vector<uint8_t> build_result_payload(const std::string& channel_id,
     s += "]";
     if (!model_extra.empty()) {
       auto wire_extra = model_extra;
+      // Tracks/events belong to API/archive. SEI carries bounded per-box IDs,
+      // not the growing analytics history or asynchronous delivery payloads.
+      wire_extra.erase("analytics");
       if (has_points && retained_points < point_count) {
         auto& grounding = wire_extra["grounding"];
         auto& points = grounding["points"];

@@ -8,7 +8,9 @@
 #include <map>
 #include <iostream>
 int main(int argc,char**argv){try{
-  if(argc!=4)throw std::runtime_error("Usage: probe media output.yuv report.json");
+  if(argc!=4 && argc!=5)throw std::runtime_error("Usage: probe media output.yuv report.json [maximum_frames 1..500]");
+  size_t consumed=0; const auto maximum=argc==5?std::stoul(argv[4],&consumed):120UL;
+  if(maximum<1||maximum>500||(argc==5&&consumed!=std::string(argv[4]).size()))throw std::runtime_error("Invalid frame bound");
   if(std::filesystem::exists(argv[2])||std::filesystem::exists(argv[3]))throw std::runtime_error("Output exists");
   ainvr::MediaSource source(argv[1]);auto info=source.Info();
   ainvr::VpuDecoder decoder(info.codec,info.width,info.height);
@@ -22,7 +24,7 @@ int main(int argc,char**argv){try{
     pending.erase(match);pixels.write(reinterpret_cast<const char*>(frame->pixels.data()),frame->pixels.size());
   };
   while(auto packet=source.Read()){
-    if(count>=120)throw std::runtime_error("Limit exceeded");
+    if(count>=maximum)throw std::runtime_error("Limit exceeded");
     pending.emplace(count,packet->pts_ns);
     auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
     while(!decoder.Submit(packet->bytes,count,50)){receive(50);if(std::chrono::steady_clock::now()>deadline)throw std::runtime_error("Input stalled");}

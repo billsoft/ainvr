@@ -315,6 +315,20 @@ describe('AI 微服务反向代理（具名路由）', () => {
     await new Promise<void>((resolve) => fakeSrs.close(() => resolve()));
   });
 
+  it('forwards analytics event history including the query limit', async () => {
+    let receivedUrl: string | undefined;
+    mock = await startMockAiService((req, res) => {
+      receivedUrl = req.url;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ channel_id: 'cam01', events: [] }));
+    });
+    app = await buildApp({ dataDir: tmpDir, aiServiceBaseUrl: mock.url });
+    const res = await app.inject({ method: 'GET', url: '/api/ai/channels/cam01/analytics/events?limit=100' });
+    expect(res.statusCode).toBe(200);
+    expect(receivedUrl).toBe('/api/v1/channels/cam01/analytics/events?limit=100');
+    expect(res.json().events).toEqual([]);
+  });
+
   describe('识别快照归档（"识别历史"页面）转发', () => {
     it('GET /api/ai/channels/:id/snapshots/overview 转发到 .../snapshots/overview', async () => {
       let receivedUrl: string | undefined;

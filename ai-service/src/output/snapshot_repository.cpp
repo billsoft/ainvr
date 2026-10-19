@@ -140,6 +140,7 @@ void SnapshotStore::AppendWrite(mongoc_bulk_operation_t* bulk, const ArchiveJob&
   if (d.confidence_known) BSON_APPEND_DOUBLE(&doc, "confidence", d.confidence);
   else BSON_APPEND_NULL(&doc, "confidence");
   if (!d.label_id.empty()) BSON_APPEND_UTF8(&doc, "label_id", d.label_id.c_str());
+  if (!d.track_id.empty()) BSON_APPEND_UTF8(&doc, "track_id", d.track_id.c_str());
   if (!d.query_description.empty()) BSON_APPEND_UTF8(&doc, "query_description", d.query_description.c_str());
   if (!d.model_extra.empty()) {
     const auto text = d.model_extra.dump();

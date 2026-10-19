@@ -43,6 +43,7 @@ inline nlohmann::json EncodeArchiveResult(const ai_service::FrameResult& r) {
   v["bbox"]=d.bbox;
   v["confidence_known"]=d.confidence_known;
   v["label_id"]=d.label_id;
+  if(!d.track_id.empty()) v["track_id"]=d.track_id;
   v["query_description"]=d.query_description;
   v["model_extra"]=d.model_extra;
   v["landmarks"]=d.landmarks ? nlohmann::json(*d.landmarks) : nlohmann::json(nullptr);
@@ -86,6 +87,7 @@ inline ai_service::FrameResult DecodeArchiveResult(const nlohmann::json& j) {
   v.at("bbox").get_to(d.bbox);
   v.at("confidence_known").get_to(d.confidence_known);
   v.at("label_id").get_to(d.label_id);
+  d.track_id=v.value("track_id",std::string{});
   v.at("query_description").get_to(d.query_description);
   v.at("model_extra").get_to(d.model_extra);
   if(!v.at("landmarks").is_null())

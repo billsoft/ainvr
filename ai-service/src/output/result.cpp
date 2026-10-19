@@ -30,6 +30,7 @@ nlohmann::json FrameResult::ToDict() const {
     };
     if (!d.confidence_known) dj["confidence"] = nullptr;
     if (!d.label_id.empty()) dj["label_id"] = d.label_id;
+    if (!d.track_id.empty()) dj["track_id"] = d.track_id;
     if (!d.query_description.empty()) dj["query_description"] = d.query_description;
     if (!d.model_extra.empty()) dj["model_extra"] = d.model_extra;
     // landmarks 键只在非空时出现在 JSON 里(不是恒为 null)——跟 Python

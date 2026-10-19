@@ -13,6 +13,8 @@ interface Props {
   aiChannelId: string | undefined
   overlayEnabled: boolean
   setOverlayEnabled: Dispatch<SetStateAction<boolean>>
+  showTrails?: boolean
+  setShowTrails?: Dispatch<SetStateAction<boolean>>
   chain: PlayProtocol[]
   selectedProtocol: string
   onProtocol: (protocol: PlayProtocol) => void
@@ -30,6 +32,8 @@ export function LivePlayerToolbar({
   aiChannelId,
   overlayEnabled,
   setOverlayEnabled,
+  showTrails = false,
+  setShowTrails,
   chain,
   selectedProtocol,
   onProtocol,
@@ -81,6 +85,13 @@ export function LivePlayerToolbar({
               <Scan size={14} />
             </button>
           )}
+          {aiChannelId && setShowTrails && <button type="button"
+            aria-label="显示运动轨迹" aria-pressed={showTrails}
+            disabled={view.panorama}
+            title={view.panorama ? '请切回原始画面查看轨迹' : '显示最近30秒轨迹，需要AI处理器开启跟踪'}
+            className={`rounded px-2 py-1 text-xs disabled:opacity-40 ${showTrails ? 'text-primary-300' : 'text-white'}`}
+            onClick={e => { e.stopPropagation(); setShowTrails(value => !value) }}
+            data-testid="btn-toggle-trails">轨迹</button>}
           {chain.length > 1 && (
             <select
               value={selectedProtocol}

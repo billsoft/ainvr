@@ -1,3 +1,5 @@
+import { AnalyticsEvents } from './AnalyticsEvents'
+import { ANALYTICS_PHASE } from '@/features/analyticsPhase'
 import { useState } from 'react'
 import { MoreVertical, Play, Square, Eye, Pencil, Trash2 } from 'lucide-react'
 import { AiChannelStatusBadge } from '@/components/common/AiChannelStatusBadge'
@@ -17,6 +19,7 @@ interface Props {
 }
 
 export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, onStop, onEdit, onDelete, onViewResult, onPreview }: Props) {
+  const [eventsOpen,setEventsOpen]=useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const { config, stats } = channel
   const canStart = !config.deletion_pending && (channel.state === 'idle' || channel.state === 'error')
@@ -28,6 +31,12 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
 
   return (
     <div className="rounded-panel border border-line bg-surface p-6 shadow-sm">
+      {ANALYTICS_PHASE.rulesAndEvents && stats.analytics_storage && (stats.analytics_storage.stage_failures>0 || stats.analytics_storage.pending>0) &&
+        <p role="status" className="text-sm text-warning-600">
+          区域事件待保存 {stats.analytics_storage.pending} 条
+          {stats.analytics_storage.stage_failures>0 && '；存在入队失败，请检查存储空间'}
+        </p>}
+      {ANALYTICS_PHASE.rulesAndEvents && eventsOpen && <AnalyticsEvents channelId={channel.id} onClose={()=>setEventsOpen(false)}/>}
       <div className="flex items-start justify-between">
         <div className="min-w-0">
           {sourceChannelName ? (
@@ -181,6 +190,7 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
         <button type="button" onClick={onViewResult} className="rounded-base border border-line px-3.5 py-2 text-sm text-ink-subtle hover:bg-surface-page">
           <Eye size={14} className="mr-1 inline" aria-hidden />查看结果
         </button>
+        {ANALYTICS_PHASE.rulesAndEvents && <button type="button" onClick={()=>setEventsOpen(true)} className="text-sm text-primary">区域事件</button>}
         <button
           type="button"
           onClick={onPreview}

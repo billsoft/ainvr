@@ -1,3 +1,4 @@
+#include "../analytics/event_store.hpp"
 #include "control_server.hpp"
 
 #include <algorithm>
@@ -49,7 +50,7 @@ namespace {
 const std::set<std::string> kHotTopLevelFields = {"name", "inference_fps", "postprocess",
                                                    "result_buffer"};
 const std::set<std::string> kStructuralTopLevelFields = {
-    "enabled", "stream", "model", "preprocess", "max_consecutive_failures"};
+    "enabled", "stream", "model", "preprocess", "max_consecutive_failures", "analytics"};
 // Service-owned persisted state; clients may only change it through actions.
 void RejectInternalFields(const nlohmann::json& patch) {
   if (patch.contains("snapshot") && patch["snapshot"].is_object() &&
@@ -127,6 +128,15 @@ void ValidateLocateAnythingQuery(const config::ModelConfig& model) {
   catch (const std::exception&) {}
   if (!valid)
     throw ApiError(422, "invalid_prompt", "识别标签的描述总长度超过模型容量，请减少标签数量或缩短描述");
+}
+
+// Phase 1 opens tracking only;newly enabling a later-stage feature is refused
+// explicitly instead of being accepted and silently not run.
+void RejectUnavailableAnalytics(const json& requested,const json& stored) {
+  const auto feature=analytics::PhaseUnavailableRequest(requested,stored);
+  if(feature.empty())return;
+  const std::string name=feature=="rules"?"区域规则与事件":feature=="review"?"大模型复核":"报警通知";
+  throw ApiError(422,"feature_unavailable","当前版本只开放目标跟踪与轨迹显示，"+name+"尚未开放");
 }
 
 void ValidatePromptBeforeSave(const json& channel) {
@@ -672,6 +682,14 @@ nlohmann::json ChannelManager::BusinessHealth() const {
               {"archive_unavailable_channels", enabled - connected}};
 }
 
+nlohmann::json ChannelManager::AnalyticsEvents(const std::string& id,int limit) {
+  auto worker=Get(id);
+  if(limit<1||limit>200)throw ApiError(422,"invalid_limit","每次查询1至200条事件");
+  const auto cfg=RequireStore().Load().snapshot_store;
+  analytics::EventStore events(cfg.mongo_uri,cfg.db_name,"analytics_events");
+  return {{"channel_id",id},{"events",events.List(id,limit)},{"limit",limit}};
+}
+
 config::ConfigStore& ChannelManager::RequireStore() {
   if (!store_) {
     throw ApiError(501, "persistence_not_configured", "本次启动未接入配置持久化存储,不支持这个操作");
@@ -733,6 +751,7 @@ nlohmann::json ChannelManager::CreateChannel(const nlohmann::json& patch) {
   }
   RejectUnportedAdapter(patch);
   ValidatePromptBeforeSave(patch);
+  RejectUnavailableAnalytics(patch.value("analytics",json()),json());
 
   config::AppConfig new_app_cfg;
   {
@@ -872,6 +891,11 @@ nlohmann::json ChannelManager::UpdateChannelConfig(const std::string& channel_id
       (patch["model"].contains("prompts") || patch["model"].contains("class_names") || patch["model"].contains("description") || patch["model"].contains("max_new_tokens") ||
        patch["model"].contains("adapter") || patch["model"].contains("path")))
     ValidatePromptBeforeSave(config::DeepMerge(config::ChannelConfigToJson(*old_config, true), patch));
+  if (patch.contains("analytics")) {
+    const auto stored = config::ChannelConfigToJson(*old_config, true);
+    RejectUnavailableAnalytics(config::DeepMerge(stored, patch).value("analytics", json()),
+                               stored.value("analytics", json()));
+  }
   for (auto&& [k, v] : classified) {
     if (v == "hot") hot_fields.push_back(k);
     if (v == "restart") restart_fields.push_back(k);
@@ -1096,6 +1120,8 @@ void RegisterRoutes(httplib::Server& server, std::shared_ptr<ChannelManager> man
                       {"publish_formats", json::array({"codec12", "enhanced"})}}},
                 };
       if (runtime_health) health.update(runtime_health());
+      // Same switches as the service gate:never report a disabled stage as usable.
+      health["capabilities"].update(analytics::PhaseCapabilities());
       WriteJson(res, 200, health);
     } catch (const std::exception& e) {
       WriteUnexpectedError(res, e);
@@ -1149,6 +1175,13 @@ void RegisterRoutes(httplib::Server& server, std::shared_ptr<ChannelManager> man
                 manager->StopChannel(id);
                 WriteJson(res, 200, json{{"status", "stopping"}, {"channel_id", id}});
               }));
+
+  server.Get(R"(/api/v1/channels/([^/]+)/analytics/events)",
+    Wrap(manager,[manager](const httplib::Request& req,httplib::Response& res) {
+      if(!analytics::kRulesAndEventsAvailable)
+        throw ApiError(404,"feature_unavailable","区域事件功能尚未开放");
+      WriteJson(res,200,manager->AnalyticsEvents(req.matches[1],IntParam(req,"limit",50)));
+    }));
 
   // ---- 结果查询 ----
   server.Get(R"(/api/v1/channels/([^/]+)/results/latest)",

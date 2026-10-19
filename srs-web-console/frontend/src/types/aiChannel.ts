@@ -157,7 +157,37 @@ export interface AiSnapshotConfig {
   face_enhance_blend: number
 }
 
+export interface AiAnalyticsRule {
+  id: string
+  type: 'line' | 'region' | 'dwell'
+  label_id?: string
+  points: [number, number][]
+  dwell_seconds?: number
+}
+export interface AiAnalyticsConfig {
+  notification?: { enabled: boolean; require_review: boolean; endpoint: string }
+
+  review?: {
+    enabled: boolean
+    model_path: string
+    description: string
+    max_new_tokens?: number
+    timeout_seconds?: number
+  }
+
+  save_events?: boolean
+  retention_days?: number
+  enabled: boolean
+  max_gap_seconds?: number
+  association_distance?: number
+  line_hysteresis?: number
+  confirmation_hits?: number
+  maximum_tracks?: number
+  rules?: AiAnalyticsRule[]
+}
+
 export interface AiChannelConfig {
+  analytics?: AiAnalyticsConfig
   deletion_pending?: boolean
   /** 服务端持久化的手动停止：AI 服务重启后仍保持停止，直到再次启动 */
   manually_stopped?: boolean
@@ -206,6 +236,7 @@ export interface AiPublishStats {
 }
 
 export interface AiChannelStats {
+  analytics_storage?: {pending:number;delivered:number;delivery_failures:number;stage_failures:number}
   state: AiChannelState
   elapsed_seconds: number
   frame_count: number
@@ -271,6 +302,7 @@ export interface AiConfigUpdateResult {
  * KNOWN_CHANNEL_FIELDS 保持一致（多传字段会被 pydantic extra="forbid"
  * 拒绝，422），id 只在创建时需要，编辑走 PATCHABLE_TOP_LEVEL_FIELDS。 */
 export interface AiChannelCreatePatch {
+  analytics?: AiAnalyticsConfig
   id: string
   name?: string
   enabled?: boolean
@@ -302,6 +334,7 @@ export interface AiDetection {
   class_name: string
   confidence: number | null
   label_id?: string
+  track_id?: string
   bbox: { x: number; y: number; w: number; h: number }
   /** 仅 scrfd_trt（人脸检测）填充，顺序固定 [左眼,右眼,鼻尖,左嘴角,右嘴角] */
   landmarks?: { x: number; y: number }[]
@@ -357,6 +390,8 @@ export interface AiServiceHealth {
   disk_total_bytes?: number
   /** ai-service 声明的能力（2026-09-29 起）：没有该字段 = 旧版，只支持 H.264 源 */
   capabilities?: {
+    target_presence_review?: boolean
+    analytics_notifications?: boolean
     codecs?: string[]
     publish_formats?: string[]
   }

@@ -1,3 +1,5 @@
+#include <future>
+#include <chrono>
 // Copyright AINVR.
 #include "output/archive_spool.hpp"
 #include <bson/bson.h>
@@ -58,4 +60,22 @@ TEST(ArchiveSpool,SurvivesKilledWriterAfterStageAcknowledgement){
   ainvr::ArchiveSpool recovered(dir.path,4096,2);ASSERT_EQ(recovered.Pending(),std::vector<std::string>{first});
   recovered.Deliver(first,[](const auto& got){EXPECT_EQ(got,Record(first));});
 }
+}
+
+TEST(ArchiveSpoolConcurrency,ProducerDoesNotWaitForDatabase) {
+ Directory dir;ainvr::ArchiveSpool spool(dir.path,8192,3);
+ spool.Stage(first,Record(first));
+ std::promise<void> entered,release;
+ auto wait_release=release.get_future().share();
+ auto consumer=std::async(std::launch::async,[&]{
+   spool.Deliver(first,[&](const auto&){entered.set_value();wait_release.wait();});
+ });
+ entered.get_future().wait();
+ auto producer=std::async(std::launch::async,[&]{spool.Stage(second,Record(second));});
+ const auto ready=producer.wait_for(std::chrono::seconds(2));
+ // Always release the consumer, even if the expectation fails.
+ release.set_value();
+ EXPECT_EQ(ready,std::future_status::ready);
+ producer.get();consumer.get();
+ EXPECT_EQ(spool.Pending(),std::vector<std::string>{second});
 }

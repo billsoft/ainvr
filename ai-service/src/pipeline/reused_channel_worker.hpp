@@ -29,6 +29,10 @@
 #include "managed_worker.hpp"
 #include "../config/config.hpp"
 #include "../output/result.hpp"
+#include "../analytics/frame_analytics.hpp"
+#include "../analytics/event_outbox.hpp"
+#include "../analytics/event_store.hpp"
+#include "../analytics/event_worker.hpp"
 #include "../output/result_buffer.hpp"
 #include "../pipeline/frame_accounting.hpp"
 #include "../platform/gles_preprocess.hpp"
@@ -96,6 +100,10 @@ class ReusedChannelWorker : public ChannelWorker {
   virtual std::unique_ptr<adapters::BpuChannelAdapter> CreatePlatformAdapter(const config::ModelConfig& model);
 
  private:
+  std::shared_ptr<analytics::EventOutbox> event_outbox_;
+  std::unique_ptr<analytics::EventWorker> review_worker_;
+  std::unique_ptr<analytics::EventWorker> notification_worker_;
+  std::atomic<uint64_t> event_stage_failures_{0};
   std::function<bool()> license_check_;
   // Once either worker observes revocation, both must finish this generation.
   // Only Start(), after joining the old threads, may clear the latch.
@@ -131,6 +139,7 @@ class ReusedChannelWorker : public ChannelWorker {
   std::pair<std::shared_ptr<stream::FrameRef>, bool> PullFrameSafe();
   std::optional<CapturedFrame> PickNextFrame(int64_t last_consumed_seq, int* skipped);
   void InferOneFrame(CapturedFrame frame, ainvr::BpuImageResult prepared);
+  std::unique_ptr<analytics::FrameAnalytics> analytics_;
   void InferPromptedFrame(CapturedFrame frame);
   bool ReconnectStream();
   void OnStreamError(const std::string& msg);

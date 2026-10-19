@@ -14,7 +14,7 @@ import { request } from './httpClient'
  * KNOWN_CHANNEL_FIELDS 白名单不包含 id，发过去会被 422 拒绝。 */
 const PATCHABLE_TOP_LEVEL_FIELDS = [
   'name', 'enabled', 'stream', 'inference_fps', 'max_consecutive_failures',
-  'model', 'preprocess', 'postprocess', 'result_buffer', 'publish', 'snapshot',
+  'model', 'preprocess', 'postprocess', 'result_buffer', 'publish', 'snapshot', 'analytics',
 ] as const
 
 function filterPatch(patch: Record<string, unknown>): Record<string, unknown> {

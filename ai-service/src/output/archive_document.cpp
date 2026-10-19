@@ -46,6 +46,7 @@ std::vector<uint8_t> BuildArchiveDocument(const ArchiveDocumentInput& in){
     {"enhanced",in.enhanced},{"enhance_model",in.enhanced?nlohmann::json(in.enhance_model):nlohmann::json(nullptr)},
     {"brightness_corrected",in.brightness_corrected},{"embedding",nullptr},{"embedding_model",nullptr}};
   if(!d.label_id.empty())metadata["label_id"]=d.label_id;
+  if(!d.track_id.empty())metadata["track_id"]=d.track_id;
   if(!d.query_description.empty())metadata["query_description"]=d.query_description;
   if(!d.model_extra.empty())metadata["model_extra"]=d.model_extra;
   auto text=metadata.dump();bson_error_t error{};

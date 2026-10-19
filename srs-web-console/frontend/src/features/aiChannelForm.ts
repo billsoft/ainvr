@@ -1,6 +1,9 @@
+import { notificationError } from './analyticsNotification'
+import { ruleError } from './analyticsRules'
+import { ANALYTICS_PHASE } from './analyticsPhase'
 import {
   AI_MODEL_PRESETS, DEFAULT_AI_MODEL_PRESET, isOpenVocabularyPreset, isYoloePreset, promptSlotLimit, type AiPromptLabel, type AiModelPresetKey, type AiModelAdapter, type AiChannel,
-  type AiChannelCreatePatch, type AiChannelUpdatePatch,
+  type AiChannelCreatePatch, type AiChannelUpdatePatch, type AiAnalyticsConfig,
 } from '@/types/aiChannel'
 import { streamKey } from '@/utils/channelMatching'
 import { isH265 } from '@/utils/codec'
@@ -11,6 +14,7 @@ import { isH265 } from '@/utils/codec'
 
 /** AI 通道向导表单统一值结构（创建与编辑共用） */
 export interface AiWizardFormValue {
+  analytics?: AiAnalyticsConfig
   /** 创建后只读（ai-service 侧 `建后不可改`） */
   id: string
   name: string
@@ -65,7 +69,7 @@ export const DEFAULT_WIZARD_VALUE: AiWizardFormValue = {
 
 export type FieldErrors = Partial<Record<
   'id' | 'name' | 'streamUrl' | 'inferenceFps' | 'prompts' | 'description' | 'labelId' | 'labelName'
-  | 'confThreshold' | 'iouThreshold' | 'maxDetections' | 'resultBufferMaxFrames',
+  | 'analytics' | 'confThreshold' | 'iouThreshold' | 'maxDetections' | 'resultBufferMaxFrames',
   string
 >>
 
@@ -193,6 +197,38 @@ export function validateStep3(v: AiWizardFormValue): FieldErrors {
   if (!Number.isInteger(v.resultBufferMaxFrames) || v.resultBufferMaxFrames < 1 || v.resultBufferMaxFrames > 300) {
     errors.resultBufferMaxFrames = '结果缓冲帧数必须在 1-300 之间的整数'
   }
+  Object.assign(errors, validateVisibleAnalytics(v))
+  return errors
+}
+
+/** Independent tracking/rules step; also checked at final submission. */
+/** 只校验当前阶段界面上能看到的分析设置；未开放功能的旧配置（可能不完整）
+ * 原样保留，不得阻止保存跟踪开关。 */
+export function validateVisibleAnalytics(v: AiWizardFormValue): FieldErrors {
+  return ANALYTICS_PHASE.rulesAndEvents || ANALYTICS_PHASE.review || ANALYTICS_PHASE.notification
+    ? validateAnalyticsStep(v) : {}
+}
+
+export function validateAnalyticsStep(v: AiWizardFormValue): FieldErrors {
+  const errors: FieldErrors = {}
+  if(v.analytics?.enabled) {
+    const days=v.analytics.retention_days??30
+    if(!Number.isInteger(days)||days<1||days>365) errors.analytics='事件保留天数必须为1至365'
+
+    const review=v.analytics.review
+    if(review?.enabled) {
+      if(v.analytics.save_events===false) errors.analytics='目标复核需要保存区域事件'
+      else if(!review.description.trim()||review.description.length>4096) errors.analytics='请填写复核目标描述（最多4096个字符）'
+      else if(!review.model_path.trim()) errors.analytics='请选择复核模型'
+      else if(!Number.isInteger(review.timeout_seconds??60)||(review.timeout_seconds??60)<5||(review.timeout_seconds??60)>300) errors.analytics='复核最长等待时间必须为5至300秒'
+    }
+    const notificationProblem=notificationError(v.analytics)
+    if(notificationProblem)errors.analytics=notificationProblem
+    const rules=v.analytics.rules??[]
+    const error=rules.map(ruleError).find(Boolean)
+    if(error || new Set(rules.map(r=>r.id)).size!==rules.length || rules.length>64)
+      errors.analytics=error || '规则名称不能重复，最多64条规则'
+  }
   return errors
 }
 
@@ -254,6 +290,7 @@ export function toCreatePatch(v: AiWizardFormValue): AiChannelCreatePatch {
     name: v.name.trim() || v.id,
     stream: { url: v.streamUrl.trim(), protocol: v.streamProtocol },
     inference_fps: v.inferenceFps,
+    ...(v.analytics ? { analytics: structuredClone(v.analytics) } : {}),
     model,
     preprocess,
     postprocess: {
@@ -297,6 +334,7 @@ export function toUpdatePatch(
     name: v.name.trim() || v.id,
     stream: { url: v.streamUrl.trim(), protocol: v.streamProtocol },
     inference_fps: v.inferenceFps,
+    ...(v.analytics ? { analytics: structuredClone(v.analytics) } : {}),
     ...(includeModelFields
       ? (() => {
           const { model, preprocess } = buildModelAndPreprocess(v.modelPreset, v)
@@ -415,6 +453,9 @@ export function toUpdatePatch(
     patch.publish = target.publish
   }
 
+  if (target.analytics && JSON.stringify(target.analytics) !== JSON.stringify(oc.analytics)) {
+    patch.analytics = target.analytics
+  }
   return patch as AiChannelUpdatePatch
 }
 
@@ -464,6 +505,7 @@ export function fromChannel(ch: AiChannel): AiWizardFormValue {
     description: ch.config.model.description,
     labelId: ch.config.model.label_id,
     labelName: ch.config.model.label_name,
+    ...(ch.config.analytics ? { analytics: structuredClone(ch.config.analytics) } : {}),
     confThreshold: ch.config.postprocess.conf_threshold,
     iouThreshold: ch.config.postprocess.iou_threshold,
     maxDetections: ch.config.postprocess.max_detections,

@@ -129,6 +129,8 @@ class ChannelManager {
   // 缺失原因：等待授权、删除中、收尾中或暂不可用。
   std::string HistoryUnavailableReason(const std::string& channel_id) const;
 
+  nlohmann::json AnalyticsEvents(const std::string& channel_id,int limit);
+
  private:
   config::ConfigStore& RequireStore();
   std::string WaitForRestart(pipeline::ChannelWorker& worker, double timeout_s = 10.0) const;

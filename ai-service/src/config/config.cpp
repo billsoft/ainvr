@@ -408,7 +408,7 @@ ChannelConfig ChannelConfigFromJson(const json& node) {
   RejectUnknownFields(node,
                        {"id", "name", "enabled", "deletion_pending", "manually_stopped", "stream", "inference_fps",
                         "max_consecutive_failures", "model", "preprocess", "postprocess",
-                        "result_buffer", "publish", "snapshot"},
+                        "result_buffer", "publish", "snapshot", "analytics"},
                        {}, "channel");
   c.id = node["id"].get<std::string>();
   c.name = GetS(node, "name", c.name);
@@ -437,6 +437,11 @@ ChannelConfig ChannelConfigFromJson(const json& node) {
   c.result_buffer = ParseResultBuffer(node.value("result_buffer", json()));
   c.publish = ParsePublish(node.value("publish", json()));
   c.snapshot = ParseSnapshot(node.value("snapshot", json()));
+  try {
+    c.analytics = analytics::FromJson(node.value("analytics", json()));
+  } catch (const std::exception& e) {
+    Fail(std::string("analytics: ") + e.what());
+  }
   ValidatePublishRequiresRtmp(c);
   return c;
 }
@@ -596,6 +601,9 @@ nlohmann::json ChannelConfigToJson(const ChannelConfig& c, bool include_id) {
       {"face_enhance_model", c.snapshot.face_enhance_model},
       {"face_enhance_blend", c.snapshot.face_enhance_blend},
   };
+  const auto analytics_config = analytics::ToJson(c.analytics);
+  if (analytics_config != analytics::ToJson(analytics::Config{}))
+    j["analytics"] = analytics_config;
   return j;
 }
 

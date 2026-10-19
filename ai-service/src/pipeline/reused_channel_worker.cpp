@@ -1,3 +1,7 @@
+#include "../analytics/locate_review.hpp"
+#include "../analytics/webhook_notifier.hpp"
+#include "../analytics/candidate_results.hpp"
+#include "../analytics/event_evidence.hpp"
 // Copyright AINVR. Original channel business with S100P hardware adapters.
 #include "reused_channel_worker.hpp"
 
@@ -68,6 +72,26 @@ void ReusedChannelWorker::ValidateStart() const {
   catch(const std::exception& e) {
     throw api::ApiError(422,"bpu_model_not_ready",utils::UserFacingError(e.what()));
   }
+  // Only phase-1 capabilities run;later-stage settings stay stored but inert.
+  const auto phase=analytics::PhaseEffective(cfg->analytics);
+  if(phase.enabled&&phase.review.enabled) {
+    if(!cfg->snapshot.enabled)throw api::ApiError(422,"review_evidence_disabled","目标复核需要开启截图归档");
+    config::ModelConfig review;review.name="locateanything-3b";review.adapter="locateanything_bpu";
+    review.path=cfg->analytics.review.model_path;
+    if(std::filesystem::path(review.path).is_relative())
+      review.path=std::filesystem::absolute(std::filesystem::path(model_root_)/review.path).string();
+    review.description=cfg->analytics.review.description;
+    review.input_size={224,448};review.max_new_tokens=cfg->analytics.review.max_new_tokens;
+    try {adapters::LocateAnythingBpuAdapter runtime(review);runtime.ValidateStartContract();}
+    catch(const std::exception& e) {
+      throw api::ApiError(422,"review_model_not_ready",utils::UserFacingError(e.what()));
+    }
+  }
+  if(phase.enabled&&phase.notification.enabled) {
+    const auto& n=cfg->analytics.notification;
+    try {analytics::WebhookNotifier validated(n.endpoint,n.require_review);}
+    catch(const std::exception&) {throw api::ApiError(422,"invalid_notification_endpoint","报警接收地址必须为有效 HTTP(S) 地址，不能包含登录凭据");}
+  }
   ValidateSnapshotResources(*cfg);
 }
 void ReusedChannelWorker::ValidateSnapshotResources(const config::ChannelConfig& next) const {
@@ -137,6 +161,53 @@ void ReusedChannelWorker::Start() {
   // 整个进程(所有通道)就没了。
   if (capture_thread_.joinable()) capture_thread_.join();
   if (infer_thread_.joinable()) infer_thread_.join();
+  if(analytics::PhaseEffective(LoadCfg()->analytics).enabled && analytics::PhaseEffective(LoadCfg()->analytics).save_events &&
+     !std::atomic_load(&event_outbox_)) {
+    const char* override_root=std::getenv("AINVR_ANALYTICS_STATE_ROOT");
+    const auto root=std::filesystem::path(override_root?override_root:"/mnt/ainvr-ssd/analytics");
+    if(!root.is_absolute())throw std::invalid_argument("Analytics state root must be absolute");
+    const auto path=root/channel_id_;
+    std::filesystem::create_directories(path);
+    auto store=std::make_shared<analytics::EventStore>(
+      snapshot_store_cfg_.mongo_uri,snapshot_store_cfg_.db_name,"analytics_events");
+    const auto review=analytics::PhaseEffective(LoadCfg()->analytics).review;
+    if(review.enabled) {
+      if(!LoadCfg()->snapshot.enabled)throw std::invalid_argument("Review requires snapshot archiving");
+      review_worker_=std::make_unique<analytics::EventWorker>(store,channel_id_,"review",
+        [store](const nlohmann::json& event,const analytics::EventWorker::Context& context) {
+          // Replay the frozen request, never reinterpret old events with a new prompt.
+          const auto request=analytics::FromJson({{"review",event.at("review_request")}}).review;
+          if(!request.enabled)return analytics::EventWorker::Outcome{"unavailable",{{"code","review_not_requested"}}};
+          config::ModelConfig model;model.name="locateanything-3b";model.adapter="locateanything_bpu";
+          model.path=request.model_path;model.description=request.description;model.input_size={224,448};
+          model.max_new_tokens=request.max_new_tokens;
+          analytics::LocateReview handler(store,std::move(model));
+          const analytics::EventWorker::Context bounded{
+            std::min(context.deadline,std::chrono::steady_clock::now()+std::chrono::seconds(request.timeout_seconds)),context.stopping};
+          try {return handler(event,bounded);}
+          catch(...) {
+            if(bounded.Cancelled())return analytics::EventWorker::Outcome{"timeout",{{"code","deadline_exceeded"}}};
+            throw;
+          }
+        },302);
+    }
+    if(analytics::PhaseEffective(LoadCfg()->analytics).notification.enabled) {
+      notification_worker_=std::make_unique<analytics::EventWorker>(store,channel_id_,"notification",
+        [](const nlohmann::json& event,const analytics::EventWorker::Context& context) {
+          const auto request=analytics::FromJson({{"notification",event.at("notification_request")}}).notification;
+          if(!request.enabled)return analytics::EventWorker::Outcome{"failed",{{"code","notification_not_requested"}}};
+          return analytics::WebhookNotifier(request.endpoint,request.require_review)(event,context);
+        },30);
+    }
+    auto box=std::make_shared<analytics::EventOutbox>(path.string(),
+      [store](const nlohmann::json& event){
+        store->Put(event);
+        if(event.contains("review_request")&&event.at("review_request").value("enabled",false))
+          store->QueueJob(event.at("event_id").get<std::string>(),"review");
+      });
+    std::atomic_store(&event_outbox_,std::move(box));
+  }
+
 
   license_revoked_.store(false);
   if (!LicenseAllowed()) throw std::runtime_error("LICENSE_REQUIRED");
@@ -245,6 +316,10 @@ void ReusedChannelWorker::Stop() {
 
   if (capture_thread_.joinable()) capture_thread_.join();
   if (infer_thread_.joinable()) infer_thread_.join();
+  notification_worker_.reset();
+  review_worker_.reset();
+  std::atomic_store(&event_outbox_,std::shared_ptr<analytics::EventOutbox>{});
+
 }
 
 void ReusedChannelWorker::ApplyHotPatch(const config::ChannelConfig& new_cfg,
@@ -345,6 +420,11 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
          }},
         {"result_buffer_size", result_buffer_.Size()},
     };
+  }
+  if(auto outbox=std::atomic_load(&event_outbox_)) {
+    stats["analytics_storage"]={{"pending",outbox->Pending()},
+      {"delivered",outbox->Delivered()},{"delivery_failures",outbox->Failures()},
+      {"stage_failures",event_stage_failures_.load()}};
   }
   if (auto stream = LoadStream()) {
     stats["video_codec"] = stream::CodecName(stream->Codec());
@@ -873,6 +953,17 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     detections=adapter_->Postprocess(prepared.outputs[0],scale_info,
       cfg->postprocess.conf_threshold,cfg->postprocess.iou_threshold,cfg->postprocess.max_detections);
   }
+  // Preserve the user's display/archive threshold. A separate decode retains
+  // low-confidence candidates for ByteTrack recovery, never publishing them.
+  std::vector<Detection> tracking_candidates;
+  if(cfg->analytics.enabled) {
+    const double floor=std::min(0.1,cfg->postprocess.conf_threshold);
+    constexpr int candidate_limit=1000;
+    if(multi_output) tracking_candidates=adapter_->PostprocessMulti(
+      prepared.outputs,scale_info,floor,cfg->postprocess.iou_threshold,candidate_limit);
+    else tracking_candidates=adapter_->Postprocess(
+      prepared.outputs[0],scale_info,floor,cfg->postprocess.iou_threshold,candidate_limit);
+  }
   {
     std::lock_guard lock(stats_mutex_);
     stats_postprocess_.Add(post_timer.ElapsedMs()+prepared.output_decode_ms);
@@ -920,6 +1011,35 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   result.task_type = adapter_->TaskType();
   result.detections = rescaled;
   result.model_extra = adapter_->ResultMetadata();
+  // Inference-thread owned; source epoch/generation resets track identity.
+  if (!analytics_) analytics_ = std::make_unique<analytics::FrameAnalytics>(analytics::PhaseEffective(cfg->analytics));
+  if(cfg->analytics.enabled) {
+    FrameResult tracked=result;
+    tracked.detections=pipeline::rescale_detections(tracking_candidates,scale_x,scale_y);
+    analytics_->Apply(tracked,frame.epoch,frame.stream_generation.value_or(-1));
+    result.model_extra=std::move(tracked.model_extra);
+    analytics::CopyTrackIdentities(tracked.detections,result.detections);
+    analytics::LinkEventArchive(result,cfg->snapshot.enabled);
+  }
+
+  if(auto outbox=std::atomic_load(&event_outbox_)) {
+    auto& data=result.model_extra["analytics"];
+    if(data.contains("events")) for(auto& event:data["events"]) {
+      try {event["retention_days"]=cfg->analytics.retention_days;
+        if(analytics::PhaseEffective(cfg->analytics).review.enabled) {
+          auto request=analytics::ToJson(cfg->analytics).at("review");
+          auto path=std::filesystem::path(cfg->analytics.review.model_path);
+          if(path.is_relative())path=std::filesystem::absolute(std::filesystem::path(model_root_)/path);
+          request["model_path"]=path.string();event["review_request"]=std::move(request);
+        }
+        if(analytics::PhaseEffective(cfg->analytics).notification.enabled)
+          event["notification_request"]=analytics::ToJson(cfg->analytics).at("notification");
+        outbox->Submit(event);event["storage_status"]="queued";}
+      catch(...) {++event_stage_failures_;event["storage_status"]="failed";}
+    }
+    data["storage"]={{"pending",outbox->Pending()},{"delivered",outbox->Delivered()},
+                     {"delivery_failures",outbox->Failures()},{"stage_failures",event_stage_failures_.load()}};
+  }
 
   utils::Timer sei_timer;
   {

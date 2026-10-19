@@ -181,6 +181,7 @@ export async function aiProxyRoutes(fastify: FastifyInstance, opts: AiProxyOptio
   fastify.post('/ai/channels/:id/start', fwdWithId('/start', startTimeoutMs));
   fastify.post('/ai/channels/:id/stop', fwdWithId('/stop', stopTimeoutMs));
 
+  fastify.get('/ai/channels/:id/analytics/events', fwdWithId('/analytics/events'));
   fastify.get('/ai/channels/:id/results/latest', fwdWithId('/results/latest'));
   // 历史结果（供浏览器端检测框叠加层按时间戳对齐画面用，见 AiDetectionOverlay）；
   // ?limit= 查询参数由 forwardToAiService 从 req.raw.url 原样透传，不用在这里

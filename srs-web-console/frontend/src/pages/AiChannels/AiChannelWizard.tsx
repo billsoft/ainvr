@@ -1,10 +1,14 @@
+import { AnalyticsNotificationSettings } from './AnalyticsNotificationSettings'
+import { AnalyticsReviewSettings } from './AnalyticsReviewSettings'
+import { AnalyticsRuleEditor } from './AnalyticsRuleEditor'
+import { ANALYTICS_PHASE } from '@/features/analyticsPhase'
 import { PromptLabelEditor } from './PromptLabelEditor'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, RefreshCw, X } from 'lucide-react'
 import {
   DEFAULT_WIZARD_VALUE, aiServiceRtmpBase, applyModelPreset, findOutputConflict, fromChannel,
   generateChannelId, needsIouThreshold, promptRows, usesPromptSlots,
-  toCreatePatch, toUpdatePatch, validateStep1, validateStep2, validateStep3, validatePublishRequiresRtmp,
+  toCreatePatch, toUpdatePatch, validateStep1, validateStep2, validateStep3, validateVisibleAnalytics, validatePublishRequiresRtmp,
   type AiWizardFormValue, type FieldErrors,
 } from '@/features/aiChannelForm'
 import { AI_MODEL_PRESETS, DEFAULT_AI_MODEL_PRESET, SELECTABLE_AI_MODEL_PRESET_KEYS, isOpenVocabularyPreset, isYoloePreset, promptSlotLimit, type AiChannel, type AiChannelCreatePatch, type AiChannelUpdatePatch, type AiStreamOption } from '@/types/aiChannel'
@@ -12,7 +16,7 @@ import type { ChannelWithStatus } from '@/types/channel'
 import { parseStreamPath, streamKey } from '@/utils/channelMatching'
 import type { AiServiceCapabilities } from '@/hooks/useAiServiceCapabilities'
 
-const STEPS = ['基本信息', '模型与推理', '输出与推流'] as const
+const STEPS = ['基本信息', '模型与推理', '目标跟踪', '输出与推流'] as const
 
 const inputCls =
   'w-full rounded-base border border-line bg-surface px-3 py-2 text-sm outline-none transition-colors focus:border-primary'
@@ -227,7 +231,7 @@ export function AiChannelWizard({
   function handleNext() {
     if (step === 0) {
       const e = validateStep1(value, mode === 'create')
-      if (!selectedInputChannelId) e.streamUrl = '请选择接入管理中的输入 SRS 通道'
+      if (!selectedInputChannelId) e.streamUrl = '请选择接入管理中的输入 流媒体通道'
       const sourceConflict = findOutputConflict(
         { streamUrl: value.streamUrl, publishEnabled: false, publishTargetUrl: '' }, aiChannels, selfId,
       )
@@ -238,6 +242,10 @@ export function AiChannelWizard({
       const e = validateStep2(value)
       setErrors(e)
       if (Object.keys(e).length > 0) return
+    } else if (step === 2) {
+      const e = validateVisibleAnalytics(value)
+      setErrors(e)
+      if (Object.keys(e).length > 0) return
     }
     setErrors({})
     setStep((s) => s + 1)
@@ -245,13 +253,14 @@ export function AiChannelWizard({
 
   async function handleSubmit() {
     const e = validateStep3(value)
+    if (e.analytics) setStep(2)
     setErrors(e)
     if (Object.keys(e).length > 0) return
 
     const input = srsChannels.find((ch) => ch.id === selectedInputChannelId)
     const output = srsChannels.find((ch) => ch.id === selectedOutputChannelId)
     if (!input || !output) {
-      setSubmitError('请选择接入管理中的输入和输出 SRS 通道；请先在接入管理中配置缺少的通道')
+      setSubmitError('请选择接入管理中的输入和输出 流媒体通道；请先在接入管理中配置缺少的通道')
       return
     }
     const outputBlocked = outputOptionBlockReason(output)
@@ -305,7 +314,7 @@ export function AiChannelWizard({
               </li>
             ))}
           </ol>
-          <p className="mt-3 text-xs text-ink-subtle">AI 处理器：输入 SRS 通道 → 模型推理 → 输出 SRS 通道。通道统一在接入管理中配置。</p>
+          <p className="mt-3 text-xs text-ink-subtle">AI 处理器：输入 流媒体通道 → 模型推理 → 输出 流媒体通道。通道统一在接入管理中配置。</p>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
@@ -396,7 +405,7 @@ export function AiChannelWizard({
                     {value.streamUrl && !selectedInputChannelId && (
                       <p className="mt-1.5 text-xs text-warning-700">当前输入地址未登记，请先到接入管理配置，再从列表选择。</p>
                     )}
-                    <p className="mt-1.5 text-xs text-ink-faint">输入 SRS 通道统一在接入管理配置。</p>
+                    <p className="mt-1.5 text-xs text-ink-faint">输入 流媒体通道统一在接入管理配置。</p>
                   </>
                 )}
                 {!lockedSource && value.streamUrl && (
@@ -491,6 +500,63 @@ export function AiChannelWizard({
 
           {step === 2 && (
             <div className="flex flex-col gap-4">
+              <section className="rounded-lg border border-line p-4" aria-label="目标跟踪设置">
+                <label className="flex items-center gap-2 text-sm font-medium text-ink">
+                  <input type="checkbox" checked={value.analytics?.enabled ?? false}
+                    onChange={(e) => set('analytics', {
+                      ...value.analytics, enabled: e.target.checked,
+                    })} />
+                  开启目标跟踪
+                </label>
+                <p className="mt-2 text-xs text-ink-faint">
+                  为同一目标保持编号，并在实时预览中显示它的运动轨迹。修改此项保存后会重新启动本 AI 处理器。
+                </p>
+                {value.analytics?.enabled && <>
+                  <p className="mt-2 text-sm text-ink">
+                    {value.modelPreset === 'locateanything-3b'
+                      ? '跟踪方式：运动关联（模型不提供置信度）'
+                      : '跟踪方式：ByteTrack'}
+                  </p>
+                  <p className="mt-2 text-xs text-ink-faint" data-testid="tracking-sampling-guidance">
+                    {value.inferenceFps > 0
+                      ? `计划每 ${(1 / value.inferenceFps).toFixed(2)} 秒检测一次；实际间隔可能更长。`
+                      : '计划跟随源流检测；实际检测频率取决于设备处理速度。'}
+                    {' '}检测间隔越长，快速移动的目标越容易换编号或轨迹断开，请结合实际画面判断效果。
+                    {' '}短时预测只用于帮助关联目标，画面上只画真实检测到的位置，不补造越线或进入事件。
+                  </p>
+                  <p className="mt-1 text-xs text-ink-faint">
+                    实时预览中的“轨迹”按钮只控制显示，不会重启处理器。
+                    {value.modelPreset === 'locateanything-3b'
+                      ? ' 当前模型采样较慢，快速移动或长时间遮挡可能导致目标编号改变。'
+                      : ' 低置信度候选可用于续跟，不改变识别结果的显示和归档阈值。'}
+                  </p>
+                </>}
+              </section>
+              {ANALYTICS_PHASE.rulesAndEvents && value.analytics?.enabled && <div className="space-y-2">
+                <label className="flex gap-2 text-sm"><input type="checkbox"
+                  checked={value.analytics.save_events??true}
+                  onChange={e=>set('analytics',{...value.analytics,enabled:true,save_events:e.target.checked})}/>
+                  保存区域事件</label>
+                {(value.analytics.save_events??true) && <label className="block text-sm">新事件保留天数
+                  <input aria-label="事件保留天数" type="number" min={1} max={365} value={value.analytics.retention_days??30}
+                    onChange={e=>set('analytics',{...value.analytics,enabled:true,retention_days:Number(e.target.value)})}/>
+                </label>}
+                <p className="text-xs text-ink-faint">关闭保存不影响实时跟踪。保留期限只对新事件生效；到期记录由后台清理。</p>
+              </div>}
+              {ANALYTICS_PHASE.rulesAndEvents && value.analytics?.enabled && <AnalyticsRuleEditor sourceUrl={value.streamUrl} rules={value.analytics.rules??[]}
+                onChange={rules=>set('analytics',{...value.analytics,enabled:true,rules})}/>}
+              {ANALYTICS_PHASE.review && value.analytics?.enabled && <AnalyticsReviewSettings value={value.analytics}
+                supported={aiCapabilities?.targetPresenceReview===true} archiveEnabled={initial?.config.snapshot.enabled===true}
+                onChange={analytics=>set('analytics',analytics)}/>}
+              {ANALYTICS_PHASE.notification && value.analytics?.enabled && <AnalyticsNotificationSettings value={value.analytics}
+                supported={aiCapabilities?.analyticsNotifications===true}
+                onChange={analytics=>set('analytics',analytics)}/>}
+              {errors.analytics && <p role="alert" className="text-danger text-xs">{errors.analytics}</p>}
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="flex flex-col gap-4">
               {value.modelPreset !== 'locateanything-3b' && <div>
                 <label className="text-sm font-medium text-ink">置信度阈值：{value.confThreshold.toFixed(2)}</label>
                 <input
@@ -539,7 +605,7 @@ export function AiChannelWizard({
               </div>
 
               <div className="rounded-base border border-line p-3">
-                <p className="text-sm font-medium text-ink">输出 SRS 通道</p>
+                <p className="text-sm font-medium text-ink">输出 流媒体通道</p>
                 {publishBlockedByProtocol && (
                   <p className="mt-1.5 text-xs text-warning-700">{publishBlockedByProtocol}</p>
                 )}
@@ -569,7 +635,7 @@ export function AiChannelWizard({
                               )
                             })}
                           </select>
-                      <p className="mt-1.5 text-xs text-ink-faint">请先在接入管理中配置输出 SRS 通道，再从此处选择；AI 处理器不会创建 SRS 通道。</p>
+                      <p className="mt-1.5 text-xs text-ink-faint">请先在接入管理中配置输出 流媒体通道，再从此处选择；AI 处理器不会创建 流媒体通道。</p>
                       {value.publishTargetUrl && !selectedOutputChannelId && (
                         <p className="mt-1.5 text-xs text-warning-700">当前输出地址未登记，请先到接入管理配置，再从列表选择。</p>
                       )}
@@ -581,7 +647,7 @@ export function AiChannelWizard({
                     )}
                     {!value.publishTargetUrl && (
                       <p className="mt-2 text-xs text-ink-faint">
-                        请选择接入管理中的输出 SRS 通道。
+                        请选择接入管理中的输出 流媒体通道。
                       </p>
                     )}
                     <p className="mt-3 text-xs text-ink-faint">
