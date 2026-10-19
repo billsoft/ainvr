@@ -6,7 +6,7 @@ import { computeContainLayout, projectLandmark } from './overlayGeometry'
 import { TrackTrailBuffer, trailSegments, type TrackTrail } from './trackTrails'
 import { drawGroundingPoints, type GroundingOverlay } from './groundingPoints'
 
-const TRAIL_IDLE_MS = 3000
+const TRAIL_IDLE_MS = 1000
 type DisplayResult = { detections: AiDetection[]; ptsNs?: number | null; displayAgeMs?: number; grounding?: GroundingOverlay }
 
 interface Props {

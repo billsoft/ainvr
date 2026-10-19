@@ -23,8 +23,9 @@ describe('display-time trajectory buffer', () => {
     const trails=cache.update(2e9,[box('chan:inst:2:7'),box('')])
     expect(trails.map(t=>t.id)).toEqual(['chan:inst:2:7'])
     expect(trails[0]!.points).toHaveLength(1)
-    // A frame without tracked targets does not end the session.
-    expect(cache.update(3e9,[box('')]).map(t=>t.id)).toEqual(['chan:inst:2:7'])
+    // A frame without tracked targets ends their trails but not the session.
+    expect(cache.update(3e9,[box('')])).toEqual([])
+    expect(cache.update(4e9,[box('chan:inst:2:8')]).map(t=>t.id)).toEqual(['chan:inst:2:8'])
   })
   it('keeps several targets of one session and ignores absent identity', () => {
     const cache = new TrackTrailBuffer()
@@ -33,21 +34,21 @@ describe('display-time trajectory buffer', () => {
     expect(trails).toHaveLength(2)
     expect(trails.every(t=>t.points.length===2)).toBe(true)
   })
-  it('keeps 30 seconds of history by default, enough points for 10 detections per second', () => {
+  it('keeps 5 seconds of history per target by default, enough points for 20 detections per second', () => {
     const cache = new TrackTrailBuffer()
     let trails = cache.update(0,[box('a')])
-    // 10 FPS for 30 s: every observation of the last 30 s stays drawn.
-    for (let i = 1; i <= 300; i++) trails = cache.update(i*1e8,[box('a',10+i)])
-    expect(trails[0]!.points).toHaveLength(301)
+    // 20 FPS for 5 s: every observation of the last 5 s stays drawn.
+    for (let i = 1; i <= 100; i++) trails = cache.update(i*5e7,[box('a',10+i)])
+    expect(trails[0]!.points).toHaveLength(101)
     expect(trails[0]!.points[0]!.ptsNs).toBe(0)
-    // Older than 30 s is dropped.
-    trails = cache.update(30.5e9,[box('a')])
+    // Older than 5 s is dropped.
+    trails = cache.update(5.5e9,[box('a')])
     expect(trails[0]!.points[0]!.ptsNs).toBeGreaterThanOrEqual(0.5e9)
   })
   it('bounds total tracks and per-track points', () => {
     const cache = new TrackTrailBuffer(10,2,2)
     cache.update(0,[box('a'),box('b'),box('c')])
-    expect(cache.update(1e9,[box('c')])).toHaveLength(2)
+    expect(cache.update(1e9,[box('a'),box('b'),box('c')])).toHaveLength(2)
     expect(cache.update(2e9,[box('c')]).find(t=>t.id==='c')?.points).toHaveLength(2)
   })
   it('expires old tracks, rejects invalid points and supports explicit session clear', () => {

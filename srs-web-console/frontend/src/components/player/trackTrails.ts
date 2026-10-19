@@ -25,7 +25,9 @@ export function trailSegments(points: TrailPoint[]): { from: TrailPoint; to: Tra
   return out
 }
 
-/** Observations and flagged short-loss predictions. Feed displayed-frame metadata, never latest API results. */
+/** Observations and flagged short-loss predictions. Feed displayed-frame metadata, never latest API results.
+ * A trail lives exactly as long as its target:a newer result without that target
+ * (no observed, low-confidence or predicted box) erases the whole trail. */
 export class TrackTrailBuffer {
   private tracks = new Map<string, TrailPoint[]>()
   private lastPts: number | null = null
@@ -35,10 +37,10 @@ export class TrackTrailBuffer {
   private readonly maxPoints: number
   private readonly maxGapSeconds: number
   constructor(
-    // 30 s of history; 360 points keep all of it at 10 detections per second.
-    durationSeconds = 30,
+    // Last 5 s per target; 120 points keep all of it up to 24 detections per second.
+    durationSeconds = 5,
     maxTracks = 128,
-    maxPoints = 360,
+    maxPoints = 120,
     maxGapSeconds = 3,
   ) {
     this.durationSeconds = durationSeconds
@@ -89,6 +91,8 @@ export class TrackTrailBuffer {
       this.tracks.set(id, points.slice(-this.maxPoints))
       while (this.tracks.size > this.maxTracks) this.tracks.delete(this.tracks.keys().next().value!)
     }
+    // The target is gone (left, lost beyond the prediction time, or tracking reset).
+    for (const id of [...this.tracks.keys()]) if (!seen.has(id)) this.tracks.delete(id)
     return this.snapshot()
   }
   private snapshot(): TrackTrail[] {

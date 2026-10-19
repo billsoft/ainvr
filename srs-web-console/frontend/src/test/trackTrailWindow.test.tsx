@@ -28,16 +28,37 @@ describe('trail buffer is a sliding window', () => {
   it('scrolls:old points fall off the tail one by one while the trail stays continuous', () => {
     const cache = new TrackTrailBuffer()
     let first: number[] = []
-    for (let i = 0; i <= 400; i++) {
+    for (let i = 0; i <= 200; i++) {
       const trail = cache.update(i * 1e8, [box(i % 300)])[0]!
-      if (i >= 300) {
+      if (i >= 50) {
         const oldest = trail.points[0]!.ptsNs
-        expect(oldest).toBeGreaterThanOrEqual(i * 1e8 - 30e9)
-        expect(trail.points.length).toBeGreaterThanOrEqual(300)    // never collapses
+        expect(oldest).toBeGreaterThanOrEqual(i * 1e8 - 5e9)     // only the last 5 s per target
+        expect(trail.points.length).toBeGreaterThanOrEqual(50)    // never collapses
         first.push(oldest)
       }
     }
     expect(first.every((v, k) => k === 0 || v > first[k - 1]!)).toBe(true)  // tail advances monotonically
+  })
+})
+
+describe('a trail lives exactly as long as its target', () => {
+  const other = (x: number): AiDetection => ({ ...box(x), track_id: 's:2' })
+  it('erases the trail of a target as soon as a newer result no longer contains it;others stay', () => {
+    const cache = new TrackTrailBuffer()
+    cache.update(0, [box(0), other(100)]); cache.update(1e8, [box(10), other(110)])
+    const trails = cache.update(2e8, [other(120)])
+    expect(trails.map(t => t.id)).toEqual(['s:2'])
+    expect(trails[0]!.points).toHaveLength(3)
+    expect(cache.update(3e8, [])).toEqual([])
+    // A target that comes back starts a fresh trail.
+    expect(cache.update(4e8, [box(40)])[0]!.points).toHaveLength(1)
+  })
+  it('a short-loss predicted box keeps the trail;it ends when the prediction ends', () => {
+    const cache = new TrackTrailBuffer()
+    cache.update(0, [box(0)]); cache.update(1e8, [box(10)])
+    const coasting = cache.update(2e8, [{ ...box(20), confidence: null, predicted: true }])
+    expect(coasting[0]!.points.map(p => !!p.predicted)).toEqual([false, false, true])
+    expect(cache.update(3e8, [])).toEqual([])
   })
 })
 
@@ -73,9 +94,9 @@ describe('live overlay draws trails independently of the current frame match', (
     present(99); now += 500; draw()
     expect(stroke.mock.calls.length).toBeGreaterThan(withMatch)
     expect(strokeRect).toHaveBeenCalledTimes(1)
-    // No result for several seconds (stream stalled/stopped):trail is no longer drawn.
+    // No result for over a second (stream stalled/stopped):trail is no longer drawn.
     const before = stroke.mock.calls.length
-    now += 4000; present(100); draw()
+    now += 1100; present(100); draw()
     expect(stroke.mock.calls.length).toBe(before)
   })
 })
