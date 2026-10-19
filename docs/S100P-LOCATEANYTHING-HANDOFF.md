@@ -1,6 +1,73 @@
 # S100P LocateAnything 量化、编译与运行时交接
 
-## 当前交接入口：2026-10-18（UTC+8，v295）
+## 当前交接入口：2026-10-18 晚（UTC+8，v325）
+
+**先读本节。** 下面"2026-10-18（v295）"那一节写的 v11 已不再是现网，那一节和更早的内容都是历史记录。
+
+### 现网已部署：GPTQ INT8 高精度文字解码（v14 / v320）
+
+- 后端入口：`ai-service/runtime/locateanything_bpu_text_gptq8_o2_eval_executor_v14.py`（SHA 27da9bc4…）
+- 契约：`BASE/official-full-family-w8a16-text-gptq8-o2-eval-v320.json`（SHA a4f584ab8e7f8742006bb4345e5ce7307846129534580715e543774401f92381）
+- 结构：在 v11（视觉 27 块 O2）的基础上，把 4 个文字解码组换成 GPTQ 校准的逐行 INT8，同 BC O2 编译。
+  - 视觉、embedding、词表头和生成逻辑都不变。
+  - 仍是 76 个逻辑程序、46 个物理 HBM，只走 BPU。
+- 安装记录：`test/results/locateanything-text-gptq8-runtime-upgrade-v323.json`。
+  - 安装后已确认真实结果和 SEI 正常，用户配置没变，录像连续。
+  - AI + 后端保守内存峰值 6.44GB。
+- **一键回滚到 v11**：
+  - 只读检查：`python3 test/model_conversion/rollback_locateanything_to_v11_v324.py`（已通过）
+  - 执行回滚（root）：`python3 test/model_conversion/rollback_locateanything_to_v11_v324.py --execute`
+  - 执行时会恢复安装前保存的 drop-in 和 sidecar 链接，重启 AI 与后端，并等待真实结果和 SEI 恢复。**回滚尚未实际演练过**，只做了只读检查。
+- 只读健康检查：`runuser -u sunrise -- python3 test/model_conversion/read_locateanything_prefill_three_groups_health_v216.py --contract-sha a4f584ab8e7f8742006bb4345e5ce7307846129534580715e543774401f92381`
+- 大门通道已按用户要求改回 **2 秒一帧**（inference_fps=0.5，2026-10-19 已持久化）。BPU 在 1fps 自适应满载时占用约 77.5%；不要再自行调成满载。
+
+### 质量与速度证据（独立 160 项，全 BPU，与原版 BF16 对比的一致率，不是标注 AP）
+
+| IoU | v11 P/R | GPTQ INT8 P/R | 上限（BPU 视觉 + BF16 文字） |
+|---|---|---|---|
+| 0.5 | 75.3/79.5 | **87.8/89.0** | 90.6/88.1 |
+| 0.75 | 70.6/74.4 | **77.5/78.5** | 80.8/78.5 |
+| 0.9 | 59.3/62.6 | **64.9/65.8** | 68.1/66.2 |
+
+- 有效输出 159/160，失败项仍只有用户已接受的 117。
+- O2 与 O0 的 160 项生成结果逐项完全一致（token 和 logprob 都相同）。
+- 组件验证 v319：4 组各 2736 次比较，逐位一致。AR 提速 1.55–1.86 倍，prefill 提速约 1.95 倍。
+- 速度 v323：两次独立的完整 160 运行，条件相同（AI 暂停、私有后端、相同输入），逐例耗时中位比 1.0037，速度与 v11 持平。
+  - 两个模型族合起来超出 ION 容量，所以没有做严格的交错 A/B。
+- 正式质量发布仍未通过，目前按试用部署。
+
+### 源码与手册（2026-10-19 已备份进项目，待用户提交）
+
+- **完整编译手册**：[S100P-LOCATEANYTHING-GPTQ-INT8-RECIPE.md](S100P-LOCATEANYTHING-GPTQ-INT8-RECIPE.md)，内容包括配方、步骤 0–11、各脚本 SHA、已否决路线和踩过的坑。
+- **速度与精度根因分析**：[S100P-LOCATEANYTHING-SPEED-ACCURACY-ANALYSIS.md](S100P-LOCATEANYTHING-SPEED-ACCURACY-ANALYSIS.md)。
+- **以前只放在 PC TASK 里的容器脚本，已全部拷入 `test/model_conversion/`**，逐个核对过哈希，换行符为 LF：
+  - 编译主线：GPTQ v307、构建 v311/v312（含 `run_gptq8_groups_v312.sh`）、打包 v312 / v318b、O2 编译 v318（含 `run_text_gptq8_o2_v318.sh`）、补链接 v318c、主机侧打包 `host_package_o2_v318d.py`；
+  - 实验与评估：视觉配方 v296（探针 / 链接 / 驱动）、O2 视觉构建 v283、评估 v298/v303、计分 v304/v317、仿真 v305/v306、网格探针 v308–v310。
+- 运行在板上的脚本（v282–v324，执行器 v11–v14）一直保存在项目中，本次没有改动。
+- PC 容器 `/opt` 中的大体积产物（GPTQ 码、各组 BC/HBO）不在项目里。O2 组产物在 D 盘 `o2-v318/`，板上在 `BASE/text-gptq8-group-*-o2-v318-board-package`。
+
+### 配方与版本链（PC 容器 ainvr-locateanything-w4-20261014）
+
+- **GPTQ 码**：`gptq_locateanything_text_row8_v307.py`，输出在容器 `/opt/locate-text-gptq-row8-v307`（252 个 npz）。
+  - 方法参考 IST-DASLab：act-order、damping .01、block 128、scale=absmax/127、码值 ±127。
+  - 校准集为旧 72 项开发集，与独立 160 项不重叠。
+- **O0 构建**：`build_locateanything_official_qwen_group_gptq8_v312.py`，即官方构建器加上 GPTQ 覆盖，absmax 固定为 127×scale。
+- **O2 编译**：`compile_text_gptq8_groups_o2_v318.py`（opt2/balance100/max_l2m 0）；`link_text_gptq8_o2_v318c.py` 用于补链接。
+  - 产物在 `D:/codex-task-staging/ainvr-locateanything-w4/o2-v318/`，板上在 `BASE/text-gptq8-group-*-o2-v318-board-package`。
+- **评估链**：v313/v13/v314/v315（O0）→ v320/v14/v321/v322（O2）→ v323 安装 → v324 回滚。
+- **已否决**：
+  - 视觉 qk16/sv16：独立 160 项 57.1/62.1，更差。
+  - 视觉 W16：单块 190MB，装不下。
+  - group32 朴素量化：P 和 R 此消彼长，没有整体提升。
+  - FP16：nash-m 的 linear/matmul 只支持 int8/int16（见 SDK 文档 hbir_op_J6E_constraint_v2.mdx）。
+- **经验与坑**：
+  - 中间产物不要写进 C 盘上的 Docker vhdx。用 `/work` 先写，写完马上移到 D 盘，并加 C 盘余量守护。曾因此把 C 盘写满，Docker 数据盘一度识别为"无文件系统"，已由用户修复。
+  - tar 解包不要带根条目 `.`，否则会改掉目标目录的属主，要加 `--no-same-owner`。
+  - 契约里的解码组 key 是两位补零的格式（decoder-group-00-08-ar）。
+
+---
+
+## 历史交接入口（已过期，v295）：2026-10-18（UTC+8）
 
 **先读本节。** 下面的"2026-10-17T22:42 交接入口"及更早内容都是历史快照：那里写的 v9、正在编译的任务、PID 均已过期。
 
