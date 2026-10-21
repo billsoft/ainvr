@@ -1275,6 +1275,17 @@ void RegisterRoutes(httplib::Server& server, std::shared_ptr<ChannelManager> man
                WriteJson(res, 200, store->Heatmap(from_ts, to_ts, bucket_s));
              }));
 
+  server.Get(R"(/api/v1/channels/([^/]+)/observation-evidence)",
+             Wrap(manager,[manager](const httplib::Request& req,httplib::Response& res){
+               const std::string id=req.matches[1];manager->Get(id);
+               for(const auto& param:req.params)if(param.first!="stream_session_id"&&param.first!="source_pts_ns"&&param.first!="source_frame_index"&&param.first!="track_id")throw ApiError(422,"invalid_parameter","Unsupported evidence query");
+               output::ObservationEvidenceQuery query{req.get_param_value("stream_session_id"),req.get_param_value("source_pts_ns"),req.get_param_value("source_frame_index"),req.get_param_value("track_id")};
+               try{query.Validate();}catch(...){throw ApiError(422,"invalid_parameter","Invalid evidence frame identity");}
+               auto store=manager->HistoryStore(id);
+               if(!store){WriteJson(res,200,json{{"schema_version","1.0"},{"state","unavailable"},{"reason","archive_unavailable"}});return;}
+               WriteJson(res,200,store->FindEvidence(query));
+             }));
+
   server.Get(R"(/api/v1/channels/([^/]+)/snapshots/([^/]+)/image)",
              Wrap(manager, [manager](const httplib::Request& req, httplib::Response& res) {
                std::string id = req.matches[1];

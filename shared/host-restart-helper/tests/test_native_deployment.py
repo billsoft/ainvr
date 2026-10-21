@@ -58,3 +58,22 @@ print(unit)
             capture_output=True, text=True, timeout=10)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == expected
+
+
+def test_alarm_metrics_and_logs_are_available_in_native_mode(monkeypatch):
+    monkeypatch.setenv('AINVR_DEPLOYMENT_MODE','native')
+    assert ob.deployment_units()['alarm-service'] == 'ainvr-alarm.service'
+    assert 'alarm-service' in ob.SOURCES
+
+
+def test_alarm_listener_uses_only_owned_loopback_socket_and_follows_custom_port(tmp_path):
+    import os
+    proc = tmp_path / '123'; (proc/'fd').mkdir(parents=True); (proc/'net').mkdir()
+    os.symlink('socket:[900]', proc/'fd'/'4')
+    header = 'sl local_address rem_address st tx_queue rx tr tm retr uid timeout inode'
+    # Another process listener must not be mistaken for the alarm listener.
+    (proc/'net'/'tcp').write_text(header+'\n0: 0100007F:2328 00000000:0000 0A 0:0 0:0 0 0 0 901\n1: 0100007F:2345 00000000:0000 0A 0:0 0:0 0 0 0 900\n')
+    assert ob.alarm_health_url(123, tmp_path) == 'http://127.0.0.1:9029/readyz'
+    (proc/'net'/'tcp').write_text(header+'\n0: 00000000:2345 00000000:0000 0A 0:0 0:0 0 0 0 900\n')
+    import pytest
+    with pytest.raises(ValueError): ob.alarm_health_url(123, tmp_path)

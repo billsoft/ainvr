@@ -40,7 +40,7 @@ export interface AiProxyOptions {
  *  但 BFF 代理还拿旧 key 转发」的两侧不一致（2026-09-15 A2 评审确认的闭环缺口）。 */
 let aiKeyCache: { value: string | null; at: number } | null = null;
 export function invalidateAiKeyCache(): void { aiKeyCache = null; }
-async function resolveAiApiKey(settings: AppSettings, pgStore?: PgConfigStore | null): Promise<string> {
+export async function resolveAiApiKey(settings: AppSettings, pgStore?: PgConfigStore | null): Promise<string> {
   if (pgStore) {
     const now = Date.now();
     if (!aiKeyCache || now - aiKeyCache.at > 10_000) {

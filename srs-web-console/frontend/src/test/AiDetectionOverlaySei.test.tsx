@@ -21,6 +21,37 @@ import { AiDetectionOverlay } from '@/components/player/AiDetectionOverlay'
 afterEach(cleanup)
 
 describe('live overlay expiry', () => {
+  it('hides every box consistently while preserving the independent trail path', () => {
+    const callbacks = new Map<number, FrameRequestCallback>()
+    let next = 0
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { callbacks.set(++next, cb); return next })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => callbacks.delete(id))
+    const strokeRect = vi.fn()
+    const context = { setTransform: vi.fn(), clearRect: vi.fn(), strokeRect,
+      measureText: () => ({ width: 10 }), fillRect: vi.fn(), fillText: vi.fn(), setLineDash: vi.fn(), globalAlpha: 1 }
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D)
+    try {
+      const v = makeVideo()
+      vi.spyOn(v.el, 'getBoundingClientRect').mockReturnValue({ width: 400, height: 200 } as DOMRect)
+      const base = { class_id: 0, class_name: 'person', confidence: 1, bbox: { x: 1, y: 2, w: 3, h: 4 } }
+      const detections = [base, { ...base, predicted: true }, { ...base, lowConfidence: true }]
+      const projected = vi.fn()
+      const view = render(<AiDetectionOverlay video={v.el} enabled showDetections={false}
+        getSeiForFrame={() => ({ detections })} />)
+      v.present(9000)
+      const draw = () => { const pending = [...callbacks]; callbacks.clear(); pending.forEach(([, cb]) => cb(performance.now())) }
+      draw()
+      expect(strokeRect).not.toHaveBeenCalled()
+      view.rerender(<AiDetectionOverlay video={v.el} enabled showDetections={false}
+        getSeiForFrame={() => ({ detections })} drawFrame={projected} />)
+      draw()
+      expect(projected).toHaveBeenLastCalledWith(context, [], 400, 200, 3840, 1920, undefined, [])
+    } finally {
+      cleanup()
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    }
+  })
   it('draws a held result, then clears it after expiry even if video stops presenting', () => {
     let now = 1000
     const callbacks = new Map<number, FrameRequestCallback>()

@@ -2,6 +2,9 @@ import { Navigate, createBrowserRouter } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import ChannelsPage from '@/pages/Channels'
 import ChannelDetailPage from '@/pages/Channels/ChannelDetail'
+import AlarmTriggersPage from '@/pages/AlarmCenter/TriggerDefinitionsPage'
+import AlarmListPage from '@/pages/AlarmCenter/AlarmListPage'
+import BehaviorStatisticsPage from '@/pages/AlarmCenter/BehaviorStatisticsPage'
 import MonitorPage from '@/pages/Monitor'
 import PlaybackPage from '@/pages/Playback'
 import ConfigCenterPage from '@/pages/ConfigCenter'
@@ -25,6 +28,9 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/monitor" replace /> },
       { path: 'dashboard', element: <DashboardPage /> },
+      { path: 'alarm-analysis', element: <AlarmTriggersPage />, errorElement: <RouteErrorBoundary /> },
+      { path: 'alarms', element: <AlarmListPage />, errorElement: <RouteErrorBoundary /> },
+      { path: 'behavior-statistics', element: <BehaviorStatisticsPage />, errorElement: <RouteErrorBoundary /> },
       { path: 'channels', element: <ChannelsPage /> },
       { path: 'channels/:id', element: <ChannelDetailPage /> },
       {

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { observabilityService, type Summary } from '@/api/observabilityService'
 import { useBranding } from '@/store/branding'
 import { Activity, Video } from 'lucide-react'
+import { AlarmPendingIndicator } from './AlarmPendingIndicator'
 import { RemoteAssistIndicator } from './RemoteAssistIndicator'
 
 interface TopbarProps {
@@ -54,6 +55,7 @@ export function Topbar({ children }: TopbarProps) {
         )}
       </div>
       <div className="flex shrink-0 items-center">
+      <AlarmPendingIndicator />
       <RemoteAssistIndicator />
       <Link
         to="/dashboard"

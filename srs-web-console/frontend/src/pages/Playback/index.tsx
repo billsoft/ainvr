@@ -10,7 +10,7 @@ import type { RecorderChannel, RecorderStats, RecordingSegment } from '@/types/r
 import { RecordingTimeline } from './RecordingTimeline'
 import { RecordingPlayer } from './RecordingPlayer'
 import { ChannelScheduleDialog } from './ChannelScheduleDialog'
-import { initialRange, resolvePlayback, seiMarks, type PlaybackRange } from './model'
+import { initialRange, rangeFromQuery, resolvePlayback, seiMarks, type PlaybackRange } from './model'
 import { useRangeRecordings } from './useRangeRecordings'
 
 function usageColor(pct: number) { return pct >= 90 ? 'bg-danger' : pct >= 70 ? 'bg-warning' : 'bg-success' }
@@ -28,7 +28,7 @@ export default function PlaybackPage() {
   const [scheduleOpen, setScheduleOpen] = useState(false)
   const [expandedChannelId, setExpandedChannelId] = useState<string | null>(null)
   const [expandedDates, setExpandedDates] = useState<Record<string, Set<string>>>({})
-  const [range, setRange] = useState<PlaybackRange>(initialRange)
+  const [range, setRange] = useState<PlaybackRange>(() => rangeFromQuery(searchParams) ?? initialRange())
   const catalogue = useRangeRecordings(channelId, range.from, range.to)
   const scope = `${channelId}:${range.from}:${range.to}`
   const currentScope = useRef(scope); currentScope.current = scope

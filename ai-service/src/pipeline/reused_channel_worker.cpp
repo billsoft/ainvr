@@ -161,6 +161,10 @@ void ReusedChannelWorker::Start() {
   // 整个进程(所有通道)就没了。
   if (capture_thread_.joinable()) capture_thread_.join();
   if (infer_thread_.joinable()) infer_thread_.join();
+  if(LoadCfg()->analytics.enabled&&!std::atomic_load(&observation_journal_)){
+    if(const char* root=std::getenv("AINVR_OBSERVATION_SPOOL_ROOT");root&&*root)
+      std::atomic_store(&observation_journal_,std::make_shared<analytics::ObservationJournal>(root,channel_id_));
+  }
   if(analytics::PhaseEffective(LoadCfg()->analytics).enabled && analytics::PhaseEffective(LoadCfg()->analytics).save_events &&
      !std::atomic_load(&event_outbox_)) {
     const char* override_root=std::getenv("AINVR_ANALYTICS_STATE_ROOT");
@@ -319,6 +323,7 @@ void ReusedChannelWorker::Stop() {
   notification_worker_.reset();
   review_worker_.reset();
   std::atomic_store(&event_outbox_,std::shared_ptr<analytics::EventOutbox>{});
+  std::atomic_store(&observation_journal_,std::shared_ptr<analytics::ObservationJournal>{});
 
 }
 
@@ -1021,6 +1026,17 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     analytics::CopyTrackIdentities(tracked.detections,result.detections);
     analytics::MarkHiddenObservations(result);
     analytics::LinkEventArchive(result,cfg->snapshot.enabled);
+  }
+
+  if(auto journal=std::atomic_load(&observation_journal_)){
+    try{
+      if(frame.epoch!=stream_epoch_.load()||!LicenseAllowed()){
+        result.model_extra["observation_delivery"]={{"state","skipped"},{"reason","source_or_license_changed"},{"stage_failures",observation_stage_failures_.load()}};
+      }else{
+        journal->Stage(result);
+        result.model_extra["observation_delivery"]={{"state","staged"},{"stage_failures",observation_stage_failures_.load()}};
+      }
+    }catch(...){++observation_stage_failures_;result.model_extra["observation_delivery"]={{"state","failed"},{"stage_failures",observation_stage_failures_.load()}};}
   }
 
   if(auto outbox=std::atomic_load(&event_outbox_)) {

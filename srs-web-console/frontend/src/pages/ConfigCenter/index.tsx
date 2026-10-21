@@ -1,3 +1,4 @@
+import {AlarmServiceConfigForm} from './AlarmServiceConfigForm'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { CheckCircle2, CircleAlert, Clock3, Loader2 } from 'lucide-react'
@@ -24,6 +25,7 @@ export const SERVICES: { key: string; label: string; description: string }[] = [
   { key: 'srs', label: '流媒体服务', description: '流媒体服务连接与实时播放配置' },
   { key: 'ai-service', label: 'AI 微服务', description: 'AI 模型、识别参数等' },
   { key: 'recorder', label: '录像服务', description: '录像存储、保留策略等' },
+  { key: 'alarm-service', label: '告警微服务', description: '行为分析、告警与统计' },
 ]
 const categories: [string, string, string][] = [
   ['basic', '基础配置', '监看上限、访问密码'],
@@ -31,6 +33,7 @@ const categories: [string, string, string][] = [
   ['streaming', '流媒体配置', '流媒体服务连接、WebRTC 候选地址'],
   ['ai-service', 'AI微服务配置', '识别服务连接、鉴权'],
   ['recorder', '录像微服务配置', '存储、配额、分段'],
+  ['alarm-service', '告警微服务配置', '独立服务连接、数据库、鉴权'],
   ['network', '网络管理', '网卡状态、IP 配置、WiFi'],
   ['time', '日期和时间', '设备时间、校准、时间服务器'],
   ['license', '授权管理', '机器码、注册密钥、授权状态'],
@@ -154,6 +157,7 @@ export default function ConfigCenterPage() {
         : category === 'time' ? <div className="min-w-0"><SystemTimeForm /></div> : loading ? <p>加载中…</p> : loadError ? null : <fieldset ref={form} disabled={busy} className="min-w-0">
         {category === 'basic' && <BasicConfigForm backendDoc={doc('backend')} onSavePartial={savePartial}
           onBusyChange={setPasswordBusy} />}
+        {category === 'alarm-service' && <AlarmServiceConfigForm document={doc('alarm-service')} onSaveBatch={saveBatch} />}
         {category === 'database' && <DatabaseConfigForm aiServiceDoc={doc('ai-service')} onSavePartial={savePartial} />}
         {category === 'streaming' && <StreamingConfigForm backendDoc={doc('backend')} srsDoc={doc('srs')} onSavePartial={savePartial} />}
         {category === 'ai-service' && <AiServiceConfigForm backendDoc={doc('backend')} aiServiceDoc={doc('ai-service')} onSaveBatch={saveBatch} />}

@@ -294,7 +294,13 @@ std::vector<uint8_t> build_result_payload(const std::string& channel_id,
       throw std::invalid_argument("SEI frame metadata contains a nonfinite number");
     if (value.is_structured()) for (const auto& item : value) self(self, item);
   };
-  validate_numbers(validate_numbers, model_extra);
+  // Local catalogue/history/delivery state is consumed over the result API and
+  // observation journal. Filter at the serialization boundary before validation
+  // and budgeting so every caller gets the same bounded video protocol.
+  auto video_extra = model_extra;
+  for (const auto* key : {"analytics", "label_catalog", "observation_delivery"})
+    video_extra.erase(key);
+  validate_numbers(validate_numbers, video_extra);
   const bool has_points = model_extra.contains("grounding") &&
       model_extra.at("grounding").is_object() &&
       model_extra.at("grounding").contains("points") &&
@@ -315,11 +321,8 @@ std::vector<uint8_t> build_result_payload(const std::string& channel_id,
       s += det_jsons[i];
     }
     s += "]";
-    if (!model_extra.empty()) {
-      auto wire_extra = model_extra;
-      // Tracks/events belong to API/archive. SEI carries bounded per-box IDs,
-      // not the growing analytics history or asynchronous delivery payloads.
-      wire_extra.erase("analytics");
+    if (!video_extra.empty()) {
+      auto wire_extra = video_extra;
       if (has_points && retained_points < point_count) {
         auto& grounding = wire_extra["grounding"];
         auto& points = grounding["points"];

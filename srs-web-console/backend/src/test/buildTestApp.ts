@@ -8,7 +8,8 @@ export function buildTestApp(opts: BuildAppOptions = {}) {
   const client = opts.licenseClient ?? new LicenseClient({
     transport: { request: async () => { throw new Error('License service is not provided by this test'); } },
   });
-  return buildApp({ requireInitialPassword: false, ingestReady: async protocol => protocol !== 'rtsp', ...opts, licenseClient: client,
+  // No external DNS in business tests; proxy-security tests can override this explicitly.
+  return buildApp({ trustedProxyLookup: async () => [], requireInitialPassword: false, ingestReady: async protocol => protocol !== 'rtsp', ...opts, licenseClient: client,
     licenseGate: opts.licenseGate ?? new LicenseGate(client, { enabled: false }),
   });
 }

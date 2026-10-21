@@ -3,6 +3,13 @@ import { DAY_MS, findSegmentAt, segmentsInRange } from '@/utils/recording'
 
 export interface PlaybackRange { from: number; to: number; preset: string | null }
 export const initialRange = (now = Date.now()): PlaybackRange => ({ from: now - DAY_MS, to: now, preset: '天' })
+/** A window linked from elsewhere (an alarm's recording): ?from=&to= in epoch ms. */
+export function rangeFromQuery(params: URLSearchParams, now = Date.now()): PlaybackRange | null {
+  const from = Number(params.get('from')), to = Number(params.get('to'))
+  if (!params.has('from') || !params.has('to') || !Number.isSafeInteger(from) || !Number.isSafeInteger(to)) return null
+  if (from < 0 || to <= from || to > now + 60_000 || to - from > 31 * DAY_MS) return null
+  return { from, to, preset: null }
+}
 
 /** Half-open range; one deterministic resolver for every playback action. */
 export function resolvePlayback(segments: RecordingSegment[], ts: number, range: PlaybackRange) {

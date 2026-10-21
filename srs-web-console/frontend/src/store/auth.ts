@@ -9,7 +9,7 @@ interface AuthState {
   required: boolean | null
   setupRequired: boolean
   checkStatus: () => Promise<void>
-  login: (password: string) => Promise<boolean>
+  login: (password: string, remember?: boolean) => Promise<boolean>
   handleUnauthorized: () => void
   logout: () => void
 }
@@ -40,11 +40,11 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
-  async login(password: string) {
+  async login(password: string, remember = false) {
     try {
       const res = await request<{ code: number; data: { token: string } }>('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ password, remember }),
       })
       const token = res.data.token
       localStorage.setItem(TOKEN_KEY, token)

@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <future>
 #include "bpu_channel_adapter.hpp"
+#include "runtime_label_catalog.hpp"
 #include "utils/log.hpp"
 #include "locateanything_result_decode.hpp"
 #include "platform/locateanything_pillow_preprocess.hpp"
@@ -209,7 +210,7 @@ class LocateAnythingBpuAdapter final : public BpuChannelAdapter {
     return parsed.detections;
   }
   nlohmann::json ResultMetadata() const override {
-    return {{"grounding",{{"complete",complete_},{"generation_mode",mode_},{"points",points_},
+    return {{"label_catalog",RuntimeLabelCatalog(ModelConfig(),{})},{"grounding",{{"complete",complete_},{"generation_mode",mode_},{"points",points_},
        {"coordinate_space","normalized_full_frame"},{"image_profile",{224,448}},
        {"image_resample","pillow9-bicubic-rgb8"},
        {"neural_provider","bpu"},{"neural_cpu_fallback",false},

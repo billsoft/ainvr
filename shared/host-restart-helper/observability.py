@@ -31,7 +31,8 @@ CONTAINERS = {'frontend': 'frontend', 'backend': 'backend', 'srs': 'srs', 'postg
 def deployment_units():
     if os.environ.get('AINVR_DEPLOYMENT_MODE') == 'native':
         return {**UNITS, 'ai-service': 'ainvr-ai.service',
-                'frontend': 'ainvr-web.service', 'backend': 'ainvr-backend.service'}
+                'frontend': 'ainvr-web.service', 'backend': 'ainvr-backend.service',
+                'alarm-service': 'ainvr-alarm.service'}
     return UNITS
 
 
@@ -39,7 +40,7 @@ def deployment_containers():
     if os.environ.get('AINVR_DEPLOYMENT_MODE') == 'native':
         return {k: v for k, v in CONTAINERS.items() if k not in ('frontend', 'backend')}
     return CONTAINERS
-SOURCES = ['host', 'frontend', 'backend', 'srs', 'postgres', 'mongodb', 'ai-service', 'recorder', 'helper']
+SOURCES = ['host', 'frontend', 'backend', 'srs', 'postgres', 'mongodb', 'ai-service', 'recorder', 'alarm-service', 'helper']
 DEFAULTS = {'fileMiB': 5, 'files': 3, 'historyHours': 72, 'level': 'INFO', 'repeatSeconds': 60}
 LEVELS = {'DEBUG': 10, 'INFO': 20, 'WARN': 30, 'ERROR': 40}
 
@@ -84,6 +85,34 @@ def run(args: list[str], timeout: float = 3, limit: int = 262144, merge_stderr=F
 def http_json(url: str):
     with build_opener(ProxyHandler({})).open(url, timeout=1.5) as r:
         return json.loads(r.read(262144))
+
+
+def alarm_health_url(pid: int, proc=Path('/proc')) -> str:
+    """Discover this unit's one loopback HTTP listener; no credentials/config read.
+
+    TCP tables are namespace-wide, so socket inode membership is required.
+    This follows central port changes without probing unrelated local listeners.
+    """
+    if pid <= 0: raise ValueError('No alarm process')
+    base = proc / str(pid)
+    sockets = set()
+    for fd in list((base / 'fd').iterdir())[:4096]:
+        try:
+            link = os.readlink(fd)
+            if re.fullmatch(r'socket:\[[0-9]+\]', link): sockets.add(link[8:-1])
+        except OSError: pass
+    listeners = []
+    for family, address, host in [('tcp', '0100007F', '127.0.0.1'), ('tcp6', '00000000000000000000000001000000', '[::1]')]:
+        try: lines = (base / 'net' / family).read_text().splitlines()[1:]
+        except OSError: continue
+        for line in lines[:8192]:
+            fields = line.split()
+            if len(fields) < 10 or fields[3] != '0A' or fields[9] not in sockets: continue
+            ip, port = fields[1].split(':')
+            if ip.upper() == address: listeners.append((host, int(port, 16)))
+    if len(listeners) != 1: raise ValueError('Ambiguous or unavailable alarm listener')
+    host, port = listeners[0]
+    return f'http://{host}:{port}/readyz'
 
 
 def memory_bytes(text: str):
@@ -449,13 +478,16 @@ class Observer:
                 if usage:
                     row['cpuPercent']=self.cpu(source,sum(x[1] for x in usage),now)
                     row['memoryBytes']=sum(x[2] for x in usage)
-                url = {'ai-service': 'http://127.0.0.1:8000/health',
+                url = alarm_health_url(pid) if source == 'alarm-service' else {'ai-service': 'http://127.0.0.1:8000/health',
                        'recorder': 'http://127.0.0.1:8100/v1/recorder/health',
                        'backend': 'http://127.0.0.1:3001/api/branding',
                        'frontend': 'http://127.0.0.1:8088/api/branding'}[source]
                 health=http_json(url)
                 if source == 'ai-service':
                     row['healthy'], row['detail'] = ai_service_health(health)
+                elif source == 'alarm-service':
+                    row['healthy'] = row['state'] == 'active' and health.get('ready') is True
+                    row['detail'] = '服务就绪；消费、存储与规则状态见告警监视' if row['healthy'] else '告警服务未就绪，请检查告警监视和日志'
                 elif source == 'recorder':
                     row['healthy'] = health.get('ok') is True and health.get('storageHealthy') is True
                     row['detail'] = recorder_detail(health)

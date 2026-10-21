@@ -49,3 +49,16 @@ ai-service/models/
 
 # Deployment rollback binaries are local recovery copies, not source.
 deploy/s100p/rollback-ai-*/
+
+# Generated alarm release copies and local console rollback builds.
+# Authoritative code, tests and installers remain versioned.
+/deploy/s100p/alarm-service/
+/deploy/s100p/ainvr-alarm.service
+/srs-web-console/backend/dist.alarm-*/
+
+# Generated native probes and TypeScript incremental caches
+/test/ai_port/runtime_label_catalog_test
+/srs-web-console/backend/*.tsbuildinfo
+
+# All local deployment recovery directories (retain on disk).
+/deploy/s100p/rollback-*/

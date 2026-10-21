@@ -10,7 +10,7 @@ const TRAIL_IDLE_MS = 1000
 type DisplayResult = { detections: AiDetection[]; ptsNs?: number | null; displayAgeMs?: number; grounding?: GroundingOverlay }
 
 interface Props {
-  drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay) => void
+  drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay, trails?: TrackTrail[]) => void
   /** The video element whose displayed frames are annotated. */
   video: HTMLVideoElement | null
   enabled: boolean
@@ -179,9 +179,13 @@ export function AiDetectionOverlay({
       const frame = frameRef.current
       context.globalAlpha = (frame?.displayAgeMs ?? 0) > 0 ? 0.65 : 1
       if (frame?.detections.length || frame?.grounding?.points.length) countersRef.current.drawn++
-      if (drawFrame && showDetections) {
-        if (frame?.grounding) drawFrame(context, frame.detections, rect.width, rect.height, video.videoWidth, video.videoHeight, frame.grounding)
-        else drawFrame(context, frame?.detections ?? [], rect.width, rect.height, video.videoWidth, video.videoHeight)
+      // Box visibility applies to detected and display-only boxes; trails remain independent.
+      const visibleDetections = showDetections ? frame?.detections ?? []
+        : []
+      if (drawFrame) {
+        drawFrame(context, visibleDetections, rect.width, rect.height, video.videoWidth, video.videoHeight,
+          showDetections ? frame?.grounding : undefined,
+          showTrails && performance.now()-lastResultRef.current<=TRAIL_IDLE_MS ? trails.current : [])
       } else {
         const layout = computeContainLayout(video.videoWidth, video.videoHeight, rect.width, rect.height)
         if (showTrails && !drawFrame && performance.now() - lastResultRef.current <= TRAIL_IDLE_MS) {
@@ -204,8 +208,8 @@ export function AiDetectionOverlay({
           }
           context.setLineDash?.([])
         }
+        drawDetections(context, visibleDetections, layout, video.videoWidth, video.videoHeight)
         if (showDetections) {
-          drawDetections(context, frame?.detections ?? [], layout, video.videoWidth, video.videoHeight)
           drawGroundingPoints(context, frame?.grounding, layout)
         }
       }

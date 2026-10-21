@@ -282,3 +282,44 @@ TEST(SeiGrounding, EmptyPointInferenceIsExplicitAndInvalidMetadataIsRejected) {
   EXPECT_THROW(sei::build_result_payload("ch", 1, 0, {}, 1024, bad), std::invalid_argument);
   EXPECT_THROW(sei::build_result_payload("ch", 1, 0, {}, 1, grounding_metadata(1)), std::runtime_error);
 }
+
+
+TEST(SeiPayload, InternalCatalogueAndDeliveryNeverConsumeVideoBudget) {
+  Detection real; real.class_name = "person"; real.confidence = .9;
+  real.bbox = {1, 2, 30, 40}; real.track_id = "session:1";
+  Detection coast = real; coast.track_id = "session:2";
+  Detection hidden = real; hidden.track_id = "session:3";
+  hidden.model_extra = {{"display_kind", "low_confidence"}};
+  auto local = grounding_metadata(1);
+  local["analytics"] = {{"tracks", nlohmann::json::array()}};
+  local["observation_delivery"] = {{"status", "staged"}, {"path", "/private/internal"}};
+  local["label_catalog"] = {{"schema_version", "1.0"}, {"labels", nlohmann::json::array()}};
+  for (int i = 0; i < 80; ++i)
+    local["label_catalog"]["labels"].push_back({{"class_id", i},
+      {"label_id", "stable-label-" + std::to_string(i)}, {"name", "class-" + std::to_string(i)},
+      {"description", "Full catalogue used by the alarm source binding"}});
+  const auto original = local;
+  ASSERT_GT(local.dump().size(), 5000);
+  for (const int budget : {1024, 2048}) {
+    const auto clean = sei::build_result_payload("ch", 123, 0, {real}, budget,
+                                                grounding_metadata(1), {coast, hidden});
+    const auto actual = sei::build_result_payload("ch", 123, 0, {real}, budget, local, {coast, hidden});
+    ASSERT_FALSE(actual.empty());
+    EXPECT_EQ(actual, clean);
+    EXPECT_LE(actual.size() + sei::SEI_UUID.size(), budget);
+    const auto value = nlohmann::json::parse(actual);
+    ASSERT_EQ(value.at("det").size(), 3);
+    EXPECT_EQ(value.at("det")[1].at("pr"), 1);
+    EXPECT_EQ(value.at("det")[2].at("lc"), 1);
+    EXPECT_EQ(value.at("model_extra"), grounding_metadata(1));
+    auto internal_only = local;
+    internal_only.erase("grounding");
+    EXPECT_EQ(sei::build_result_payload("ch", 123, 0, {real}, budget, internal_only),
+              sei::build_result_payload("ch", 123, 0, {real}, budget));
+    const auto observed = sei::build_result_payload("ch", 123, 0, {real}, budget);
+    const auto tight = sei::build_result_payload("ch", 123, 0, {real},
+        static_cast<int>(observed.size() + sei::SEI_UUID.size()), internal_only, {coast, hidden});
+    EXPECT_EQ(tight, observed);
+  }
+  EXPECT_EQ(local, original);
+}

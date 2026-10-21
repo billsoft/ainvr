@@ -86,12 +86,12 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
  * 请求头，认证图片只能走 fetch 手动带 token + 转成 blob object URL 这条路，
  * 不能直接把接口地址当 src 用。404（图片已被淘汰）时返回 null，不抛错，
  * 调用方渲染占位图即可，不需要 try/catch。 */
-export async function requestBlob(path: string): Promise<Blob | null> {
+export async function requestBlob(path: string, signal?: AbortSignal): Promise<Blob | null> {
   const token = localStorage.getItem('srs-console-token')
   const headers: Record<string, string> = {}
   if (token) headers['X-Console-Token'] = token
 
-  const res = await fetch(`${API_BASE}${path}`, { headers })
+  const res = await fetch(`${API_BASE}${path}`, { headers, ...(signal ? { signal } : {}) })
   if (res.status === 401) {
     void import('@/store/auth').then(({ useAuthStore }) => useAuthStore.getState().handleUnauthorized())
     return null

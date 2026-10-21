@@ -12,6 +12,7 @@ describe('配置中心服务名单', () => {
       'srs',
       'ai-service',
       'recorder',
+      'alarm-service',
     ])
   })
 

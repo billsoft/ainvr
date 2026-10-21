@@ -1,5 +1,6 @@
 // Copyright AINVR. Model semantics must accompany a compiled HBM; no CPU fallback.
 #include "bpu_channel_adapter.hpp"
+#include "runtime_label_catalog.hpp"
 #include "platform/bpu_image_input.hpp"
 #include <unistd.h>
 #include <openssl/evp.h>
@@ -212,6 +213,10 @@ nlohmann::json BpuChannelAdapter::ResultMetadata() const{
       {"reprta_hbm_sha256",text.at("reprta_hbm_sha256")},{"text_execution_backend","s100p_bpu"},
       {"prompt_slots",text.at("prompt_slots")},{"active_prompts",prompt_names_.size()}});
   }
+  const auto names=config_.adapter=="yoloe_bpu"?prompt_names_:
+      config_.adapter=="scrfd_bpu"?std::vector<std::string>{"face"}:
+      manifest_.at("class_names").get<std::vector<std::string>>();
+  result["label_catalog"]=RuntimeLabelCatalog(config_,names);
   return result;
 }
 ainvr::BpuImageResult BpuChannelAdapter::RunFrame(const ainvr::Nv12Frame& frame,const pipeline::PreprocessConfig& p,bool bt709,bool full_range){

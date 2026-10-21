@@ -37,6 +37,8 @@ function LoginForm() {
   const branding = useBranding()
   const [password, setPassword] = useState('')
   const [confirmation,setConfirmation]=useState('')
+  // Default on: the console is used from a fixed iPad/PC; opt out on shared devices.
+  const [remember,setRemember]=useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -62,7 +64,7 @@ function LoginForm() {
         await request('/settings/password',{method:'PUT',body:JSON.stringify({password})})
         await useAuthStore.getState().checkStatus()
       }
-      const ok = await login(password)
+      const ok = await login(password, remember)
       if (!ok) setError('登录失败，请核对密码；频繁尝试后请稍候再试')
     } catch(error) {
       setError(error instanceof Error?error.message:'设置密码失败，请稍后重试')
@@ -110,6 +112,11 @@ function LoginForm() {
             aria-describedby={error ? 'auth-error' : undefined} aria-invalid={!!error}
             className="mt-1.5 w-full rounded-base border border-ink-faint bg-surface px-3 py-2 text-sm text-ink focus:border-primary focus:outline-none" />
         </>}
+        <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-2 text-sm text-ink">
+          <input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)} className="h-5 w-5" />
+          记住此设备（30 天内免登录）
+        </label>
+        <p className="text-xs text-ink-subtle">公用或他人的电脑请不要勾选。修改密码会让所有记住的设备重新登录。</p>
         {error && <p id="auth-error" role="alert" className="mt-3 rounded-base border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
         <button
           type="submit"

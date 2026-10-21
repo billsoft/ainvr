@@ -9,7 +9,7 @@
  *
  * ⚠️ 新增服务时：此处加名字 + 对应 adapter（或 PullModeAdapter），二者缺一不可。
  */
-export const CONFIG_SERVICES = ['backend', 'srs', 'ai-service', 'recorder'] as const;
+export const CONFIG_SERVICES = ['backend', 'srs', 'ai-service', 'recorder', 'alarm-service'] as const;
 
 export type ConfigServiceName = (typeof CONFIG_SERVICES)[number];
 

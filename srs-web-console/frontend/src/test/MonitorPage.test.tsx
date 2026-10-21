@@ -6,7 +6,8 @@ import { mockChannels } from '@/mock/channels'
 import { useMonitorStore } from '@/store/monitor'
 import MonitorPage from '@/pages/Monitor'
 
-vi.mock('@/components/player/VideoPlayer', () => ({ VideoPlayer: () => <div data-testid="vp" /> }))
+vi.mock('@/components/player/VideoPlayer', () => ({ VideoPlayer: (props:{onArming?:(video:HTMLVideoElement)=>void;savedZoneSource?:{id:string;createdAt?:string;inputGeneration?:string}}) => <div data-testid="vp" data-zone-source={JSON.stringify(props.savedZoneSource)}>{props.onArming&&<button onClick={()=>props.onArming!(document.createElement('video'))}>布防</button>}</div> }))
+vi.mock('@/pages/AlarmCenter/ArmingLauncher',()=>({ArmingLauncher:({onClose}:{onClose:()=>void})=><div role="dialog" aria-label="布防"><button onClick={onClose}>取消布防</button></div>}))
 vi.mock('@/pages/Monitor/useMonitorCatalog', () => ({ useMonitorCatalog: () => ({
   allChannels: mockChannels, outputIds: new Map(), variants: new Map(), ready: true, error: '',
 }) }))
@@ -56,4 +57,21 @@ describe('MonitorPage stable layout', () => {
     await user.click(screen.getByTestId('focus-back'))
     expect(screen.getByTestId('monitor-grid')).toBeInTheDocument()
   })
+})
+
+it('focused source forwards its stable generation or creation identity to the saved zone overlay',async()=>{
+ const user=userEvent.setup();renderPage();await user.click(await screen.findByTestId('slot-focus-0'))
+ const value=JSON.parse(screen.getByTestId('vp').getAttribute('data-zone-source')!)
+ expect(value.id).toBe(mockChannels[0]!.id);expect(value.createdAt).toBe(mockChannels[0]!.createdAt)
+ expect(value.inputGeneration||value.createdAt).toBeTruthy()
+})
+
+it('arming opens over the focused player without replacing its playback element',async()=>{
+ const user=userEvent.setup();renderPage();await user.click(await screen.findByTestId('slot-focus-0'))
+ const player=screen.getByTestId('vp')
+ await user.click(screen.getByRole('button',{name:'布防'}))
+ expect(screen.getByRole('dialog',{name:'布防'})).toBeInTheDocument()
+ expect(screen.getByTestId('vp')).toBe(player)
+ await user.click(screen.getByRole('button',{name:'取消布防'}))
+ expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(screen.getByTestId('vp')).toBe(player)
 })

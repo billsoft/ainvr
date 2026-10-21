@@ -51,7 +51,7 @@ export function drawPanoramaDetections(ctx: CanvasRenderingContext2D, detections
     if (bottom <= top) continue
     // Keep x unwrapped across the seam; trigonometry provides periodic mapping.
     const corners = [[x, top], [x + w, top], [x + w, bottom], [x, bottom], [x, top]]
-    ctx.strokeStyle = '#22c55e'; ctx.beginPath()
+    ctx.setLineDash?.(d.predicted || d.lowConfidence ? [6,4] : []); ctx.strokeStyle = '#22c55e'; ctx.beginPath()
     for (let edge = 0; edge < 4; edge++) {
       const a = corners[edge]!, b = corners[edge + 1]!
       const steps = Math.min(180, Math.max(1, Math.ceil(Math.max(Math.abs(b[0]! - a[0]!) / frameW * 360, Math.abs(b[1]! - a[1]!) / frameH * 180) / 2)))
@@ -69,7 +69,8 @@ export function drawPanoramaDetections(ctx: CanvasRenderingContext2D, detections
     ctx.stroke()
     const label = visiblePoint(x + w / 2, top)
     if (label) {
-      const text = d.confidence === null ? d.class_name : `${d.class_name} ${(d.confidence * 100).toFixed(0)}%`
+      const base = d.confidence === null ? d.class_name : `${d.class_name} ${(d.confidence * 100).toFixed(0)}%`
+      const text = base + (d.lowConfidence ? ' 低置信' : d.predicted ? ' 推算' : '')
       const tw = ctx.measureText(text).width + 6
       const lx = Math.max(0, Math.min(width - tw, label[0] - tw / 2)), ly = Math.max(15, label[1] - 4)
       ctx.fillStyle = '#22c55e'; ctx.fillRect(lx, ly - 13, tw, 16)
@@ -82,6 +83,7 @@ export function drawPanoramaDetections(ctx: CanvasRenderingContext2D, detections
       if (p) { ctx.beginPath(); ctx.arc(...p, 3, 0, 2 * Math.PI); ctx.fill() }
     }
   }
+  ctx.setLineDash?.([])
   if (grounding) {
     const bounds = { dispW: width, dispH: height, offsetX: 0, offsetY: 0 }
     for (const p of grounding.points) {
@@ -91,4 +93,22 @@ export function drawPanoramaDetections(ctx: CanvasRenderingContext2D, detections
     drawGroundingNotice(ctx, grounding.omitted, bounds)
   }
   ctx.restore()
+}
+
+/** Source-space straight edges are sampled on the ERP sphere before projection.
+ * Only trajectories use the shortest seam; zone edges retain the drawn polygon semantics. */
+export function projectErpSegment(a:[number,number],b:[number,number],camera:PanoramaCamera|null,
+ width:number,height:number,wrap=false):[[number,number],[number,number]][]{
+ if(!camera||width<=0||height<=0||![...a,...b].every(Number.isFinite)||a[1]<0||a[1]>1||b[1]<0||b[1]>1)return []
+ let dx=b[0]-a[0];if(wrap){if(dx>.5)dx-=1;else if(dx<-.5)dx+=1}
+ const steps=Math.min(180,Math.max(1,Math.ceil(Math.max(Math.abs(dx)*360,Math.abs(b[1]-a[1])*180)/2)))
+ const point=(t:number)=>transform(erpPoint(a[0]+dx*t,a[1]+(b[1]-a[1])*t,1,1),camera.view)
+ const out:[[number,number],[number,number]][]=[];let previous=point(0)
+ for(let i=1;i<=steps;i++){
+  const next=point(i/steps),clipped=clipNear(previous,next)
+  if(clipped){const p=screen(clipped[0],camera.projection,width,height),q=screen(clipped[1],camera.projection,width,height)
+   if([...p,...q].every(Number.isFinite))out.push([p,q])}
+  previous=next
+ }
+ return out
 }

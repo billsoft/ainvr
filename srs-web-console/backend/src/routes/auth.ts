@@ -11,7 +11,7 @@ export interface AuthRoutesOptions {
   sessions: ConsoleSessions;
   requireInitialPassword: boolean;
 }
-const LoginSchema=z.object({password:z.string().min(1).max(100)});
+const LoginSchema=z.object({password:z.string().min(1).max(100),remember:z.boolean().optional()});
 export async function authRoutes(fastify:FastifyInstance,opts:AuthRoutesOptions) {
   const {passwordCache,sessions,requireInitialPassword}=opts;
   const attempts=new LoginAttempts();
@@ -51,7 +51,7 @@ export async function authRoutes(fastify:FastifyInstance,opts:AuthRoutesOptions)
       ok=await verifyPassword(parsed.data.password,hash);
       if(!ok)return reply.status(401).send({error:'密码错误'});
       if(await passwordCache.get()!==hash)return reply.status(401).send({error:'密码已变更，请重试'});
-      const session=sessions.create(hash);
+      const session=sessions.create(hash,{remember:parsed.data.remember===true});
       reply.header('Set-Cookie',mediaCookie(session.media,clientIdentity(req).protocol==='https'));
       return {code:0,data:{token:session.token}};
     } finally {attempts.leave(ip,ok);}

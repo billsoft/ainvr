@@ -20,6 +20,7 @@ export interface BffChannel {
   rtspTransport?: 'tcp' | 'udp'
   inputUsername?: string
   inputEnabled?: boolean
+  inputGeneration?: string
   inputCredentialSet?: boolean
   createdAt: number
   updatedAt: number
@@ -100,6 +101,7 @@ function mapStatus(bff: BffChannel): ChannelStatus {
 function mapChannel(bff: BffChannel): ChannelWithStatus {
   return {
     id: bff.id,
+    inputGeneration: bff.inputGeneration,
     name: bff.name,
     description: bff.remark,
     upstream: mapUpstream(bff),

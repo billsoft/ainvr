@@ -9,6 +9,8 @@ import { useSettingsStore } from '@/store/settings'
 import { LAYOUT_CAPACITY, MONITOR_LAYOUTS, gridClassFor, type MonitorLayout } from '@/utils/monitorLayout'
 import { useMonitorCatalog } from './useMonitorCatalog'
 import { isH265 } from '@/utils/codec'
+import {ArmingLauncher} from '@/pages/AlarmCenter/ArmingLauncher'
+import type {ChannelWithStatus} from '@/types/channel'
 
 const button = 'rounded-base border border-line bg-surface px-3 py-2 text-xs text-ink-subtle hover:bg-primary-50 disabled:opacity-40'
 
@@ -20,6 +22,8 @@ export default function MonitorPage() {
   const { layout, slots, page, mode, hardLimit, focusedChannelId } = state
   const { settings, fetchSettings } = useSettingsStore()
   const [search, setSearch] = useState('')
+  const [arming,setArming]=useState<{channel:ChannelWithStatus;video:HTMLVideoElement}|null>(null)
+  const zoneChannelId=arming?.channel.id??null
   const outputs = state.selectedOutputs
   const [moving, setMoving] = useState<number | null>(null)
   const dragFrom = useRef<number | null>(null)
@@ -77,7 +81,13 @@ export default function MonitorPage() {
     if (!c) return <div className="p-4 text-center text-sm text-slate-300">通道暂不可用，位置已保留</div>
     if (!c.status.online) return <div className="p-4 text-center text-sm text-slate-300">{c.name} · 离线</div>
     if (!settings) return <div className="p-4 text-center text-sm text-slate-300">正在读取监看上限，请稍候</div>
+    const direct=byId.get(id)
+    const parents=allChannels.filter(source=>variants.get(source.id)?.some(output=>output.id===c.id))
+    const original=direct&&!outputIds.has(`${direct.upstream.app}/${direct.upstream.stream}`)?direct:parents.length===1?parents[0]:undefined
+    const zoneSource=original&&original.registered!==false&&!outputIds.has(`${original.upstream.app}/${original.upstream.stream}`)?{id:original.id,updatedAt:original.updatedAt,createdAt:original.createdAt,inputGeneration:original.inputGeneration}:undefined
     return <VideoPlayer key={c.id} title="" protocols={c.downstream.protocols} primary={c.downstream.primary}
+      savedZoneSource={zoneSource} compactZones={focusedChannelId!==id}
+      onArming={zoneSource&&original?video=>setArming({channel:original,video}):undefined}
       stream={{ host: window.location.hostname, app: c.upstream.app, stream: c.upstream.stream }}
       muted allowPanorama className="h-full w-full" aiChannelId={outputIds.get(`${c.upstream.app}/${c.upstream.stream}`)}
       videoInfo={{ codec: c.status.videoCodec, level: c.status.videoLevel, width: c.status.videoWidth, height: c.status.videoHeight }}
@@ -106,7 +116,7 @@ export default function MonitorPage() {
           const isOutput = outputIds.has(`${c.upstream.app}/${c.upstream.stream}`)
           return <li key={c.id}><button className={`flex w-full items-center gap-2 rounded-base p-2 text-left text-sm ${index >= 0 ? 'bg-primary-50 text-primary-600' : 'text-ink-subtle hover:bg-surface-page'}`}
             title={index >= 0 ? `${c.name}：定位到第 ${Math.floor(index / capacity) + 1} 页` : `${c.name}：加入监看`}
-            data-testid={`monitor-item-${c.id}`} onClick={() => { if (focusedChannelId) state.enterFocus(c.id); else if (!state.add(c.id)) toast.error('监看排列已达到容量上限') }}>
+            disabled={!!zoneChannelId} data-testid={`monitor-item-${c.id}`} onClick={() => { if (focusedChannelId) state.enterFocus(c.id); else if (!state.add(c.id)) toast.error('监看排列已达到容量上限') }}>
             <span className={`h-2 w-2 shrink-0 rounded-full ${c.status.online ? 'bg-success' : 'bg-ink-faint'}`} />
             <span className="min-w-0 flex-1 truncate">{c.name}{isOutput && <span className="ml-1 text-xs">AI</span>}</span>
             {index >= 0 && <span className="text-xs tabular-nums">{index + 1}</span>}
@@ -118,7 +128,7 @@ export default function MonitorPage() {
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 id="monitor-title" className="page-title">实时监看</h1>
-        {focusedChannelId ? <button className={button} onClick={state.exitFocus} data-testid="focus-back"><ArrowLeft size={14} className="mr-1 inline" />返回宫格</button> :
+        {focusedChannelId ? <button className={button} disabled={!!zoneChannelId} onClick={state.exitFocus} data-testid="focus-back"><ArrowLeft size={14} className="mr-1 inline" />返回宫格</button> :
           <div className="flex flex-wrap items-center gap-2">
             <select aria-label="监看布局" className={button} value={mode === 'auto' ? 'auto' : layout} onChange={e => {
               setMoving(null)
@@ -142,7 +152,7 @@ export default function MonitorPage() {
       {heavyH265 >= 2 && <p role="note" className="text-xs text-amber-800">本页有 {heavyH265} 路 4K H.265 同时播放，受本机硬件解码路数限制可能卡顿或黑屏；卡顿时请减少宫格路数或单独放大。</p>}
       {moving !== null && <p role="status" className="text-xs text-primary-600">已选位置 {moving + 1}，点击目标位置的“放到这里”完成交换。<button className="ml-2 underline" onClick={() => setMoving(null)}>取消</button></p>}
       {focusedChannelId ? <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-panel bg-slate-950">
-        <div className="flex shrink-0 items-center justify-between gap-2 p-3 text-white"><span data-testid="focus-title">{focus?.name ?? byId.get(focusedChannelId)?.name ?? '通道暂不可用'}</span><div className="flex items-center gap-2">{variantSelect(focusedChannelId)}<button aria-label="关闭聚焦画面" onClick={state.closeFocus} data-testid="focus-close"><X size={16} /></button></div></div>
+        <div className="flex shrink-0 items-center justify-between gap-2 p-3 text-white"><span data-testid="focus-title">{focus?.name ?? byId.get(focusedChannelId)?.name ?? '通道暂不可用'}</span><div className="flex items-center gap-2">{!zoneChannelId&&variantSelect(focusedChannelId)}<button aria-label="关闭聚焦画面" disabled={!!zoneChannelId} onClick={state.closeFocus} data-testid="focus-close"><X size={16} /></button></div></div>
         <div className="relative flex min-h-0 flex-1 items-center justify-center">{player(focusedChannelId)}</div>
       </div> : <div className={`grid min-h-0 flex-1 gap-2 ${gridClassFor(layout)}`} data-testid="monitor-grid">
         {pageSlots.map((id, offset) => {
@@ -170,6 +180,7 @@ export default function MonitorPage() {
       </div>}
       <p className="text-xs leading-5 text-ink-subtle">仅播放当前页；放大时释放其他连接。双击画面放大，拖动手柄交换位置。布局保存在当前浏览器，新增通道不会挤动已有画面。</p>
     </div>
+    {arming&&<ArmingLauncher channel={arming.channel} video={arming.video} onClose={()=>setArming(null)} onSaved={()=>{toast.success("布防已保存，应用状态将在配置同步后更新");window.dispatchEvent(new Event("ainvr-arming-saved"))}}/>}
     <Toaster />
   </section>
 }

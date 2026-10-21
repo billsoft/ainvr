@@ -31,6 +31,7 @@
 #include "../output/result.hpp"
 #include "../analytics/frame_analytics.hpp"
 #include "../analytics/event_outbox.hpp"
+#include "../analytics/observation_journal.hpp"
 #include "../analytics/event_store.hpp"
 #include "../analytics/event_worker.hpp"
 #include "../output/result_buffer.hpp"
@@ -101,6 +102,8 @@ class ReusedChannelWorker : public ChannelWorker {
 
  private:
   std::shared_ptr<analytics::EventOutbox> event_outbox_;
+  std::shared_ptr<analytics::ObservationJournal> observation_journal_;
+  std::atomic<uint64_t> observation_stage_failures_{0};
   std::unique_ptr<analytics::EventWorker> review_worker_;
   std::unique_ptr<analytics::EventWorker> notification_worker_;
   std::atomic<uint64_t> event_stage_failures_{0};

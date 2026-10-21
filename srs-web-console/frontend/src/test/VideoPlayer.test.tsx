@@ -241,7 +241,7 @@ describe('VideoPlayer · AI 识别框叠加（aiChannelId）', () => {
     expect(aiChannelService.resultHistory).not.toHaveBeenCalled()
   })
 
-  it('传了 aiChannelId 且协议列表含 webrtc：强制 WebRTC 优先，默认开启叠加层，点开关能关掉', async () => {
+  it('传了 aiChannelId 且协议列表含 webrtc：强制 WebRTC 优先，默认开启叠加层，隐藏识别框仍保留常显轨迹', async () => {
     const user = userEvent.setup()
     render(
       <VideoPlayer
@@ -262,7 +262,9 @@ describe('VideoPlayer · AI 识别框叠加（aiChannelId）', () => {
     expect(aiChannelService.resultHistory).not.toHaveBeenCalled()
 
     await user.click(screen.getByTestId('btn-toggle-ai-overlay'))
-    expect(screen.queryByTestId('ai-detection-overlay')).not.toBeInTheDocument()
+    expect(screen.getByTestId('btn-toggle-ai-overlay')).toHaveAttribute('title','显示识别框')
+    expect(screen.getByTestId('ai-detection-overlay')).toBeInTheDocument()
+    expect(screen.queryByTestId('btn-toggle-trails')).not.toBeInTheDocument()
   })
 
   it('传了 aiChannelId 但协议不含 webrtc（FLV-only）：显示"不支持逐帧识别框"提示', async () => {

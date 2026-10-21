@@ -448,6 +448,15 @@ json SnapshotStore::Heatmap(std::optional<double> from_ts, std::optional<double>
   }
 }
 
+nlohmann::json SnapshotStore::FindEvidence(const ObservationEvidenceQuery& query) const {
+  query.Validate();
+  if(!connected_.load())throw SnapshotUnavailable();
+  try{
+    PooledClient client(pool_);ScopedCollection collection(client.get(),db_name_,collection_name_);
+    return FindObservationEvidence(collection.get(),channel_id_,query);
+  }catch(...){throw SnapshotUnavailable();}
+}
+
 std::optional<std::vector<uint8_t>> SnapshotStore::GetImage(const std::string& image_id, bool original) const {
   if (!connected_.load()) throw SnapshotUnavailable();
   try {

@@ -27,3 +27,10 @@ it('keeps long ranges bounded and labels calendar dates unambiguously', () => {
   expect(new Set(ticks.map(t => t.label)).size).toBe(ticks.length)
   expect(ticks.every(t => t.ts >= from && t.ts <= to)).toBe(true)
 })
+
+import {rangeFromQuery} from '@/pages/Playback/model'
+it('opens the recording window an alarm links to, and ignores unusable windows',()=>{
+  const now=Date.parse('2026-10-20T03:00:00Z')
+  expect(rangeFromQuery(new URLSearchParams('from=1000&to=61000'),now)).toEqual({from:1000,to:61000,preset:null})
+  for(const q of ['','from=5&to=5','from=x&to=9','from=10&to=5',`from=0&to=${now+3600000}`,`from=0&to=${40*86400000}`])expect(rangeFromQuery(new URLSearchParams(q),now)).toBeNull()
+})

@@ -31,6 +31,7 @@
 #include "../pipeline/snapshot_sink.hpp"
 #include "erp_perspective.hpp"
 #include "result.hpp"
+#include "observation_evidence.hpp"
 #include "history_deletions.hpp"
 #include "archive_capacity.hpp"
 
@@ -130,6 +131,7 @@ class SnapshotStore : public pipeline::SnapshotSink {
   nlohmann::json Heatmap(std::optional<double> from_ts, std::optional<double> to_ts,
                          int bucket_s) const;
   std::optional<std::vector<uint8_t>> GetImage(const std::string& image_id, bool original = false) const;
+  nlohmann::json FindEvidence(const ObservationEvidenceQuery& query) const;
   bool DeleteOne(const std::string& image_id);
   int64_t DeleteRange(double from_ts, double to_ts);
   int64_t Clear();

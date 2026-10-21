@@ -30,7 +30,7 @@ it('saves the initial password before logging in and refreshes setup state', asy
   fireEvent.change(screen.getByLabelText('管理密码', { exact: true }), { target: { value: 'test-password' } })
   fireEvent.change(screen.getByLabelText('确认管理密码'), { target: { value: 'test-password' } })
   fireEvent.click(screen.getByRole('button', { name: '设置并进入' }))
-  await waitFor(() => expect(useAuthStore.getState().login).toHaveBeenCalledWith('test-password'))
+  await waitFor(() => expect(useAuthStore.getState().login).toHaveBeenCalledWith('test-password', true))
   expect(request).toHaveBeenCalledWith('/settings/password', {
     method: 'PUT', body: JSON.stringify({ password: 'test-password' }),
   })
@@ -57,7 +57,7 @@ it('shows a save failure inline and permits retry', async () => {
   expect(screen.getByRole('button', { name: '设置并进入' })).not.toBeDisabled()
   vi.mocked(request).mockResolvedValueOnce({ code: 0 })
   fireEvent.click(screen.getByRole('button', { name: '设置并进入' }))
-  await waitFor(() => expect(useAuthStore.getState().login).toHaveBeenCalledWith('test-password'))
+  await waitFor(() => expect(useAuthStore.getState().login).toHaveBeenCalledWith('test-password', true))
 })
 
 it('shows login failures inline without exposing the private page', async () => {
@@ -67,4 +67,23 @@ it('shows login failures inline without exposing the private page', async () => 
   fireEvent.click(screen.getByRole('button', { name: '进入' }))
   expect(await screen.findByRole('alert')).toHaveTextContent('登录失败')
   expect(screen.queryByText('private page')).not.toBeInTheDocument()
+})
+
+it('remembers this device by default and lets the user opt out', async () => {
+  useAuthStore.setState({ setupRequired: false })
+  render(<AuthGate><div>private page</div></AuthGate>)
+  const remember = screen.getByLabelText('记住此设备（30 天内免登录）')
+  expect(remember).toBeChecked()
+  fireEvent.change(screen.getByLabelText('访问密码'), { target: { value: 'secret-pass' } })
+  fireEvent.click(remember)
+  fireEvent.click(screen.getByRole('button', { name: '进入' }))
+  await waitFor(() => expect(useAuthStore.getState().login).toHaveBeenCalledWith('secret-pass', false))
+})
+it('sends the remember choice with the login request', async () => {
+  vi.resetModules()  // a fresh store instance, not the one stubbed in beforeEach
+  const { useAuthStore: fresh } = await import('@/store/auth')
+  const { request: freshRequest } = await import('@/api/httpClient')
+  vi.mocked(freshRequest).mockResolvedValue({ code: 0, data: { token: 't' } })
+  await fresh.getState().login('secret-pass', true)
+  expect(freshRequest).toHaveBeenCalledWith('/auth/login', { method: 'POST', body: JSON.stringify({ password: 'secret-pass', remember: true }) })
 })

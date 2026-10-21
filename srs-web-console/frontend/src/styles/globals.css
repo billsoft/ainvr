@@ -52,3 +52,13 @@
     display: none;
   }
 }
+
+/* Alarm editors share system button typography. Coarse pointers retain comfortable
+   targets without drawing oversized controls over the evidence picture. */
+@layer components {
+  .alarm-workspace .btn-primary, .alarm-workspace .btn-secondary { min-height: 2.25rem; }
+  @media (any-pointer: coarse) {
+    .alarm-workspace .btn-primary, .alarm-workspace .btn-secondary,
+    .alarm-workspace .form-input { min-height: 2.75rem; }
+  }
+}

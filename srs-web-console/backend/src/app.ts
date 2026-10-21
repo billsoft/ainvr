@@ -1,5 +1,19 @@
 // Fastify 应用构建（可复用，测试用 fastify.inject 不启端口）
-import Fastify, { FastifyInstance } from 'fastify';
+import {alarmTriggerRoutes} from './routes/alarmTriggerRoutes.js';
+import {alarmArmingRoutes} from './routes/alarmArmingRoutes.js';
+import {AlarmArmingStore} from './store/alarmArmingStore.js';
+import {prepareAlarmConfiguration} from './services/alarmConfigurationStartup.js';
+import {migrateLegacyAlarms} from './store/alarmLegacyMigration.js';
+import {AlarmCombinedSnapshot} from './services/alarmCombinedSnapshot.js';
+import {readArmingGeometry} from './services/alarmArmingGeometry.js';
+import {readAlarmSourceCatalog} from './services/alarmSourceCatalog.js';
+import {alarmProxyRoutes} from './routes/alarmProxy.js';
+import {alarmEvidenceRoutes} from './routes/alarmEvidenceRoutes.js';
+import {readAppliedAlarmConnection} from './services/alarmConnection.js';
+import {AlarmTriggerStore} from './store/alarmTriggers.js';
+import {AlarmRuleSync} from './services/alarmRuleSync.js';
+import { AlarmConfigAdapter } from './store/alarmConfigAdapter.js';
+import Fastify, { FastifyInstance, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -17,7 +31,9 @@ import { statusRoutes, readSettingsFromPgOrFallback } from './routes/status.js';
 import { authRoutes } from './routes/auth.js';
 import { brandingRoutes } from './routes/branding.js';
 import { createBrandingLoader } from './services/branding.js';
-import { aiProxyRoutes } from './routes/aiProxy.js';
+import { aiProxyRoutes, resolveAiApiKey } from './routes/aiProxy.js';
+import { alarmZoneRoutes } from './routes/alarmZoneRoutes.js';
+import { AlarmZoneStore } from './store/alarmZones.js';
 import { recorderProxyRoutes } from './routes/recorderProxy.js';
 import { diagOverlayRoutes } from './routes/diagOverlay.js';
 import { AppSettings, DEFAULT_SETTINGS } from './types/channel.js';
@@ -35,7 +51,7 @@ import { operationalLog } from './services/operationalLog.js';
 import { licenseRoutes } from './routes/license.js';
 import { LicenseClient } from './license/licenseClient.js';
 import { LicenseGate } from './license/licenseGate.js';
-import { ConsoleSessions } from './services/consoleSessions.js';
+import { ConsoleSessions, RememberedDevices } from './services/consoleSessions.js';
 import { createProxyIdentity, clientIdentity } from './services/proxyIdentity.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -60,9 +76,9 @@ export interface BuildAppOptions {
 }
 
 export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const sessions=new ConsoleSessions();
   const requireInitialPassword=opts.requireInitialPassword ?? true;
   const dataDir = opts.dataDir ?? process.env.DATA_DIR ?? path.resolve(__dirname, '..', 'data');
+  const sessions=new ConsoleSessions(undefined,undefined,new RememberedDevices(path.join(dataDir,'remembered-devices.json')));
   // 仅作为「settings.json 全新时」的 bootstrap 种子值——一旦文件已存在（含用户改过的值），
   // JsonStore.readFromDisk() 会直接返回磁盘内容，这个种子被完全忽略，见下方 settingsStore.read()。
   const seedApiHost = opts.srsApiHost ?? process.env.SRS_API_HOST ?? DEFAULT_SETTINGS.srsApiHost;
@@ -176,6 +192,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const boundService = resolveServiceByToken(serviceTokens, req.headers['x-service-token']);
     if (boundService === 'recorder' && req.method === 'GET' &&
         ['/api/channels', '/api/ai/channels'].includes(pathname)) return;
+    if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/alarm-evidence\/[a-f0-9]{64}(?:\/image)?$/.test(pathname))return;
     if (boundService && url.startsWith('/api/v1/config/')) {
       (req as any).boundService = boundService;
       return;
@@ -293,6 +310,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           srsAdapter,
           new PullModeAdapter('ai-service'),
           new PullModeAdapter('recorder'),
+          new AlarmConfigAdapter(),
         ]);
         // 升级会用离线包默认配置覆盖 srs.conf：按配置中心重新下发（失败不阻断启动）
         await reapplyPublishedSrsSettings(pgStore, srsAdapter);
@@ -341,6 +359,52 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       pgStore: pgStore ?? undefined,
     });
     await instance.register(authRoutes, { passwordCache, sessions, requireInitialPassword });
+    const alarmPrincipal = async (req: FastifyRequest): Promise<string | null> => {
+      const hash = await passwordCache.get();
+      if (!hash && !requireInitialPassword) return 'console-local';
+      return sessions.get(hash, req.headers['x-console-token']) ? 'console-administrator' : null;
+    };
+    const alarmConnection = () => readAppliedAlarmConnection(pgStore, process.env.ALARM_SERVICE_HOST ?? 'host.docker.internal');
+    await instance.register(alarmProxyRoutes, {
+      connection: alarmConnection,
+      principal: alarmPrincipal,
+    });
+    await instance.register(alarmEvidenceRoutes,{
+      connection:alarmConnection,
+      internalPrincipal:async req=>resolveServiceByToken(serviceTokens,req.headers['x-service-token'])==='alarm-service',
+      principal:alarmPrincipal,
+      aiConnection:async()=>{const settings=await settingsStore.read();return {baseUrl:settings.aiService.baseUrl||aiServiceBaseUrl,apiKey:await resolveAiApiKey(settings,pgStore)};},
+    });
+    const alarmConfigurationReady=pgStore?await prepareAlarmConfiguration(instance,()=>migrateLegacyAlarms(pgStore.pool),alarmPrincipal):false;
+    const triggerStore=pgStore&&alarmConfigurationReady?new AlarmTriggerStore(pgStore.pool):null;
+    const armingStore=pgStore&&alarmConfigurationReady?new AlarmArmingStore(pgStore.pool):null;
+    const ruleSync=triggerStore&&armingStore?new AlarmRuleSync(new AlarmCombinedSnapshot(triggerStore,armingStore),alarmConnection):null;
+    await instance.register(alarmArmingRoutes,{
+      store:armingStore,synchronization:ruleSync,principal:alarmPrincipal,
+      catalog:async id=>readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore),
+      sourceGeometry:async id=>readArmingGeometry(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore,()=>srsClient.listStreams()),
+    });
+    await instance.register(alarmTriggerRoutes,{
+      readOnly:true,store:triggerStore,synchronization:ruleSync,
+      principal:alarmPrincipal,
+      catalog:async id=>readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore),
+    });
+    if (ruleSync) {
+      let stopped = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const sync = async () => {
+        try { await ruleSync.synchronize(); } catch { /* next bounded poll retries */ }
+        if (!stopped) { timer = setTimeout(sync, 5000); timer.unref(); }
+      };
+      instance.addHook('onReady', async () => { void sync(); });
+      instance.addHook('onClose', async () => { stopped = true; clearTimeout(timer); });
+    }
+    await instance.register(alarmZoneRoutes, {
+      readOnly:true,
+      store: pgStore && alarmConfigurationReady ? new AlarmZoneStore(pgStore.pool) : null,
+      principal: alarmPrincipal,
+      channelExists: async id => (await channelStore.read()).channels.some(channel => channel.id === id),
+    });
     await instance.register(aiProxyRoutes, {
       fallbackBaseUrl: aiServiceBaseUrl,
       settingsStore,

@@ -1,0 +1,403 @@
+[
+  {
+    "name": "always",
+    "schedule": {
+      "mode": "always"
+    },
+    "valid": true
+  },
+  {
+    "name": "named timezone weekday",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "09:00",
+          "end": "18:00"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "Sunday overnight",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            7
+          ],
+          "start": "22:00",
+          "end": "06:00"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "full day",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "start": "00:00",
+          "end": "24:00"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "adjacent windows",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "09:00",
+          "end": "12:00"
+        },
+        {
+          "days": [
+            1
+          ],
+          "start": "12:00",
+          "end": "18:00"
+        }
+      ]
+    },
+    "valid": true
+  },
+  {
+    "name": "empty",
+    "schedule": null,
+    "valid": false
+  },
+  {
+    "name": "unsupported mode",
+    "schedule": {
+      "mode": "yearly"
+    },
+    "valid": false
+  },
+  {
+    "name": "always unknown fields",
+    "schedule": {
+      "mode": "always",
+      "timezone": "UTC"
+    },
+    "valid": false
+  },
+  {
+    "name": "weekly unknown fields",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "09:00",
+          "end": "18:00"
+        }
+      ],
+      "enabled": true
+    },
+    "valid": false
+  },
+  {
+    "name": "window unknown fields",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "09:00",
+          "end": "18:00",
+          "extra": true
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid timezone",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Invalid/Timezone",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "09:00",
+          "end": "18:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "offset timezone not supported",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "+08:00",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "09:00",
+          "end": "18:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "empty windows",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": []
+    },
+    "valid": false
+  },
+  {
+    "name": "empty days",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [],
+          "start": "09:00",
+          "end": "18:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "duplicate day",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1,
+            1
+          ],
+          "start": "09:00",
+          "end": "18:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "day zero",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            0
+          ],
+          "start": "09:00",
+          "end": "18:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "day string",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            "1"
+          ],
+          "start": "09:00",
+          "end": "18:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "equal times",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "00:00",
+          "end": "00:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid clock",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "9:00",
+          "end": "18:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "24 start invalid",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "24:00",
+          "end": "06:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "overlap same day",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "09:00",
+          "end": "13:00"
+        },
+        {
+          "days": [
+            1
+          ],
+          "start": "12:00",
+          "end": "18:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "overlap overnight next day",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            1
+          ],
+          "start": "22:00",
+          "end": "06:00"
+        },
+        {
+          "days": [
+            2
+          ],
+          "start": "05:00",
+          "end": "07:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "overlap wraps week",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            7
+          ],
+          "start": "22:00",
+          "end": "06:00"
+        },
+        {
+          "days": [
+            1
+          ],
+          "start": "05:00",
+          "end": "07:00"
+        }
+      ]
+    },
+    "valid": false
+  },
+  {
+    "name": "non-overlap wraps week",
+    "schedule": {
+      "mode": "weekly",
+      "timezone": "Asia/Shanghai",
+      "windows": [
+        {
+          "days": [
+            7
+          ],
+          "start": "22:00",
+          "end": "06:00"
+        },
+        {
+          "days": [
+            1
+          ],
+          "start": "06:00",
+          "end": "07:00"
+        }
+      ]
+    },
+    "valid": true
+  }
+]

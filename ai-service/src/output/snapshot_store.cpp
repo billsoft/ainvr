@@ -224,7 +224,8 @@ bool SnapshotStore::TryConnect(bool ensure_indexes) {
     ScopedCollection coll(pc.get(), db_name_, collection_name_);
     std::string idx_cmd = "{\"createIndexes\": \"" + collection_name_ +
                           "\", \"indexes\": [{\"key\": {\"timestamp\": 1}, \"name\": \"timestamp_1\"},"
-                          "{\"key\": {\"image_id\": 1}, \"name\": \"image_id_1\"}]}";
+                          "{\"key\": {\"image_id\": 1}, \"name\": \"image_id_1\"},"
+                          "{\"key\": {\"track_id\": 1, \"frame_pts_ns\": 1}, \"name\": \"observation_evidence_1\"}]}";
     bson_t* cmd = bson_new_from_json(reinterpret_cast<const uint8_t*>(idx_cmd.c_str()), -1, nullptr);
     bson_t idx_reply;
     bool idx_ok =

@@ -1,5 +1,6 @@
 #include "snapshot_internal.hpp"
 #include "grounding_snapshot.hpp"
+#include "observation_evidence.hpp"
 
 namespace ai_service::output {
 using namespace snapshot_detail;
@@ -23,8 +24,9 @@ void SnapshotStore::OfferResult(const FrameProvider& provider, const FrameResult
   const auto targets = GroundingSnapshotTargets(result);
   if (!targets.empty() && (provider.size.width <= 0 || provider.size.height <= 0))
     throw std::invalid_argument("Snapshot point context requires a valid source frame");
+  const auto stored=BindObservationEvidence(result);
   Offer(provider, result.channel_id, channel_name, result.frame_pts_ns, result.timestamp,
-        result.model_name, result.task_type, crop_detections, result.detections, square_crop, cfg);
+        result.model_name, result.task_type, crop_detections, stored, square_crop, cfg);
   if (targets.empty()) return;
   std::vector<Detection> contexts, properties;
   std::vector<json> points;

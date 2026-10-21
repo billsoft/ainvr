@@ -36,6 +36,8 @@ export interface ChannelDownstream {
 /** 通道（元数据，持久化于 BFF） */
 export interface Channel {
   id: string
+  /** Opaque source generation; cosmetic channel edits do not change it. */
+  inputGeneration?: string
   name: string
   description?: string
   upstream: ChannelUpstream

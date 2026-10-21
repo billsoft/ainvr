@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { Clapperboard, Gauge, History, Info, Layers, MonitorPlay, ScanFace, Video, X } from 'lucide-react'
+import { Bell, ScanLine, BarChart3, Clapperboard, Gauge, History, Info, Layers, MonitorPlay, ScanFace, Video, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useMonitorStore } from '@/store/monitor'
 import { displayVersion, useBranding } from '@/store/branding'
@@ -17,6 +17,9 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/monitor', label: '实时监看', icon: MonitorPlay },
   { to: '/playback', label: '录像回放', icon: Clapperboard },
   { to: '/recognition-history', label: '识别历史', icon: History },
+  { to: '/alarm-analysis', label: '告警触发', icon: ScanLine },
+  { to: '/alarms', label: '告警列表', icon: Bell },
+  { to: '/behavior-statistics', label: '行为统计', icon: BarChart3 },
   { to: '/config-center', label: '系统配置', icon: Layers },
   { to: '/about', label: '关于', icon: Info },
 ]

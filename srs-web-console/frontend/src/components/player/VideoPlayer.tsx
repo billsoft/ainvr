@@ -26,6 +26,8 @@ import {
 } from './webrtc'
 import { inspectSeiDetections, SeiFrameCache, type SeiFrameDetections } from './seiDetections'
 import { AiDetectionOverlay } from './AiDetectionOverlay'
+import { SavedZoneOverlay } from './SavedZoneOverlay'
+import type { ZonePreviewSource } from '@/features/zoneSourceGeometry'
 import { ArrivalTimeline, DisplayDelayEstimator, extractDecodeStatsRaw } from './approxAlign'
 import { reportOverlayDiag } from '@/api/diagService'
 import type { DownstreamProtocol } from '@/types/channel'
@@ -60,6 +62,9 @@ const FAILED_RETRY_MS = 5_000
 const VISIBILITY_RECONNECT_AFTER_MS = 10_000
 
 export interface VideoPlayerProps {
+  onArming?: (video: HTMLVideoElement) => void
+  compactZones?: boolean
+  savedZoneSource?: ZonePreviewSource
   allowPanorama?: boolean
   /** 展示标题（控制栏/覆盖层）；传空串可关闭该角标（配合 footerBadge 使用，避免重复显示同一个名字） */
   title: string
@@ -143,6 +148,9 @@ export function VideoPlayer({
   footerBadge,
   onVideoElement,
   aiChannelId,
+  savedZoneSource,
+  onArming,
+  compactZones = false,
   diagLabel,
   videoInfo,
   allowPanorama = false,
@@ -194,7 +202,7 @@ export function VideoPlayer({
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const view = usePlayerView(containerRef)
-  const { panorama, panoramaReset, panoramaError, panoramaFailed, receivePanoramaCamera, drawPanoramaFrame, isFullscreen, fullscreenError } = view
+  const { panorama, panoramaReset, panoramaError, panoramaFailed, receivePanoramaCamera, drawPanoramaFrame, fullscreenError } = view
   const mountedRef = useRef(true)
   const cleanupRef = useRef<(() => void) | null>(null)
   const [paused, setPaused] = useState(false)
@@ -214,7 +222,6 @@ export function VideoPlayer({
   // 默认开——这路流已经被判定为 AI 输出流（aiChannelId 有值）时，用户大概率
   // 就是为了看识别框才点进来的，不用每次都手动开一遍；不想看直接点掉。
   const [overlayEnabled, setOverlayEnabled] = useState(true)
-  const [showTrails, setShowTrails] = useState(false)
   // WebRTC 自动重连节流：记录最近自动重连的时间戳（ms），见常量注释。
   // 用 ref 不用 state——纯事件节流，不需要触发渲染。
   const autoReconnectsRef = useRef<number[]>([])
@@ -786,11 +793,12 @@ export function VideoPlayer({
     <div
       ref={containerRef}
       className={[
-        'group relative overflow-hidden rounded-base bg-black',
+        'group relative flex min-h-0 flex-col overflow-hidden rounded-base bg-black',
         className ?? '',
       ].join(' ')}
       data-testid="video-player"
     >
+      <div className="relative min-h-0 flex-1 overflow-hidden">
       {fullscreenError && <div role="status" className="pointer-events-none absolute bottom-14 left-2 z-30 rounded bg-black/75 px-2 py-1 text-xs text-white">{fullscreenError}</div>}
       <video
         ref={videoRef}
@@ -807,12 +815,13 @@ export function VideoPlayer({
         </div>
       )}
 
+      {savedZoneSource&&<SavedZoneOverlay key={savedZoneSource.id} video={videoEl} source={savedZoneSource} compact={compactZones} transformed={allowPanorama&&panorama} camera={view.camera} resetKey={state.generation}/>}
       {aiChannelId && (
         <AiDetectionOverlay
           video={videoEl}
-          enabled={overlayEnabled || showTrails}
+          enabled={true}
           showDetections={overlayEnabled}
-          showTrails={showTrails && !panorama}
+          showTrails={true}
           drawFrame={panorama ? drawPanoramaFrame : undefined}
           channelId={aiChannelId}
           getSeiForFrame={getSeiForFrame}
@@ -917,10 +926,10 @@ export function VideoPlayer({
         </div>
       )}
 
+      </div>
       {/* 控制栏 */}
       {showControls && (
         <LivePlayerToolbar
-          isFullscreen={isFullscreen}
           paused={paused}
           isMuted={isMuted}
           togglePlay={togglePlay}
@@ -928,8 +937,7 @@ export function VideoPlayer({
           aiChannelId={aiChannelId}
           overlayEnabled={overlayEnabled}
           setOverlayEnabled={setOverlayEnabled}
-          showTrails={showTrails}
-          setShowTrails={setShowTrails}
+          onArming={onArming}
           chain={chain}
           selectedProtocol={proto ?? state.chain[state.index] ?? ''}
           onProtocol={(protocol) => dispatch({ type: 'switch', protocol })}

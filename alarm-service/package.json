@@ -1,0 +1,16 @@
+{
+  "name": "ainvr-alarm-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "fastify": "5.2.1",
+    "mongodb": "6.12.0"
+  }
+}
