@@ -4,7 +4,7 @@ import { validatePoints } from './geometry.mjs';
 import {normalizeSchedule} from './schedule.mjs';
 
 // Bumped when behavior judgement changes; recorded on every fact so statistics can tell eras apart.
-export const ENGINE_SEMANTICS='2026-10-20.assignments';
+export const ENGINE_SEMANTICS='2026-10-21.counter-bindings';
 export class DomainError extends Error {
   constructor(code, message, status=422) { super(message); this.code=code; this.status=status; }
 }
@@ -52,6 +52,16 @@ export function validateRule(input) {
   }
   if(r.erp_wrap!==undefined&&typeof r.erp_wrap!=='boolean')fail('invalid_geometry','Invalid ERP topology');
   if(r.erp_wrap&&r.zone_id==null)fail('invalid_geometry','ERP topology requires a zone');
+  if(r.passage!==undefined){
+    const p=r.passage;
+    if(!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).some(k=>!['kind','edges','max_gap_ms'].includes(k))||
+      !['zone','line','gates'].includes(p.kind)||!Number.isInteger(p.max_gap_ms)||p.max_gap_ms<0||p.max_gap_ms>2000||
+      r.behavior!=='region_traverse'||r.alarm_enabled!==false||r.erp_wrap)fail('invalid_passage','Statistics passage policy is invalid');
+    if(p.kind==='zone'){if(p.edges!==undefined)fail('invalid_passage','Zone has no gates');}
+    else if(!Array.isArray(p.edges)||p.edges.length!==(p.kind==='line'?1:2)||new Set(p.edges).size!==p.edges.length||
+      p.edges.some(e=>!Number.isInteger(e)||e<0||e>=(r.points?.length??0)))fail('invalid_passage','Select distinct existing gate edges');
+    if(r.entry_edges?.length||r.exit_edges?.length||r.duration_ms>0)fail('invalid_passage','Shared passage collector must be unrestricted');
+  }
   r.anchor ??= 'bottom_center';
   if(!['bottom_center','center'].includes(r.anchor)) fail('invalid_anchor','anchor');
   r.duration_ms ??= 0; range(r.duration_ms,0,3600000,'duration_ms');

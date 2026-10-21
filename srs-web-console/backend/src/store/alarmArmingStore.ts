@@ -1,3 +1,4 @@
+import {compileBinding,parseCounterDefinition,validateBindingSet,type BindingVersion,type CounterBinding,type CounterDefinition} from './flowCounters.js';
 import {unwrapErp} from './erpGeometry.js';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
@@ -15,13 +16,14 @@ const zoneSchema=z.object({
 }).strict();
 const armingSchema=z.object({
   coordinate_space:z.enum(['planar','erp']).optional(),source_id:identifier,geometry_revision:identifier,zones:z.array(zoneSchema).max(1000),assignments:z.array(z.unknown()).max(1000),
+  counter_bindings:z.array(z.unknown()).max(1000).optional(),
 }).strict();
 type Zone=z.infer<typeof zoneSchema>;
-type Arming={coordinate_space?:'planar'|'erp';source_id:string;geometry_revision:string;zones:Zone[];assignments:TriggerAssignment[]};
+type Arming={coordinate_space?:'planar'|'erp';source_id:string;geometry_revision:string;zones:Zone[];assignments:TriggerAssignment[];counter_bindings:CounterBinding[]};
 type Lookup=(processorId:string)=>Promise<AssignmentSource|null>;
 function fail(code:string,message:string):never{
   const status=code==='source_unavailable'?503:
-    ['version_conflict','idempotency_conflict','source_changed','assignment_identity','archived_trigger'].includes(code)?409:422;
+    ['version_conflict','idempotency_conflict','source_changed','assignment_identity','binding_identity','archived_trigger','archived_counter'].includes(code)?409:422;
   throw new AlarmConfigError(code,message,status);
 }
 function geometry(points:[number,number][]){
@@ -58,7 +60,7 @@ export class AlarmArmingStore {
   async readArming(sourceId:string){
     if(!identifier.safeParse(sourceId).success)fail('invalid_source','来源编号无效');
     const row=(await this.pool.query('SELECT document,revision FROM alarm_arming_sources WHERE source_id=$1',[sourceId])).rows[0];
-    return row?{...row.document,revision:row.revision}:null;
+    return row?{counter_bindings:[],...row.document,revision:row.revision}:null;
   }
   private async operation<T>(kind:string,input:unknown,expected:number,actor:string,key:string,run:(c:PoolClient)=>Promise<T>):Promise<T>{
     if(!Number.isInteger(expected)||expected<0||expected>=2147483646||!identifier.safeParse(actor).success||!identifier.safeParse(key).success)fail('invalid_operation','操作身份、版本或编号无效');
@@ -117,10 +119,97 @@ export class AlarmArmingStore {
       return {saved:true as const,trigger:{...definition,version},application:{state:'pending' as const,desired_revision:await this.bump(c)}};
     });
   }
+  /** Compile one binding; an unchanged rule keeps its version so counting state is not reset. */
+  private async writeBinding(c:PoolClient,sourceId:string,b:CounterBinding,definition:CounterDefinition,definitionVersion:number,source:AssignmentSource,zone:Zone|null,previous:{execution_version:number;compiled_rule:any;active:boolean}|undefined){
+    let version=(previous?.execution_version??0)+1;
+    let rule:any=compileBinding({...definition,state:'enabled'},definitionVersion,b,source,zone,version);
+    if(previous?.active&&previous.compiled_rule&&definition.state==='enabled'){
+      const unchanged=JSON.parse(JSON.stringify({...rule,version:previous.execution_version,source_binding:{...rule.source_binding,not_before:previous.compiled_rule.source_binding?.not_before}}));
+      if(isDeepStrictEqual(unchanged,previous.compiled_rule)){version=previous.execution_version;rule=previous.compiled_rule;}
+    }
+    await c.query(`INSERT INTO flow_counter_bindings(binding_id,source_id,counter_id,execution_version,document,compiled_rule,active)
+      VALUES($1,$2,$3,$4,$5,$6,TRUE) ON CONFLICT(binding_id) DO UPDATE SET execution_version=EXCLUDED.execution_version,
+      document=EXCLUDED.document,compiled_rule=EXCLUDED.compiled_rule,active=TRUE,updated_at=now()`,
+      [b.binding_id,sourceId,b.counter_id,version,JSON.stringify(b),definition.state==='enabled'?JSON.stringify(rule):null]);
+  }
+  /** A new counting line applies from now; earlier passages keep their meaning unless recounted explicitly. */
+  private async recordLine(c:PoolClient,b:CounterBinding,recount:boolean,actor:string){
+    const last=(await c.query('SELECT seq,direction FROM flow_counter_binding_versions WHERE binding_id=$1 ORDER BY seq DESC LIMIT 1',[b.binding_id])).rows[0];
+    if(last&&isDeepStrictEqual(last.direction,b.direction))return;
+    await c.query('INSERT INTO flow_counter_binding_versions(binding_id,seq,direction,reclassify,actor,effective_from) VALUES($1,$2,$3,$4,$5,clock_timestamp())',
+      [b.binding_id,(last?.seq??0)+1,JSON.stringify(b.direction),!!last&&recount,actor]);
+  }
+  async listCounters(){
+    const rows=await this.pool.query(`SELECT d.document,d.version,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('binding_id',b.binding_id,'source_id',b.source_id,'processor_id',b.document->>'processor_id',
+        'zone_id',b.document->>'zone_id','active',b.active,'counting',b.compiled_rule IS NOT NULL,'direction',b.document->'direction',
+        'zone_name',(SELECT z->>'name' FROM alarm_arming_sources s,jsonb_array_elements(s.document->'zones') z WHERE s.source_id=b.source_id AND z->>'zone_id'=b.document->>'zone_id')
+      ) ORDER BY b.created_at,b.binding_id) FROM flow_counter_bindings b WHERE b.counter_id=d.counter_id AND b.active),'[]'::jsonb) AS bindings
+      FROM flow_counter_definitions d ORDER BY d.counter_id LIMIT 1001`);
+    if(rows.rows.length>1000)fail('capacity','计数器数量超过上限');
+    return rows.rows.map(r=>({...r.document,version:r.version,bindings:r.bindings}));
+  }
+  async saveCounter(input:unknown,expected:number,actor:string,key:string,lookup:Lookup){
+    const definition=parseCounterDefinition(input);
+    return this.operation('counter',definition,expected,actor,key,async c=>{
+      const old=(await c.query('SELECT document,version FROM flow_counter_definitions WHERE counter_id=$1',[definition.counter_id])).rows[0];
+      if((old?.version??0)!==expected)fail('version_conflict','计数器已变化，请重新读取');
+      if(old?.document.state==='archived')fail('archived_counter','已归档计数器不能修改');
+      if(!old&&definition.state==='archived')fail('invalid_counter','新计数器不能直接归档');
+      if(old&&old.document.method!==definition.method)fail('invalid_counter','已有计数器不能更改计数方式，请新建计数器');
+      const version=expected+1;
+      await c.query('INSERT INTO flow_counter_definitions(counter_id,version,document) VALUES($1,$2,$3) ON CONFLICT(counter_id) DO UPDATE SET version=EXCLUDED.version,document=EXCLUDED.document,updated_at=now()',[definition.counter_id,version,JSON.stringify(definition)]);
+      await c.query('INSERT INTO flow_counter_definition_versions(counter_id,version,document,actor) VALUES($1,$2,$3,$4)',[definition.counter_id,version,JSON.stringify(definition),actor]);
+      const rows=(await c.query('SELECT * FROM flow_counter_bindings WHERE counter_id=$1 AND active=TRUE',[definition.counter_id])).rows;
+      const sameLabels=!!old&&JSON.stringify(old.document.labels.map((l:{label_id:string})=>l.label_id))===JSON.stringify(definition.labels.map(l=>l.label_id));
+      for(const row of rows){
+        let rule=null;
+        if(definition.state==='enabled'){
+          const sourceDoc=(await c.query('SELECT document FROM alarm_arming_sources WHERE source_id=$1',[row.source_id])).rows[0].document as Arming;
+          const zone=sourceDoc.zones.find(z=>z.zone_id===row.document.zone_id)??null;
+          const frozen=row.compiled_rule?.source_binding;
+          // Name or gap edits reuse the frozen source evidence, so an offline camera cannot block them.
+          const source:AssignmentSource|null=sameLabels&&frozen?{channel_id:row.document.processor_id,input_stream_id:frozen.input_stream_id,geometry_revision:frozen.geometry_revision,
+            label_map_version:frozen.label_map_version,tracking_available:true,labels:definition.labels.map(l=>({label_id:l.label_id})),width:frozen.width,height:frozen.height,
+            stream_fingerprint:frozen.stream_fingerprint,observed_at:frozen.not_before}:await lookup(row.document.processor_id);
+          if(!source)fail('source_unavailable','来源暂不可用，请稍后重试');
+          rule=compileBinding(definition,version,row.document,source!,zone,row.execution_version+1);
+        }
+        // A name change does not alter the judgement: keep the execution version so passages in progress still count.
+        const same=(a:any,b:any)=>!!a&&!!b&&isDeepStrictEqual({...a,name:0,trigger_version:0,version:0,source_binding:{...a.source_binding,not_before:0}},{...b,name:0,trigger_version:0,version:0,source_binding:{...b.source_binding,not_before:0}});
+        const keep=rule&&same(rule,row.compiled_rule);
+        if(keep)rule={...rule,version:row.execution_version,source_binding:row.compiled_rule.source_binding};
+        await c.query('UPDATE flow_counter_bindings SET compiled_rule=$2,execution_version=$3,active=$4,updated_at=now() WHERE binding_id=$1',[row.binding_id,rule?JSON.stringify(rule):null,keep?row.execution_version:row.execution_version+1,definition.state!=='archived']);
+      }
+      if(definition.state==='archived'){
+        for(const sourceId of new Set(rows.map(r=>r.source_id))){
+          const row=(await c.query('SELECT document,revision FROM alarm_arming_sources WHERE source_id=$1',[sourceId])).rows[0];
+          const doc=row.document as Arming;doc.counter_bindings=(doc.counter_bindings??[]).filter(b=>b.counter_id!==definition.counter_id);
+          await this.writeSource(c,doc,row.revision+1,actor);
+        }
+      }
+      return {saved:true as const,counter:{...definition,version},application:{state:'pending' as const,desired_revision:await this.bump(c)}};
+    });
+  }
+  /** All binding rows of the given counters, removed ones included, for history queries. */
+  async counterBindings(counterIds:string[]){
+    return (await this.pool.query(`SELECT b.binding_id,b.source_id,b.counter_id,b.document,b.active,b.compiled_rule IS NOT NULL AS counting,b.created_at,b.updated_at,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('seq',v.seq,'direction',v.direction,'reclassify',v.reclassify,'effective_from',v.effective_from) ORDER BY v.seq)
+        FROM flow_counter_binding_versions v WHERE v.binding_id=b.binding_id),'[]'::jsonb) AS versions,
+      (SELECT z->>'name' FROM alarm_arming_sources s,jsonb_array_elements(s.document->'zones') z WHERE s.source_id=b.source_id AND z->>'zone_id'=b.document->>'zone_id') AS zone_name
+      FROM flow_counter_bindings b WHERE b.counter_id=ANY($1::text[]) ORDER BY b.created_at,b.binding_id`,[counterIds])).rows as {binding_id:string;source_id:string;counter_id:string;document:CounterBinding;active:boolean;counting:boolean;zone_name:string|null;created_at:Date;updated_at:Date;versions:BindingVersion[]}[];
+  }
+  /** Target lists per definition version, for history queries. */
+  async definitionHistory(counterIds:string[]){
+    return (await this.pool.query('SELECT counter_id,document->\'labels\' AS labels,created_at FROM flow_counter_definition_versions WHERE counter_id=ANY($1::text[]) ORDER BY created_at',[counterIds])).rows as {counter_id:string;labels:{label_id:string}[];created_at:Date}[];
+  }
   async saveArming(input:unknown,expected:number,actor:string,key:string,lookup:Lookup,sourceGeometry:(id:string)=>Promise<string|null>){
     const parsed=armingSchema.safeParse(input);
     if(!parsed.success)fail('invalid_arming','布防参数无效');
-    const doc:Arming={...parsed.data,assignments:validateAssignmentSet(parsed.data.assignments)};
+    const bindingInputs=validateBindingSet(parsed.data.counter_bindings??[]);
+    // "Recount history" is an instruction for this save only; the stored selection never carries it.
+    const recount=new Set(bindingInputs.filter(b=>b.reclassify_history).map(b=>b.binding_id));
+    const doc:Arming={...parsed.data,assignments:validateAssignmentSet(parsed.data.assignments),counter_bindings:bindingInputs.map(({reclassify_history:_,...b})=>b)};
     const zoneIds=new Set<string>(),names=new Set<string>();
     for(const z of doc.zones){
       if(z.erp_wrap&&doc.coordinate_space!=='erp')fail('panorama_confirmation_required','请先明确确认来源画面是全景画面，普通相机不能使用全景环绕区域');
@@ -132,6 +221,10 @@ export class AlarmArmingStore {
     for(const a of doc.assignments){
       if(a.input_stream_id!==doc.source_id||a.geometry_revision!==doc.geometry_revision)fail('source_changed','选用来源不匹配');
       if(a.zone_id!==null&&!zoneIds.has(a.zone_id))fail('zone_required','删除区域时必须解除选用');
+    }
+    for(const b of doc.counter_bindings){
+      if(b.input_stream_id!==doc.source_id||b.geometry_revision!==doc.geometry_revision)fail('source_changed','计数选用来源不匹配');
+      if(!zoneIds.has(b.zone_id))fail('zone_required','删除区域时必须解除计数选用');
     }
     return this.operation('arming',doc,expected,actor,key,async c=>{
       const current=await sourceGeometry(doc.source_id);
@@ -176,6 +269,17 @@ export class AlarmArmingStore {
           [a.assignment_id,doc.source_id,a.trigger_id,version,JSON.stringify(a),trigger.document.state==='enabled'?JSON.stringify(rule):null]);
       }
       await c.query('UPDATE alarm_trigger_assignments SET active=FALSE,compiled_rule=NULL,updated_at=now() WHERE source_id=$1 AND NOT (assignment_id=ANY($2::text[]))',[doc.source_id,doc.assignments.map(a=>a.assignment_id)]);
+      for(const b of doc.counter_bindings){
+        const previous=(await c.query('SELECT source_id,counter_id,execution_version,compiled_rule,active FROM flow_counter_bindings WHERE binding_id=$1',[b.binding_id])).rows[0];
+        if(previous&&(previous.source_id!==doc.source_id||previous.counter_id!==b.counter_id))fail('binding_identity','计数选用编号不能迁移到其他来源或计数器');
+        const counter=(await c.query('SELECT document,version FROM flow_counter_definitions WHERE counter_id=$1',[b.counter_id])).rows[0];
+        if(!counter||counter.document.state==='archived')fail('counter_unavailable','计数器不存在或已归档');
+        const source=await lookup(b.processor_id);
+        if(!source)fail('source_unavailable','来源暂不可用，请保留草稿');
+        await this.writeBinding(c,doc.source_id,b,counter.document,counter.version,source,doc.zones.find(z=>z.zone_id===b.zone_id)??null,previous);
+        await this.recordLine(c,b,recount.has(b.binding_id),actor);
+      }
+      await c.query('UPDATE flow_counter_bindings SET active=FALSE,compiled_rule=NULL,updated_at=now() WHERE source_id=$1 AND NOT (binding_id=ANY($2::text[]))',[doc.source_id,doc.counter_bindings.map(b=>b.binding_id)]);
       return {saved:true as const,sourceId:doc.source_id,revision:expected+1,application:{state:'pending' as const,desired_revision:await this.bump(c)}};
     });
   }
@@ -184,7 +288,9 @@ export class AlarmArmingStore {
     try{
       await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const revision=(await c.query('SELECT revision::text FROM alarm_configuration_revision WHERE singleton=TRUE')).rows[0].revision as string;
-      const rules=(await c.query('SELECT compiled_rule FROM alarm_trigger_assignments WHERE active=TRUE AND compiled_rule IS NOT NULL ORDER BY assignment_id')).rows.map(r=>r.compiled_rule);
+      const rules=(await c.query(`SELECT compiled_rule FROM alarm_trigger_assignments WHERE active=TRUE AND compiled_rule IS NOT NULL
+        UNION ALL SELECT compiled_rule FROM flow_counter_bindings WHERE active=TRUE AND compiled_rule IS NOT NULL`)).rows.map(r=>r.compiled_rule)
+        .sort((a,b)=>String(a.id).localeCompare(String(b.id)));
       await c.query('COMMIT');return {schema_version:'1.0',revision,rules};
     }catch(e){await c.query('ROLLBACK').catch(()=>undefined);throw e;}finally{c.release();}
   }

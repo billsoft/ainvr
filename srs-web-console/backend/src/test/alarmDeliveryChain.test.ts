@@ -21,7 +21,7 @@ it.skipIf(process.env.AINVR_ALARM_TEST_PG!=='1'||process.env.AINVR_ALARM_TEST_MO
  let app:any,pump:any;
  try{
   await admin.query(`CREATE SCHEMA ${schema}`);await client.connect();
-  for(const file of ['003_alarm_zones.sql','004_alarm_monitors.sql','005_alarm_triggers.sql','006_alarm_migration_review.sql','007_alarm_arming_storage.sql'])
+  for(const file of ['003_alarm_zones.sql','004_alarm_monitors.sql','005_alarm_triggers.sql','006_alarm_migration_review.sql','007_alarm_arming_storage.sql','009_flow_counters.sql','010_flow_counter_library.sql','011_flow_counter_history.sql'])
    await pool.query(readFileSync(new URL('../store/migrations/'+file,import.meta.url),'utf8'));
   const {AlarmRepository}=await load('repository'),{ObservationConsumer}=await load('ingestion');
   const {createApp}=await load('http'),{ObservationPump}=await load('observation-pump'),{digest}=await load('domain');

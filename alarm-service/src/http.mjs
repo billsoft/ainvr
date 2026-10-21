@@ -36,6 +36,7 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
     behaviors:['appearance','region_approach','region_enter','region_traverse'],
     review:{available:false,reason:'No validated BPU review executor configured'},notification:{available:false},
     schedules:['always','weekly'],limits:{bulk_items:200}}));
+  app.post('/v1/flow/query',async req=>repository.flow.query(req.body));
   app.get('/v1/behavior-statistics',async req=>{
     const allowed=new Set(['from','to','channel_id','zone_id','label_id','event_type','bucket','timezone','rule_id','trigger_id','group_by']);
     if(Object.keys(req.query).some(key=>!allowed.has(key)))fail('invalid_query','Unsupported statistics filter');

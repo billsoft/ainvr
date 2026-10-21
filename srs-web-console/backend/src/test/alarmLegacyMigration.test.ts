@@ -11,7 +11,7 @@ async function isolated(run:(p:Pool)=>Promise<void>){
  const admin=new Pool(connection);await admin.query(`CREATE SCHEMA ${schema}`);
  const p=new Pool({...connection,options:`-c search_path=${schema}`});
  try{
-  for(const f of ['003_alarm_zones.sql','004_alarm_monitors.sql','005_alarm_triggers.sql','006_alarm_migration_review.sql','007_alarm_arming_storage.sql','008_alarm_legacy_imports.sql'])
+  for(const f of ['003_alarm_zones.sql','004_alarm_monitors.sql','005_alarm_triggers.sql','006_alarm_migration_review.sql','007_alarm_arming_storage.sql','008_alarm_legacy_imports.sql','009_flow_counters.sql','010_flow_counter_library.sql','011_flow_counter_history.sql'])
    await p.query(readFileSync(new URL('../store/migrations/'+f,import.meta.url),'utf8'));
   await run(p);
  }finally{await p.end();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();}

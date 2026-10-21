@@ -7,6 +7,8 @@ export interface ArmingSaveRequest {
   assignments:unknown[]
   removedZoneIds:string[]
   removedAssignmentIds:string[]
+  counterBindings:unknown[]
+  removedCounterBindingIds:string[]
 }
 export interface ArmingSaveResult {
   saved:true

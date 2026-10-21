@@ -36,7 +36,7 @@ export class ObservationConsumer {
       const gap=doc.offset!==null&&offset!==BigInt(doc.offset)+1n;
       const rules=(await this.repository.listRules(channel)).map(({history,...r})=>r);
       const result=evaluate(doc.checkpoint,{...frame,...(gap?{gap:true}:{})},rules);
-      const pending={offset:envelope.offset,fingerprint,checkpoint:result.checkpoint,events:result.events,ended_episodes:result.ended_episodes??[],issues:result.issues};
+      const pending={offset:envelope.offset,fingerprint,checkpoint:result.checkpoint,events:result.events,coverage:result.coverage??[],ended_episodes:result.ended_episodes??[],issues:result.issues};
       if(Buffer.byteLength(JSON.stringify(pending))>8*1024*1024)fail('checkpoint_capacity','Channel state exceeds bounded checkpoint capacity',503);
       const prepared=await this.collection.findOneAndUpdate({...validFence(),pending:null},{$set:{pending}},{returnDocument:'after'});
       if(!prepared)fail('lease_expired','Input lease expired; retry same input',503);
@@ -59,6 +59,7 @@ export class ObservationConsumer {
       }
       await this.hook('event_inserted');
     }
+    await this.repository.flow?.record(p.coverage);
     await this.hook('before_checkpoint');
     for(const episode of p.ended_episodes??[])await this.repository.endEpisode(episode);
     const saved=await this.collection.findOneAndUpdate({...fence(),'pending.fingerprint':p.fingerprint},

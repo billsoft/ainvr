@@ -5,7 +5,8 @@ import {erpDisplayPolygons} from '@/features/erpGeometry'
 import {PanoramaZoneCanvas} from './PanoramaZoneCanvas'
 import {FitFrame} from './FitFrame'
 import {zoneGeometryError,type ZonePoint} from '@/features/alarmGeometry'
-export interface ZoneDraft {name:string;points:ZonePoint[];geometryRevision:string;erpWrap?:boolean}
+/** redrawn: the vertices were cleared and drawn again, so earlier edge identities no longer apply. */
+export interface ZoneDraft {name:string;points:ZonePoint[];geometryRevision:string;erpWrap?:boolean;redrawn?:boolean}
 interface DrawingStep {points:ZonePoint[];finished:boolean}
 interface Props {
   reference:{url:string;width:number;height:number;geometryRevision:string;capturedAt:string}
@@ -27,6 +28,7 @@ export function ZoneEditor({reference,initial,onSave,onCancel,draftOnly=false,pa
   const [pan,setPan]=useState(false)
   const panDrag=useRef<{pointerId:number;start:ZonePoint;before:ZonePoint[]}|null>(null)
   const [finished,setFinished]=useState(!!initial?.points.length)
+  const [cleared,setCleared]=useState(false)
   const [loaded,setLoaded]=useState(''),[imageError,setImageError]=useState(''),[error,setError]=useState('')
   const [saving,setSaving]=useState(false),[saved,setSaved]=useState(false),[confirmCancel,setConfirmCancel]=useState(false)
   const canvas=useRef<HTMLDivElement>(null)
@@ -55,7 +57,8 @@ export function ZoneEditor({reference,initial,onSave,onCancel,draftOnly=false,pa
   const save=async()=>{
     if(locked||!finished||problem||!name.trim())return
     setSaving(true);setError('')
-    try{await onSave({name:name.trim(),points:points.map(p=>[...p] as ZonePoint),geometryRevision:revision,...(erpWrap?{erpWrap:true}:{})});setSaved(true)}
+    const redrawn=cleared&&JSON.stringify(points)!==JSON.stringify(initial?.points??[])
+    try{await onSave({name:name.trim(),points:points.map(p=>[...p] as ZonePoint),geometryRevision:revision,...(erpWrap?{erpWrap:true}:{}),...(redrawn?{redrawn:true}:{})});setSaved(true)}
     catch{setError('保存未确认，区域草稿已保留。请检查状态或处理版本冲突后重试。')}
     finally{setSaving(false)}
   }
@@ -104,7 +107,7 @@ export function ZoneEditor({reference,initial,onSave,onCancel,draftOnly=false,pa
       <button type="button" className={button} aria-pressed={mode==='rectangle'} disabled={locked||!!points.length} onClick={()=>setMode('rectangle')}><RectangleHorizontal size={16} aria-hidden="true"/>矩形（点击两个对角）</button>
       <button type="button" className={button} disabled={locked||!past.length} onClick={()=>{const previous=past[past.length-1];if(!previous)return;setFuture([{points,finished},...future]);setPoints(previous.points);setPast(past.slice(0,-1));setFinished(previous.finished);setSelectedVertex(null);setPan(false);setSaved(false)}}><Undo2 size={16} aria-hidden="true"/>撤销</button>
       <button type="button" className={button} disabled={locked||!future.length} onClick={()=>{const next=future[0];if(!next)return;setPast([...past,{points,finished}]);setPoints(next.points);setFuture(future.slice(1));setFinished(next.finished);setSelectedVertex(null);setPan(false);setSaved(false)}}><Redo2 size={16} aria-hidden="true"/>重做</button>
-      <button type="button" className={button} disabled={locked||!points.length} onClick={()=>{edit([]);setPan(false);setFinished(false)}}><Trash2 size={16} aria-hidden="true"/>清空顶点</button>
+      <button type="button" className={button} disabled={locked||!points.length} onClick={()=>{edit([]);setPan(false);setFinished(false);setCleared(true)}}><Trash2 size={16} aria-hidden="true"/>清空顶点</button>
       <button type="button" className={button} aria-pressed={pan} disabled={locked||!finished||!!problem} onClick={()=>{setPan(!pan);setSelectedVertex(null)}}><Move size={16} aria-hidden="true"/>平移区域</button>
       <button type="button" className={button} disabled={locked||pan||selectedVertex===null||points.length<=3} onClick={()=>{
         edit(points.filter((_,index)=>index!==selectedVertex));setSelectedVertex(null)

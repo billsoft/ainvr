@@ -1,5 +1,6 @@
 // Fastify 应用构建（可复用，测试用 fastify.inject 不启端口）
 import {alarmTriggerRoutes} from './routes/alarmTriggerRoutes.js';
+import {flowRoutes} from './routes/flowRoutes.js';
 import {alarmArmingRoutes} from './routes/alarmArmingRoutes.js';
 import {AlarmArmingStore} from './store/alarmArmingStore.js';
 import {prepareAlarmConfiguration} from './services/alarmConfigurationStartup.js';
@@ -379,6 +380,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const triggerStore=pgStore&&alarmConfigurationReady?new AlarmTriggerStore(pgStore.pool):null;
     const armingStore=pgStore&&alarmConfigurationReady?new AlarmArmingStore(pgStore.pool):null;
     const ruleSync=triggerStore&&armingStore?new AlarmRuleSync(new AlarmCombinedSnapshot(triggerStore,armingStore),alarmConnection):null;
+    await instance.register(flowRoutes,{
+      store:armingStore,
+      principal:alarmPrincipal,connection:alarmConnection,synchronization:ruleSync,
+      catalog:async id=>readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore),
+    });
     await instance.register(alarmArmingRoutes,{
       store:armingStore,synchronization:ruleSync,principal:alarmPrincipal,
       catalog:async id=>readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore),

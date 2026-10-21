@@ -1,10 +1,11 @@
 import {describe,expect,it} from 'vitest'
-import {createArmingDraft,type ArmingSnapshot} from '@/features/armingDraft'
+import {createArmingDraft,type ArmingSnapshotInput} from '@/features/armingDraft'
 
-const initial=():ArmingSnapshot=>({
+const initial=():ArmingSnapshotInput=>({
   sourceId:'camera',geometryRevision:'generation:1920x1080',revision:7,
   zones:[{id:'zone-a',name:'禁区',points:[[.1,.1],[.8,.1],[.8,.8],[.1,.8]],edgeIds:['a','b','c','d'],version:2}],
   assignments:[{id:'assignment-a',triggerId:'intrusion',processorId:'ai',zoneId:'zone-a',entryEdges:['a'],exitEdges:[],version:3,needsDirectionConfirmation:false}],
+  counterBindings:[],
 })
 describe('布防事务草稿',()=>{
   it('取消恢复区域和选用，修改及读取不会改变原始快照',()=>{

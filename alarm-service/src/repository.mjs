@@ -1,5 +1,6 @@
 // Copyright AINVR. Mongo single-document atomic operations (no replica-set assumption).
 import {randomUUID} from 'node:crypto';
+import {FlowStatistics} from './flow-statistics.mjs';
 import {BehaviorEvents} from './behavior-events.mjs';
 import {RuleSnapshots} from './rule-snapshots.mjs';
 import {stageRank} from './episodes.mjs';
@@ -10,12 +11,14 @@ const pendingFilter=()=>({'handling.state':'unacknowledged','handling.dispositio
 export class AlarmRepository {
   constructor(db,{clock=()=>new Date().toISOString()}={}) {
     this.behaviors=new BehaviorEvents(db);
+    this.flow=new FlowStatistics(db);
     this.ruleSnapshots=new RuleSnapshots(db,{clock});
     this.db=db;this.events=db.collection('alarms');this.rules=db.collection('alarm_rules');
     this.checkpoints=db.collection('alarm_consumer_checkpoints');this.clock=clock;
   }
   async initialize() {
     await this.behaviors.initialize();
+    await this.flow.initialize();
     await this.events.createIndex({alarm_id:1},{unique:true});
     await this.events.createIndex({dedup_key:1},{unique:true});
     await this.events.createIndex({'handling.state':1,'handling.disposition':1,'review.state':1,ingested_at:1});

@@ -10,7 +10,7 @@ async function isolated(run:(store:AlarmArmingStore,pool:Pool)=>Promise<void>){
   const admin=new Pool(connection);await admin.query(`CREATE SCHEMA ${schema}`);
   const pool=new Pool({...connection,options:`-c search_path=${schema}`});
   try{
-    for(const file of ['003_alarm_zones.sql','004_alarm_monitors.sql','005_alarm_triggers.sql','006_alarm_migration_review.sql','007_alarm_arming_storage.sql'])
+    for(const file of ['003_alarm_zones.sql','004_alarm_monitors.sql','005_alarm_triggers.sql','006_alarm_migration_review.sql','007_alarm_arming_storage.sql','009_flow_counters.sql','010_flow_counter_library.sql','011_flow_counter_history.sql'])
       await pool.query(readFileSync(new URL('../store/migrations/'+file,import.meta.url),'utf8'));
     await run(new AlarmArmingStore(pool),pool);
   }finally{await pool.end();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();}

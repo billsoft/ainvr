@@ -21,7 +21,7 @@ const connection={host:'127.0.0.1',port:25439,user:'alarm_test',database:'alarm_
 const schema='browser_'+randomUUID().replaceAll('-','');
 const admin=new Pool(connection);await admin.query(`CREATE SCHEMA ${schema}`);
 const pool=new Pool({...connection,options:`-c search_path=${schema}`});
-for(const name of ['003_alarm_zones.sql','004_alarm_monitors.sql','005_alarm_triggers.sql','006_alarm_migration_review.sql','007_alarm_arming_storage.sql'])
+for(const name of ['003_alarm_zones.sql','004_alarm_monitors.sql','005_alarm_triggers.sql','006_alarm_migration_review.sql','007_alarm_arming_storage.sql','009_flow_counters.sql','010_flow_counter_library.sql','011_flow_counter_history.sql'])
  await pool.query(await readFile(path.join(backend,'dist/store/migrations',name),'utf8'));
 const store=new AlarmArmingStore(pool);
 const live=await (await fetch('http://127.0.0.1:1985/api/v1/streams/',{signal:AbortSignal.timeout(5000)})).json();

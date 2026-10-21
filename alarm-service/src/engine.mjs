@@ -1,17 +1,26 @@
 // Copyright AINVR. Pure, checkpointable trigger evaluator. No model execution.
+import {holdPassage,restorePassage} from './passage-continuity.mjs';
+import {coverageStep} from './flow-coverage.mjs';
 import {unwrapErp,liftErp} from './erp-geometry.mjs';
 import {boundaryDistance,boundaryDistancePx,inside} from './geometry.mjs';
 import {makeAlarm,validateFrame,validateRule,fail,digest} from './domain.mjs';
 import {traversalStep,regionDirection} from './traversal.mjs';
 import {createScheduleEvaluator} from './schedule.mjs';
 
+const ruleCache=new Map(),geometryCache=new WeakMap(),labelsCache=new WeakMap();
+function preparedRule(raw){
+  const key=digest(raw);let r=ruleCache.get(key);
+  if(!r){r=validateRule(raw);if(ruleCache.size>=256)ruleCache.delete(ruleCache.keys().next().value);ruleCache.set(key,r);
+    geometryCache.set(r,r.erp_wrap?{...r,points:unwrapErp(r.points)}:r);labelsCache.set(r,new Set(r.label_ids));}
+  return r;
+}
 const elapsedMs=(f,since)=>Number(BigInt(f.source_pts_ns)-BigInt(since))/1e6;
-// Geometry evidence never survives a missing or predicted frame: crossings must be
-// proven by real detections. Appearance continuity (seen_since) is kept separately.
+// Alarm geometry stays strict. Statistics can retain observed endpoints across a
+// bounded same-ID coast; predictions never become geometric evidence.
 function breakEvidence(state) {
   delete state.side; delete state.traversal; delete state.match; delete state.candidate;
   delete state.unmatched_since; delete state.observedPoint; delete state.triggerDirection; delete state.out_since;
-  state.interrupted=true;
+  delete state.passage_observation;delete state.passage_pending;state.interrupted=true;
 }
 // Frame-rate adaptive continuity: a pause longer than 4x the recent median frame
 // interval (at least 1.5 s) is a gap. Long intervals are recorded too, so a channel
@@ -50,10 +59,10 @@ export function evaluate(checkpoint,input,rules) {
   cp.session=f.stream_session_id;cp.seq=f.seq;cp.pts=f.source_pts_ns;
   const atCapture=createScheduleEvaluator(f.captured_at),periods=new Map(),eligible=new Map(),channelRules=[];
   for(const raw of rules){
-    const r=validateRule(raw);let period;
+    const r=preparedRule(raw);let period;
     try{period=atCapture(r.schedule);}catch(e){fail('invalid_time',e.message);}
     periods.set(JSON.stringify([r.id,r.version]),period);
-    if(r.channel_id===f.channel_id&&r.state==='enabled')channelRules.push([r.id,r.version,period]);
+    if(r.channel_id===f.channel_id&&r.state==='enabled'&&r.alarm_enabled!==false)channelRules.push([r.id,r.version,period]);
     if(period===null||r.state!=='enabled'||r.channel_id!==f.channel_id)continue;
     if(r.source_binding&&Date.parse(f.captured_at)<Date.parse(r.source_binding.not_before))continue;
     if(r.input_stream_id!==undefined&&r.input_stream_id!==f.input_stream_id){issues.push(`rule_input_mismatch:${r.id}`);continue;}
@@ -69,11 +78,12 @@ export function evaluate(checkpoint,input,rules) {
   const present=new Set(f.tracks.map(t=>t.track_id)),{width:W,height:H}=f.source;
   for(const t of f.tracks)cp.first_seen[t.track_id]??=f.captured_at;
   for(const r of eligible.values()) for(const t of f.tracks) {
-    if(t.state!=='confirmed'||!r.label_ids.includes(t.label_id))continue;
-    const key=JSON.stringify([r.id,r.version,t.track_id]),detected=t.observation==='detected',evidence=detected&&t.event_eligible!==false;
+    const key=JSON.stringify([r.id,r.version,t.track_id]);
+    if(t.state!=='confirmed'||!labelsCache.get(r).has(t.label_id)){delete cp.states[key];continue;}
+    const detected=t.observation==='detected',evidence=detected&&t.event_eligible!==false;
     // A target that has only been a hidden candidate (low confidence, prediction) has no state.
     if(!cp.states[key]&&!evidence)continue;
-    const g=r.erp_wrap?{...r,points:unwrapErp(r.points)}:r;
+    const g=geometryCache.get(r);
     const anchor=p=>r.erp_wrap?liftErp(p,g.points):p;
     const s=cp.states[key]??={first_seq:f.seq,since:f.source_pts_ns,fired:false};
     if(r.behavior==='appearance'){
@@ -93,7 +103,7 @@ export function evaluate(checkpoint,input,rules) {
       if(!s.fired&&evidence&&elapsedMs(f,s.seen_since)>=r.duration_ms){out.push(makeAlarm(r,f,t,s.first_seq,null));s.fired=true;}
       continue;
     }
-    if(!evidence){breakEvidence(s);continue;}
+    if(!evidence){if(r.behavior!=='region_traverse'||!holdPassage(r,f,s))breakEvidence(s);continue;}
     const b=t.bbox;let p=anchor([(b.x+b.w/2)/W,(b.y+b.h*(r.anchor==='center'?0.5:1))/H]);
     // The centre-nearest copy is sufficient for membership, not for distance
     // to an asymmetric polygon. Compare adjacent copies for outside approach.
@@ -106,9 +116,13 @@ export function evaluate(checkpoint,input,rules) {
     if(s.interrupted){s.since=f.source_pts_ns;delete s.interrupted;}
     const fire=direction=>{out.push(makeAlarm(r,f,t,s.first_seq,canonicalDirection(r,direction)));s.fired=true;};
     if(r.behavior==='region_traverse'){
+      if(!restorePassage(r,f,t,p,s)){breakEvidence(s);restorePassage(r,f,t,p,s);issues.push(`passage_gap_rejected:${r.id}:${t.track_id}`);}
       const tr=traversalStep(g,f,p,s);
+      if(s.traversal_issue){issues.push(`${s.traversal_issue}:${r.id}:${t.track_id}`);delete s.traversal_issue;}
       if(tr&&allowedEdge(tr.entry.edge,r.entry_edges)&&allowedEdge(tr.exit.edge,r.exit_edges)){
-        const event=makeAlarm(r,f,t,tr.entry.seq,{...tr.direction,entry_edge:tr.entry.edge,exit_edge:tr.exit.edge});
+        // Counting bindings classify by stable edge ids: a dragged vertex keeps them.
+        const ids=r.edge_ids?{entry_edge_id:r.edge_ids[tr.entry.edge]??null,exit_edge_id:r.edge_ids[tr.exit.edge]??null}:{};
+        const event=makeAlarm(r,f,t,tr.entry.seq,{...tr.direction,entry_edge:tr.entry.edge,exit_edge:tr.exit.edge,...ids});
         event.analysis_evidence.traversal=r.erp_wrap?{...tr,entry:{...tr.entry,point:canonicalPoint(tr.entry.point),boundary:canonicalPoint(tr.entry.boundary)},exit:{...tr.exit,point:canonicalPoint(tr.exit.point),boundary:canonicalPoint(tr.exit.boundary)}}:tr;event.analysis_evidence.started_at=tr.entry.at;out.push(event);
       }
     } else if(r.behavior==='region_enter') {
@@ -159,7 +173,16 @@ export function evaluate(checkpoint,input,rules) {
   channelRules.sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
   const rulesKey=JSON.stringify(channelRules.map(([id,version])=>[id,version])),windowKey=JSON.stringify(channelRules.map(r=>r[2]));
   const current=new Map(channelRules.map(([id,version,period])=>[id,{version,period:JSON.stringify(period??null)}]));
+  const statisticsRules=new Set(rules.filter(r=>r.alarm_enabled===false).map(r=>r.id));
   for(const [track,e] of Object.entries(cp.episodes)){
+    // Upgrade pre-isolation checkpoints without allowing statistics-only edits
+    // to close a genuine alarm. Unknown removed rules remain conservative.
+    if(e.used)for(const id of statisticsRules)delete e.used[id];
+    else if(e.rules_key){
+      const old=JSON.parse(e.rules_key),windows=JSON.parse(e.window_key);
+      e.rules_key=JSON.stringify(old.filter(([id])=>!statisticsRules.has(id)));
+      e.window_key=JSON.stringify(windows.filter((_,i)=>!statisticsRules.has(old[i][0])));
+    }
     const used=e.used?Object.entries(e.used):null;
     const reason=used?(used.some(([id,u])=>current.get(id)?.version!==u.version)?'configuration_changed':
       used.some(([id,u])=>current.get(id)?.period!==u.period)?'schedule_ended':!present.has(track)?'track_expired':null):
@@ -167,6 +190,7 @@ export function evaluate(checkpoint,input,rules) {
     if(reason){ended.push({episode_id:e.id,ended_at:f.captured_at,end_reason:reason});delete cp.episodes[track];}
   }
   for(const event of out){
+    if(event.rule.snapshot.alarm_enabled===false)continue;
     const track=event.track_ids[0];
     const e=cp.episodes[track]??={id:digest(['episode',f.channel_id,f.stream_session_id,track,f.seq]),started_at:cp.first_seen[track]??f.captured_at,used:{}};
     // Legacy checkpoints only know the old channel-wide signatures. Keep that
@@ -175,5 +199,6 @@ export function evaluate(checkpoint,input,rules) {
     if(e.used)e.used[event.rule.id]={version:event.rule.version,period:current.get(event.rule.id)?.period??'null'};
     event.episode_id=e.id;event.episode_started_at=e.started_at;event.lifecycle={state:'active',end_reason:null};
   }
-  return {checkpoint:cp,events:out,ended_episodes:ended,issues};
+  const coverage=coverageStep(cp,f,eligible.values(),sessionChanged||seqGap||ptsReset||timeGap||f.gap===true||(interval!==null&&cp.intervals?.length===1&&interval>1500));
+  return {checkpoint:cp,events:out,ended_episodes:ended,issues,coverage};
 }

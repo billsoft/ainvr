@@ -12,11 +12,13 @@ try{
  if(mode==='prepare'){
   const {runMigrations}=await import(pathToFileURL(backend+'/dist/store/migrator.js'));
   const {migrateLegacyAlarms}=await import(pathToFileURL(backend+'/dist/store/alarmLegacyMigration.js'));
+  const hasRegistry=(await pool.query("SELECT to_regclass('schema_migrations') AS t")).rows[0].t;
+  const previousVersion=hasRegistry?Number((await pool.query('SELECT COALESCE(max(version),0)::int AS v FROM schema_migrations')).rows[0].v):0;
   const info=console.info;console.info=()=>{};
   let sql,legacy;
   try{sql=await runMigrations(pool);legacy=await migrateLegacyAlarms(pool);}finally{console.info=info;}
   const guard=await captureAlarmRollbackGuard(pool);
-  result={schema_version:1,guard,sql,legacy,migration_changed:sql.applied>0||legacy.converted+legacy.review>0};
+  result={schema_version:1,guard,sql,legacy,migration_changed:(previousVersion<8&&sql.applied>0)||legacy.converted+legacy.review>0,additive_flow_schema:previousVersion>=8&&sql.applied>0};
   const temp=guardFile+'.new';await writeFile(temp,JSON.stringify(result),{flag:'wx',mode:0o600});
   const file=await open(temp,'r');try{await file.sync();}finally{await file.close();}await rename(temp,guardFile);
  }else{

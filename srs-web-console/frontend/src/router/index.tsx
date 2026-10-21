@@ -1,3 +1,4 @@
+import FlowPage from '@/pages/Flow'
 import { Navigate, createBrowserRouter } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import ChannelsPage from '@/pages/Channels'
@@ -30,6 +31,7 @@ export const router = createBrowserRouter([
       { path: 'dashboard', element: <DashboardPage /> },
       { path: 'alarm-analysis', element: <AlarmTriggersPage />, errorElement: <RouteErrorBoundary /> },
       { path: 'alarms', element: <AlarmListPage />, errorElement: <RouteErrorBoundary /> },
+      { path: 'flow-statistics', element: <FlowPage />, errorElement: <RouteErrorBoundary /> },
       { path: 'behavior-statistics', element: <BehaviorStatisticsPage />, errorElement: <RouteErrorBoundary /> },
       { path: 'channels', element: <ChannelsPage /> },
       { path: 'channels/:id', element: <ChannelDetailPage /> },

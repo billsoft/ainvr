@@ -8,18 +8,20 @@ export function behaviorEvent(candidate) {
     trigger_id:candidate.trigger_id??candidate.rule.snapshot.trigger_id??candidate.rule.id,
     zone_id:candidate.rule.snapshot.zone_id??null,zone_version:candidate.rule.snapshot.zone_version??null,
     rule_id:candidate.rule.id,rule_version:candidate.rule.version,
+    ...(candidate.rule.snapshot.counter_id?{counter_id:candidate.rule.snapshot.counter_id}:{}),
     episode_id:candidate.episode_id??null,
     started_at:candidate.analysis_evidence.started_at??null,occurred_at:new Date(candidate.occurred_at).toISOString(),
     source_pts_ns:candidate.source_pts_ns,frame_id:candidate.frame_id,direction:candidate.direction,
     source_frame_index:candidate.analysis_evidence.source_frame_index??null,
     evidence_refs:structuredClone(candidate.evidence.refs),
-    quality:{basis:'observed_track',trajectory_complete:candidate.analysis_evidence.traversal?.trajectory_complete??null},
+    quality:{basis:candidate.analysis_evidence.traversal?.observation_gaps?'observed_endpoints':'observed_track',trajectory_complete:candidate.analysis_evidence.traversal?.trajectory_complete??null,observation_gaps:candidate.analysis_evidence.traversal?.observation_gaps??0,gap_ms:candidate.analysis_evidence.traversal?.gap_ms??0,passage_method:candidate.analysis_evidence.traversal?.method??null},
     analysis_evidence:structuredClone(candidate.analysis_evidence)};
 }
 function factFilter({from,to,channel_id,zone_id,label_id,event_type,rule_id,trigger_id}) {
   const start=typeof from==='string'?Date.parse(from):NaN,end=typeof to==='string'?Date.parse(to):NaN;
   if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start||end-start>31*86400000)fail('invalid_time_range','Choose a positive range up to 31 days');
-  const query={occurred_at:{$gte:new Date(start).toISOString(),$lt:new Date(end).toISOString()}};
+  // Counter passages belong to flow statistics, not to behavior history.
+  const query={occurred_at:{$gte:new Date(start).toISOString(),$lt:new Date(end).toISOString()},counter_id:{$exists:false}};
   for(const [key,value] of Object.entries({channel_id,zone_id,label_id,event_type,rule_id}))if(value!==undefined)query[key]=identity(value,key);
   // Facts recorded before triggers carry only the rule id, which is the migrated trigger id.
   if(trigger_id!==undefined)query.$and=[{$or:[{trigger_id:identity(trigger_id,'trigger_id')},{trigger_id:{$exists:false},rule_id:trigger_id}]}];

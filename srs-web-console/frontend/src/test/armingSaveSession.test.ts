@@ -1,6 +1,6 @@
 import {expect,it,vi} from 'vitest'
 import {createArmingSaveSession,type ArmingSaveRequest} from '@/features/armingSaveSession'
-const change=(revision=1,name='区域')=>({sourceId:'source',geometryRevision:'g',expectedRevision:revision,zones:[{name}],assignments:[],removedZoneIds:[],removedAssignmentIds:[]})
+const change=(revision=1,name='区域')=>({sourceId:'source',geometryRevision:'g',expectedRevision:revision,zones:[{name}],assignments:[],removedZoneIds:[],removedAssignmentIds:[],counterBindings:[],removedCounterBindingIds:[]})
 const response=(version:number)=>({saved:true as const,sourceId:'source',revision:version,application:{state:'pending' as const}})
 it('超时后同一内容沿用同一请求，不能把待应用误报为已应用',async()=>{
   const send=vi.fn().mockRejectedValueOnce(Error('timeout')).mockResolvedValueOnce(response(2))

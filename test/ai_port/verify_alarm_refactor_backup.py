@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only production backup; verify alarm refactor migrations through 008 and the runtime legacy import in an isolated PG.
+"""Read-only production backup; verify alarm refactor migrations through 011 and the runtime legacy import in an isolated PG.
 No production SQL changes, service restart or model access; restore listens only on loopback.
 The encrypted configuration dump remains private on SSD for a later rollout.
 """
@@ -53,7 +53,7 @@ def main():
   before_hashes={t:fingerprint(t) for t in protected}
   counts={t:int(sql('SELECT count(*) FROM '+t)) for t in tables if t in existing}
   applied=set(sql('SELECT version FROM schema_migrations').splitlines());migrations=[]
-  for name in ['003_alarm_zones.sql','004_alarm_monitors.sql','005_alarm_triggers.sql','006_alarm_migration_review.sql','007_alarm_arming_storage.sql','008_alarm_legacy_imports.sql']:
+  for name in ['003_alarm_zones.sql','004_alarm_monitors.sql','005_alarm_triggers.sql','006_alarm_migration_review.sql','007_alarm_arming_storage.sql','008_alarm_legacy_imports.sql','009_flow_counters.sql','010_flow_counter_library.sql','011_flow_counter_history.sql']:
    path=backend/'src/store/migrations'/name;data=path.read_bytes();version=str(int(name[:3]))
    if version not in applied:
     sql('BEGIN;\n'+data.decode()+f"\nINSERT INTO schema_migrations(version,name) VALUES({version},'{name[4:-4]}');\nCOMMIT;")
@@ -93,7 +93,8 @@ try{
   after={t:int(sql('SELECT count(*) FROM '+t)) for t in counts}
   if counts!=after:raise RuntimeError('Existing configuration row counts changed')
   if before_hashes!={t:fingerprint(t) for t in protected}:raise RuntimeError('Existing non-alarm data changed')
-  if int(sql('SELECT max(version) FROM schema_migrations'))!=8:raise RuntimeError('Expected migration version 8')
+  if int(sql('SELECT max(version) FROM schema_migrations'))!=11:raise RuntimeError('Expected migration version 11')
+  if 'flow_counter_definitions' not in existing and (int(sql('SELECT count(*) FROM flow_counter_definitions')) or int(sql('SELECT count(*) FROM flow_counter_bindings'))):raise RuntimeError('Flow migration created unexpected configuration')
   added=set(sql("SELECT tablename FROM pg_tables WHERE schemaname='public'").splitlines())-existing
   save('passed',runtime_import=imported,migrations=migrations,existing_row_counts=counts,existing_row_counts_unchanged=True,protected_tables=protected,protected_content_unchanged=True,added_tables=sorted(added),restored_schema_version=int(sql('SELECT max(version) FROM schema_migrations')))
   (ROOT/'test/results/alarm-refactor-backup-20261020.json').write_text(json.dumps(report,indent=2)+'\n')
