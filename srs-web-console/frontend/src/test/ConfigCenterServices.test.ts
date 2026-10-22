@@ -13,6 +13,7 @@ describe('配置中心服务名单', () => {
       'ai-service',
       'recorder',
       'alarm-service',
+      'llm-service',
     ])
   })
 

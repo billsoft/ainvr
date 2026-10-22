@@ -59,10 +59,10 @@ it('filters by status, level, channel and time from the toolbar and the channel 
   await open();vi.mocked(alarmEventService.list).mockClear()
   fireEvent.click(screen.getByRole('button',{name:/^穿过/}))
   await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('pending',undefined,expect.objectContaining({behavior:'region_traverse'})))
-  fireEvent.click(screen.getByRole('button',{name:'已确认'}))
-  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('acknowledged',undefined,expect.anything()))
+  fireEvent.click(screen.getByRole('button',{name:'已人工审核'}))
+  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('human',undefined,expect.anything()))
   fireEvent.click(within(screen.getByRole('navigation',{name:'告警通道'})).getByRole('button',{name:/东围栏/}))
-  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('acknowledged',undefined,expect.objectContaining({channel_id:'east'})))
+  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('human',undefined,expect.objectContaining({channel_id:'east'})))
   const filters=vi.mocked(alarmEventService.list).mock.lastCall![2]!
   const midnight=new Date();midnight.setHours(0,0,0,0)
   expect(filters.from).toBe(midnight.toISOString())  // handled history defaults to today
@@ -128,10 +128,10 @@ it('opening details never acknowledges; a failed refresh keeps the loaded cards'
   await open()
   fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'详情与录像'}))
   await screen.findByRole('dialog',{name:'告警详情'})
-  fireEvent.click(screen.getByRole('button',{name:'关闭详情'}))
+  fireEvent.click(screen.getByRole('button',{name:'关闭'}))
   expect(alarmEventService.confirm).not.toHaveBeenCalled()
   vi.mocked(alarmEventService.list).mockRejectedValueOnce(Error('offline'))
-  fireEvent.click(screen.getByRole('button',{name:'已确认'}))
+  fireEvent.click(screen.getByRole('button',{name:'已人工审核'}))
   expect(await screen.findByRole('alert')).toHaveTextContent('已加载的记录保留')
   expect(screen.getAllByRole('article').length).toBe(2)
 })
@@ -200,7 +200,7 @@ it('keeps keyboard focus inside details and restores it when Escape closes the d
  vi.mocked(alarmEventService.get).mockResolvedValue(alarm('a'));await open()
  const button=within(card(/门前禁区/)).getByRole('button',{name:'详情与录像'});button.focus();fireEvent.click(button)
  const sheet=await screen.findByRole('dialog',{name:'告警详情'})
- const close=within(sheet).getByRole('button',{name:'关闭详情'})
+ const close=within(sheet).getByRole('button',{name:'关闭'})
  await waitFor(()=>expect(close).toHaveFocus())
  const last=within(sheet).getByRole('button',{name:'标记误报'});last.focus();fireEvent.keyDown(last,{key:'Tab'})
  expect(close).toHaveFocus()
@@ -242,3 +242,15 @@ it('reopens an uncertain acknowledgement with its original note and disposition,
  await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalledTimes(2));
  const calls=vi.mocked(alarmEventService.confirm).mock.calls;expect(calls[1]).toEqual(calls[0]);
 });
+
+it('AI confirmation and false positive are completed reviews with human correction available',async()=>{
+ vi.mocked(alarmEventService.list).mockResolvedValue({items:[alarm('a',{handling:{state:'acknowledged',revision:1,reviewed_by_kind:'ai',disposition:'false_positive'}})],next_cursor:null})
+ await open();const row=card(/门前禁区/)
+ expect(within(row).getByText('已 AI 审核 · 误报')).toBeInTheDocument()
+ expect(within(row).getByRole('button',{name:'确认已处理'})).toBeEnabled()
+ expect(screen.queryByText('疑似误报')).not.toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'已 AI 审核'}))
+ await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('ai',undefined,expect.anything()))
+ fireEvent.change(screen.getByRole('combobox',{name:'审核结论'}),{target:{value:'false_positive'}})
+ await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('ai',undefined,expect.objectContaining({disposition:'false_positive'})))
+})

@@ -14,6 +14,9 @@ import {readAppliedAlarmConnection} from './services/alarmConnection.js';
 import {AlarmTriggerStore} from './store/alarmTriggers.js';
 import {AlarmRuleSync} from './services/alarmRuleSync.js';
 import { AlarmConfigAdapter } from './store/alarmConfigAdapter.js';
+import { LlmConfigAdapter } from './store/llmConfigAdapter.js';
+import { llmProxyRoutes } from './routes/llmProxy.js';
+import { readAppliedLlmConnection } from './services/llmConnection.js';
 import Fastify, { FastifyInstance, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import path from 'node:path';
@@ -193,6 +196,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const boundService = resolveServiceByToken(serviceTokens, req.headers['x-service-token']);
     if (boundService === 'recorder' && req.method === 'GET' &&
         ['/api/channels', '/api/ai/channels'].includes(pathname)) return;
+    if(boundService==='alarm-service'&&req.method==='POST'&&pathname==='/api/internal/alarm-review')return;
     if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/alarm-evidence\/[a-f0-9]{64}(?:\/image)?$/.test(pathname))return;
     if (boundService && url.startsWith('/api/v1/config/')) {
       (req as any).boundService = boundService;
@@ -312,6 +316,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           new PullModeAdapter('ai-service'),
           new PullModeAdapter('recorder'),
           new AlarmConfigAdapter(),
+          new LlmConfigAdapter(),
         ]);
         // 升级会用离线包默认配置覆盖 srs.conf：按配置中心重新下发（失败不阻断启动）
         await reapplyPublishedSrsSettings(pgStore, srsAdapter);
@@ -366,6 +371,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       return sessions.get(hash, req.headers['x-console-token']) ? 'console-administrator' : null;
     };
     const alarmConnection = () => readAppliedAlarmConnection(pgStore, process.env.ALARM_SERVICE_HOST ?? 'host.docker.internal');
+    await instance.register(llmProxyRoutes, {
+      alarmConnection,
+      internalPrincipal:async req=>resolveServiceByToken(serviceTokens,req.headers['x-service-token'])==='alarm-service',
+      reviewConnection:()=>readAppliedLlmConnection(pgStore,process.env.LLM_SERVICE_HOST??'host.docker.internal','alarm-review'),
+      principal: alarmPrincipal,
+      connection: () => readAppliedLlmConnection(pgStore, process.env.LLM_SERVICE_HOST ?? 'host.docker.internal'),
+    });
     await instance.register(alarmProxyRoutes, {
       connection: alarmConnection,
       principal: alarmPrincipal,

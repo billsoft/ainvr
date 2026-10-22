@@ -74,6 +74,7 @@ export default function TriggerDefinitionsPage(){
     <h2 className="min-w-0 flex-1 break-words text-base font-semibold text-ink">{t.name}</h2><span className="text-sm text-ink-subtle">{states[t.state]}</span></header>
    <p className="text-sm text-ink">{t.labels.map(l=>labelDisplay(l.name)).join('、')} · {condition(t)}</p>
    <p className="text-sm text-ink-subtle">{t.alarm_enabled?'统计并告警':'仅统计'} · {scheduleSummary(t.schedule)}</p>
+   {t.review?.enabled&&<p className="text-xs text-primary">AI 审核已开启 · 确认或误报，人工可纠正</p>}
    {t.migration_review?.required&&<p role="status" className="rounded-base border border-warning bg-amber-50 p-3 text-sm">待重新确认：{t.migration_review.reason} 原配置与历史已保留，{t.state==='archived'?'请新建触发器并在实时监看重新选用。':'请编辑条件并在实时监看重新选用。'}</p>}
    <section aria-label="选用位置" className="rounded-base bg-surface-page p-3 text-sm">
     {t.usages?.length?<ul>{t.usages.map(u=><li key={u.assignment_id}>{usageNames[u.source_id]??'来源暂不可用'} · {u.zone_name??'整个画面'} · {usageNames[u.processor_id]??'处理器暂不可用'}</li>)}</ul>:t.usages?<p>尚未选用 · 到实时监看中布防</p>:<p>选用位置待确认</p>}

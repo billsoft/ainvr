@@ -1,3 +1,4 @@
+import {reviewLabel} from '@/features/alarmReview'
 import {Check,ChevronRight,Flag,ImageOff} from 'lucide-react'
 import type {AlarmEvent,AckDisposition} from '@/api/alarmEventService'
 import {behaviorNames,levelLook} from '@/features/alarmTriggers'
@@ -12,7 +13,7 @@ interface Props {
 /** One activity per horizontal row. All stage evidence stays in one detail view. */
 export function AlarmRow({alarm,trigger,channelName,onHandle,onOpen}:Props){
  const described=describeAlarm(alarm,trigger),look=levelLook[alarm.behavior]??levelLook.appearance!
- const done=alarm.handling.state==='acknowledged',live=alarm.lifecycle.state==='active'
+ const done=alarm.handling.state==='acknowledged'&&alarm.handling.reviewed_by_kind!=='ai',live=alarm.lifecycle.state==='active'
  const stages=alarm.stages??[],latest=[...stages].reverse()
  const shot=latest.find(s=>s.behavior===alarm.behavior&&s.behavior_event_ids?.[0])??latest.find(s=>s.behavior_event_ids?.[0])
  const time=new Date(alarm.occurred_at)
@@ -28,6 +29,7 @@ export function AlarmRow({alarm,trigger,channelName,onHandle,onOpen}:Props){
     <span className="shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium" style={{background:look.soft,color:look.ink,borderColor:look.color}}>{behaviorNames[alarm.behavior]??alarm.behavior}</span>
     {live&&<span className="shrink-0 text-xs text-success-700">进行中</span>}
    </header>
+   <p className="mt-1 text-xs text-ink-subtle">{reviewLabel(alarm)}{alarm.handling.state==='acknowledged'?` · ${alarm.handling.disposition==='false_positive'?'误报':'确认'}`:''}</p>
    <p className="mt-1 truncate text-sm text-ink" title={described.sentence}>{described.sentence}</p>
    <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-ink-subtle">
     <time dateTime={alarm.occurred_at} title={time.toLocaleString('zh-CN')} className="shrink-0 tabular-nums">{time.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}</time>

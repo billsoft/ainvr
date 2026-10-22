@@ -18,6 +18,8 @@ const elapsedMs=(f,since)=>Number(BigInt(f.source_pts_ns)-BigInt(since))/1e6;
 // Alarm geometry stays strict. Statistics can retain observed endpoints across a
 // bounded same-ID coast; predictions never become geometric evidence.
 function breakEvidence(state) {
+  delete state.seen_since; // A journal gap is not proof of continuous appearance.
+  delete state.review_trace;delete state.review_trace_truncated;
   delete state.side; delete state.traversal; delete state.match; delete state.candidate;
   delete state.unmatched_since; delete state.observedPoint; delete state.triggerDirection; delete state.out_since;
   delete state.passage_observation;delete state.passage_pending;state.interrupted=true;
@@ -75,6 +77,10 @@ export function evaluate(checkpoint,input,rules) {
     if(periods.get(ruleKey)!==(cp.rule_windows?.[ruleKey]??'always'))delete cp.states[key];
   }
   cp.rule_windows=Object.fromEntries(periods);
+  // Small channel envelope lets the asynchronous evidence worker pin entry frames
+  // while an activity is still underway; no image I/O on this evaluator.
+  if([...eligible.values()].some(r=>r.review.enabled))cp.review_source={channel_id:f.channel_id,stream_session_id:f.stream_session_id,source:structuredClone(f.source)};
+  else delete cp.review_source;
   const present=new Set(f.tracks.map(t=>t.track_id)),{width:W,height:H}=f.source;
   for(const t of f.tracks)cp.first_seen[t.track_id]??=f.captured_at;
   for(const r of eligible.values()) for(const t of f.tracks) {
@@ -86,6 +92,18 @@ export function evaluate(checkpoint,input,rules) {
     const g=geometryCache.get(r);
     const anchor=p=>r.erp_wrap?liftErp(p,g.points):p;
     const s=cp.states[key]??={first_seq:f.seq,since:f.source_pts_ns,fired:false};
+    if(r.review.enabled){
+      const sample={seq:f.seq,frame_id:f.frame_id,last_observed_pts_ns:t.last_observed_pts_ns,source_pts_ns:f.source_pts_ns,source_frame_index:f.source_frame_index??null,
+        captured_at:f.captured_at,track_id:t.track_id,label_id:t.label_id,observation:t.observation,event_eligible:evidence,
+        bbox:structuredClone(t.bbox),...(t.predicted_bbox?{predicted_bbox:structuredClone(t.predicted_bbox)}:{})};
+      s.review_trace??=[];s.review_trace.push(sample);
+      // Bounded trace retains the first sample and recent observations; explicitly mark truncation.
+      if(s.review_trace.length>128){s.review_trace.splice(1,1);s.review_trace_truncated=true;}
+    }
+    const attach=event=>{if(r.review.enabled)event.analysis_evidence.review_context={schema_version:'1.0',
+      anchor:r.anchor,trace:structuredClone(s.review_trace??[]),truncated:s.review_trace_truncated===true,
+      labels:structuredClone(r.labels??r.label_ids.map(label_id=>({label_id,name:label_id}))),
+      region:r.points?{points:r.points,zone_id:r.zone_id,version:r.zone_version,erp_wrap:r.erp_wrap===true}:null};return event;};
     if(r.behavior==='appearance'){
       // Same ID = same target: real detections and dead-reckoned frames are continuous;
       // a lost frame without a prediction is not. Fire on a real detection (evidence).
@@ -100,7 +118,7 @@ export function evaluate(checkpoint,input,rules) {
         // establish entry into the zone or produce an event on their own.
       }
       if(s.seen_since===undefined){if(!evidence)continue;s.seen_since=f.source_pts_ns;s.first_seq=f.seq;}  // the clock starts on a real detection
-      if(!s.fired&&evidence&&elapsedMs(f,s.seen_since)>=r.duration_ms){out.push(makeAlarm(r,f,t,s.first_seq,null));s.fired=true;}
+      if(!s.fired&&evidence&&elapsedMs(f,s.seen_since)>=r.duration_ms){out.push(attach(makeAlarm(r,f,t,s.first_seq,null)));s.fired=true;}
       continue;
     }
     if(!evidence){if(r.behavior!=='region_traverse'||!holdPassage(r,f,s))breakEvidence(s);continue;}
@@ -114,7 +132,7 @@ export function evaluate(checkpoint,input,rules) {
     const previous=s.observedPoint??s.traversal?.previous?.point;
     if(r.erp_wrap&&previous&&Math.abs(p[0]-previous[0])>.5)breakEvidence(s);
     if(s.interrupted){s.since=f.source_pts_ns;delete s.interrupted;}
-    const fire=direction=>{out.push(makeAlarm(r,f,t,s.first_seq,canonicalDirection(r,direction)));s.fired=true;};
+    const fire=direction=>{out.push(attach(makeAlarm(r,f,t,s.first_seq,canonicalDirection(r,direction))));s.fired=true;};
     if(r.behavior==='region_traverse'){
       if(!restorePassage(r,f,t,p,s)){breakEvidence(s);restorePassage(r,f,t,p,s);issues.push(`passage_gap_rejected:${r.id}:${t.track_id}`);}
       const tr=traversalStep(g,f,p,s);
@@ -123,13 +141,17 @@ export function evaluate(checkpoint,input,rules) {
         // Counting bindings classify by stable edge ids: a dragged vertex keeps them.
         const ids=r.edge_ids?{entry_edge_id:r.edge_ids[tr.entry.edge]??null,exit_edge_id:r.edge_ids[tr.exit.edge]??null}:{};
         const event=makeAlarm(r,f,t,tr.entry.seq,{...tr.direction,entry_edge:tr.entry.edge,exit_edge:tr.exit.edge,...ids});
-        event.analysis_evidence.traversal=r.erp_wrap?{...tr,entry:{...tr.entry,point:canonicalPoint(tr.entry.point),boundary:canonicalPoint(tr.entry.boundary)},exit:{...tr.exit,point:canonicalPoint(tr.exit.point),boundary:canonicalPoint(tr.exit.boundary)}}:tr;event.analysis_evidence.started_at=tr.entry.at;out.push(event);
+        event.analysis_evidence.traversal=r.erp_wrap?{...tr,entry:{...tr.entry,point:canonicalPoint(tr.entry.point),boundary:canonicalPoint(tr.entry.boundary)},exit:{...tr.exit,point:canonicalPoint(tr.exit.point),boundary:canonicalPoint(tr.exit.boundary)}}:tr;event.analysis_evidence.started_at=tr.entry.at;out.push(attach(event));
       }
+      // Outside waiting is not part of a future passage. Retain its exact last
+      // observation so a new crossing remains reviewable after a long wait.
+      if(r.review.enabled&&!inside(g.points,p)&&!s.traversal?.entry){s.review_trace=s.review_trace?.slice(-1)??[];delete s.review_trace_truncated;}
     } else if(r.behavior==='region_enter') {
       const inRegion=inside(g.points,p),stable=boundaryDistance(g.points,p)>=r.hysteresis?(inRegion?'in':'out'):null;
       if(stable==='out'){
         // Re-arm only after a stable observed departure lasting rearm_ms.
         if(s.side!=='out'){s.side='out';s.out_since=f.source_pts_ns;}
+        s.out_since??=f.source_pts_ns;
         s.candidate=false;
         if(s.fired&&s.out_since&&elapsedMs(f,s.out_since)>=r.rearm_ms)s.fired=false;
       }
@@ -141,8 +163,9 @@ export function evaluate(checkpoint,input,rules) {
           s.side='in';s.candidate=false;
         }
       } else if(stable==='in'&&!s.side)s.side='in'; // First seen inside is not entry.
-      if(!stable)s.candidate=false;
+      if(!stable){s.candidate=false;delete s.out_since;} // Boundary uncertainty cannot count toward rearm.
       if(stable)s.observedPoint=p; // keep the last stable point for the crossing edge
+      if(r.review.enabled&&stable==='out'){s.review_trace=s.review_trace?.slice(-1)??[];delete s.review_trace_truncated;}
     } else {
       const inRegion=inside(g.points,p),distance=boundaryDistancePx(g.points,p,W,H),margin=r.hysteresis*Math.min(W,H);
       const match=!inRegion&&distance<=r.approach_px;

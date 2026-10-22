@@ -115,10 +115,45 @@ test('real Mongo: pending summary counts all pages with the same exclusions as t
   for(let i=0;i<205;i++)await repo.insert({alarm_id:`count-${i}`,dedup_key:`count-${i}`,occurred_at:'2020-01-01T00:00:00.000Z',handling:{state:'unacknowledged',revision:0,disposition:'unset'},review:{state:'skipped'},version:1});
   await repo.events.updateOne({alarm_id:'count-0'},{$set:{'handling.state':'acknowledged'}});
   await repo.events.updateOne({alarm_id:'count-1'},{$set:{'handling.disposition':'false_positive'}});
-  await repo.events.updateOne({alarm_id:'count-2'},{$set:{'review.state':'not_supported'}});
+  await repo.events.updateOne({alarm_id:'count-2'},{$set:{'review.state':'not_supported','handling.state':'acknowledged','handling.reviewed_by_kind':'ai'}});
   assert.equal((await repo.pendingSummary()).pending,202);
   assert.equal((await repo.list()).items.length,50);
   await repo.confirm('count-3',{expected_handling_revision:0,note:''},'operator','count-ack');
   assert.equal((await repo.pendingSummary()).pending,201);
+  assert.deepEqual((await repo.list({status:'pending',disposition:'handled'})).items,[]);
+  assert.deepEqual((await repo.list({status:'pending',disposition:'false_positive'})).items,[]);
+ }finally{await db.dropDatabase();await client.close();}
+});
+
+test('stage upgrades invalidate AI handling, retain human handling and frozen evidence',{skip:!enabled},async()=>{
+ const client=new MongoClient('mongodb://127.0.0.1:27028',{serverSelectionTimeoutMS:3000});await client.connect();const db=client.db('ainvr_alarm_test_'+randomUUID().replaceAll('-',''));
+ try{
+ const repo=new AlarmRepository(db);await repo.initialize();
+ const rule={id:'r',version:1,snapshot:{review:{enabled:true,description:'person',reject_below:.05,approve_above:.95}}};
+ const event=(key,behavior)=>({episode_id:'activity',dedup_key:key,frame_id:key,source_pts_ns:key,channel_id:'gate',occurred_at:'2026-10-22T00:00:00Z',last_seen_at:'2026-10-22T00:00:00Z',rule,behavior,version:1,handling:{state:'unacknowledged',revision:0},analysis_evidence:{marker:key}});
+ await repo.insert(event('1','appearance'));
+ await repo.events.updateOne({alarm_id:'activity'},{$set:{handling:{state:'acknowledged',revision:1,reviewed_by_kind:'ai',disposition:'false_positive'}}});
+ await repo.insert(event('2','region_enter'));let row=await repo.get('activity');
+ assert.equal(row.handling.state,'unacknowledged');assert.equal(row.handling.revision,2);assert.equal(row.analysis_evidence.marker,'2');assert.equal(row.review.state,'queued');
+ await repo.confirm('activity',{expected_handling_revision:2,disposition:'handled',note:''},'operator','human-review');
+ await repo.insert(event('3','region_traverse'));row=await repo.get('activity');
+ assert.equal(row.handling.state,'acknowledged');assert.equal(row.handling.reviewed_by_kind,'human');assert.equal(row.analysis_evidence.marker,'3');assert.equal(row.behavior,'region_traverse');
+ }finally{await db.dropDatabase();await client.close();}
+});
+
+test('same-stage repeated facts do not reopen AI decisions; a higher stage does',{skip:!enabled},async()=>{
+ const client=new MongoClient('mongodb://127.0.0.1:27028');await client.connect();const db=client.db('ainvr_alarm_test_'+randomUUID().replaceAll('-',''));
+ try{
+  const repo=new AlarmRepository(db);await repo.initialize();
+  const r={id:'r',version:1,review:{enabled:true,description:'person'}};
+  const event={episode_id:'e',dedup_key:'one',frame_id:'1',occurred_at:'2026-10-22T00:00:00Z',last_seen_at:'2026-10-22T00:00:00Z',behavior:'region_approach',rule:{id:'r',version:1,snapshot:r},version:1,handling:{state:'unacknowledged',revision:0}};
+  await repo.insert(event);
+  await repo.events.updateOne({alarm_id:'e'},{$set:{'handling.state':'acknowledged','handling.reviewed_by_kind':'ai','handling.disposition':'handled','review.state':'supported'}});
+  const first=await repo.get('e');
+  await repo.insert({...event,dedup_key:'two',frame_id:'2'});
+  const repeat=await repo.get('e');assert.equal(repeat.handling.state,'acknowledged');assert.equal(repeat.review.generation,first.review.generation);
+  assert.equal(repeat.stages.length,1);
+  await repo.insert({...event,dedup_key:'three',frame_id:'3',behavior:'region_enter'});
+  const higher=await repo.get('e');assert.equal(higher.handling.state,'unacknowledged');assert.notEqual(higher.review.generation,first.review.generation);
  }finally{await db.dropDatabase();await client.close();}
 });

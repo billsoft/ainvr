@@ -7,6 +7,7 @@ import { observabilityService as api, type Summary, type Snapshot, type LogSetti
 import { Curve, Sparkline, computeRecentStats, type DataPoint } from './Curve'
 import { LogViewer } from './LogViewer'
 import { AlarmServiceStatusCard } from './AlarmServiceStatusCard'
+import { LlmServiceStatusCard } from './LlmServiceStatusCard'
 import { names, bytes, percent, wholeHostCpu, time, input, button } from './format'
 
 export default function DashboardPage(){
@@ -194,6 +195,7 @@ export default function DashboardPage(){
     </nav>
     {tab==='logs'?<LogViewer initialSource={params.get('source')??''}/>:<>
       <AlarmServiceStatusCard/>
+      <LlmServiceStatusCard/>
       <div className="grid gap-4 xl:grid-cols-[1fr_2fr]">
         <div className="rounded-2xl bg-slate-900 p-6 text-white"><p className="text-sm text-slate-300">设备 · 运行概况</p><h2 className="mt-3 text-2xl font-semibold">{!snap?'等待采集':stale?'数据已过期':unhealthy.length?`${unhealthy.length} 个服务需检查`:'核心服务运行正常'}</h2><p className="mt-3 text-sm text-slate-300">{services.length-unhealthy.length} / {services.length} 服务正常 · 最高温度 {snap?.host.temperatureC?.toFixed(1)??'—'}℃</p><p className="mt-4 text-xs leading-5 text-slate-400">先判断整机余量，再比较服务消耗；异常与日志联动，不用在多个页面之间查找。</p></div>
         <div className="grid gap-3 sm:grid-cols-2">

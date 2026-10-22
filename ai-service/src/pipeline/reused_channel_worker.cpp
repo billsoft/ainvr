@@ -4,6 +4,7 @@
 #include "../analytics/event_evidence.hpp"
 // Copyright AINVR. Original channel business with S100P hardware adapters.
 #include "reused_channel_worker.hpp"
+#include "../output/review_frame_cache.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -1072,6 +1073,20 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     stats_frame_age_.Add((NowMono()-frame.captured_mono)*1000.0);
   }
 
+  if (LicenseAllowed() && output::SharedReviewFrameCache().Enabled(channel_id_) && result.model_extra.contains("analytics")) {
+    const auto session=result.model_extra["analytics"].value("stream_session_id",std::string());
+    if(!session.empty())output::SharedReviewFrameCache().Offer({{"channel_id",channel_id_},{"stream_session_id",session},
+      {"source_pts_ns",std::to_string(result.frame_pts_ns)},{"source_frame_index",std::to_string(result.frame_index)},
+      {"frame_width",frame.width},{"frame_height",frame.height}},[owned=frame.ref]{
+        static thread_local std::unique_ptr<ainvr::GlesPreprocessor> converter;
+        if(!converter)converter=std::make_unique<ainvr::GlesPreprocessor>();
+        const auto& src=owned->nv12;const double scale=std::min(1.0,1280.0/std::max(src.width,src.height));
+        ainvr::ImageTransform t;t.width=std::max(32,int(src.width*scale)/2*2);t.height=std::max(32,int(src.height*scale)/2*2);
+        t.letterbox=false;t.yuv_bt709=owned->bt709;t.yuv_full_range=owned->full_range;
+        auto rgba=converter->RunNv12Rgba(src.pixels,src.width,src.height,t);
+        cv::Mat image(t.height,t.width,CV_8UC4);std::memcpy(image.data,rgba.data(),rgba.size());return image;
+      });
+  }
   if (snapshot_sink_ && LicenseAllowed()) {
     utils::Timer snapshot_timer;
     static std::atomic<uint64_t> next_snapshot_tag{1};

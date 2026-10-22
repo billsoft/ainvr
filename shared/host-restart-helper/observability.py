@@ -32,7 +32,7 @@ def deployment_units():
     if os.environ.get('AINVR_DEPLOYMENT_MODE') == 'native':
         return {**UNITS, 'ai-service': 'ainvr-ai.service',
                 'frontend': 'ainvr-web.service', 'backend': 'ainvr-backend.service',
-                'alarm-service': 'ainvr-alarm.service'}
+                'alarm-service': 'ainvr-alarm.service', 'llm-service': 'ainvr-llm.service'}
     return UNITS
 
 
@@ -40,7 +40,7 @@ def deployment_containers():
     if os.environ.get('AINVR_DEPLOYMENT_MODE') == 'native':
         return {k: v for k, v in CONTAINERS.items() if k not in ('frontend', 'backend')}
     return CONTAINERS
-SOURCES = ['host', 'frontend', 'backend', 'srs', 'postgres', 'mongodb', 'ai-service', 'recorder', 'alarm-service', 'helper']
+SOURCES = ['host', 'frontend', 'backend', 'srs', 'postgres', 'mongodb', 'ai-service', 'recorder', 'alarm-service', 'llm-service', 'helper']
 DEFAULTS = {'fileMiB': 5, 'files': 3, 'historyHours': 72, 'level': 'INFO', 'repeatSeconds': 60}
 LEVELS = {'DEBUG': 10, 'INFO': 20, 'WARN': 30, 'ERROR': 40}
 
@@ -479,6 +479,7 @@ class Observer:
                     row['cpuPercent']=self.cpu(source,sum(x[1] for x in usage),now)
                     row['memoryBytes']=sum(x[2] for x in usage)
                 url = alarm_health_url(pid) if source == 'alarm-service' else {'ai-service': 'http://127.0.0.1:8000/health',
+                       'llm-service': 'http://127.0.0.1:8300/health',
                        'recorder': 'http://127.0.0.1:8100/v1/recorder/health',
                        'backend': 'http://127.0.0.1:3001/api/branding',
                        'frontend': 'http://127.0.0.1:8088/api/branding'}[source]
@@ -488,6 +489,8 @@ class Observer:
                 elif source == 'alarm-service':
                     row['healthy'] = row['state'] == 'active' and health.get('ready') is True
                     row['detail'] = '服务就绪；消费、存储与规则状态见告警监视' if row['healthy'] else '告警服务未就绪，请检查告警监视和日志'
+                elif source == 'llm-service':
+                    row['healthy'], row['detail'] = llm_service_health(row['state'], health)
                 elif source == 'recorder':
                     row['healthy'] = health.get('ok') is True and health.get('storageHealthy') is True
                     row['detail'] = recorder_detail(health)
@@ -627,3 +630,13 @@ class Observer:
                     self.append('host','ERROR','采集循环失败: '+type(e).__name__,'collector')
                 except Exception: pass
             self.stop.wait(max(1,10-(time.monotonic()-started)))
+
+
+def llm_service_health(state, health):
+    """A listening process is not enough: the model must actually be ready."""
+    ready = state == 'active' and health.get('ready') is True and health.get('model') == 'ready'
+    details = {'loading': '模型加载中', 'unloaded': '模型未加载',
+               'fault': '模型未就绪，请查看服务监视和日志',
+               'ion_insufficient': '专用内存不足，模型未加载',
+               'verify_failed': '模型文件校验失败'}
+    return ready, '模型就绪；提供图片复审接口' if ready else details.get(health.get('model'), '大模型服务未就绪')

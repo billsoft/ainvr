@@ -1,4 +1,6 @@
 // Copyright AINVR. Independent service lifecycle; never starts or stops the AI service.
+import {ReviewContext} from './review-context.mjs';
+import {ReviewWorker} from './review-worker.mjs';
 import {readFile,stat} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import {MongoClient} from 'mongodb';
@@ -31,10 +33,10 @@ export async function loadConfig(path) {
   catch{throw Error('Invalid service configuration');} // Never echo credentials or parsed input.
 }
 
-export async function startService(input,{evidenceSource}={}) {
+export async function startService(input,{evidenceSource,reviewInvoke}={}) {
   const config=validateConfig(input),instanceId=randomUUID(),startedAt=new Date().toISOString();
   const client=new MongoClient(config.mongo_uri,{serverSelectionTimeoutMS:3000,connectTimeoutMS:3000,socketTimeoutMS:10000,maxPoolSize:8});
-  let app,heartbeat,pump,vault,closing=false,healthy=false,checkedAt=null;
+  let app,heartbeat,pump,vault,review,context,closing=false,healthy=false,checkedAt=null;
   const counters={received:0,persisted:0,replayed:0,failed:0};
   let lastInputAt=null,lastPersistedAt=null;
   const cpuStart=process.cpuUsage();
@@ -49,6 +51,7 @@ export async function startService(input,{evidenceSource}={}) {
       vault=new EvidenceVault(db,{root:resolve(base,config.database),policy:config.evidence,source:evidenceSource});
       await vault.initialize();repository.evidenceVault=vault;
     }
+    if(reviewInvoke){context=new ReviewContext(repository,process.env.AINVR_REVIEW_FRAME_ROOT??'/mnt/ainvr-ssd/ainvr-review-frames');await context.initialize();repository.reviewContext=context;review=new ReviewWorker(repository,{source:evidenceSource,vault,invoke:reviewInvoke,context});await review.initialize();}
     const health=db.collection('alarm_service_health');
     await health.createIndex({expires_at:1},{expireAfterSeconds:0});
     const probe=async()=>{
@@ -85,13 +88,13 @@ export async function startService(input,{evidenceSource}={}) {
         lag_reason:'Producer watermark not connected'},
       observation_journal:pump?structuredClone(pump.status):{state:'disabled'},
       evidence_vault:vault?await vault.status():{enabled:false,state:'not_configured'},
-      review:{available:false},notifications:{available:false}}));
+      review:review?await review.status():{available:false},notifications:{available:false}}));
     await app.listen({host:config.host,port:config.port});
-    pump?.run();vault?.run();
+    pump?.run();vault?.run();context?.run();review?.run();
     heartbeat=setInterval(()=>{void probe();},5000);heartbeat.unref();
     return {app,instanceId,close:async()=>{
       if(closing)return;closing=true;clearInterval(heartbeat);
-      try{await pump?.close();await vault?.close();await app.close();}finally{await client.close();}
+      try{await pump?.close();await review?.close();await context?.close();await vault?.close();await app.close();}finally{await client.close();}
     }};
-  }catch(error){clearInterval(heartbeat);await pump?.close();await vault?.close();if(app)await app.close();await client.close();throw error;}
+  }catch(error){clearInterval(heartbeat);await pump?.close();await review?.close();await context?.close();await vault?.close();if(app)await app.close();await client.close();throw error;}
 }

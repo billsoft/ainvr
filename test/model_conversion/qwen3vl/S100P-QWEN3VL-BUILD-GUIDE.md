@@ -104,6 +104,8 @@ docker run -d --name ainvr-qwen3vl-20261020 --gpus all --cpus 8 --memory 28g --s
 
 板端评估包用 `prepare_board_items_v1.py` 生成，然后上传到 `/mnt/ainvr-ssd/qwen3vl/run-v1/`。清单文件 `manifest-*.json` 里写明各个 HBM 包的相对路径。
 
+> ⚠️ **禁止读取 `/sys/kernel/debug/ion/`**（2026-10-22 已证实会使本板内核崩溃重启）。测内存只用 `/proc/<pid>/fdinfo` 的 dma-buf 统计（下限），见 `test/ION-DEBUGFS-FORBIDDEN.md`。
+
 **生产保护（必须做）**：板上有生产 AI 在跑，两套模型放不进同一个 ION 内存池。所以端到端板测一律用 `board_guard_eval_v2.sh` 包起来：它会有界暂停 AI 服务，结束时（不管成功失败）自动恢复，并检查确实恢复了。录像和接入不会动。只做逐位校验时，单个包很小，可以在生产运行时直接跑。
 
 ---

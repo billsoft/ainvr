@@ -16,6 +16,7 @@ sys.path.insert(0,str(CODE))
 from locateanything_bpu_executor_v2 import prepare_socket_path,serve_connection
 from locateanything_request_server import BoundedRequestServer
 from locateanything_persistent_request_worker_v1 import PersistentRequestWorker
+from large_model_reservation import LargeModelReservation, ReservedExecutor
 from locateanything_prompt import LocateAnythingPrompt
 from locateanything_official_text_gptq8_o2_eval_v320 import load_official_generator
 from locateanything_official_program_executor_reused_io_v1 import ReusedIOProgramExecutor as OfficialProgramExecutor
@@ -76,6 +77,7 @@ class OfficialEvaluationBackend:
     raise ValueError('Evaluation trace directory identity differs')
    self._trace_directory=trace_directory.resolve()
   def factory():
+   reservation=LargeModelReservation()
    current=None
    try:
     started=time.perf_counter()
@@ -83,9 +85,11 @@ class OfficialEvaluationBackend:
     current.preload_all()
     assert len(current.loaded)==46 and current.stats['loads']==46
     current.owner_preload_seconds=time.perf_counter()-started
-    return current
+    reservation.loaded()
+    return ReservedExecutor(current,reservation)
    except BaseException:
     if current is not None:current.close()
+    reservation.close()
     raise
   self._worker=PersistentRequestWorker(factory)
 

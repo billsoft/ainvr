@@ -33,16 +33,26 @@ man = json.loads(Path(sys.argv[1]).read_text()); root = Path(sys.argv[1]).parent
 items = [json.loads(l) for l in Path(sys.argv[2]).read_text(encoding='utf-8').splitlines()]
 if len(sys.argv) > 4:
     items = items[:int(sys.argv[4])]
+def own_ion_bytes_lower_bound():
+    """本进程持有的 ION 缓冲字节数（/proc/self/fdinfo，按 inode 去重；不含驱动内部分配，只是下限）。
+    禁止读取 /sys/kernel/debug/ion：2026-10-22 在本板内核上触发过内核崩溃重启。"""
+    seen = {}
+    for fd in os.listdir('/proc/self/fd'):
+        try:
+            if not os.readlink('/proc/self/fd/' + fd).startswith('/dmabuf'):
+                continue
+            info = open('/proc/self/fdinfo/' + fd).read()
+        except OSError:
+            continue
+        if 'exp_name:\tion' in info:
+            fields = dict(line.split(':', 1) for line in info.splitlines() if ':' in line)
+            seen[int(fields['ino'])] = int(fields['size'])
+    return sum(seen.values())
+
+
 def mem_sample():
-    """RSS once + ION owned by this process' live TIDs (same conservative accounting as locateanything_process_memory_v4)."""
-    tids = {int(t) for t in os.listdir('/proc/self/task')}; ion = 0
-    for h in ['cma_reserved', 'carveout', 'ion_cma']:
-        f = Path('/sys/kernel/debug/ion/heaps') / h
-        if f.exists():
-            for line in f.read_text().split('allocations (', 1)[0].splitlines():
-                v = line.split()
-                if len(v) == 4 and v[0] == h and v[2].isdigit() and int(v[2]) in tids:
-                    ion += int(v[3])
+    """RSS + 本进程 ION 下限（fdinfo）。旧版读 debugfs 的实现已移除。"""
+    ion = own_ion_bytes_lower_bound()
     st = {l.split(':')[0]: int(l.split()[1]) * 1024 for l in Path('/proc/self/status').read_text().splitlines() if l.startswith(('VmRSS:', 'VmHWM:'))}
     return dict(ion=ion, rss=st.get('VmRSS', 0), hwm=st.get('VmHWM', 0))
 

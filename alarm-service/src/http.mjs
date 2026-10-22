@@ -31,11 +31,15 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
     return reply.code(200).send(result);
   });
   const actor=req=>identity(req.headers['x-ainvr-actor'],'Authenticated actor is required');
+  app.get('/v1/alarms/:id/review-frames/:key',async(req,reply)=>{
+    try{const data=await repository.reviewContext?.retained(req.params.id,req.params.key);if(!data)return reply.code(404).send({error:{code:'missing_context'}});return reply.type('image/jpeg').header('Cache-Control','private, no-store').send(data);}
+    catch{return reply.code(404).send({error:{code:'missing_context'}});}
+  });
   app.get('/livez',async()=>({status:'alive',service:'alarm-service'}));
   app.get('/readyz',async(req,reply)=>{const ready=await readiness();return reply.code(ready?200:503).send({ready});});
   app.get('/v1/capabilities',async()=>({schema_version:'1.0',service:'alarm-service',
     behaviors:['appearance','region_approach','region_enter','region_traverse'],
-    review:{available:false,reason:'No validated BPU review executor configured'},notification:{available:false},
+    review:{available:!!repository.reviewContext,mode:'asynchronous_image_and_trajectory'},notification:{available:false},
     schedules:['always','weekly'],limits:{bulk_items:200}}));
   app.post('/v1/flow/query',async req=>repository.flow.query(req.body));
   app.post('/v1/flow/purge',async req=>{

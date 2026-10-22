@@ -1,3 +1,5 @@
+import {ReviewFrames} from './ReviewFrames'
+import {reviewLabel,reviewReason} from '@/features/alarmReview'
 import {useEffect,useRef,useState} from 'react'
 import {Link} from 'react-router-dom'
 import {Play,X} from 'lucide-react'
@@ -32,7 +34,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
   setBusy(true);setFailed(false)
   try{if(await confirm(value,pendingAttempt?.note??note,pendingAttempt?.disposition??disposition))close();else{setFailed(true);setRetryDisposition(disposition)}}finally{setBusy(false)}
  }
- const done=value?.handling.state==='acknowledged'
+ const done=value?.handling.state==='acknowledged'&&value.handling.reviewed_by_kind!=='ai'
  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/55 p-2 sm:p-4" onClick={e=>{if(e.target===e.currentTarget&&!busy)close()}}>
   <section ref={dialog} role="dialog" aria-modal="true" aria-label={intent?intent==='handled'?'确认告警':'标记误报':'告警详情'} onKeyDown={e=>{
    if(e.key==='Escape'){e.preventDefault();e.stopPropagation();if(!busy)close();return}
@@ -49,7 +51,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
       <h2 className="text-base font-semibold text-ink">{intent?intent==='handled'?'确认已处理 · ':'标记误报 · ':''}{channelName}{described?.zone?` · ${described.zone}`:''}</h2></div>
      {value&&<p className="mt-1 text-sm text-ink-subtle">首次触发 {new Date(value.occurred_at).toLocaleString('zh-CN',{hour12:false})} · 最近阶段 {clock(value.last_seen_at)} · 触发器「{value.rule.name}」 · 目标：{described?.target}</p>}
     </div>
-    <button ref={closeRef} type="button" aria-label="关闭详情" disabled={busy} onClick={close} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-faint hover:bg-surface-page hover:text-ink"><X size={20} aria-hidden="true"/></button>
+    <button ref={closeRef} type="button" aria-label="关闭" disabled={busy} onClick={close} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-faint hover:bg-surface-page hover:text-ink"><X size={20} aria-hidden="true"/></button>
    </header>
    {pendingAttempt&&<p role="status" className="px-5 py-2 text-sm text-warning-700">上次处理结果尚未确认；将重试原备注和原处理方式，请勿重复新建操作。</p>}
    {error?<p role="alert" className="p-6">读取失败。<button className="btn-secondary" onClick={()=>setRetry(n=>n+1)}>重试</button></p>:!value?<p role="status" className="p-6">正在读取…</p>:
@@ -63,10 +65,19 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
    </div>:<div className="grid min-h-0 flex-1 overflow-y-auto md:grid-cols-[minmax(0,1fr)_22rem]">
     <div className="min-w-0 space-y-3 p-6">
      <p className="text-sm leading-6 text-ink">{described?.sentence}</p>
+     <ReviewFrames alarm={value}/>
      {selected?.behavior_event_ids?.[0]?<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>:<p className="rounded-card bg-surface-page p-4 text-sm text-ink-subtle">此阶段没有截图。</p>}
      {playbackHref(value)?<div className="space-y-1"><Link to={playbackHref(value)!} target="_blank" rel="noopener noreferrer" className="btn-primary !min-h-11"><Play size={16} aria-hidden="true"/>查看录像（{clock(new Date(Date.parse(value.occurred_at)-PLAYBACK_MARGIN_MS).toISOString())}–{clock(new Date(Date.parse(value.last_seen_at)+PLAYBACK_MARGIN_MS).toISOString())}）</Link><p className="text-xs text-ink-subtle">在新页面打开对应来源和时间段，保留当前告警列表。</p></div>:<p className="text-sm text-ink-subtle">此告警没有有效的原帧时间或输入画面，无法跳转录像。</p>}
     </div>
     <aside className="flex min-w-0 flex-col gap-4 border-line p-6 md:border-l">
+     <section aria-label="AI 审核结果" className="space-y-1 rounded-base border border-line p-3 text-sm">
+      <h3 className="font-medium">{reviewLabel(value)}</h3>
+      {value.review?.score!==undefined&&<p>属实分数 {value.review.score.toFixed(3)}（不是概率）</p>}
+      {value.review?.policy?.description&&<p className="text-ink-subtle">{value.review.policy.description}</p>}
+      {value.review?.completed_at&&<p className="text-xs text-ink-subtle">{new Date(value.review.completed_at).toLocaleString()} · {value.review.model?.package_id}</p>}
+      {value.review?.reason&&<p className="text-xs text-warning-700">{reviewReason(value.review.reason)}</p>}
+      {value.handling.reviewed_by_kind==='ai'&&<p>此条已由 AI 审核。下方人工操作可纠正结果。</p>}
+     </section>
      <h3 className="font-semibold">经过</h3>
      <ol className="space-y-2">{(value.stages??[]).map(s=><li key={s.event_id}>
       <button type="button" aria-pressed={s.event_id===stage} onClick={()=>setStage(s.event_id)} className={`flex min-h-14 w-full items-center gap-3 rounded-card border p-2 text-left ${s.event_id===stage?'border-primary bg-primary-50':'border-line'}`}>
@@ -80,7 +91,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
       <div className="flex gap-2"><button type="button" disabled={busy||(pendingAttempt?.disposition??retryDisposition)==='false_positive'} onClick={()=>void act('handled')} className="btn-primary flex-1">确认已处理</button>
        <button type="button" disabled={busy||(pendingAttempt?.disposition??retryDisposition)==='handled'} onClick={()=>void act('false_positive')} className="btn-secondary">标记误报</button></div>
      </div>}
-     {!!value.logs?.length&&<details className="text-sm"><summary className="cursor-pointer py-2 text-sm font-medium text-ink">处理记录（{value.logs.length}）</summary><ul>{value.logs.map(l=><li key={l.operation_id} className="border-t border-line py-1.5">{new Date(l.at).toLocaleString()} · {l.action==='acknowledged'?'已确认':l.action==='false_positive'?'标记误报':l.action==='created'?'生成告警':l.action} · {l.actor}{l.note?` · ${l.note}`:''}</li>)}</ul></details>}
+     {!!value.logs?.length&&<details className="text-sm"><summary className="cursor-pointer py-2 text-sm font-medium text-ink">处理记录（{value.logs.length}）</summary><ul>{value.logs.map(l=><li key={l.operation_id} className="border-t border-line py-1.5">{new Date(l.at).toLocaleString()} · {l.action==='acknowledged'?'已确认':l.action==='false_positive'?'标记误报':l.action==='created'?'生成告警':l.action==='ai_review'?'AI 审核':l.action} · {l.actor}{l.note?` · ${l.note}`:''}</li>)}</ul></details>}
     </aside>
    </div>}
   </section>

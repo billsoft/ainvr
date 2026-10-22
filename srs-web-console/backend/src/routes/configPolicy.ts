@@ -74,6 +74,7 @@ export async function resolveSecretRefs(
  *  重新算哈希）。这里改用 rejectReservedAdminPasswordField() 显式拒绝，
  *  见下方定义处的完整说明。 */
 export const KNOWN_SECRET_PATHS: Record<string, string[][]> = {
+  'llm-service': [['admin_key'], ['api_keys', '*', 'key']],
   'alarm-service': [['mongo_uri'], ['api_token'], ['producer_token']],
   recorder: [
     ['storage', 'smb', 'password'],
@@ -98,6 +99,22 @@ export function pathToSecretKey(service: string, path: string[]): string {
   return `${service}/${path.join('.')}`;
 }
 
+/** Expand only declared array wildcards; never discover secrets by field name. */
+function concreteSecretPaths(config: unknown, patterns: string[][]): string[][] {
+  const result: string[][] = [];
+  function visit(node: unknown, remaining: string[], path: string[]) {
+    if (!remaining.length) { result.push(path); return; }
+    const [head, ...tail] = remaining;
+    if (head === '*') {
+      if (Array.isArray(node)) node.forEach((value, index) => visit(value, tail, [...path, String(index)]));
+    } else if (node && typeof node === 'object') {
+      visit((node as Record<string, unknown>)[head!], tail, [...path, head!]);
+    }
+  }
+  for (const pattern of patterns) visit(config, pattern, []);
+  return result;
+}
+
 /** 导入文档的敏感值清洗：把已知明文敏感字段写入 secrets，返回替换了 ${secret:...} 占位符的新 config。
  *  已有占位符引用（以 ${secret: 开头）原样保留。
  *  ⚠️ 支持传入 PoolClient，保证同一事务内写文档 + 写 secrets（否则回滚时会留下孤儿 secret）。 */
@@ -109,7 +126,7 @@ export async function sanitizeImportDocSecrets(
   client?: import('pg').PoolClient,
 ): Promise<Record<string, unknown>> {
   const cloned = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
-  const paths = KNOWN_SECRET_PATHS[service] ?? [];
+  const paths = concreteSecretPaths(cloned, KNOWN_SECRET_PATHS[service] ?? []);
 
   for (const path of paths) {
     let cur: Record<string, unknown> | undefined = cloned;
@@ -126,7 +143,7 @@ export async function sanitizeImportDocSecrets(
 
     // 明文非空 → 写入 secrets + 替换占位符
     if (typeof val === 'string' && val.length > 0) {
-      const secretKey = pathToSecretKey(service, path) + (service === 'alarm-service' ? '/' + crypto.randomUUID() : '');
+      const secretKey = pathToSecretKey(service, path) + (['alarm-service', 'llm-service'].includes(service) ? '/' + crypto.randomUUID() : '');
       if (client) {
         // 同一事务内写：加锁避免并发，用相同的加密方式
         const ciphertext = await pgStore.encryptSecret(val);
@@ -158,13 +175,13 @@ export function validateNoSensitiveFields(
   service: string,
 ): string | null {
   const knownPaths = new Set(
-    (KNOWN_SECRET_PATHS[service] ?? []).map((p) => p.join('.')),
+    concreteSecretPaths(config, KNOWN_SECRET_PATHS[service] ?? []).map((p) => p.join('.')),
   );
 
   function walk(node: unknown, path: string[]): string | null {
     if (Array.isArray(node)) {
-      for (const item of node) {
-        const err = walk(item, path);
+      for (const [index, item] of node.entries()) {
+        const err = walk(item, [...path, String(index)]);
         if (err) return err;
       }
       return null;

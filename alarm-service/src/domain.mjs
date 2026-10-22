@@ -102,7 +102,13 @@ export function validateRule(input) {
   try{r.schedule=normalizeSchedule(r.schedule);}catch(e){fail('invalid_schedule',e.message);}
   r.review ??= {enabled:false};
   if(typeof r.review.enabled!=='boolean') fail('invalid_review','review.enabled');
-  if(r.review.enabled) {identity(r.review.profile_id,'review.profile_id'); if(!Number.isSafeInteger(r.review.version)||r.review.version<1) fail('invalid_review','review.version');}
+  if(r.review.enabled) {
+    identity(r.review.profile_id,'review.profile_id');
+    if(r.alarm_enabled===false||r.review.profile_id!=='alarm-review-zh-v1'||!Number.isSafeInteger(r.review.version)||r.review.version<1||
+      typeof r.review.description!=='string'||!r.review.description.trim()||r.review.description.length>500||r.review.description.includes('<|')||
+      !Number.isFinite(r.review.reject_below)||r.review.reject_below<0||r.review.reject_below>0.1||
+      !Number.isFinite(r.review.approve_above)||r.review.approve_above<0.9||r.review.approve_above>1)fail('invalid_review','Invalid image review policy');
+  }
   return r;
 }
 export function validateFrame(input) {
@@ -151,14 +157,14 @@ export function acknowledge(event,{expected_handling_revision,note='',dispositio
   // handled = dealt with; false_positive = not a real event. Statistics keep both.
   if(!['handled','false_positive'].includes(disposition)) fail('invalid_disposition','disposition');
   if(!Number.isSafeInteger(expected_handling_revision)||expected_handling_revision<0) fail('invalid_version','expected_handling_revision');
-  if(event.handling.state==='acknowledged') return {outcome:'already_acknowledged',event};
+  if(event.handling.state==='acknowledged'&&event.handling.reviewed_by_kind!=='ai') return {outcome:'already_acknowledged',event};
   if(event.handling.revision!==expected_handling_revision) fail('version_conflict','Handling changed; refresh before confirming',409);
   const next=structuredClone(event);
-  next.handling={...next.handling,state:'acknowledged',revision:next.handling.revision+1,acknowledged_by:actor,acknowledged_at:now,note,disposition};
+  next.handling={...next.handling,state:'acknowledged',revision:next.handling.revision+1,acknowledged_by:actor,acknowledged_at:now,reviewed_by_kind:'human',note,disposition};
   next.version++;
   const log={operation_id:operationId,alarm_id:event.alarm_id,action:disposition==='false_positive'?'false_positive':'acknowledged',actor,at:now,note,disposition};
   return {outcome:'succeeded',event:next,log};
 }
 export function pending(event) {
-  return event.handling.state==='unacknowledged' && event.handling.disposition!=='false_positive' && event.review.state!=='not_supported';
+  return event.handling.state==='unacknowledged' && event.handling.disposition!=='false_positive';
 }

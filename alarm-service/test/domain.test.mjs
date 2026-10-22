@@ -66,7 +66,8 @@ test('acknowledgement is separate from review; duplicate cannot replace actor',(
 });
 test('review rejection is excluded from pending but does not delete event',()=>{
   const event=evaluate(null,frame(1,.4),[rule({behavior:'appearance'})]).events[0];
-  event.review.state='not_supported';assert.equal(pending(event),false);assert.ok(event.alarm_id);
+  event.review.state='not_supported';assert.equal(pending(event),true);
+  event.handling={...event.handling,state:'acknowledged',reviewed_by_kind:'ai',disposition:'false_positive'};assert.equal(pending(event),false);assert.ok(event.alarm_id);
 });
 
 test('bound input stream prevents applying a region from another camera and clears old transition state',()=>{
@@ -124,4 +125,12 @@ test('acknowledging records whether it was handled or a false alarm; false alarm
  const wrong=acknowledge(event,{expected_handling_revision:0,note:'shadow',disposition:'false_positive'},'operator','op-f','2026-10-20T00:00:00Z');
  assert.equal(wrong.event.handling.disposition,'false_positive');assert.equal(pending(wrong.event),false);assert.equal(wrong.log.disposition,'false_positive');
  assert.throws(()=>acknowledge(event,{expected_handling_revision:0,disposition:'maybe'},'operator','op-x','now'),e=>e.code==='invalid_disposition');
+});
+
+test('human correction of an AI decision is versioned and changes reviewer without deleting AI evidence',()=>{
+ const event=evaluate(null,frame(1,.4),[rule({behavior:'appearance'})]).events[0];
+ event.handling={state:'acknowledged',revision:1,reviewed_by_kind:'ai',disposition:'false_positive'};event.review={state:'not_supported',score:.01};
+ assert.throws(()=>acknowledge(event,{expected_handling_revision:0,disposition:'handled'},'human','a','now'),e=>e.code==='version_conflict');
+ const result=acknowledge(event,{expected_handling_revision:1,disposition:'handled'},'human','b','now');
+ assert.equal(result.event.handling.reviewed_by_kind,'human');assert.equal(result.event.handling.disposition,'handled');assert.equal(result.event.review.score,.01);
 });

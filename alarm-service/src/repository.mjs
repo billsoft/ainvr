@@ -1,4 +1,5 @@
 // Copyright AINVR. Mongo single-document atomic operations (no replica-set assumption).
+import {reviewFor} from './review-worker.mjs';
 import {randomUUID} from 'node:crypto';
 import {FlowStatistics} from './flow-statistics.mjs';
 import {BehaviorEvents} from './behavior-events.mjs';
@@ -7,7 +8,7 @@ import {stageRank} from './episodes.mjs';
 import {acknowledge, digest, fail, identity, validateRule} from './domain.mjs';
 
 const withoutInternal=d=>{if(!d)return null;const {_id,operations,...publicDoc}=d;return publicDoc;};
-const pendingFilter=()=>({'handling.state':'unacknowledged','handling.disposition':{$ne:'false_positive'},'review.state':{$ne:'not_supported'}});
+const pendingFilter=()=>({'handling.state':'unacknowledged','handling.disposition':{$ne:'false_positive'}});
 export class AlarmRepository {
   constructor(db,{clock=()=>new Date().toISOString()}={}) {
     this.behaviors=new BehaviorEvents(db);
@@ -30,7 +31,7 @@ export class AlarmRepository {
   }
   async insert(event) {
     if(event.episode_id)return this.mergeEpisode(event);
-    const document={...structuredClone(event),ingested_at:this.clock(),operations:[],logs:[{
+    const document={...structuredClone(event),review:reviewFor(event),ingested_at:this.clock(),operations:[],logs:[{
       operation_id:`created:${event.alarm_id}`,alarm_id:event.alarm_id,action:'created',actor:'alarm-service',at:this.clock()}]};
     const result=await this.events.updateOne({alarm_id:event.alarm_id},{$setOnInsert:document},{upsert:true});
     return result.upsertedCount===1;
@@ -50,24 +51,37 @@ export class AlarmRepository {
       await this.endEpisode({episode_id:event.episode_id,ended_at:new Date(Math.max(Date.parse(snapshot.applied_at),Date.parse(event.occurred_at))).toISOString(),end_reason:'configuration_changed'});
   }
   async mergeEpisode(event){
-    const id=event.episode_id,stage={event_id:event.dedup_key,behavior:event.behavior,at:event.occurred_at,trigger_id:event.trigger_id,zone_id:event.rule.snapshot.zone_id??null,
+    const id=event.episode_id,stage={event_id:event.dedup_key,behavior:event.behavior,at:event.occurred_at,trigger_id:event.trigger_id??event.rule.id,zone_id:event.rule.snapshot.zone_id??null,
       direction:event.direction,frame_id:event.frame_id,behavior_event_ids:event.behavior_event_ids??[]};
     const ruleRef={id:event.rule.id,version:event.rule.version};
-    const document={...structuredClone(event),alarm_id:id,dedup_key:id,occurred_at:event.occurred_at,activity_started_at:event.episode_started_at??event.occurred_at,rules:[],
+    const document={...structuredClone(event),review:reviewFor(event),alarm_id:id,dedup_key:id,occurred_at:event.occurred_at,activity_started_at:event.episode_started_at??event.occurred_at,rules:[],
       ingested_at:this.clock(),stages:[],operations:[],logs:[{operation_id:`created:${id}`,alarm_id:id,action:'created',actor:'alarm-service',at:this.clock()}]};
     try{await this.events.updateOne({alarm_id:id},{$setOnInsert:document},{upsert:true});}catch(e){if(e.code!==11000)throw e;}
     for(let retry=0;retry<8;retry++){
       const current=await this.events.findOne({alarm_id:id});
       if(current.stages.some(s=>s.event_id===stage.event_id)){await this.closeStaleEpisode(event);return false;}
+      // Store each trigger/zone/stage once per activity. All repeated facts
+      // already live independently in behavior_events for counting. Otherwise a
+      // busy boundary can exhaust the stage array and block this channel forever.
+      if(current.stages.some(s=>s.behavior===stage.behavior&&s.trigger_id===stage.trigger_id&&s.zone_id===stage.zone_id)){
+        const seen=await this.events.updateOne({alarm_id:id,version:current.version},
+          {$max:{last_seen_at:event.last_seen_at},$inc:{version:1},$addToSet:{rules:ruleRef}});
+        if(seen.modifiedCount){await this.closeStaleEpisode(event);return false;}
+        continue;
+      }
       if(current.stages.length>=1024)fail('episode_capacity','Activity stage capacity reached',503);
       // Alarm time is the first time a selected rule fired; the activity start is kept separately.
       const set={last_seen_at:event.last_seen_at>current.last_seen_at?event.last_seen_at:current.last_seen_at};
       if(event.occurred_at<current.occurred_at)set.occurred_at=event.occurred_at;
       // The alarm shows the highest level reached and the trigger that reached it.
-      if((stageRank[event.behavior]??0)>=(stageRank[current.behavior]??0))Object.assign(set,{
+      // Same-stage recurrence remains a behavior fact, not a new review job.
+      // A higher stage changes the claim and may reopen an AI decision.
+      if(current.stages.length===0||(stageRank[event.behavior]??0)>(stageRank[current.behavior]??0))Object.assign(set,{
         behavior:event.behavior,direction:event.direction,analysis_evidence:event.analysis_evidence,frame_id:event.frame_id,source_pts_ns:event.source_pts_ns,
-        rule:event.rule,trigger_id:event.trigger_id,severity:event.severity});
-      // Only analysis fields change. Human acknowledgement/audit are never replaced.
+        rule:event.rule,trigger_id:event.trigger_id,severity:event.severity,review:reviewFor(event)});
+      // A new highest-stage evidence invalidates an AI decision, never a human one.
+      if(Object.hasOwn(set,'review')&&current.handling?.reviewed_by_kind==='ai')set.handling={state:'unacknowledged',revision:current.handling.revision+1,disposition:'unset'};
+      // Human acknowledgement/audit are never replaced.
       const result=await this.events.updateOne({alarm_id:id,version:current.version,'stages.event_id':{$ne:stage.event_id}},
         {$set:set,$inc:{version:1},$push:{stages:stage},$addToSet:{behavior_event_ids:{$each:event.behavior_event_ids??[]},rules:ruleRef}});
       if(result.modifiedCount){await this.closeStaleEpisode(event);return true;}
@@ -107,16 +121,17 @@ export class AlarmRepository {
     const pending=await this.events.countDocuments({...pendingFilter(),ingested_at:{$lte:as_of}},{maxTimeMS:3000});
     return {pending,as_of};
   }
-  async list({status='pending',channel_id,review,from,to,zone_id,behavior,limit=50,cursor}={}) {
-    if(!['pending','all','acknowledged'].includes(status))fail('invalid_filter','status');
+  async list({status='pending',channel_id,review,disposition,from,to,zone_id,behavior,limit=50,cursor}={}) {
+    if(!['pending','all','acknowledged','human','ai'].includes(status))fail('invalid_filter','status');
     if(!Number.isInteger(limit)||limit<1||limit>200)fail('invalid_limit','limit');
+    if(disposition&&!['handled','false_positive'].includes(disposition))fail('invalid_filter','disposition');
     if(channel_id)identity(channel_id,'channel_id');
     if(review&&!['skipped','queued','running','supported','not_supported','uncertain','failed'].includes(review))fail('invalid_filter','review');
     if(zone_id!==undefined)identity(zone_id,'zone_id');
     if(behavior!==undefined&&!Object.hasOwn(stageRank,behavior))fail('invalid_filter','behavior');
     const start=from===undefined?null:Date.parse(from),end=to===undefined?null:Date.parse(to);
     if((from!==undefined&&(!Number.isFinite(start)||typeof from!=='string'))||(to!==undefined&&(!Number.isFinite(end)||typeof to!=='string'))||(start!==null&&end!==null&&end<=start))fail('invalid_time_range','Invalid alarm time range');
-    const signature=digest([status,channel_id??null,review??null,from??null,to??null,zone_id??null,behavior??null]);
+    const signature=digest([status,disposition??null,channel_id??null,review??null,from??null,to??null,zone_id??null,behavior??null]);
     let page={as_of:this.clock()};
     if(cursor) {
       try {if(typeof cursor!=='string'||cursor.length>2048||!/^[A-Za-z0-9_-]+$/.test(cursor))throw Error();page=JSON.parse(Buffer.from(cursor,'base64url').toString());
@@ -131,7 +146,13 @@ export class AlarmRepository {
     if(from!==undefined||to!==undefined)query.occurred_at={...(start!==null?{$gte:new Date(start).toISOString()}:{}),...(end!==null?{$lt:new Date(end).toISOString()}:{})};
     if(status==='pending')Object.assign(query,pendingFilter());
     if(status==='acknowledged')query['handling.state']='acknowledged';
-    if(review){if(status==='pending'&&review==='not_supported')return {items:[],next_cursor:null,as_of:page.as_of};query['review.state']=review;}
+    if(status==='human')Object.assign(query,{'handling.state':'acknowledged','handling.reviewed_by_kind':{$ne:'ai'}});
+    if(status==='ai')Object.assign(query,{'handling.state':'acknowledged','handling.reviewed_by_kind':'ai'});
+    if(disposition){
+      if(status==='pending')return {items:[],next_cursor:null,as_of:page.as_of};
+      Object.assign(query,{'handling.state':'acknowledged','handling.disposition':disposition});
+    }
+    if(review)query['review.state']=review;
     if(page.alarm_id)query.$or=[{occurred_at:{$lt:page.occurred_at}},{occurred_at:page.occurred_at,alarm_id:{$lt:page.alarm_id}}];
     const rows=await this.events.find(query,{projection:{_id:0,operations:0,logs:0,'rule.snapshot':0,analysis_evidence:0,model_snapshot:0}})
       .sort({occurred_at:-1,alarm_id:-1}).limit(limit+1).toArray();

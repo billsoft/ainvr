@@ -20,3 +20,19 @@ test('approach facts require a clear observed departure for rearm, not a boundar
   assert.equal(step(.9),0);assert.equal(step(.9,true),0);assert.equal(step(.9),0);assert.equal(step(.24),0);
   assert.equal(step(.9),0);assert.equal(step(.9),0);assert.equal(step(.9),0);assert.equal(step(.24),1);
 });
+
+test('intrusion rearm requires uninterrupted stable outside observations, excluding the boundary band',()=>{
+ const r={...rule,behavior:'region_enter'};delete r.approach_px;
+ let cp=null,seq=0;const step=x=>{const result=evaluate(cp,frame(++seq,x),[r]);cp=result.checkpoint;return result.events.length};
+ assert.equal(step(.2),0);assert.equal(step(.4),1);
+ assert.equal(step(.2),0);
+ for(let i=0;i<5;i++)assert.equal(step(.295),0); // anchor .300: ambiguous boundary
+ assert.equal(step(.2),0);assert.equal(step(.4),0); // not rearmed by boundary dwell
+ assert.equal(step(.2),0);assert.equal(step(.2),0);assert.equal(step(.2),0);assert.equal(step(.4),1);
+});
+test('a sequence gap resets unproven appearance duration but never rearms an already fired appearance',()=>{
+ const r={...rule,behavior:'appearance',duration_ms:2000};delete r.approach_px;delete r.points;
+ let cp=null;const step=seq=>{const result=evaluate(cp,frame(seq,.4),[r]);cp=result.checkpoint;return result.events.length};
+ assert.equal(step(1),0);assert.equal(step(3),0);assert.equal(step(4),0);assert.equal(step(5),1);
+ assert.equal(step(7),0);assert.equal(step(8),0);assert.equal(step(9),0);
+});

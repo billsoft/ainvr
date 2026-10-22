@@ -24,7 +24,7 @@ export class RuleSnapshots {
     const rules=input.rules.map(rule=>{
       if(!rule||typeof rule!=='object'||Array.isArray(rule))fail('invalid_rule','Rule must be an object');
       const parsed=validateRule(rule);
-      if(parsed.state!=='enabled'||parsed.review.enabled)fail('unsupported_rule','Snapshot requires enabled rules without VLM execution');
+      if(parsed.state!=='enabled')fail('unsupported_rule','Snapshot requires enabled rules without VLM execution');
       if(ids.has(parsed.id))fail('duplicate_rule','Duplicate rule identity');
       ids.add(parsed.id);return parsed;
     }).sort((a,b)=>a.id.localeCompare(b.id));

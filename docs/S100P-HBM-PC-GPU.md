@@ -176,6 +176,21 @@ YOLOE 不能只比较文字余弦或一个 MatMul 小模型就宣布完成。必
 
 保留 `guard_docker_compile_memory.py` 作为内存保护工具，参数见索引。它只管理显式指定且核对身份的自有容器；VM 可用 <6 GiB、容器余量 <3 GiB 或显存余量 <2 GiB 时暂停，暂停不释放分配，持续危急时按脚本策略停止该任务保留文件。不要停止矿工或不在本任务中的服务。阈值是本机实验策略，不是所有机器的最低要求。
 
+### 6.1 大模型（多包 HBM）编译经验（Qwen3-VL-4B，2026-10-20～22）
+
+详细配方与脚本见 `test/model_conversion/qwen3vl/S100P-QWEN3VL-ALARM-REVIEW-BPU.md` 与新手手册 `S100P-QWEN3VL-BUILD-GUIDE.md`。
+
+| 现象 | 原因 / 处理 |
+| --- | --- |
+| 视觉末段误差放大几十倍 | 官方 GELU 查表在输入达到数百时失效；改为量化域分段 `gelu(sat8(x)) + relu(x−8)` |
+| 编译通过但板上变慢、精度不对 | 浮点 `clip/exp/sub` 等被静默降到 CPU（`hbtl.call: native::*`）；全部留在 16 位伪量化域，用固定范围饱和伪量化。**每个包都用 `hbrt4-disas --json` 断言全部为 `DEVICE_CATEGORY_BPU`** |
+| 注意力分数精度损失大 | 掩码 −512 把 int16 分数范围撑宽 4 倍；改为 −96。官方 softmax 约 2.3% 概率误差，改为量化域分解 softmax |
+| 整组误差看着很小，末 token 却错 | 首 token 的大激活行稀释了整组 rel_l2；**必须单独检查最后一个 token** |
+| 编译机 OOM（WSL 32 GB 曾连续被杀 3 次） | 单个 9 层文字组的编译器参考仿真约 24 GB、O2 约 19 GB；**严格串行**，加内存守护；数据盘满会导致 ConstantWriter I/O 错误，开工前留足空间 |
+| O2 是否要重新验精度 | 同一 converted.bc 只改编译选项（O2、balance）时，板上输出与编译器参考**逐位相同**即可，不必重跑精度评估 |
+| O2 后还想提速 | 本次编译用的 `max_l2m_size=0`（未用片上缓存），未试；`max_time_per_fc` 可让其他模型在大模型调用中插入（降低检测抖动），未试。都需同 BC 重编并做逐位比对 |
+| 编译后 BPU 耗时口径 | 用 `hrt_model_exec perf --model_file X --model_name N --frame_count 20 --core_id 1` 测纯 BPU；与 Python `hbm_runtime` 调用对比可拆出主机开销（Qwen3-VL 实测仅约 7 ms/次） |
+
 ## 7. 板端验收及安装
 
 1. 将候选上传 SSD `model-compile-candidates/`，核对 SHA；不直接覆盖生产 `ai-service/models`。
@@ -193,6 +208,21 @@ YOLOE 不能只比较文字余弦或一个 MatMul 小模型就宣布完成。必
 | YOLOE detector O2 | 约 39.48 | 文字 v18 + RepRTA v5 完整链路另行验收 |
 
 128 图一致性不是官方 COCO 全集 mAP。真实流优化后的约 30 FPS 是另一项结果，见 [推理流水线文档](S100P-INFERENCE-PIPELINE.md)。当前模型部署状态以 [readiness](S100P-MODEL-READINESS.md) 为准；旧 PID 和旧静态状态不代表仍在编译。
+
+### 7.1 板端 BPU 内存（ION）与共存
+
+> ⚠️ **禁止读取 `/sys/kernel/debug/ion/` 下任何文件**（`cat`/`head`/`tail`/脚本顺序读、单次或轮询都不行）。2026-10-22 读取 `heaps/cma_reserved` 使本板内核崩溃并自动重启（`ion_heap_show → seq_lseek` Oops）。生产服务单元加 `InaccessiblePaths=/sys/kernel/debug`。`test/` 下读取该目录的旧实验脚本一律不得运行，见 `test/ION-DEBUGFS-FORBIDDEN.md`。
+
+| 事项 | 做法 / 实测 |
+| --- | --- |
+| 池容量 | ION 池 7.5 GiB（8053063680 B），开机固定，已接近单个内存段上限；物理内存 24 GiB 中 Linux 只用 15.5 GiB。用官方 `hb_mem_get_heap_size` 读总量 |
+| 剩余量 | **没有安全的实时剩余量来源**：官方库只给总量；`MemAvailable`/`CmaFree` 与 ION 池无关；内核未开 DMA-BUF sysfs 统计。不要设计依赖“剩余量”的加载判断 |
+| 进程占用（只用于展示） | 读 `/proc/<pid>/fdinfo/<fd>`：链接目标为 `/dmabuf:`、`exp_name: ion` 的条目按 `ino` 去重累加 `size`。这是**下限**（不含驱动内部分配），不得用“总量 − 占用”推算剩余 |
+| 已测占用 | Qwen3-VL-4B 约 5.5 GB；LocateAnything 首个请求懒加载后约 5.19 GB；两者不能同时常驻。新模型上线前必须在独占条件下实测并写入其 `.hbm.ainvr.json` / 包清单 |
+| 大模型加载判断 | 共同锁 `/run/ainvr/bpu-reservation.lock` + 登记表互斥 → 静态预算（总量 − ai-service 预算 − 余量 ≥ 需求）→ 锁内加载，失败干净释放 → 加载后用 `hbUCPMallocCached` 试分配“余量”大小并立即释放，失败则卸载。详见 `docs/S100P-LLM-SERVICE-DESIGN.md` §7 |
+| 启用前验证 | 正常加载一次；再做“绕过登记表强制冲突加载”，确认干净失败、无句柄泄漏、其他服务健康不变 |
+| BPU 时间争用 | 本板只有 1 个 BPU 核；实测 hbUCP 任务优先级（0～255）对抢占/插队无效：大模型一次调用期间，检测类短任务多等约 230 ms。共存靠调用方的提交时间配额与调用粒度，不靠优先级 |
+| 扩大 ION | 需改设备树并重启。`/boot/hobot/rdk-s100p-v1p0.dtb.bak` 是 1 GiB 的原始设置，**`hb_switch_ion.sh default` 会恢复它，导致现有模型全部加载失败，不得执行** |
 
 ## 8. 脚本整理范围
 

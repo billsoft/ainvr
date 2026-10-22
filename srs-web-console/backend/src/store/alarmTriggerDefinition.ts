@@ -12,6 +12,8 @@ const definitionSchema=z.object({
   approach_width_percent:percent.optional(),
   alarm_enabled:z.boolean(),state:z.enum(['draft','enabled','paused','archived']),
   schedule:alarmScheduleSchema,
+  review:z.object({enabled:z.boolean(),description:z.string().trim().min(1).max(500),
+    reject_below:z.number().min(0).max(0.1),approve_above:z.number().min(0.9).max(1)}).strict().optional(),
 }).strict();
 export type TriggerDefinition=z.infer<typeof definitionSchema>;
 const assignmentSchema=z.object({
@@ -40,6 +42,8 @@ export function parseTriggerDefinition(input:unknown):TriggerDefinition {
   if(new Set(d.labels.map(l=>l.label_id)).size!==d.labels.length)return fail('invalid_trigger','目标不能重复');
   if(d.behavior!=='appearance'&&d.duration_ms!==0)return fail('invalid_trigger','只有出现使用持续时间');
   if((d.behavior==='region_approach')!==(d.approach_width_percent!==undefined))return fail('invalid_trigger','只有接近使用距离且必须设置');
+  if(d.review?.enabled&&!d.alarm_enabled)return fail('invalid_review','仅统计不能启用 AI 审核');
+  if(d.review?.description.includes('<|'))return fail('invalid_review','审核说明包含保留标记');
   return d;
 }
 export function parseTriggerAssignment(input:unknown):TriggerAssignment {
@@ -92,12 +96,12 @@ export function compileAssignment(
     id:a.assignment_id,assignment_id:a.assignment_id,trigger_id:d.trigger_id,trigger_version:definitionVersion,
     version:executionVersion,name:d.name,state:'enabled',
     channel_id:a.processor_id,input_stream_id:a.input_stream_id,
-    label_ids:d.labels.map(l=>l.label_id),label_map_version:a.label_map_version,geometry_revision:a.geometry_revision,
+    labels:d.labels,label_ids:d.labels.map(l=>l.label_id),label_map_version:a.label_map_version,geometry_revision:a.geometry_revision,
     zone_id:a.zone_id,zone_version:a.zone_version,points:zone?.points.map(p=>[...p]),...(zone?.erp_wrap?{erp_wrap:true}:{}),
     behavior:d.behavior,anchor:'bottom_center',duration_ms:d.duration_ms,
     entry_edges:a.entry_edges.map(e=>zone!.edge_ids.indexOf(e)),exit_edges:a.exit_edges.map(e=>zone!.edge_ids.indexOf(e)),
     ...(distance!==undefined?{approach_px:source.width*distance/100,approach_width_percent:distance}:{}),
-    alarm_enabled:d.alarm_enabled,schedule:d.schedule,review:{enabled:false},
+    alarm_enabled:d.alarm_enabled,schedule:d.schedule,review:d.review?.enabled?{...d.review,profile_id:'alarm-review-zh-v1',version:definitionVersion}:{enabled:false},
     source_binding:source.stream_fingerprint&&source.observed_at?{
       stream_fingerprint:source.stream_fingerprint,not_before:source.observed_at,width:source.width,height:source.height,
       input_stream_id:a.input_stream_id,label_map_version:a.label_map_version,geometry_revision:a.geometry_revision,

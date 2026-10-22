@@ -17,7 +17,7 @@ import {AlarmConfirmation} from './AlarmConfirmation'
 
 // One compact row per target activity (highest level), newest first.
 // Evidence and stage history open in one detail layer; controls keep 44 px targets.
-type Status='pending'|'acknowledged'|'all'
+type Status='pending'|'acknowledged'|'all'|'human'|'ai'
 type Range='today'|'7d'|'all'
 const pill='btn-secondary !min-h-11 aria-pressed:border-primary aria-pressed:bg-primary-50 aria-pressed:text-primary'
 const midnight=()=>{const d=new Date();d.setHours(0,0,0,0);return d}
@@ -28,6 +28,7 @@ export default function AlarmListPage(){
  // Unhandled alarms are never hidden by the clock: pending defaults to all time,
  // handled history defaults to today, until the user picks a range.
  const [status,setStatus]=useState<Status>('pending'),[level,setLevel]=useState(''),[channel,setChannel]=useState(''),[range,setRange]=useState<Range>('all')
+ const [review,setReview]=useState('')
  const rangeTouched=useRef(false)
  const location=useLocation()
  useEffect(()=>{
@@ -45,7 +46,7 @@ export default function AlarmListPage(){
  const [singleAttempts,setSingleAttempts]=useState<Record<string,PendingAcknowledgement>>({})
  const loadRequest=useRef(0)
  const [today,setToday]=useState<Record<string,number>|null>(null)
- const filters=useMemo<AlarmFilters>(()=>({...(channel?{channel_id:channel}:{}),...(level?{behavior:level}:{}),...(rangeFrom(range)?{from:rangeFrom(range)}:{})}),[channel,level,range])
+ const filters=useMemo<AlarmFilters>(()=>({...(review?{disposition:review}:{}),...(channel?{channel_id:channel}:{}),...(level?{behavior:level}:{}),...(rangeFrom(range)?{from:rangeFrom(range)}:{})}),[channel,level,range,review])
  const live=useRef(true)
  useEffect(()=>{live.current=true;return()=>{live.current=false}},[])
  useEffect(()=>{
@@ -66,7 +67,7 @@ export default function AlarmListPage(){
  useEffect(()=>{void load()},[status,filters]) // eslint-disable-line react-hooks/exhaustive-deps
  // Newer alarms are announced, not pushed into the feed under the user's finger.
  useEffect(()=>{let active=true;const timer=setInterval(()=>{if(document.hidden)return
-  void alarmEventService.list(status,undefined,filters).then(page=>{if(active&&live.current)setFresh(page.items.filter(i=>!rows.some(r=>r.alarm_id===i.alarm_id)).length)}).catch(()=>undefined)},15000)
+  void alarmEventService.list(status,undefined,filters).then(page=>{if(active&&live.current)setFresh(page.items.filter(i=>!rows.some(r=>r.alarm_id===i.alarm_id&&JSON.stringify(r.review)===JSON.stringify(i.review)&&r.handling.revision===i.handling.revision)).length)}).catch(()=>undefined)},15000)
   return()=>{active=false;clearInterval(timer)}},[status,filters,rows])
  // Zone names come from the source's arming; read each source once while its alarms are shown.
  useEffect(()=>{
@@ -88,7 +89,7 @@ export default function AlarmListPage(){
    zone_snapshot:zone?{name:zone.name,points:zone.points}:null}]:[]}
  }
  const channelName=(id:string)=>channels.find(c=>c.id===id)?.name??'已删除的通道'
- const markDone=(ids:string[],disposition:AckDisposition)=>setRows(old=>old.map(r=>ids.includes(r.alarm_id)?{...r,handling:{...r.handling,state:'acknowledged',disposition}}:r))
+ const markDone=(ids:string[],disposition:AckDisposition)=>setRows(old=>old.map(r=>ids.includes(r.alarm_id)?{...r,handling:{...r.handling,state:'acknowledged',reviewed_by_kind:'human',disposition}}:r))
  const confirmOne=async(a:AlarmEvent,note:string,disposition:AckDisposition)=>{
   const attempt=singleAttempts[a.alarm_id]??{items:[{alarm_id:a.alarm_id,expected_handling_revision:a.handling.revision}],note,disposition,key:newAlarmOperationId()}
   setSingleAttempts(old=>({...old,[a.alarm_id]:attempt}))
@@ -128,8 +129,9 @@ export default function AlarmListPage(){
   <main className="alarm-workspace flex min-w-0 flex-1 flex-col">
    <div className="space-y-3 px-4 pb-3 pt-4 md:px-6">
     <div className="flex flex-wrap items-center gap-3">
-     <div role="group" aria-label="处理状态" className="flex gap-1 rounded-base border border-line bg-surface p-1">{([['pending','待确认'],['acknowledged','已确认'],['all','全部']] as const).map(([id,label])=>
+     <div role="group" aria-label="处理状态" className="flex gap-1 rounded-base border border-line bg-surface p-1">{([['pending','未审核'],['human','已人工审核'],['ai','已 AI 审核'],['all','全部']] as const).map(([id,label])=>
       <button key={id} type="button" aria-pressed={status===id} onClick={()=>pickStatus(id)} className={`!min-h-11 rounded-base px-3 py-1.5 text-sm ${status===id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle'}`}>{label}</button>)}</div>
+     <label className="flex items-center gap-2 text-sm text-ink-subtle">结论<select aria-label="审核结论" value={review} onChange={e=>setReview(e.target.value)} className="form-input !min-h-11 w-auto"><option value="">全部</option><option value="handled">确认</option><option value="false_positive">误报</option></select></label>
      <label className="flex items-center gap-2 text-sm text-ink-subtle">时间<select value={range} onChange={e=>{rangeTouched.current=true;setRange(e.target.value as Range)}} className="form-input !min-h-11 w-auto py-1.5"><option value="today">今天</option><option value="7d">近 7 天</option><option value="all">全部</option></select></label>
      {fresh>0&&<button type="button" onClick={()=>void load()} className="btn-primary ml-auto">新告警 {fresh} 条 · 点击刷新</button>}
      {status!=='acknowledged'&&pending.length>0&&<button type="button" disabled={!!bulk} onClick={askBulk} className={`btn-secondary !min-h-11 ${fresh>0?'':'ml-auto'}`}>确认已加载（{Math.min(200,pending.length)}）</button>}

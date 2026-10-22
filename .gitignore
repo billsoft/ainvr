@@ -62,3 +62,12 @@ deploy/s100p/rollback-ai-*/
 
 # All local deployment recovery directories (retain on disk).
 /deploy/s100p/rollback-*/
+
+# Local LLM releases and recoverable console deployment backups
+/deploy/s100p/llm-service/
+/srs-web-console/backend/dist.llm-*/
+/srs-web-console/frontend/dist.llm-*/
+
+# Local review release backups (retain for rollback)
+/srs-web-console/backend/dist.review-*/
+/srs-web-console/frontend/dist.review-*/

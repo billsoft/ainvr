@@ -18,6 +18,7 @@ const ENV_BY_SERVICE: Record<ConfigServiceName, string> = {
   'ai-service': 'CONFIG_SERVICE_TOKEN_AI_SERVICE',
   recorder: 'CONFIG_SERVICE_TOKEN_RECORDER',
   'alarm-service': 'CONFIG_SERVICE_TOKEN_ALARM_SERVICE',
+  'llm-service': 'CONFIG_SERVICE_TOKEN_LLM_SERVICE',
 };
 
 /** token 值 → 服务名。启动时从 env 加载一次。 */

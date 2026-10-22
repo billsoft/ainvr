@@ -19,7 +19,7 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
  const [value,setValue]=useState<TriggerDefinitionInput>(()=>initial?{
   trigger_id:initial.trigger_id,name:initial.name,behavior:initial.behavior,labels:structuredClone(initial.labels),
   duration_ms:initial.duration_ms,...(initial.approach_width_percent!==undefined?{approach_width_percent:initial.approach_width_percent}:{}),
-  alarm_enabled:initial.alarm_enabled,state:initial.state,schedule:structuredClone(initial.schedule),
+  review:initial.review?structuredClone(initial.review):undefined,alarm_enabled:initial.alarm_enabled,state:initial.state,schedule:structuredClone(initial.schedule),
  }:{trigger_id:id,name:'',behavior:'appearance',labels:[],duration_ms:3000,alarm_enabled:true,state:'enabled',schedule:{mode:'always'}})
  const [seconds,setSeconds]=useState(String((initial?.duration_ms??3000)/1000))
  const [percent,setPercent]=useState(String(initial?.approach_width_percent??''))
@@ -47,6 +47,8 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
   if(n===1&&!value.labels.length)return '至少选择一个检测目标'
   if(n===2&&value.behavior==='appearance'&&(!seconds.trim()||!Number.isFinite(Number(seconds))||Number(seconds)<0||Number(seconds)>3600))return '持续时间须为0至3600秒'
   if(n===2&&value.behavior==='region_approach'&&(!percent.trim()||!Number.isFinite(Number(percent))||Number(percent)<=0||Number(percent)>100))return '接近距离须大于0且不超过画面宽度的100%'
+  if(n===3&&value.review?.enabled&&(!value.review.description.trim()||value.review.description.length>500||value.review.description.includes('<|')))return '请填写审核说明，不使用保留标记'
+  if(n===3&&value.review?.enabled&&(!Number.isFinite(value.review.reject_below)||value.review.reject_below<0||value.review.reject_below>0.1||!Number.isFinite(value.review.approve_above)||value.review.approve_above<0.9||value.review.approve_above>1))return '误报上限须为 0–0.1，通过下限须为 0.9–1'
   return n===3?scheduleError(value.schedule):''
  }
  const next=()=>{const problem=validation(step);if(problem)setError(problem);else{setError('');setStep(step+1)}}
@@ -79,6 +81,7 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
     if(e.shiftKey&&(document.activeElement===first||document.activeElement===heading.current||document.activeElement===scope)){e.preventDefault();last?.focus()}
     else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}
    }}>
+   <button type="button" aria-label="关闭" disabled={locked} onClick={close} className="absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover"><X size={18}/></button>
    <header className="border-b border-line px-6 pb-4 pt-5">
     <h2 id={title} className="text-base font-semibold">{initial?'编辑触发器':'新建触发器'}</h2>
     <ol aria-label="创建步骤" className="mt-3 grid grid-cols-4 gap-2 text-xs">{steps.map((s,i)=><li key={s} aria-current={step===i?'step':undefined} className={`flex items-center gap-2 py-2 ${step===i?'font-semibold text-primary-700':'text-ink-subtle'}`}><span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs ${step===i?'bg-primary text-white':'border border-line'}`}>{i+1}</span><span>{s}</span></li>)}</ol>
@@ -121,7 +124,16 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
     </>}
     {step===3&&<>
      <ScheduleEditor value={value.schedule} onChange={schedule=>patch({schedule})}/>
-     <div><p className="text-sm font-medium text-ink">用途</p><div role="group" aria-label="用途" className="mt-1.5 flex gap-2">{([[false,'仅统计'],[true,'统计并告警']] as const).map(([v,n])=><button key={String(v)} type="button" aria-pressed={value.alarm_enabled===v} className={choice} onClick={()=>patch({alarm_enabled:v})}>{n}</button>)}</div></div>
+     <div><p className="text-sm font-medium text-ink">用途</p><div role="group" aria-label="用途" className="mt-1.5 flex gap-2">{([[false,'仅统计'],[true,'统计并告警']] as const).map(([v,n])=><button key={String(v)} type="button" aria-pressed={value.alarm_enabled===v} className={choice} onClick={()=>patch({alarm_enabled:v,...(!v?{review:undefined}:{})})}>{n}</button>)}</div></div>
+     {value.alarm_enabled&&<section aria-label="AI 审核设置" className="space-y-3 rounded-panel border border-line p-3">
+      <label className="flex min-h-11 items-center gap-2 text-sm font-medium"><input type="checkbox" checked={value.review?.enabled??false} onChange={e=>patch({review:e.target.checked?{enabled:true,description:value.review?.description||'确认截图中的目标与检测类别相符',reject_below:0.05,approve_above:0.95}:undefined})}/>告警入库后使用 AI 审核</label>
+      <p className="text-xs leading-5 text-ink-subtle">后台按时间顺序审核，不阻塞新增告警。人工已处理的会跳过。自动读取本触发器的目标和条件，结合关键帧、热区及真实轨迹审核；证据不足仍交人工处理。</p>
+      {value.review?.enabled&&<>
+       <label className="block text-sm">审核说明<textarea className={`${field} mt-1 min-h-20`} maxLength={500} value={value.review.description} onChange={e=>patch({review:{...value.review!,description:e.target.value}})} placeholder="例如：确认截图中确实存在火焰，而不是灯光或反射"/></label>
+       <div className="grid grid-cols-2 gap-3"><label className="text-sm">误报分数上限<input className={`${field} mt-1`} type="number" min="0" max="0.1" step="0.01" value={value.review.reject_below} onChange={e=>patch({review:{...value.review!,reject_below:Number(e.target.value)}})}/></label><label className="text-sm">通过分数下限<input className={`${field} mt-1`} type="number" min="0.9" max="1" step="0.01" value={value.review.approve_above} onChange={e=>patch({review:{...value.review!,approve_above:Number(e.target.value)}})}/></label></div>
+       <p className="text-xs text-warning-700">分数不是概率；无法明确判断时保持未审核。AI 与人工均可作出确认或误报结论，人工可以纠正 AI。须在大模型配置中启用模型和告警审核调用权限；缺图或服务故障会保留告警。</p>
+      </>}
+     </section>}
      <label className="block text-sm font-medium text-ink">保存后状态<select className={`${field} mt-1.5`} value={value.state} onChange={e=>patch({state:e.target.value as TriggerDefinitionInput['state']})}>
       <option value="enabled">已启用</option><option value="paused">已暂停</option><option value="draft">草稿</option>{initial&&<option value="archived">归档</option>}</select></label>
      <p className="rounded-base bg-surface-page p-3 text-sm text-ink">将会：{value.labels.length?value.labels.map(l=>labelDisplay(l.name)).join('、'):'（未选目标）'} {value.behavior==='appearance'?`连续出现满 ${seconds||0} 秒`:value.behavior==='region_approach'?`接近热区（画面宽度 ${percent||'?'}% 以内）`:`${behaviorNames[value.behavior]}热区`}时，{value.alarm_enabled?'记录并告警':'只记录统计'}；{scheduleSummary(value.schedule)}。</p>
@@ -139,7 +151,7 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
     {step>0&&<button type="button" disabled={locked} onClick={()=>{setError('');setStep(step-1)}} className="btn-secondary"><ChevronLeft size={16} aria-hidden="true"/>上一步</button>}
     <button type="button" disabled={saving} onClick={()=>void(step===3?save():next())} className="btn-primary ml-auto">{step===3?<Save size={16} aria-hidden="true"/>:<ChevronRight size={16} aria-hidden="true"/>}{saving?'保存中…':unconfirmed?'重试确认保存':step===3?'保存':'下一步'}</button>
    </footer>
-   {discard&&<div className="absolute inset-0 z-10 flex items-center justify-center rounded-panel bg-black/30 p-4"><section ref={discardPanel} tabIndex={-1} role="alertdialog" aria-label="放弃触发器修改" className="w-full max-w-sm space-y-3 rounded-panel bg-surface p-5 shadow-modal outline-none"><p className="text-base font-semibold">放弃尚未保存的触发器修改？</p><div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setDiscard(false)}>继续编辑</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={onCancel}>放弃修改</button></div></section></div>}
+   {discard&&<div className="absolute inset-0 z-10 flex items-center justify-center rounded-panel bg-black/30 p-4"><section ref={discardPanel} tabIndex={-1} role="alertdialog" aria-label="放弃触发器修改" className="relative w-full max-w-sm space-y-3 rounded-panel bg-surface p-5 shadow-modal outline-none"><button type="button" aria-label="关闭" onClick={()=>setDiscard(false)} className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-base hover:bg-surface-hover"><X size={18}/></button><p className="pr-7 text-base font-semibold">放弃尚未保存的触发器修改？</p><div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setDiscard(false)}>继续编辑</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={onCancel}>放弃修改</button></div></section></div>}
   </div>
  </div>,document.body)
 }

@@ -58,3 +58,11 @@ it('selected targets can be removed and Escape protects dirty drafts',()=>{
  expect(screen.getByRole('alertdialog',{name:'放弃触发器修改'})).toBeInTheDocument();expect(cancel).not.toHaveBeenCalled()
  fireEvent.click(screen.getByRole('button',{name:'继续编辑'}));expect(save).not.toHaveBeenCalled()
 })
+
+it('top right close uses the same discard flow and never saves',()=>{
+ const {save,cancel}=open()
+ fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'未保存'}})
+ fireEvent.click(screen.getByRole('button',{name:'关闭'}))
+ expect(cancel).not.toHaveBeenCalled();expect(save).not.toHaveBeenCalled()
+ fireEvent.click(screen.getByRole('button',{name:'放弃修改'}));expect(cancel).toHaveBeenCalledOnce()
+})

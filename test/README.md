@@ -1,5 +1,7 @@
 # RDK S100P 硬件资源实验
 
+> **安全警告（2026-10-22）**：禁止读取 `/sys/kernel/debug/ion/`，会使本板内核崩溃重启。读取它的旧实验脚本一律不得运行。详见 [ION-DEBUGFS-FORBIDDEN.md](ION-DEBUGFS-FORBIDDEN.md)。
+
 在板端项目目录运行。每个资源有独立脚本，默认串行测试、有限帧数、命令超时；
 普通硬件实验产物写入本目录的 build/ 和 results/，不修改 /app 官方示例、不写裸块设备。
 系统恢复工具另有显式安装入口；本次已获用户授权完成官方包与引导恢复，见 SYSTEM-RECOVERY.md。
