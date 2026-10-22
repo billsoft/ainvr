@@ -18,7 +18,7 @@ const definitionSchema=z.object({
   names:z.object({in:outputName,out:outputName}).strict(),
   occupancy:z.boolean(),
   max_gap_ms:z.number().int().min(0).max(2000),
-  state:z.enum(['enabled','paused','archived']),
+  state:z.enum(['enabled','paused']),
 }).strict();
 export type CounterDefinition=z.infer<typeof definitionSchema>;
 const angle=z.object({from:z.number().finite().min(0).max(360),to:z.number().finite().min(0).max(360)}).strict();

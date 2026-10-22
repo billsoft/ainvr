@@ -2,12 +2,12 @@ import {render,screen,fireEvent,within,waitFor} from '@testing-library/react'
 import {MemoryRouter} from 'react-router-dom'
 import {beforeEach,expect,it,vi} from 'vitest'
 import {ArmingModal} from '@/pages/AlarmCenter/ArmingModal'
-import {tapEdge,pickFrom,pickDirection} from '@/pages/AlarmCenter/CounterBindingEditor'
+import {tapEdge,pickFrom,pickDirection} from '@/features/countingSelection'
 import {countingDrawing} from '@/features/counterGeometry'
 import type {ArmingDocument} from '@/features/armingDocument'
 import type {Counter,CounterResult} from '@/api/flowService'
 import type {AlarmSource} from '@/api/alarmTriggerService'
-vi.mock('@/api/flowService',async original=>({...(await original<typeof import('@/api/flowService')>()),flowService:{list:vi.fn(),save:vi.fn(),query:vi.fn(),records:vi.fn(),live:vi.fn()}}))
+vi.mock('@/api/flowService',async original=>({...(await original<typeof import('@/api/flowService')>()),flowService:{list:vi.fn(),save:vi.fn(),query:vi.fn(),records:vi.fn(),live:vi.fn(),remove:vi.fn()}}))
 vi.mock('@/api/aiChannelService',()=>({aiChannelService:{list:vi.fn().mockResolvedValue([])}}))
 const {flowService}=await import('@/api/flowService')
 const {default:FlowPage}=await import('@/pages/Flow')
@@ -26,12 +26,12 @@ it('一条计数线的“进”箭头指向热区内侧，翻转后指向外侧'
  const reversed=countingDrawing({kind:'line',edge:'right',in_side:'inward'},[...square].reverse(),['bottom','right','top','left'],1000,1000).arrow!
  expect(reversed.to[0]).toBeLessThan(reversed.from[0])
 })
-it('点边设置计数线：越线可翻转，双线先 A 后 B，区域依次切换进入、离开、取消',()=>{
+it('点边不隐式翻转：双线明确 A/B，区域明确进入/离开',()=>{
  let line=tapEdge(pickFrom('line'),'right');expect(pickDirection(line)).toEqual({kind:'line',edge:'right',in_side:'inward'})
- line=tapEdge(line,'right');expect(pickDirection(line)).toMatchObject({in_side:'outward'})
+ line=tapEdge(line,'right');expect(pickDirection(line)).toMatchObject({in_side:'inward'})
  let gates=tapEdge(pickFrom('gates'),'left');expect(pickDirection(gates)).toBeNull()
  gates=tapEdge(gates,'right');expect(pickDirection(gates)).toEqual({kind:'gates',from:'left',to:'right'})
- let zone=tapEdge(tapEdge(pickFrom('zone'),'left'),'right');zone=tapEdge(zone,'right')
+ let zone=tapEdge(pickFrom('zone'),'left');zone=tapEdge({...zone,target:'exit'},'right')
  expect(pickDirection(zone)).toEqual({kind:'edges',entry:['left'],exit:['right']})
  expect(pickDirection(tapEdge(zone,'right'))).toBeNull()
 })
@@ -43,14 +43,14 @@ it('布防里为热区选用计数器：点画面上的边设置计数线，保�
  const send=vi.fn().mockResolvedValue({saved:true,sourceId:'cam',revision:2,application:{state:'applied'}})
  render(<ArmingModal sourceId="cam" sourceName="大门" base={base} reference={{url:'image',width:1000,height:500,geometryRevision:'g:1000x500',capturedAt:'now'}}
   definitions={[]} sources={[source]} counters={[{...counter,bindings:[]}]} send={send} onClose={vi.fn()} onSaved={vi.fn()}/>)
+ fireEvent.click(screen.getByRole('button',{name:'选择热区 门口'}))
  fireEvent.click(screen.getByRole('button',{name:'为 门口 选用计数器'}))
  fireEvent.click(screen.getByRole('radio',{name:/客流/}))
- expect(screen.getByRole('button',{name:'加入布防草稿'})).toBeDisabled()
+ expect(screen.queryByRole('button',{name:'确定'})).not.toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'保存布防'}));expect(send).not.toHaveBeenCalled()
  fireEvent.click(screen.getByRole('button',{name:'设置计数线：边 2'}))
  expect(screen.getByText(/箭头方向记为“进”，反方向记为“出”/)).toBeInTheDocument()
- fireEvent.click(screen.getByRole('button',{name:'加入布防草稿'}))
- const list=screen.getByRole('region',{name:'计数选用列表'})
- expect(within(list).getByText('客流 · 门口')).toBeInTheDocument()
+
  fireEvent.click(screen.getByRole('button',{name:'保存布防'}))
  await waitFor(()=>expect(send).toHaveBeenCalledOnce())
  expect(send.mock.calls[0]![0].counterBindings).toEqual([expect.objectContaining({counter_id:'visitors',processor_id:'ai',zone_id:'z',zone_version:1,label_map_version:'lm',direction:{kind:'line',edge:'b',in_side:'inward'}})])
@@ -107,31 +107,61 @@ it('切换时段时晚到的旧结果不会覆盖新时段，失败时不保留�
  await screen.findByRole('alert')
  expect(within(screen.getByRole('article',{name:'客流'})).queryByText('7')).not.toBeInTheDocument()
 })
-it('已归档的计数器可以查看它的历史统计和通行记录',async()=>{
- const archived={...counter,state:'archived' as const,bindings:[]}
- vi.mocked(flowService.list).mockResolvedValue({items:[archived]})
- vi.mocked(flowService.query).mockImplementation(async input=>({from:input.from,to:input.to,items:input.counter_ids?.includes('visitors')?[{...result(4,3),counter:archived}]:[]}))
+it('一页一个计数器一张卡片：统计与编辑、暂停、删除在一起，没有选项卡和归档',async()=>{
+ vi.mocked(flowService.list).mockResolvedValue({items:[counter]})
+ vi.mocked(flowService.query).mockImplementation(async input=>({from:input.from,to:input.to,items:[result(4,3)]}))
  render(<MemoryRouter><FlowPage/></MemoryRouter>)
- fireEvent.click(await screen.findByRole('tab',{name:/计数器/}))
- fireEvent.click(screen.getByRole('checkbox',{name:'查看已归档'}))
- fireEvent.click(within(await screen.findByRole('article',{name:'客流'})).getByRole('button',{name:'查看统计'}))
  const card=await screen.findByRole('article',{name:'客流'})
  await waitFor(()=>expect(within(card).getByText('4')).toBeInTheDocument())
- expect(vi.mocked(flowService.query).mock.calls.some(([q])=>q.counter_ids?.[0]==='visitors')).toBe(true)
- expect(screen.getByText(/已归档/)).toBeInTheDocument()
+ expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+ expect(screen.queryByText(/归档/)).not.toBeInTheDocument()
+ for(const name of ['编辑','暂停','删除'])expect(within(card).getByRole('button',{name})).toBeInTheDocument()
+ expect(within(card).getByText(/门口/)).toBeInTheDocument()
+})
+it('删除前说明会连同历史记录一起删除；确认后删除并刷新',async()=>{
+ vi.mocked(flowService.list).mockResolvedValueOnce({items:[counter]}).mockResolvedValue({items:[]})
+ vi.mocked(flowService.query).mockImplementation(async input=>({from:input.from,to:input.to,items:[result(4,3)]}))
+ vi.mocked(flowService.remove).mockResolvedValue({deleted:true})
+ render(<MemoryRouter><FlowPage/></MemoryRouter>)
+ fireEvent.click(within(await screen.findByRole('article',{name:'客流'})).getByRole('button',{name:'删除'}))
+ const confirm=screen.getByRole('alertdialog',{name:'确认删除计数器'})
+ expect(confirm).toHaveTextContent(/历史通行记录.*一起删除/)
+ expect(confirm).toHaveTextContent(/不能恢复/)
+ expect(flowService.remove).not.toHaveBeenCalled()
+ fireEvent.click(within(confirm).getByRole('button',{name:'删除计数器及历史'}))
+ await waitFor(()=>expect(flowService.remove).toHaveBeenCalledWith('visitors',2,expect.any(String)))
+ expect(await screen.findByText('开始统计流量')).toBeInTheDocument()
+})
+it('删除未完成的计数器只显示重试，不再显示统计',async()=>{
+ vi.mocked(flowService.list).mockResolvedValue({items:[{...counter,bindings:[],deleting:true}]})
+ vi.mocked(flowService.query).mockResolvedValue({from:'',to:'',items:[]})
+ vi.mocked(flowService.remove).mockRejectedValue(Object.assign(Error('分析服务暂不可用'),{status:503}))
+ render(<MemoryRouter><FlowPage/></MemoryRouter>)
+ const card=await screen.findByRole('article',{name:'客流'})
+ expect(card).toHaveTextContent(/删除未完成/)
+ expect(within(card).queryByRole('button',{name:'编辑'})).not.toBeInTheDocument()
+ fireEvent.click(within(card).getByRole('button',{name:'重试删除'}))
+ await waitFor(()=>expect(flowService.remove).toHaveBeenCalled())
+ expect(await within(card).findByText(/分析服务暂不可用/)).toBeInTheDocument()
+})
+it('分时图的提示时间不重复“时”字',async()=>{
+ const {FlowChart}=await import('@/pages/Flow/FlowChart')
+ render(<FlowChart label="趋势" bucket="hour" slots={[{from:'2026-10-21T06:00:00Z',to:'2026-10-21T07:00:00Z'}]} series={[{name:'进',color:'#000',buckets:[{from:'2026-10-21T06:00:00Z',occurrences:2}]}]}/>)
+ fireEvent.click(document.querySelector('svg g.cursor-pointer')!)
+ expect(screen.getByText(/：进 2/).textContent).not.toMatch(/时时/)
 })
 it('调整已有计数线时提供“以前的记录”选项，默认保持原统计',async()=>{
  const withBinding:ArmingDocument={...base,counter_bindings:[{binding_id:'flow-1',counter_id:'visitors',input_stream_id:'cam',processor_id:'ai',zone_id:'z',zone_version:1,geometry_revision:'g:1000x500',label_map_version:'lm',direction:{kind:'line',edge:'b',in_side:'inward'}}]}
  const send=vi.fn().mockResolvedValue({saved:true,sourceId:'cam',revision:2,application:{state:'applied'}})
  render(<ArmingModal sourceId="cam" sourceName="大门" base={withBinding} reference={{url:'image',width:1000,height:500,geometryRevision:'g:1000x500',capturedAt:'now'}}
   definitions={[]} sources={[source]} counters={[counter]} send={send} onClose={vi.fn()} onSaved={vi.fn()}/>)
- fireEvent.click(screen.getByRole('button',{name:'调整计数线'}))
+ fireEvent.click(screen.getByRole('button',{name:'选择热区 门口'}))
+ fireEvent.click(screen.getByRole('button',{name:'调整计数线 客流 · 门口'}))
  expect(screen.queryByRole('group',{name:'以前的记录'})).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'翻转方向'}))
  const history=screen.getByRole('group',{name:'以前的记录'})
  expect(within(history).getByRole('radio',{name:/保持原统计/})).toBeChecked()
  fireEvent.click(within(history).getByRole('radio',{name:/按新计数线重新统计/}))
- fireEvent.click(screen.getByRole('button',{name:'加入布防草稿'}))
  fireEvent.click(screen.getByRole('button',{name:'保存布防'}))
  await waitFor(()=>expect(send).toHaveBeenCalledOnce())
  expect(send.mock.calls[0]![0].counterBindings[0]).toMatchObject({direction:{in_side:'outward'},reclassify_history:true})
@@ -141,7 +171,8 @@ it('从参数库读回的计数线字段顺序不同，不算改动：未修改�
  const stored:ArmingDocument={...base,counter_bindings:[{binding_id:'flow-1',counter_id:'visitors',input_stream_id:'cam',processor_id:'ai',zone_id:'z',zone_version:1,geometry_revision:'g:1000x500',label_map_version:'lm',direction:{edge:'b',kind:'line',in_side:'inward'} as never}]}
  render(<ArmingModal sourceId="cam" sourceName="大门" base={stored} reference={{url:'image',width:1000,height:500,geometryRevision:'g:1000x500',capturedAt:'now'}}
   definitions={[]} sources={[source]} counters={[counter]} send={vi.fn()} onClose={vi.fn()} onSaved={vi.fn()}/>)
- fireEvent.click(screen.getByRole('button',{name:'调整计数线'}))
+ fireEvent.click(screen.getByRole('button',{name:'门口：触发器 0，计数器 1'}))
+ fireEvent.click(screen.getByRole('button',{name:'调整计数线 客流 · 门口'}))
  expect(screen.queryByRole('group',{name:'以前的记录'})).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'翻转方向'}))
  fireEvent.click(screen.getByRole('button',{name:'翻转方向'}))

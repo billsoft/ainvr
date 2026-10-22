@@ -30,8 +30,44 @@ test('Mongo counting: repeated trips, two bindings, durable replay, in/out serie
   const page=await repo.flow.query({series:[both],detail:true,limit:1});assert.ok(page.next_cursor);
   const next=await repo.flow.query({series:[both],detail:true,limit:1,cursor:page.next_cursor});assert.notEqual(next.items[0].event_id,page.items[0].event_id);
   await assert.rejects(()=>repo.flow.query({series:[inward],detail:true,cursor:page.next_cursor}),e=>e.code==='invalid_cursor');
+  // Deleting a counter purges only its own passages and coverage.
+  await assert.rejects(()=>repo.flow.purge({counter_id:'c-a',rule_ids:[]}),e=>e.code==='invalid_purge');
+  const purged=await repo.flow.purge({counter_id:'c-a',rule_ids:['a']});
+  assert.ok(purged.facts>0&&purged.coverage>0);
+  assert.equal(await repo.behaviors.collection.countDocuments({rule_id:'a'}),0);
+  assert.ok(await repo.behaviors.collection.countDocuments({rule_id:'b'})>0);
+  assert.ok(await repo.flow.coverage.countDocuments({assignment_id:'b'})>0);
   const f=input(8,.4);let broken=true;
   const fault=new ObservationConsumer(repo,{hook:async p=>{if(p==='before_checkpoint'&&broken){broken=false;throw Error('injected');}}});
   await assert.rejects(()=>fault.consume(f),/injected/);const n=await repo.flow.coverage.countDocuments();await fault.consume(f);assert.equal(await repo.flow.coverage.countDocuments(),n);
  }finally{await db.dropDatabase();await client.close();}
+});
+
+test('Mongo purge drains a prepared old frame under sustained arrivals and replay cannot resurrect deleted facts',{skip:!enabled},async()=>{
+ const {createApp}=await import('../src/http.mjs');
+ const {observationBarrier}=await import('../src/observation-barrier.mjs');
+ const client=new MongoClient('mongodb://127.0.0.1:27028',{serverSelectionTimeoutMS:3000});await client.connect();
+ const db=client.db('ainvr_flow_drain_'+randomUUID().replaceAll('-','')),repo=new AlarmRepository(db);
+ let release;const hold=new Promise(r=>{release=r});let prepared;const reached=new Promise(r=>{prepared=r});
+ const app=createApp({repository:repo,apiToken:'a'.repeat(32)});
+ try{
+  await repo.initialize();await repo.ruleSnapshots.apply({schema_version:'1.0',revision:'1',rules:[rule('a')]},'test');
+  const normal=new ObservationConsumer(repo);await normal.consume(input(1,.2));await normal.consume(input(2,.4));await normal.consume(input(3,.6));
+  const delayed=new ObservationConsumer(repo,{hook:async p=>{if(p==='prepared'){prepared();await hold}}});
+  const old=delayed.consume(input(4,.8));await reached;
+  await repo.ruleSnapshots.apply({schema_version:'1.0',revision:'2',rules:[]},'test');
+  await app.ready();const request=app.inject({method:'POST',url:'/v1/flow/purge',headers:{authorization:'Bearer '+'a'.repeat(32)},payload:{counter_id:'c-a',rule_ids:['a']}});
+  // Wait until admission is fenced; no elapsed-time assumption about database IO.
+  let fenced=false;
+  for(let i=0;i<200&&!fenced;i++){
+   try{observationBarrier(repo).enter()();}catch(e){assert.equal(e.code,'consumer_busy');fenced=true;}
+   if(!fenced)await new Promise(r=>setTimeout(r,1));
+  }
+  assert.equal(fenced,true);
+  for(let i=0;i<30;i++)await assert.rejects(normal.consume(input(5,.9)),e=>e.code==='consumer_busy');
+  release();await old;assert.equal((await request).statusCode,200);
+  assert.equal(await repo.behaviors.collection.countDocuments({counter_id:'c-a'}),0);
+  await normal.consume(input(4,.8));await normal.consume(input(5,.9));
+  assert.equal(await repo.behaviors.collection.countDocuments({counter_id:'c-a'}),0);
+ }finally{release();await app.close();await db.dropDatabase();await client.close();}
 });

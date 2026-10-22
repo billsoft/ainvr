@@ -144,3 +144,12 @@
   one existing output SRS channel. Do not create SRS channels inside AI flows.
 - Preserve manually configured channels and bindings. Do not recreate deleted
   agent-created trial channels or restore an earlier configuration.
+
+
+## 全局弹窗关闭规范（用户长期要求，2026-10-22）
+
+- AINVR 所有弹窗、弹窗向导和编辑窗口，除“取消”外，均提供清晰可见的右上角“×”关闭按钮，不能只依赖底部取消按钮。
+- “×”与“取消”使用同一取消流程：放弃该窗口中尚未保存的操作，不得触发保存、提交或隐式生效。已成功保存的操作不因关闭而回滚。
+- 有未保存修改或业务上要求二次确认的窗口，点击“×”仍须经过相同的放弃确认；确认前保留全部草稿，选择继续编辑则留在原窗口。无修改、纯查看窗口可直接关闭。
+- Esc 与关闭/取消保持一致，不绕过确认；关闭后焦点返回打开窗口的控件。
+- “×”需有可访问名称“关闭”，图标尺寸与全站协调，触摸点击区域至少 44×44 像素，兼顾 iPad 与键盘鼠标。后续新建、重构和验收弹窗均检查此规则。

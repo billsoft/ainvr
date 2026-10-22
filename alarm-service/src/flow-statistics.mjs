@@ -78,6 +78,14 @@ export class FlowStatistics {
     await this.coverage.createIndex({segment_id:1},{unique:true});
     await this.coverage.createIndex({assignment_id:1,from:1,to:1});
   }
+  /** A deleted counter takes its passages and coverage with it; other counters are untouched. */
+  async purge(request){
+    if(!object(request)||Object.keys(request).some(k=>!['counter_id','rule_ids'].includes(k))||!Array.isArray(request.rule_ids)||!request.rule_ids.length||request.rule_ids.length>1000)fail('invalid_purge','Counter and its bindings are required');
+    identity(request.counter_id,'counter_id');request.rule_ids.forEach(id=>identity(id,'rule_id'));
+    const facts=await this.facts.deleteMany({counter_id:request.counter_id,rule_id:{$in:request.rule_ids}});
+    const coverage=await this.coverage.deleteMany({assignment_id:{$in:request.rule_ids}});
+    return {facts:facts.deletedCount,coverage:coverage.deletedCount};
+  }
   async record(segments){
     for(const s of segments??[]){const {to,...base}=s;await this.coverage.updateOne({segment_id:s.segment_id},{$setOnInsert:base,$max:{to}},{upsert:true});}
   }

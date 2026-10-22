@@ -27,7 +27,7 @@ const zone=(points:[number,number][]=[[.3,.3],[.7,.3],[.7,.7],[.3,.7]],version=1
 const binding=(zoneVersion=1)=>({binding_id:'flow-door-visitors',counter_id:'visitors',input_stream_id:'camera',processor_id:'ai',zone_id:'door',zone_version:zoneVersion,
   geometry_revision:'g',label_map_version:'lm',direction:{kind:'edges',entry:['left'],exit:['right']}});
 const arming=(z=zone(),bindings=[binding(z.version)])=>({source_id:'camera',geometry_revision:'g',zones:[z],assignments:[],counter_bindings:bindings});
-it.skipIf(!pgEnabled)('PG 计数器库：选用随布防保存，拖动顶点不打断，删掉计数边被拒，名称修改不依赖在线来源，归档解除选用',async()=>isolated(async store=>{
+it.skipIf(!pgEnabled)('PG 计数器库：选用随布防保存，拖动顶点不打断，删掉计数边被拒，名称修改不依赖在线来源，删除解除选用',async()=>isolated(async store=>{
   await store.saveCounter(counter,0,'operator','c1',lookup);
   await store.saveArming(arming(),0,'operator','a1',lookup,async()=>'g');
   let rules=(await store.snapshot()).rules as any[];
@@ -52,10 +52,21 @@ it.skipIf(!pgEnabled)('PG 计数器库：选用随布防保存，拖动顶点不
   await store.saveCounter({...counter,state:'paused'},4,'operator','c3',offline);
   expect((await store.snapshot()).rules).toEqual([]);
   await expect(store.saveCounter({...counter,method:'line'},5,'operator','c4',lookup)).rejects.toMatchObject({code:'invalid_counter'});
-  await store.saveCounter({...counter,state:'archived'},5,'operator','c5',offline);
+  // There is no archive: a counter is kept or deleted together with its history.
+  await expect(store.saveCounter({...counter,state:'archived'},5,'operator','c5',offline)).rejects.toMatchObject({code:'invalid_counter'});
+  // Deleting first stops counting everywhere, then the records are purged, then the definition goes.
+  await expect(store.beginDeleteCounter('visitors',4,'operator','d0')).rejects.toMatchObject({code:'version_conflict'});
+  expect(await store.beginDeleteCounter('visitors',5,'operator','d1')).toEqual({binding_ids:['flow-door-visitors']});
   expect((await store.readArming('camera'))!.counter_bindings).toEqual([]);
-  expect((await store.counterBindings(['visitors']))[0]).toMatchObject({active:false});
+  expect((await store.snapshot()).rules).toEqual([]);
+  expect((await store.listCounters())[0]).toMatchObject({counter_id:'visitors',deleting:true,bindings:[]});
+  await expect(store.saveCounter({...counter,state:'enabled'},6,'operator','c6',offline)).rejects.toMatchObject({code:'counter_deleting'});
   await expect(store.saveArming(arming(zone([[.3,.25],[.72,.3],[.7,.7],[.3,.7]],2)),3,'operator','a4',lookup,async()=>'g')).rejects.toMatchObject({code:'counter_unavailable'});
+  // A retry of an unfinished delete is accepted whatever version the page still holds.
+  expect(await store.beginDeleteCounter('visitors',1,'operator','d2')).toEqual({binding_ids:['flow-door-visitors']});
+  await store.finishDeleteCounter('visitors');
+  expect(await store.listCounters()).toEqual([]);
+  expect(await store.counterBindings(['visitors'])).toEqual([]);
 }));
 it.skipIf(!pgEnabled||!mongoEnabled)('布防→回放→流量接口：一条计数线同时得到进与出，告警为零，记录与统计一致，今日实时累计',async()=>isolated(async store=>{
   const alarmRoot=new URL('../../../../alarm-service/',import.meta.url);
@@ -145,4 +156,49 @@ it.skipIf(!pgEnabled||!mongoEnabled)('调整计数线默认不改写历史统计
     // The flag is an instruction, not part of the stored selection.
     expect((await store.readArming('camera'))!.counter_bindings[0]).not.toHaveProperty('reclassify_history');
   }finally{await web.close();await analysis.close();await db.dropDatabase();await client.close();}
+}));
+it.skipIf(!pgEnabled||!mongoEnabled)('删除计数器连同它的通行与覆盖记录一起删除；分析服务不可用时留在“删除未完成”，重试后完成',async()=>isolated(async store=>{
+  const alarmRoot=new URL('../../../../alarm-service/',import.meta.url);
+  const load=(name:string)=>import(new URL(`src/${name}.mjs`,alarmRoot).href);
+  const {MongoClient}=createRequire(new URL('package.json',alarmRoot))('mongodb');
+  const {AlarmRepository}=await load('repository'),{ObservationConsumer}=await load('ingestion'),{createApp}=await load('http');
+  const client=new MongoClient('mongodb://127.0.0.1:27028',{serverSelectionTimeoutMS:3000});await client.connect();
+  const db=client.db('ainvr_flow_delete_'+randomUUID().replaceAll('-',''));
+  const repository=new AlarmRepository(db);await repository.initialize();
+  const apiToken='flow-delete-test-'.repeat(4),analysis=createApp({repository,apiToken});
+  const down=Fastify(),up=Fastify();
+  let purgeAttempts=0;
+  analysis.addHook('onRequest',async(req:any,reply:any)=>{
+    if(req.url==='/v1/flow/purge'&&++purgeAttempts<=2)return reply.code(503).send({error:{code:'consumer_busy'}});
+  });
+  try{
+    await analysis.listen({host:'127.0.0.1',port:0});
+    const baseUrl=`http://127.0.0.1:${(analysis.server.address() as {port:number}).port}`;
+    await down.register(flowRoutes,{store,principal:async()=>'operator',catalog:lookup,synchronization:null,connection:async()=>null});
+    await up.register(flowRoutes,{store,principal:async()=>'operator',catalog:lookup,synchronization:null,connection:async()=>({baseUrl,apiToken,timeoutMs:5000})});
+    await store.saveCounter(counter,0,'operator','c1',lookup);
+    await store.saveCounter({...counter,counter_id:'other',name:'另一个'},0,'operator','c2',lookup);
+    const other={...binding(),binding_id:'flow-door-other',counter_id:'other'};
+    await store.saveArming(arming(zone(),[binding(),other]),0,'operator','a1',lookup,async()=>'g');
+    const r=await analysis.inject({method:'POST',url:'/v1/configuration/rules',headers:{authorization:`Bearer ${apiToken}`,'x-ainvr-actor':'test'},payload:await store.snapshot()});expect(r.statusCode,r.body).toBe(200);
+    const consumer=new ObservationConsumer(repository),base=Date.now()+1000,xs=[.2,.4,.6,.8];
+    for(let i=0;i<xs.length;i++){const pts=String((i+1)*1000000000);
+      await consumer.consume({schema_version:'1.0',producer_id:'p',offset:String(i+1),frame:{schema_version:'1.0',channel_id:'ai',input_stream_id:'camera',stream_session_id:'s',seq:String(i+1),frame_id:String(i+1),
+        source_pts_ns:pts,captured_at:new Date(base+i*1000).toISOString(),source:{width:1000,height:1000,coordinate_space:'source_pixels',geometry_revision:'g'},model:{label_map_version:'lm'},
+        tracks:[{track_id:'t',label_id:'person',state:'confirmed',observation:'detected',last_observed_pts_ns:pts,bbox:{x:xs[i]!*1000-10,y:480,w:20,h:20}}]}});}
+    const facts=(id:string)=>repository.behaviors.collection.countDocuments({counter_id:id});
+    expect([await facts('visitors'),await facts('other')]).toEqual([1,1]);
+    const remove=(app:typeof up,key:string)=>app.inject({method:'POST',url:'/flow/counters/visitors/delete',headers:{'idempotency-key':key},payload:{expected_version:1}});
+    const failed=await remove(down,'k1');
+    expect(failed.statusCode).toBe(503);
+    expect((await store.listCounters()).find(c=>c.counter_id==='visitors')).toMatchObject({deleting:true});
+    expect(await facts('visitors')).toBe(1);
+    const done=await remove(up,'k2');
+    expect(done.statusCode,done.body).toBe(200);expect(done.json()).toMatchObject({deleted:true});expect(purgeAttempts).toBe(3);
+    const replay=await remove(up,'k2');expect(replay.statusCode,replay.body).toBe(200);
+    expect((await store.listCounters()).map(c=>c.counter_id)).toEqual(['other']);
+    expect([await facts('visitors'),await facts('other')]).toEqual([0,1]);
+    expect(await repository.flow.coverage.countDocuments({assignment_id:'flow-door-visitors'})).toBe(0);
+    expect(await repository.flow.coverage.countDocuments({assignment_id:'flow-door-other'})).toBeGreaterThan(0);
+  }finally{await down.close();await up.close();await analysis.close();await db.dropDatabase();await client.close();}
 }));

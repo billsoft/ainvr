@@ -1,36 +1,44 @@
-import {useEffect,useRef,useState} from 'react'
+import {useRef,useState} from 'react'
 import type {AlarmSource} from '@/api/alarmTriggerService'
 import type {DraftZone,DraftAssignment} from '@/features/armingDraft'
 import type {TriggerDefinition} from '@/features/alarmDefinitions'
 import {AssignmentEditor} from './AssignmentEditor'
+import {useWorkspaceDraft,type WorkspaceDraft,type WorkspaceDraftRef} from './workspaceDraft'
 interface Props {
- sourceId:string;geometryRevision:string;zone:DraftZone|null;definitions:TriggerDefinition[];sources:AlarmSource[];
- onDirectionChange:(edges:{entry:string[];exit:string[]})=>void;
- onApply:(items:{assignment:DraftAssignment;labelVersion:string}[])=>void;onCancel:()=>void
+ sourceId:string;geometryRevision:string;zone:DraftZone|null;definitions:TriggerDefinition[];sources:AlarmSource[]
+ workspace:WorkspaceDraftRef
+ onDirectionChange:(edges:{entry:string[];exit:string[]})=>void
+ onApply:(items:{assignment:DraftAssignment;labelVersion:string}[])=>void
 }
-/** Each selected trigger has its own processor and geometry settings. Commit the batch atomically. */
+/** Select and configure in one panel. The arming save validates the entire batch. */
 export function AssignmentPicker(props:Props){
- const panel=useRef<HTMLDivElement>(null)
- const [ids,setIds]=useState<string[]>([]),[index,setIndex]=useState<number|null>(null)
- const [items,setItems]=useState<{assignment:DraftAssignment;labelVersion:string}[]>([]),[error,setError]=useState('')
- useEffect(()=>{if(index!==null)panel.current?.focus()},[index])
+ const [ids,setIds]=useState<string[]>([]),[error,setError]=useState('')
+ const [handles,setHandles]=useState<Record<string,{current:WorkspaceDraft|null}>>({})
+ const values=useRef(new Map<string,{assignment:DraftAssignment;labelVersion:string}>())
  const available=props.definitions.filter(d=>d.state!=='archived'&&!d.migration_review?.required&&(props.zone||d.behavior==='appearance'))
- const button='btn-secondary'
- if(index!==null){
-  const definition=available.find(t=>t.trigger_id===ids[index])
-  if(!definition)return <p role="alert">触发器已不可用，请取消后重新选择。</p>
-  return <div ref={panel} tabIndex={-1} role="group" aria-label="配置多项选用" className="space-y-3 outline-none"><p>配置选用 {index+1} / {ids.length} · {definition.name}</p>
-   <AssignmentEditor key={definition.trigger_id} sourceId={props.sourceId} geometryRevision={props.geometryRevision} zone={props.zone}
-    definitions={[definition]} sources={props.sources} defaultTriggerId={definition.trigger_id} applyLabel={index===ids.length-1?'全部加入布防草稿':'下一项选用'}
-    onDirectionChange={props.onDirectionChange} onCancel={props.onCancel} onApply={(assignment,labelVersion)=>{
-     const next=[...items,{assignment,labelVersion}]
-     if(index===ids.length-1){try{props.onApply(next)}catch(e){setError(e instanceof Error?e.message:'不能加入草稿')}}
-     else{setItems(next);setIndex(index+1);setError('')}
-    }}/>{error&&<p role="alert">{error}</p>}</div>
+ const flush=()=>{
+  if(!ids.length)return true
+  let valid=true
+  for(const id of ids)if(!available.some(t=>t.trigger_id===id)||!handles[id]?.current?.flush())valid=false
+  if(!valid){setError('请补齐已选触发器的设置。');return false}
+  try{props.onApply(ids.map(id=>values.current.get(id)!));return true}catch(e){setError(e instanceof Error?e.message:'不能加入草稿');return false}
  }
- return <section aria-label="选择多个触发器" className="space-y-3 rounded-panel border border-line p-4"><h3 className="font-semibold">{props.zone?.name??'整个画面'} · 选用触发器</h3><p>可勾选多个，下一步逐项确认处理器和条件。取消不会加入任何选用。</p>
-  <div className="grid gap-2 sm:grid-cols-2">{available.map(t=><label key={t.trigger_id} className="flex items-center gap-3 rounded-base border border-line bg-surface px-3 py-2 text-sm"><input type="checkbox" checked={ids.includes(t.trigger_id)} onChange={e=>setIds(e.target.checked?[...ids,t.trigger_id]:ids.filter(id=>id!==t.trigger_id))}/><span>{t.name}{t.state!=='enabled'?'（未启用）':''}</span></label>)}</div>
-  {!available.length&&<p role="status">没有适合此范围的触发器，请先到告警触发页创建。</p>}
-  <div className="flex justify-end gap-2"><button type="button" className={button} onClick={props.onCancel}>取消选用修改</button><button type="button" className="btn-primary" disabled={!ids.length} onClick={()=>setIndex(0)}>配置已选 {ids.length} 项</button></div>
+ useWorkspaceDraft(props.workspace,{flush,dirty:()=>ids.length>0})
+ return <section aria-label="选择多个触发器" className="space-y-4 text-sm">
+  <h3 className="font-semibold">{props.zone?.name??'整个画面'} · 添加触发器</h3>
+  <p className="text-ink-subtle">勾选需要的触发器，在下方设置；统一保存布防后生效。</p>
+  <div className="space-y-2">{available.map(t=><label key={t.trigger_id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-base border border-line bg-surface px-3 py-2">
+   <input type="checkbox" checked={ids.includes(t.trigger_id)} onChange={e=>{if(e.target.checked)setHandles(h=>({...h,[t.trigger_id]:{current:null}}));setIds(e.target.checked?[...ids,t.trigger_id]:ids.filter(id=>id!==t.trigger_id));setError('')}}/>
+   <span>{t.name}{t.state!=='enabled'?'（未启用）':''}</span>
+  </label>)}</div>
+  {!available.length&&<p role="status">没有适合此范围的触发器。请先在告警触发页创建，再返回关联。</p>}
+  <a href="/alarm-analysis" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center text-primary underline">在新页面管理触发器，返回后点刷新库</a>
+  {ids.map(id=>{const t=available.find(t=>t.trigger_id===id);if(!t)return <p key={id} role="alert">已选触发器不可用，请取消勾选或撤销本处修改。</p>;return <div key={id} className="border-t border-line pt-3">
+   <AssignmentEditor sourceId={props.sourceId} geometryRevision={props.geometryRevision} zone={props.zone} definitions={[t]} sources={props.sources} defaultTriggerId={id}
+    workspace={handles[id]!} onDirectionChange={props.onDirectionChange}
+    onApply={(assignment,labelVersion)=>values.current.set(id,{assignment,labelVersion})}/>
+  </div>})}
+  {error&&<p role="alert" className="text-danger">{error}</p>}
+
  </section>
 }

@@ -1,18 +1,17 @@
 import {render,screen,fireEvent} from '@testing-library/react'
 import {it,expect,vi} from 'vitest'
-import {AssignmentPicker} from '@/pages/AlarmCenter/AssignmentPicker'
+import {AssignmentPicker} from './WorkspaceEditorHarness'
 import {createArmingDraft} from '@/features/armingDraft'
 import type {TriggerDefinition} from '@/features/alarmDefinitions'
 const definitions:TriggerDefinition[]=['t1','t2'].map(id=>({trigger_id:id,name:id,behavior:'appearance',labels:[{label_id:'person',name:'人'}],duration_ms:0,alarm_enabled:true,state:'enabled',schedule:{mode:'always'},version:1}))
 const source={channel_id:'ai',channel_name:'检测',input_stream_id:'cam',input_name:'门',label_map_version:'l',geometry_revision:'g',tracking_available:true,labels:[{class_id:0,label_id:'person',name:'人',description:''}]}
 it('configures multiple selections independently then applies one atomic batch',()=>{
  const apply=vi.fn()
- render(<AssignmentPicker sourceId="cam" geometryRevision="g" zone={null} definitions={definitions} sources={[source]} onDirectionChange={vi.fn()} onApply={apply} onCancel={vi.fn()}/> )
+ render(<AssignmentPicker sourceId="cam" geometryRevision="g" zone={null} definitions={definitions} sources={[source]} onDirectionChange={vi.fn()} onApply={apply}/> )
  fireEvent.click(screen.getByLabelText('t1'));fireEvent.click(screen.getByLabelText('t2'))
- fireEvent.click(screen.getByRole('button',{name:'配置已选 2 项'}));fireEvent.click(screen.getByRole('button',{name:'下一项选用'}))
- expect(screen.getByRole('group',{name:'配置多项选用'})).toHaveFocus()
+ expect(screen.getAllByLabelText('AI 处理器')).toHaveLength(2)
  expect(apply).not.toHaveBeenCalled()
- fireEvent.click(screen.getByRole('button',{name:'全部加入布防草稿'}))
+ fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
  expect(apply).toHaveBeenCalledOnce();expect(apply.mock.calls[0]![0].map((i:any)=>i.assignment.triggerId)).toEqual(['t1','t2'])
 })
 it('a duplicate in a batch leaves the entire draft unchanged and creates no undo entry',()=>{

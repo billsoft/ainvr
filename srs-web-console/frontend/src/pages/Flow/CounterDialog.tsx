@@ -45,7 +45,7 @@ export function CounterDialog({initial,labels,onCancel,onSaved,send=flowService.
  return createPortal(<div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-2 sm:p-5">
   <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby={title} className="alarm-workspace relative flex max-h-[calc(100dvh-1rem)] w-full max-w-[760px] flex-col rounded-panel bg-surface shadow-modal"
    onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();if(discard)setDiscard(false);else close()}}}>
-   <header className="border-b border-line px-6 py-4"><h2 id={title} className="text-base font-semibold">{initial?'编辑计数器':'新建计数器'}</h2>
+   <header className="relative border-b border-line py-4 pl-6 pr-16"><button type="button" aria-label="关闭" disabled={locked} onClick={close} className="absolute right-3 top-3 flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover"><X size={20} aria-hidden="true"/></button><h2 id={title} className="text-base font-semibold">{initial?'编辑计数器':'新建计数器'}</h2>
     <p className="mt-1 text-sm text-ink-subtle">这里只定义数什么、怎么数。计数线画在哪里，到实时监看的布防中选用到热区时设置。</p></header>
    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-6 py-5"><fieldset disabled={locked} className="space-y-5">
     <label className="block text-sm font-medium text-ink">名称<input ref={first} className="form-input mt-1.5" maxLength={128} placeholder="例如：客流、车辆进出" value={value.name} onChange={e=>patch({name:e.target.value})}/></label>
@@ -80,9 +80,7 @@ export function CounterDialog({initial,labels,onCancel,onSaved,send=flowService.
     <details className="rounded-panel border border-line"><summary className="cursor-pointer px-3 py-2.5 text-sm font-medium text-ink">高级</summary>
      <div className="space-y-2 border-t border-line p-3"><label className="block text-sm font-medium text-ink">短时漏检保留（秒）<input type="number" min="0" max="2" step="0.1" className="form-input mt-1.5 block w-32" value={value.max_gap_ms/1000} onChange={e=>patch({max_gap_ms:Math.round(Math.min(2,Math.max(0,Number(e.target.value)||0))*1000)})}/></label>
       <p className="text-xs text-ink-subtle">目标被遮挡片刻后同一编号恢复时，仍按一次通行计数；0 表示不保留。</p></div></details>
-    {initial&&<label className="block text-sm font-medium text-ink">状态<select className="form-input mt-1.5 w-auto" value={value.state} onChange={e=>patch({state:e.target.value as CounterInput['state']})}><option value="enabled">启用</option><option value="paused">暂停</option><option value="archived">归档</option></select></label>}
-    {initial&&value.state==='archived'&&<p className="rounded-base border border-warning bg-amber-50 p-3 text-sm">归档后从各热区解除，停止计数；已有统计保留，可在“查看已归档”中查看，不能恢复。</p>}
-    {initial&&!!initial.bindings.length&&value.state!=='archived'&&<p className="rounded-base bg-surface-page p-3 text-sm">已选用到 {initial.bindings.length} 个热区，保存后同时生效。</p>}
+    {initial&&!!initial.bindings.length&&<p className="rounded-base bg-surface-page p-3 text-sm">已选用到 {initial.bindings.length} 个热区，保存后同时生效。</p>}
    </fieldset>
    {error&&<p role="alert" className="rounded-base border border-danger bg-danger-50 p-3 text-sm text-danger-700">{error}</p>}</div>
    <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-line px-6 py-3">
@@ -90,7 +88,7 @@ export function CounterDialog({initial,labels,onCancel,onSaved,send=flowService.
     <button type="button" className="btn-primary" disabled={saving} onClick={()=>void save()}><Save size={16} aria-hidden="true"/>{saving?'保存中…':session.hasPending()?'重试保存':'保存'}</button>
    </footer>
    {discard&&<div className="absolute inset-0 z-10 flex items-center justify-center rounded-panel bg-black/30 p-4"><section ref={discardPanel} role="alertdialog" aria-label="放弃计数器修改" className="w-full max-w-sm space-y-3 rounded-panel bg-surface p-5 shadow-modal">
-    <p className="text-base font-semibold">放弃尚未保存的修改？</p><div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setDiscard(false)}>继续编辑</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={onCancel}>放弃修改</button></div></section></div>}
+    <header className="flex items-center justify-between gap-2"><p className="text-base font-semibold">放弃尚未保存的修改？</p><button type="button" aria-label="关闭" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base hover:bg-surface-hover" onClick={()=>setDiscard(false)}><X size={20} aria-hidden="true"/></button></header><div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setDiscard(false)}>继续编辑</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={onCancel}>放弃修改</button></div></section></div>}
   </div>
  </div>,host)
 }

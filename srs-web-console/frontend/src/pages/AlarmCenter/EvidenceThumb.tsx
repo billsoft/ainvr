@@ -1,4 +1,5 @@
 import {useEffect,useRef,useState} from 'react'
+import {ImageOff,Image} from 'lucide-react'
 import {request,requestBlob} from '@/api/httpClient'
 
 // Thumbnails load only when scrolled into view, a few at a time: a page of 50
@@ -11,8 +12,9 @@ function slot(){return new Promise<()=>void>(resolve=>{
  if(loading<MAX_LOADING)take();else waiting.push(take)
 })}
 export function EvidenceThumb({eventId,label,onOpen,compact=false}:{eventId:string;label:string;onOpen?:()=>void;compact?:boolean}){
- const [url,setUrl]=useState<string|null>(null),[missing,setMissing]=useState(false),[visible,setVisible]=useState(typeof IntersectionObserver==='undefined')
- const box=useRef<HTMLButtonElement>(null)
+ const [picture,setPicture]=useState<{eventId:string;url:string|null;missing:boolean}|null>(null),[visible,setVisible]=useState(typeof IntersectionObserver==='undefined')
+ const url=picture?.eventId===eventId?picture.url:null,missing=picture?.eventId===eventId&&picture.missing
+ const box=useRef<HTMLSpanElement>(null)
  useEffect(()=>{
   if(visible||!box.current)return
   const observer=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting)){setVisible(true);observer.disconnect()}},{rootMargin:'200px'})
@@ -20,17 +22,21 @@ export function EvidenceThumb({eventId,label,onOpen,compact=false}:{eventId:stri
  },[visible])
  useEffect(()=>{
   if(!visible)return
-  let active=true,objectUrl:string|null=null,release:(()=>void)|null=null;setUrl(null);setMissing(false)
-  void slot().then(free=>{release=free;if(!active){free();return}
-   return request<{state:string}>(`/alarms/behavior-events/${encodeURIComponent(eventId)}/evidence`,{signal:AbortSignal.timeout(20000)})
-    .then(v=>v.state==='available'?requestBlob(`/alarms/behavior-events/${encodeURIComponent(eventId)}/evidence/image?variant=processed`,AbortSignal.timeout(20000)):null)
-    .then(blob=>{if(!active)return;if(!blob){setMissing(true);return}objectUrl=URL.createObjectURL(blob);setUrl(objectUrl)})
-    .catch(()=>{if(active)setMissing(true)})
+  let active=true,objectUrl:string|null=null
+  const controller=new AbortController(),signal=AbortSignal.any([controller.signal,AbortSignal.timeout(20000)])
+  void slot().then(free=>{if(!active){free();return}
+   return request<{state:string}>(`/alarms/behavior-events/${encodeURIComponent(eventId)}/evidence`,{signal})
+    .then(v=>v.state==='available'?requestBlob(`/alarms/behavior-events/${encodeURIComponent(eventId)}/evidence/image?variant=processed`,signal):null)
+    .then(blob=>{if(!active)return;if(!blob){setPicture({eventId,url:null,missing:true});return}objectUrl=URL.createObjectURL(blob);setPicture({eventId,url:objectUrl,missing:false})})
+    .catch(()=>{if(active)setPicture({eventId,url:null,missing:true})})
     .finally(free)})
-  return()=>{active=false;release?.();if(objectUrl)URL.revokeObjectURL(objectUrl)}
+  return()=>{active=false;controller.abort();if(objectUrl)URL.revokeObjectURL(objectUrl)}
  },[eventId,visible])
- return <button ref={box} type="button" onClick={onOpen} aria-label={`放大查看${label}截图`} className="relative aspect-[4/3] w-full overflow-hidden rounded-card bg-slate-800">
-  {url?<img src={url} alt="" className="h-full w-full object-cover"/>:!compact&&<span className="flex h-full items-center justify-center text-xs text-slate-300">{missing?'截图不可用':visible?'读取中…':''}</span>}
-  {!compact&&<span className="absolute bottom-1.5 left-1.5 rounded bg-slate-900/80 px-2 py-0.5 text-xs text-white">{label}</span>}
- </button>
+ const content=<>
+  {url?<img src={url} alt="" className="h-full w-full object-contain"/>:<span className="flex h-full flex-col items-center justify-center gap-1 text-xs text-slate-300">{missing?<ImageOff size={18} aria-hidden="true"/>:<Image size={18} aria-hidden="true"/>}{!compact&&(missing?'截图不可用':visible?'读取中…':'')}</span>}
+  {!compact&&<span className="absolute bottom-1 left-1 rounded bg-slate-900/80 px-1.5 py-0.5 text-xs text-white">{label}</span>}
+ </>
+ return <span ref={box} className="relative block aspect-[4/3] w-full overflow-hidden rounded-base bg-slate-800">
+  {onOpen?<button type="button" onClick={onOpen} aria-label={`查看${label}截图与详情`} className="absolute inset-0 h-full !min-h-11 w-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary">{content}</button>:<span role="img" aria-label={`${label}截图`} className="absolute inset-0">{content}</span>}
+ </span>
 }

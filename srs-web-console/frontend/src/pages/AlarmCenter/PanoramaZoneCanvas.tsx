@@ -1,11 +1,13 @@
 import {useEffect,useMemo,useRef,useState} from 'react'
 import * as T from 'three'
+import type {ZoneReference} from './ZoneReferenceLayer'
 import type {ZonePoint} from '@/features/alarmGeometry'
 import {erpToViewport,viewportToErp} from '@/components/player/panoramaCoordinates'
 import {projectErpSegment} from '@/components/player/panoramaDetection'
 
 interface Props {
   url:string
+  referenceZones?:ZoneReference[]
   points:ZonePoint[]
   erpWrap?:boolean
   pan?:boolean
@@ -19,7 +21,7 @@ interface Props {
 
 /** Frozen reference only; never opens a second live media connection. Edits are
  * committed as source ERP coordinates, independent of view direction and zoom. */
-export function PanoramaZoneCanvas({url,points,locked,finished,selected,onSelect,onAdd,onChange,erpWrap=false,pan=false}:Props){
+export function PanoramaZoneCanvas({url,points,locked,finished,selected,onSelect,onAdd,onChange,erpWrap=false,pan=false,referenceZones=[]}:Props){
   const host=useRef<HTMLDivElement>(null)
   const [size,setSize]=useState({width:800,height:450})
   const [view,setView]=useState({yaw:0,pitch:0,fov:75})
@@ -79,7 +81,7 @@ export function PanoramaZoneCanvas({url,points,locked,finished,selected,onSelect
   }
   const visible=preview??points
   const edges=visible.flatMap((p,i)=>{
-    if(!finished&&i===visible.length-1)return []
+    if(visible.length<3&&i===visible.length-1)return []
     const q=visible[(i+1)%visible.length];if(!q)return []
     return projectErpSegment(p,q,matrix,size.width,size.height,erpWrap)
   })
@@ -120,7 +122,14 @@ export function PanoramaZoneCanvas({url,points,locked,finished,selected,onSelect
           if(pan||navigate||locked||!ready||finished)return
           const p=source(e.clientX,e.clientY);if(p)onAdd(p)
         }}>
-        {finished&&visible.map((p,i)=>{const q=visible[(i+1)%visible.length]!;let dx=q[0]-p[0];if(erpWrap)dx-=Math.round(dx);const at=erpToViewport([p[0]+dx/2,(p[1]+q[1])/2],matrix,size.width,size.height);return at?<text key={i} x={at[0]} y={at[1]} fill="white" stroke="black" strokeWidth="3" paintOrder="stroke" fontSize="16" className="pointer-events-none">边 {i+1}</text>:null})}
+        <g role="img" aria-label="已有热区参考" className="pointer-events-none">
+          {referenceZones.map(z=>{
+            const paths=z.points.flatMap((p,i)=>projectErpSegment(p,z.points[(i+1)%z.points.length]!,matrix,size.width,size.height,!!z.erpWrap))
+            const label=z.points.map(p=>erpToViewport(p,matrix,size.width,size.height)).find(p=>p!==null)
+            return <g key={z.id}><path d={paths.map(([a,b])=>`M${a[0]},${a[1]}L${b[0]},${b[1]}`).join(' ')} fill="none" stroke="#bae6fd" strokeWidth="2" strokeDasharray="6 4"/>{label&&<text x={label[0]+4} y={Math.max(18,label[1]-6)} fill="#e0f2fe" stroke="#0f172a" strokeWidth="3" paintOrder="stroke" fontSize="14">{z.name}</text>}</g>
+          })}
+        </g>
+        {visible.length>=3&&visible.map((p,i)=>{const q=visible[(i+1)%visible.length]!;let dx=q[0]-p[0];if(erpWrap)dx-=Math.round(dx);const at=erpToViewport([p[0]+dx/2,(p[1]+q[1])/2],matrix,size.width,size.height);return at?<text key={i} x={at[0]} y={at[1]} fill="white" stroke="black" strokeWidth="3" paintOrder="stroke" fontSize="16" className="pointer-events-none">边 {i+1}</text>:null})}
         <path d={edges.map(([a,b])=>`M${a[0]},${a[1]}L${b[0]},${b[1]}`).join(' ')} fill="none" stroke="#60a5fa" strokeWidth="2" className="pointer-events-none"/>
       </svg>
       {visible.map((p,i)=>{

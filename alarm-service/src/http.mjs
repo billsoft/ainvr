@@ -1,4 +1,5 @@
 // Copyright AINVR. Independent HTTP application; no AI-service business routes.
+import {observationBarrier} from './observation-barrier.mjs';
 import Fastify from 'fastify';
 import {timingSafeEqual} from 'node:crypto';
 import {DomainError,identity,fail} from './domain.mjs';
@@ -37,6 +38,27 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
     review:{available:false,reason:'No validated BPU review executor configured'},notification:{available:false},
     schedules:['always','weekly'],limits:{bulk_items:200}}));
   app.post('/v1/flow/query',async req=>repository.flow.query(req.body));
+  app.post('/v1/flow/purge',async req=>{
+    identity(req.body?.counter_id,'counter_id');
+    if(!Array.isArray(req.body?.rule_ids)||!req.body.rule_ids.length||req.body.rule_ids.length>1000)fail('invalid_purge','Binding IDs required');
+    req.body.rule_ids.forEach(id=>identity(id,'rule_id'));
+    return observationBarrier(repository).configure(async()=>{
+      await observationBarrier(repository).drain(async()=>{
+        const snapshot=await repository.ruleSnapshots.current();
+        if(!snapshot||snapshot.rules.some(r=>r.counter_id===req.body?.counter_id))fail('counter_active','Stop counting before deleting records',409);
+        // A prepared frame can still materialize old rules after a snapshot update.
+        // Retry instead of claiming deletion while any worker or matching replay is pending.
+        const pending=await repository.checkpoints.findOne({$or:[
+          {lease_until:{$gt:Date.now()}},
+          {'pending.events.rule.snapshot.counter_id':req.body?.counter_id},
+          {'pending.coverage.assignment_id':{$in:Array.isArray(req.body?.rule_ids)?req.body.rule_ids:[]}}
+        ]});
+        if(pending)fail('consumer_busy','Finish pending observations before deleting records',503);
+      });
+      // Admissions resume; publication remains fenced until deletion finishes.
+      return repository.flow.purge(req.body);
+    });
+  });
   app.get('/v1/behavior-statistics',async req=>{
     const allowed=new Set(['from','to','channel_id','zone_id','label_id','event_type','bucket','timezone','rule_id','trigger_id','group_by']);
     if(Object.keys(req.query).some(key=>!allowed.has(key)))fail('invalid_query','Unsupported statistics filter');
@@ -76,7 +98,7 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
   });
   app.get('/v1/rules',async req=>({items:await repository.listRules(req.query.channel_id)}));
   app.get('/v1/configuration/rules',async()=>repository.ruleSnapshots.status());
-  app.post('/v1/configuration/rules',async req=>repository.ruleSnapshots.apply(req.body,actor(req)));
+  app.post('/v1/configuration/rules',async req=>observationBarrier(repository).configure(()=>repository.ruleSnapshots.apply(req.body,actor(req))));
   app.post('/v1/rules',async(req,reply)=>reply.code(405).header('Allow','GET').send({error:{code:'configuration_authority',message:'Save monitors in the configuration service; direct rule writes are disabled'}}));
   app.post('/v1/dry-runs',async req=>{
     actor(req);const body=req.body;

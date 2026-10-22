@@ -14,7 +14,7 @@ export function FlowChart({series,slots,bucket,label}:Props){
  const shown=active===null?null:slots[active]
  return <figure className="space-y-2" aria-label={label}>
   <div className="flex flex-wrap items-center gap-4 text-xs text-ink-subtle">{series.map(s=><span key={s.name} className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm" style={{background:s.color}}/>{s.name}</span>)}
-   <span className="ml-auto min-h-[1rem] text-ink">{shown?`${new Date(shown.from).toLocaleString('zh-CN',bucket==='hour'?{month:'numeric',day:'numeric',hour:'numeric'}:{month:'numeric',day:'numeric'})}${bucket==='hour'?'时':''}：${series.map((s,i)=>`${s.name} ${values[active!]![i]}`).join('，')}`:'点柱子查看数值'}</span></div>
+   <span className="ml-auto min-h-[1rem] text-ink">{shown?`${periodName(shown.from,bucket)}：${series.map((s,i)=>`${s.name} ${values[active!]![i]}`).join('，')}`:'点柱子查看数值'}</span></div>
   <svg viewBox={`0 0 ${W} ${H}`} className="h-48 w-full" role="img" aria-label={`${label}：${series.map(s=>`${s.name}共${s.buckets.reduce((n,b)=>n+b.occurrences,0)}`).join('，')}`}>
    {Array.from({length:Math.round(top/step)+1},(_,i)=>{const v=i*step,y=8+plotH-v/top*plotH;return <g key={v}><line x1={left} x2={W-8} y1={y} y2={y} stroke="currentColor" className="text-line" strokeWidth="1"/><text x={left-6} y={y+4} textAnchor="end" fontSize="11" className="fill-ink-faint">{v}</text></g>})}
    {slots.map((s,i)=>{const x=left+i*slot,group=bar*series.length,start=x+(slot-group)/2;return <g key={s.from} onMouseEnter={()=>setActive(i)} onClick={()=>setActive(i)} className="cursor-pointer">
@@ -25,6 +25,8 @@ export function FlowChart({series,slots,bucket,label}:Props){
   </svg>
  </figure>
 }
+/** "10/21 14时" or "10/21"; locale output may or may not already end in 时. */
+function periodName(from:string,bucket:'hour'|'day'){const d=new Date(from);return `${d.getMonth()+1}/${d.getDate()}${bucket==='hour'?` ${d.getHours()}时`:''}`}
 function niceStep(max:number){const raw=max/4,p=10**Math.floor(Math.log10(raw)),n=raw/p;return Math.max(1,(n<=1?1:n<=2?2:n<=5?5:10)*p)}
 /** Period starts between from and to in local time. */
 export function periodSlots(from:Date,to:Date,bucket:'hour'|'day'){

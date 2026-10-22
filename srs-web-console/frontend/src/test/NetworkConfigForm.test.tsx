@@ -36,6 +36,22 @@ describe('NetworkConfigForm（配置中心 · 网络管理分类）', () => {
     mocks.getFallback.mockResolvedValue(null)
   })
 
+  it('leaving the page cancels the delayed refresh after applying network settings', async () => {
+    vi.useFakeTimers()
+    try {
+      mocks.applyIpConfig.mockResolvedValue({ rollbackSeconds: 30 })
+      const view = render(<NetworkConfigForm />)
+      await act(async () => {})
+      fireEvent.click(screen.getByRole('button', { name: /IP 配置/ }))
+      fireEvent.click(screen.getByRole('button', { name: '应用配置' }))
+      await act(async () => {})
+      view.unmount()
+      mocks.listInterfaces.mockClear()
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(mocks.listInterfaces).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+  })
+
   it('渲染网卡列表：名称、类型、连接状态、IP', async () => {
     render(<NetworkConfigForm />)
     expect(await screen.findByText('eth0')).toBeInTheDocument()

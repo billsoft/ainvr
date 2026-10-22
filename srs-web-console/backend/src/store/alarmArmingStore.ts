@@ -23,7 +23,7 @@ type Arming={coordinate_space?:'planar'|'erp';source_id:string;geometry_revision
 type Lookup=(processorId:string)=>Promise<AssignmentSource|null>;
 function fail(code:string,message:string):never{
   const status=code==='source_unavailable'?503:
-    ['version_conflict','idempotency_conflict','source_changed','assignment_identity','binding_identity','archived_trigger','archived_counter'].includes(code)?409:422;
+    ['version_conflict','idempotency_conflict','source_changed','assignment_identity','binding_identity','archived_trigger','counter_deleting'].includes(code)?409:code==='not_found'?404:422;
   throw new AlarmConfigError(code,message,status);
 }
 function geometry(points:[number,number][]){
@@ -154,8 +154,7 @@ export class AlarmArmingStore {
     return this.operation('counter',definition,expected,actor,key,async c=>{
       const old=(await c.query('SELECT document,version FROM flow_counter_definitions WHERE counter_id=$1',[definition.counter_id])).rows[0];
       if((old?.version??0)!==expected)fail('version_conflict','计数器已变化，请重新读取');
-      if(old?.document.state==='archived')fail('archived_counter','已归档计数器不能修改');
-      if(!old&&definition.state==='archived')fail('invalid_counter','新计数器不能直接归档');
+      if(old?.document.deleting)fail('counter_deleting','计数器正在删除，不能修改');
       if(old&&old.document.method!==definition.method)fail('invalid_counter','已有计数器不能更改计数方式，请新建计数器');
       const version=expected+1;
       await c.query('INSERT INTO flow_counter_definitions(counter_id,version,document) VALUES($1,$2,$3) ON CONFLICT(counter_id) DO UPDATE SET version=EXCLUDED.version,document=EXCLUDED.document,updated_at=now()',[definition.counter_id,version,JSON.stringify(definition)]);
@@ -179,17 +178,49 @@ export class AlarmArmingStore {
         const same=(a:any,b:any)=>!!a&&!!b&&isDeepStrictEqual({...a,name:0,trigger_version:0,version:0,source_binding:{...a.source_binding,not_before:0}},{...b,name:0,trigger_version:0,version:0,source_binding:{...b.source_binding,not_before:0}});
         const keep=rule&&same(rule,row.compiled_rule);
         if(keep)rule={...rule,version:row.execution_version,source_binding:row.compiled_rule.source_binding};
-        await c.query('UPDATE flow_counter_bindings SET compiled_rule=$2,execution_version=$3,active=$4,updated_at=now() WHERE binding_id=$1',[row.binding_id,rule?JSON.stringify(rule):null,keep?row.execution_version:row.execution_version+1,definition.state!=='archived']);
-      }
-      if(definition.state==='archived'){
-        for(const sourceId of new Set(rows.map(r=>r.source_id))){
-          const row=(await c.query('SELECT document,revision FROM alarm_arming_sources WHERE source_id=$1',[sourceId])).rows[0];
-          const doc=row.document as Arming;doc.counter_bindings=(doc.counter_bindings??[]).filter(b=>b.counter_id!==definition.counter_id);
-          await this.writeSource(c,doc,row.revision+1,actor);
-        }
+        await c.query('UPDATE flow_counter_bindings SET compiled_rule=$2,execution_version=$3,updated_at=now() WHERE binding_id=$1',[row.binding_id,rule?JSON.stringify(rule):null,keep?row.execution_version:row.execution_version+1]);
       }
       return {saved:true as const,counter:{...definition,version},application:{state:'pending' as const,desired_revision:await this.bump(c)}};
     });
+  }
+  /** Deleting, step 1: stop counting everywhere and mark the counter. A retry of an
+   * unfinished delete is accepted at any version. Returns every binding whose records must go. */
+  async beginDeleteCounter(counterId:string,expected:number,actor:string,key:string){
+    return this.operation('delete-counter',{counterId},expected,actor,key,async c=>{
+      const old=(await c.query('SELECT document,version FROM flow_counter_definitions WHERE counter_id=$1',[counterId])).rows[0];
+      if(!old)fail('not_found','计数器不存在');
+      const rows=(await c.query('SELECT binding_id,source_id,active FROM flow_counter_bindings WHERE counter_id=$1 ORDER BY binding_id',[counterId])).rows;
+      if(!old.document.deleting){
+        if(old.version!==expected)fail('version_conflict','计数器已变化，请重新读取');
+        for(const sourceId of new Set(rows.filter(r=>r.active).map(r=>r.source_id))){
+          const row=(await c.query('SELECT document,revision FROM alarm_arming_sources WHERE source_id=$1',[sourceId])).rows[0];
+          const doc=row.document as Arming;doc.counter_bindings=(doc.counter_bindings??[]).filter(b=>b.counter_id!==counterId);
+          await this.writeSource(c,doc,row.revision+1,actor);
+        }
+        await c.query('UPDATE flow_counter_bindings SET active=FALSE,compiled_rule=NULL,updated_at=now() WHERE counter_id=$1',[counterId]);
+        const document={...old.document,deleting:true};
+        await c.query('UPDATE flow_counter_definitions SET version=$2,document=$3,updated_at=now() WHERE counter_id=$1',[counterId,old.version+1,JSON.stringify(document)]);
+        await c.query('INSERT INTO flow_counter_definition_versions(counter_id,version,document,actor) VALUES($1,$2,$3,$4)',[counterId,old.version+1,JSON.stringify(document),actor]);
+        await this.bump(c);
+      }
+      return {binding_ids:rows.map(r=>r.binding_id as string)};
+    });
+  }
+  /** Deleting, step 2 (after the records are purged): remove the definition and its history. */
+  async finishDeleteCounter(counterId:string){
+    const c=await this.pool.connect();
+    try{
+      await c.query('BEGIN');await c.query("SELECT pg_advisory_xact_lock(hashtextextended('alarm-arming-configuration',0))");
+      const old=(await c.query('SELECT document FROM flow_counter_definitions WHERE counter_id=$1',[counterId])).rows[0];
+      // A successful delete can be replayed after its response was lost.
+      if(!old){await c.query('COMMIT');return;}
+      if(!old.document.deleting)fail('invalid_counter','计数器未在删除中');
+      await c.query('DELETE FROM flow_counter_binding_versions WHERE binding_id IN (SELECT binding_id FROM flow_counter_bindings WHERE counter_id=$1)',[counterId]);
+      await c.query('DELETE FROM flow_counter_bindings WHERE counter_id=$1',[counterId]);
+      await c.query('DELETE FROM flow_counter_definition_versions WHERE counter_id=$1',[counterId]);
+      await c.query('DELETE FROM flow_counter_definitions WHERE counter_id=$1',[counterId]);
+      await c.query('COMMIT');
+    }catch(e){await c.query('ROLLBACK').catch(()=>undefined);throw e;}finally{c.release();}
   }
   /** All binding rows of the given counters, removed ones included, for history queries. */
   async counterBindings(counterIds:string[]){
@@ -273,7 +304,7 @@ export class AlarmArmingStore {
         const previous=(await c.query('SELECT source_id,counter_id,execution_version,compiled_rule,active FROM flow_counter_bindings WHERE binding_id=$1',[b.binding_id])).rows[0];
         if(previous&&(previous.source_id!==doc.source_id||previous.counter_id!==b.counter_id))fail('binding_identity','计数选用编号不能迁移到其他来源或计数器');
         const counter=(await c.query('SELECT document,version FROM flow_counter_definitions WHERE counter_id=$1',[b.counter_id])).rows[0];
-        if(!counter||counter.document.state==='archived')fail('counter_unavailable','计数器不存在或已归档');
+        if(!counter||counter.document.deleting)fail('counter_unavailable','计数器不存在或正在删除');
         const source=await lookup(b.processor_id);
         if(!source)fail('source_unavailable','来源暂不可用，请保留草稿');
         await this.writeBinding(c,doc.source_id,b,counter.document,counter.version,source,doc.zones.find(z=>z.zone_id===b.zone_id)??null,previous);

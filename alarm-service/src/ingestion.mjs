@@ -1,4 +1,5 @@
 // Copyright AINVR. Durable prepare/materialize/checkpoint protocol for standalone Mongo.
+import {observationBarrier} from './observation-barrier.mjs';
 import {randomUUID} from 'node:crypto';
 import {digest,fail,identity,integerText,validateFrame} from './domain.mjs';
 import {evaluate} from './engine.mjs';
@@ -10,6 +11,10 @@ export class ObservationConsumer {
     this.now=now;this.leaseMs=leaseMs;this.hook=hook;
   }
   async consume(envelope) {
+    const release=observationBarrier(this.repository).enter();
+    try{return await this.consumeFrame(envelope);}finally{release();}
+  }
+  async consumeFrame(envelope) {
     if(!envelope||envelope.schema_version!=='1.0')fail('invalid_envelope','Unsupported input envelope');
     const producer=identity(envelope.producer_id,'producer_id');
     const offset=integerText(envelope.offset,'offset');

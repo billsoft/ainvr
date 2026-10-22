@@ -1,5 +1,7 @@
+import {useWorkspaceDraft,type WorkspaceDraftRef} from './workspaceDraft'
+import {Unlink} from 'lucide-react'
 import {unwrapErp} from '@/features/erpGeometry'
-import {useEffect,useState} from 'react'
+import {useEffect,useRef,useState} from 'react'
 import type {AlarmSource} from '@/api/alarmTriggerService'
 import {newAlarmOperationId} from '@/api/alarmZoneService'
 import type {DraftZone,DraftAssignment} from '@/features/armingDraft'
@@ -7,19 +9,23 @@ import type {TriggerDefinition} from '@/features/alarmDefinitions'
 import {edgeNames,sameLabel,sourceSize} from '@/features/alarmTriggers'
 interface Props {
  sourceId:string;geometryRevision:string;zone:DraftZone|null;
- defaultTriggerId?:string;applyLabel?:string;
+ workspace:WorkspaceDraftRef;
+ defaultTriggerId?:string;
  definitions:TriggerDefinition[];sources:AlarmSource[];initial?:DraftAssignment;
  onDirectionChange?:(edges:{entry:string[];exit:string[]})=>void;
- onApply:(assignment:DraftAssignment,labelMapVersion:string)=>void;onCancel:()=>void
+ onApply:(assignment:DraftAssignment,labelMapVersion:string)=>void
+ /** Present when editing an existing selection: takes it out of the draft. */
+ onRemove?:()=>void
 }
 /** Only updates the parent arming draft. No network mutation occurs here. */
-export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sources,initial,onApply,onCancel,onDirectionChange,defaultTriggerId,applyLabel='加入布防草稿'}:Props){
+export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sources,initial,onApply,onRemove,onDirectionChange,defaultTriggerId,workspace}:Props){
  const [triggerId,setTriggerId]=useState(initial?.triggerId??defaultTriggerId??'')
  const [processorId,setProcessorId]=useState(initial?.processorId??'')
  const [entry,setEntry]=useState(initial?.entryEdges??[]),[exit,setExit]=useState(initial?.exitEdges??[])
  useEffect(()=>{onDirectionChange?.({entry,exit})},[entry,exit,onDirectionChange])
  const [distance,setDistance]=useState(initial?.approachWidthPercent?.toString()??'')
  const [error,setError]=useState('')
+ const [directionConfirmed,setDirectionConfirmed]=useState(!initial?.needsDirectionConfirmation)
  const available=definitions.filter(d=>d.state!=='archived'&&(!d.migration_review?.required||d.trigger_id===initial?.triggerId)&&(zone||d.behavior==='appearance'))
  const trigger=available.find(d=>d.trigger_id===triggerId)
  const compatible=sources.filter(s=>s.input_stream_id===sourceId&&s.geometry_revision===geometryRevision&&s.tracking_available&&trigger&&trigger.labels.every(l=>s.labels.some(v=>sameLabel(l,v))))
@@ -29,14 +35,17 @@ export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sou
  const distanceValue=distance===''?undefined:Number(distance)
  const badDistance=trigger?.behavior==='region_approach'&&distanceValue!==undefined&&(!Number.isFinite(distanceValue)||distanceValue<=0||distanceValue>100)
  const invalidEdges=zone&&[...entry,...exit].some(e=>!zone.edgeIds.includes(e))
+ const generatedId=useRef(newAlarmOperationId())
+ const original=useRef(JSON.stringify({triggerId,processorId,entry,exit,distance}))
  const apply=()=>{
-  if(!trigger||!effective||badDistance||invalidEdges)return
-  try{onApply({id:initial?.id??newAlarmOperationId(),triggerId:trigger.trigger_id,processorId:effective.channel_id,zoneId:zone?.id??null,
+  if(!trigger||!effective||badDistance||invalidEdges||!directionConfirmed){setError('请先选择兼容的触发器、处理器并检查方向和距离。');return false}
+  try{onApply({id:initial?.id??generatedId.current,triggerId:trigger.trigger_id,processorId:effective.channel_id,zoneId:zone?.id??null,
    entryEdges:directional?entry:[],exitEdges:trigger.behavior==='region_traverse'?exit:[],
    version:initial?.version??0,needsDirectionConfirmation:false,
-   ...(trigger.behavior==='region_approach'&&distanceValue!==undefined?{approachWidthPercent:distanceValue}:{})},effective.label_map_version)}
-  catch(e){setError(e instanceof Error?e.message:'不能加入草稿')}
+   ...(trigger.behavior==='region_approach'&&distanceValue!==undefined?{approachWidthPercent:distanceValue}:{})},effective.label_map_version);return true}
+  catch(e){setError(e instanceof Error?e.message:'不能加入草稿');return false}
  }
+ useWorkspaceDraft(workspace,{flush:()=>!initial&&!triggerId?true:apply(),dirty:()=>JSON.stringify({triggerId,processorId,entry,exit,distance})!==original.current||!!defaultTriggerId})
  const button='btn-secondary aria-pressed:border-primary aria-pressed:bg-primary-50 aria-pressed:text-primary'
  const field='form-input'
  return <section aria-label="选用触发器" className="space-y-3 rounded border border-line p-4">
@@ -57,9 +66,9 @@ export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sou
     {trigger.behavior==='region_traverse'&&<><p>离开方向（未选边表示不限；同边返回不算穿过）</p><div className="flex flex-wrap gap-2">{zone.edgeIds.map((id,i)=><button type="button" className={`${button} ${exit.includes(id)?'border-orange-600 bg-orange-100 text-orange-900':''}`} key={id} aria-pressed={exit.includes(id)} onClick={()=>{setExit(exit.includes(id)?exit.filter(e=>e!==id):[...exit,id]);setEntry(entry.filter(e=>e!==id))}}>离开边 {i+1} · {names[i]}</button>)}</div></>}
    </fieldset>}
   </>}
+  {initial?.needsDirectionConfirmation&&<label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={directionConfirmed} onChange={e=>setDirectionConfirmed(e.target.checked)}/>已核对当前热区的进入和离开方向</label>}
   {invalidEdges&&<p role="alert">区域的边已变化，请清除旧方向后重新选择。<button type="button" className={button} onClick={()=>{setEntry([]);setExit([])}}>清除旧方向</button></p>}
   {badDistance&&<p role="alert">接近范围必须大于 0 且不超过画面宽度的 100%。</p>}{error&&<p role="alert">{error}</p>}
-  <div className="flex flex-wrap justify-end gap-2"><button type="button" className={button} onClick={onCancel}>取消选用修改</button><button type="button" className="btn-primary" disabled={!trigger||!effective||!!badDistance||!!invalidEdges} onClick={apply}>{applyLabel}</button></div>
-  <p className="text-sm text-ink-subtle">此处只更新草稿，点击“保存布防”后才应用。</p>
+  {onRemove&&<div className="flex justify-end"><button type="button" className="btn-secondary mr-auto text-danger" onClick={onRemove}><Unlink size={16} aria-hidden="true"/>移除选用</button></div>}
  </section>
 }

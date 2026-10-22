@@ -126,6 +126,22 @@ export function NetworkConfigForm({ accessHost = window.location.hostname }: { a
     setLoading(false)
   }, [showAll, accessHost, observePending])
 
+  const refreshTimers = useRef(new Set<ReturnType<typeof setTimeout>>())
+  const refreshActive = useRef(false)
+  useEffect(() => {
+    refreshActive.current = true
+    const timers = refreshTimers.current
+    return () => { refreshActive.current = false; timers.forEach(clearTimeout); timers.clear() }
+  }, [])
+  const loadLater = useCallback((delay: number) => {
+    if (!refreshActive.current) return
+    const timer = setTimeout(() => {
+      refreshTimers.current.delete(timer)
+      if (refreshActive.current) void load()
+    }, delay)
+    refreshTimers.current.add(timer)
+  }, [load])
+
   useEffect(() => { void load() }, [load])
 
   // 本地倒计时（每秒平滑递减）
@@ -155,7 +171,7 @@ export function NetworkConfigForm({ accessHost = window.location.hostname }: { a
         observePending(null, true, false)
         setPending(null)
         setCountdown(null)
-        setTimeout(() => void load(), 1000)
+        loadLater(1000)
         return
       }
       setPending(p)
@@ -177,7 +193,7 @@ export function NetworkConfigForm({ accessHost = window.location.hostname }: { a
     }
     const t = setInterval(() => void sync(), PENDING_POLL_MS)
     return () => { cancelled = true; clearInterval(t) }
-  }, [pending, pendingIface, load, observePending, autoConfirm, showAll, accessHost])
+  }, [pending, pendingIface, loadLater, observePending, autoConfirm, showAll, accessHost])
 
   const handleConfirm = async () => {
     setActing(true)
@@ -199,7 +215,7 @@ export function NetworkConfigForm({ accessHost = window.location.hostname }: { a
       await networkService.revert()
       setPending(null)
       setCountdown(null)
-      setTimeout(() => void load(), 2000)
+      loadLater(2000)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '回滚失败')
     } finally {
@@ -226,7 +242,7 @@ export function NetworkConfigForm({ accessHost = window.location.hostname }: { a
       // load() 成功回来——这次改的网卡完全可能就是当前访问用的那张。
       setPending({ iface: fallback.interface, state: 'applying', remaining: result.rollbackSeconds })
       setCountdown(result.rollbackSeconds)
-      setTimeout(() => void load(), 1500)
+      loadLater(1500)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '恢复出厂设置失败')
     } finally {
@@ -244,7 +260,7 @@ export function NetworkConfigForm({ accessHost = window.location.hostname }: { a
     setPending(prev => ({ iface: ipDialogIface ?? prev?.iface ?? '', state: 'applying', remaining: remainingSeconds }))
     setCountdown(remainingSeconds)
     setIpDialogIface(null)
-    setTimeout(() => void load(), 1500)
+    loadLater(1500)
   }
 
   const ipDialogCurrent = interfaces.find(i => i.name === ipDialogIface) || null
@@ -486,7 +502,7 @@ export function NetworkConfigForm({ accessHost = window.location.hostname }: { a
           onClose={() => setWifiDialogIface(null)}
           onConnected={() => {
             setWifiDialogIface(null)
-            setTimeout(() => void load(), 1500)
+            loadLater(1500)
           }}
         />
       )}

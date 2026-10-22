@@ -25,7 +25,7 @@ it('fullscreen arming stays inside the visible fullscreen element and retains dr
  const view=render(<ArmingModal sourceId="cam" sourceName="门" base={base} reference={reference} definitions={[]} sources={[]} send={send} onClose={vi.fn()} onSaved={vi.fn()}/>)
  try{
   expect(host.contains(screen.getByRole('dialog'))).toBe(true)
-  fireEvent.click(screen.getByRole('button',{name:'移除 门'}));fireEvent.click(screen.getByRole('button',{name:'确认移除热区'}))
+  fireEvent.click(screen.getByRole('button',{name:'选择热区 门'}));fireEvent.click(screen.getByRole('button',{name:'移除 门'}));fireEvent.click(screen.getByRole('button',{name:'确认移除热区'}))
   act(()=>{fullscreen=null;document.dispatchEvent(new Event('fullscreenchange'))})
   expect(host.contains(screen.getByRole('dialog'))).toBe(false)
   expect(screen.getByRole('dialog')).toHaveFocus()
@@ -37,7 +37,7 @@ it('fullscreen arming stays inside the visible fullscreen element and retains dr
 it('cancel discards the local zone removal without any write',()=>{
  const send=vi.fn(),close=vi.fn()
  render(<ArmingModal sourceId="cam" sourceName="门" base={base} reference={reference} definitions={[]} sources={[]} send={send} onClose={close} onSaved={vi.fn()}/> )
- fireEvent.click(screen.getByRole('button',{name:'移除 门'}));fireEvent.click(screen.getByRole('button',{name:'确认移除热区'}))
+ fireEvent.click(screen.getByRole('button',{name:'选择热区 门'}));fireEvent.click(screen.getByRole('button',{name:'移除 门'}));fireEvent.click(screen.getByRole('button',{name:'确认移除热区'}))
  expect(send).not.toHaveBeenCalled()
  fireEvent.click(screen.getByRole('button',{name:'取消'}));expect(close).not.toHaveBeenCalled()
  fireEvent.click(screen.getByRole('button',{name:'放弃布防修改'}));expect(close).toHaveBeenCalledOnce();expect(send).not.toHaveBeenCalled()
@@ -45,7 +45,7 @@ it('cancel discards the local zone removal without any write',()=>{
 it('uncertain save locks draft and retries exact operation; pending application stays pending',async()=>{
  const send=vi.fn().mockRejectedValueOnce(Error('timeout')).mockResolvedValueOnce({saved:true,sourceId:'cam',revision:2,application:{state:'pending'}}),saved=vi.fn()
  render(<ArmingModal sourceId="cam" sourceName="门" base={base} reference={reference} definitions={[]} sources={[]} send={send} onClose={vi.fn()} onSaved={saved}/> )
- fireEvent.click(screen.getByRole('button',{name:'移除 门'}));fireEvent.click(screen.getByRole('button',{name:'确认移除热区'}));fireEvent.click(screen.getByRole('button',{name:'保存布防'}))
+ fireEvent.click(screen.getByRole('button',{name:'选择热区 门'}));fireEvent.click(screen.getByRole('button',{name:'移除 门'}));fireEvent.click(screen.getByRole('button',{name:'确认移除热区'}));fireEvent.click(screen.getByRole('button',{name:'保存布防'}))
  await waitFor(()=>expect(screen.getByRole('button',{name:'重试确认保存'})).toBeEnabled())
  expect(screen.getByRole('button',{name:'取消'})).toBeDisabled()
  expect(screen.getByRole('button',{name:'新增热区'})).toBeDisabled()
@@ -57,19 +57,21 @@ it('uncertain save locks draft and retries exact operation; pending application 
 it('undo restores removed zone before a save and does not call backend',()=>{
  const send=vi.fn()
  render(<ArmingModal sourceId="cam" sourceName="门" base={base} reference={reference} definitions={[]} sources={[]} send={send} onClose={vi.fn()} onSaved={vi.fn()}/> )
- fireEvent.click(screen.getByRole('button',{name:'移除 门'}));fireEvent.click(screen.getByRole('button',{name:'确认移除热区'}));fireEvent.click(screen.getByRole('button',{name:'撤销布防修改'}))
- expect(screen.getByRole('button',{name:'编辑 门'})).toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'选择热区 门'}));fireEvent.click(screen.getByRole('button',{name:'移除 门'}));fireEvent.click(screen.getByRole('button',{name:'确认移除热区'}));fireEvent.click(screen.getByRole('button',{name:'撤销布防修改'}))
+ expect(screen.getByRole('button',{name:'选择热区 门'})).toBeInTheDocument()
  expect(screen.getByRole('button',{name:'保存布防'})).toBeDisabled();expect(send).not.toHaveBeenCalled()
 })
 
 it('closing an inner editor restores focus inside arming instead of the page background',()=>{
  render(<ArmingModal sourceId="cam" sourceName="门" base={base} reference={reference} definitions={[]} sources={[]} onClose={vi.fn()} onSaved={vi.fn()}/> )
+ fireEvent.click(screen.getByRole('button',{name:'整个画面：触发器 0，计数器 0'}))
  fireEvent.click(screen.getByRole('button',{name:'整个画面选用触发器'}))
- const cancel=screen.getByRole('button',{name:'取消选用修改'})
+ const cancel=screen.getByRole('button',{name:'返回关联'})
  cancel.focus();fireEvent.click(cancel)
- expect(screen.getByRole('dialog')).toHaveFocus()
+ expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true)
  fireEvent.keyDown(screen.getByRole('dialog'),{key:'Tab',shiftKey:true})
- expect(screen.getByRole('button',{name:'取消'})).toHaveFocus()
+ expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true)
+ expect(document.activeElement).not.toBe(screen.getByRole('dialog'))
 })
 it('picture selection is keyboard accessible and removal requires confirmation',()=>{
  const send=vi.fn(),close=vi.fn()
@@ -89,9 +91,9 @@ it('picture selection is keyboard accessible and removal requires confirmation',
 
 it('Tab stays in the removal confirmation instead of returning to the draft',()=>{
  render(<ArmingModal sourceId="cam" sourceName="门" base={base} reference={reference} definitions={[]} sources={[]} onClose={vi.fn()} onSaved={vi.fn()}/>)
- fireEvent.click(screen.getByRole('button',{name:'移除 门'}))
+ fireEvent.click(screen.getByRole('button',{name:'选择热区 门'}));fireEvent.click(screen.getByRole('button',{name:'移除 门'}))
  const root=screen.getByRole('dialog'),panel=screen.getByRole('alertdialog',{name:'确认移除热区'})
- const keep=screen.getByRole('button',{name:'保留热区'}),remove=screen.getByRole('button',{name:'确认移除热区'})
+ const keep=panel.querySelector<HTMLButtonElement>('button[aria-label="关闭"]')!,remove=screen.getByRole('button',{name:'确认移除热区'})
  expect(panel).toHaveFocus()
  fireEvent.keyDown(panel,{key:'Tab',shiftKey:true});expect(remove).toHaveFocus()
  fireEvent.keyDown(remove,{key:'Tab'});expect(keep).toHaveFocus()

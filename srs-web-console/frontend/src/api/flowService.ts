@@ -7,7 +7,7 @@ export type CounterMethod='line'|'gates'|'zone'
 export interface CounterInput {
  counter_id:string;name:string;labels:{label_id:string;name:string}[]
  method:CounterMethod;outputs:'both'|'in';names:{in:string;out:string}
- occupancy:boolean;max_gap_ms:number;state:'enabled'|'paused'|'archived'
+ occupancy:boolean;max_gap_ms:number;state:'enabled'|'paused'
 }
 export type BindingDirection=
  |{kind:'line';edge:string;in_side:'inward'|'outward'}
@@ -15,7 +15,8 @@ export type BindingDirection=
  |{kind:'edges';entry:string[];exit:string[]}
  |{kind:'angle';entry:{from:number;to:number};exit:{from:number;to:number}}
 export interface CounterUsage {binding_id:string;source_id:string;processor_id:string;zone_id:string;zone_name:string|null;active:boolean;counting:boolean;direction:BindingDirection}
-export interface Counter extends CounterInput {version:number;bindings:CounterUsage[]}
+/** deleting: counting stopped but its records are not purged yet; only a retry is possible. */
+export interface Counter extends CounterInput {version:number;bindings:CounterUsage[];deleting?:boolean}
 export interface Coverage {state:'complete'|'partial'|'no_data';gaps?:{from:string;to:string}[]}
 export interface SeriesTotal {occurrences:number;buckets:{from:string;to:string;occurrences:number}[];coverage:Coverage['state']}
 export interface ZoneSeries {occurrences:number;tracked_targets:number;coverage:Coverage;buckets:{from:string;to:string;occurrences:number}[]}
@@ -37,6 +38,8 @@ export const flowService={
   request<{from:string;to:string;items:CounterResult[]}>('/flow/query',{method:'POST',body:JSON.stringify(input),signal:AbortSignal.timeout(60000)}),
  records:(input:{counter_id:string;binding_id:string;output:'in'|'out';from:string;to:string;cursor?:string;limit?:number})=>
   request<{items:Passage[];next_cursor:string|null}>('/flow/records',{method:'POST',body:JSON.stringify(input),signal:AbortSignal.timeout(30000)}),
+ remove:(counterId:string,version:number,key:string)=>request<{deleted:true}>(`/flow/counters/${encodeURIComponent(counterId)}/delete`,{method:'POST',headers:{'Idempotency-Key':key},
+  body:JSON.stringify({expected_version:version}),signal:AbortSignal.timeout(60000)}),
  live:(sourceId:string,from:string)=>request<{items:LiveCount[]}>(`/flow/live?source_id=${encodeURIComponent(sourceId)}&from=${encodeURIComponent(from)}`,{signal:AbortSignal.timeout(15000)}),
 }
 /** Same contract as trigger definitions: an unconfirmed save keeps its key and frozen input. */

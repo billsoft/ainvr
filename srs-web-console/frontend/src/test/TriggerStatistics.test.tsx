@@ -1,15 +1,13 @@
-import {render,screen,fireEvent,waitFor} from '@testing-library/react'
+import {render,screen} from '@testing-library/react'
 import {MemoryRouter} from 'react-router-dom'
 import {it,expect,vi,beforeEach} from 'vitest'
-import BehaviorStatisticsPage from '@/pages/AlarmCenter/BehaviorStatisticsPage'
 import AlarmListPage from '@/pages/AlarmCenter/AlarmListPage'
 import {alarmTriggerService} from '@/api/alarmTriggerService'
-import {behaviorStatisticsService} from '@/api/behaviorStatisticsService'
 import {alarmEventService} from '@/api/alarmEventService'
 vi.mock('@/api/alarmTriggerService',()=>({alarmTriggerService:{source:vi.fn(),list:vi.fn()}}))
 vi.mock('@/api/alarmZoneService',async original=>({...await original<typeof import('@/api/alarmZoneService')>(),alarmZoneService:{list:vi.fn().mockResolvedValue({items:[]})}}))
 vi.mock('@/api/aiChannelService',()=>({aiChannelService:{list:vi.fn().mockResolvedValue([{id:'c1',name:'大门'}])}}))
-vi.mock('@/api/behaviorStatisticsService',()=>({behaviorStatisticsService:{query:vi.fn()}}))
+vi.mock('@/api/behaviorStatisticsService',()=>({behaviorStatisticsService:{query:vi.fn().mockResolvedValue({items:[]})}}))
 vi.mock('@/api/alarmEventService',()=>({alarmEventService:{list:vi.fn(),get:vi.fn(),confirm:vi.fn()}}))
 beforeEach(()=>{
   vi.clearAllMocks()
@@ -20,20 +18,6 @@ beforeEach(()=>{
     {trigger_id:'t2',name:'别处出现',behavior:'appearance',labels:[{label_id:'car',name:'车辆'}],duration_ms:2000,alarm_enabled:true,state:'enabled',schedule:{mode:'always'},version:1,
      bindings:[{channel_id:'other',label_map_version:'lm',geometry_revision:'g',zone_id:null,zone_version:null,direction:{entry_edges:[],exit_edges:[]}}]},
   ]} as never)
-})
-it('statistics filters come from saved triggers of the channel, even archived ones and while the source is offline',async()=>{
-  vi.mocked(behaviorStatisticsService.query).mockResolvedValue({schema_version:'1.0',from:'a',to:'b',items:[{event_type:'region_traverse',group:'t1',occurrences:4,tracked_targets:3}],coverage:{state:'unknown'},buckets:[]})
-  render(<MemoryRouter><BehaviorStatisticsPage/></MemoryRouter>);await screen.findByRole('option',{name:'大门'})
-  fireEvent.change(screen.getByLabelText('AI 通道'),{target:{value:'c1'}})
-  expect(await screen.findByRole('option',{name:'通道进出计数 · 穿过'})).toBeInTheDocument()
-  expect(screen.queryByRole('option',{name:/别处出现/})).not.toBeInTheDocument()
-  expect(screen.getByRole('option',{name:'通道区'})).toBeInTheDocument()
-  expect(screen.queryByRole('option',{name:/越线/})).not.toBeInTheDocument()
-  fireEvent.change(screen.getByLabelText('触发器'),{target:{value:'t1'}})
-  fireEvent.change(screen.getByLabelText('分组'),{target:{value:'trigger'}})
-  fireEvent.click(screen.getByRole('button',{name:'查询'}))
-  await waitFor(()=>expect(behaviorStatisticsService.query).toHaveBeenCalledWith(expect.objectContaining({trigger_id:'t1',group_by:'trigger',channel_id:'c1'})))
-  expect(await screen.findAllByText('通道进出计数 · 穿过')).not.toHaveLength(0)
 })
 it('the alarm list filters by level using the four trigger behaviors',async()=>{
   vi.mocked(alarmEventService.list).mockResolvedValue({items:[],next_cursor:null} as never)

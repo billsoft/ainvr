@@ -73,7 +73,8 @@ app.post('/__fixture/replay',async req=>{
 app.get('/api/auth/status',async()=>({code:0,data:{required:false}}));
 app.post('/api/auth/media-session',async()=>({code:0,data:{}}));
 app.get('/api/branding',async()=>({code:0,data:{productName:'AINVR · 隔离交互验收'}}));
-const channels=[['fixture-camera','隔离验收 · 大门原画面','xm'],['fixture-output','隔离验收 · AI 输出','ai-n2q08c']].map(([id,name,streamName])=>({id,name,upstreamProtocol:'rtmp',streamName,app:'live',downstreamProtocols:['webrtc','flv'],primaryProtocol:'webrtc',inputGeneration:'g',createdAt:1792454400000,updatedAt:1792454400000,status:{online:true,clients:1,srsOnline:true,videoCodec:'H264',videoWidth:width,videoHeight:height}}));
+// FIXTURE_PROTOCOL=flv plays over HTTP, which also works through an SSH port forward (WebRTC needs UDP).
+const channels=[['fixture-camera','隔离验收 · 大门原画面','xm'],['fixture-output','隔离验收 · AI 输出','ai-n2q08c']].map(([id,name,streamName])=>({id,name,upstreamProtocol:'rtmp',streamName,app:'live',downstreamProtocols:['webrtc','flv'],primaryProtocol:process.env.FIXTURE_PROTOCOL==='flv'?'flv':'webrtc',inputGeneration:'g',createdAt:1792454400000,updatedAt:1792454400000,status:{online:true,clients:1,srsOnline:true,videoCodec:'H264',videoWidth:width,videoHeight:height}}));
 app.get('/api/channels',async()=>({code:0,data:channels}));
 app.get('/api/settings',async()=>({code:0,data:{monitorHardLimit:2,monitorSoftLimit:2,adminPasswordSet:false,aiService:{pollIntervalMs:15000}}}));
 app.get('/api/summary',async()=>({code:0,data:{srsOnline:true,srsRtcHevc:false,serverTime:Date.now(),streams:{total:2,online:2,totalClients:0,totalBitrateKbps:0},channels:{total:2,online:2,offline:0}}}));

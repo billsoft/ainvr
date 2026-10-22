@@ -10,7 +10,7 @@ export function directionSummary(d:BindingDirection,points:[number,number][],edg
  if(d.kind==='edges')return `${d.entry.map(edge).join('、')}进、${d.exit.map(edge).join('、')}出记为“${counter.names.in}”${out}`
  return `按角度判定，记为“${counter.names.in}”${out}`
 }
-export const counterStates={enabled:'已启用',paused:'已暂停',archived:'已归档'} as const
+export const counterStates={enabled:'已启用',paused:'已暂停'} as const
 export function formatRangeLabel(from:Date,to:Date){
  const day=(d:Date)=>d.toLocaleDateString('zh-CN',{month:'numeric',day:'numeric'})
  return day(from)===day(new Date(to.getTime()-1))?day(from):`${day(from)} — ${day(new Date(to.getTime()-1))}`

@@ -3,7 +3,7 @@ import type {AlarmArmingStore} from '../store/alarmArmingStore.js';
 import type {AssignmentSource} from '../store/alarmTriggerDefinition.js';
 import {bindingFilters,countingPieces,type BindingVersion,type CounterDefinition,type DefinitionVersion} from '../store/flowCounters.js';
 import {AlarmConfigError} from '../store/alarmZones.js';
-import type {AlarmRuleSync} from '../services/alarmRuleSync.js';
+import {AlarmRuleSync} from '../services/alarmRuleSync.js';
 import {endpoint,limitedJson,type AlarmConnection} from './alarmProxy.js';
 interface Options{
  store:AlarmArmingStore|null;principal:(r:FastifyRequest)=>Promise<string|null>;
@@ -54,7 +54,8 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
  }
  async function readCounters(ids?:string[]){
   const all=await store().listCounters() as (CounterDefinition&{version:number})[];
-  const chosen=ids?ids.map(id=>all.find(c=>c.counter_id===id)??bad('计数器不存在')):all.filter(c=>c.state!=='archived');
+  const live=all.filter(c=>!(c as {deleting?:boolean}).deleting);
+  const chosen=ids?ids.map(id=>live.find(c=>c.counter_id===id)??bad('计数器不存在')):live;
   const chosenIds=chosen.map(c=>c.counter_id),rows=await store().counterBindings(chosenIds),history=await store().definitionHistory(chosenIds);
   return chosen.map(counter=>({counter,bindings:rows.filter(r=>r.counter_id===counter.counter_id),definitions:history.filter(h=>h.counter_id===counter.counter_id)}));
  }
@@ -78,6 +79,32 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
   const result=await store().saveCounter(b.counter,b.expected_version as number,actors.get(req)!,key,options.catalog);
   if(!options.synchronization)return result;
   try{return {...result,application:await options.synchronization.synchronize()};}catch{return result;}
+ });
+ app.post('/flow/counters/:id/delete',async req=>{
+  const id=(req.params as {id?:unknown}).id,b=req.body,key=req.headers['idempotency-key'];
+  if(!validId(id)||!object(b)||Object.keys(b).some(k=>k!=='expected_version')||!Number.isSafeInteger(b.expected_version)||!validId(key))
+   throw new AlarmConfigError('invalid_request','删除参数或操作编号无效');
+  const {binding_ids}=await store().beginDeleteCounter(id,b.expected_version as number,actors.get(req)!,key);
+  // Counting stops first, so no new passage is written while the records are removed.
+  // Start after the deletion transaction; do not reuse a sync begun before it.
+  const stopped=await new AlarmRuleSync(store(),options.connection).synchronize();
+  if(stopped.state!=='applied')throw new AlarmConfigError('flow_unavailable','停止计数尚未确认，删除未完成，请稍后重试',503);
+  if(binding_ids.length){
+   const config=await options.connection();
+   if(!config)throw new AlarmConfigError('flow_unavailable','计数器已停止计数，历史记录暂未清除，请稍后重试删除',503);
+   for(let attempt=0;attempt<3;attempt++){
+    const response=await fetch(endpoint(config,'/v1/flow/purge'),{method:'POST',redirect:'error',signal:AbortSignal.timeout(config.timeoutMs),
+     headers:{authorization:`Bearer ${config.apiToken}`,'content-type':'application/json'},body:JSON.stringify({counter_id:id,rule_ids:binding_ids})});
+    if(response.ok)break;
+    const body=await response.json().catch(()=>null) as {error?:{code?:string}}|null;
+    if(response.status===503&&body?.error?.code==='consumer_busy'&&attempt<2){
+     await new Promise(resolve=>setTimeout(resolve,150*(attempt+1)));continue;
+    }
+    throw new AlarmConfigError('flow_unavailable','计数器已停止计数，历史记录暂未清除，请稍后重试删除',503);
+   }
+  }
+  await store().finishDeleteCounter(id);
+  return {deleted:true};
  });
  app.post('/flow/query',async req=>{
   const b=req.body;

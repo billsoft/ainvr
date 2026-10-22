@@ -1,7 +1,8 @@
-import {render,screen,fireEvent,waitFor,within} from '@testing-library/react'
+import {act,render,screen,fireEvent,waitFor,within} from '@testing-library/react'
 import {it,expect,vi,beforeEach} from 'vitest'
 import {MemoryRouter} from 'react-router-dom'
 import AlarmListPage from '@/pages/AlarmCenter/AlarmListPage'
+import {playbackHref} from '@/features/alarmNavigation'
 import {describeAlarm} from '@/features/alarmSentences'
 import {alarmEventService,type AlarmEvent} from '@/api/alarmEventService'
 import {alarmTriggerService} from '@/api/alarmTriggerService'
@@ -10,7 +11,7 @@ vi.mock('@/api/alarmEventService',()=>({alarmEventService:{list:vi.fn(),get:vi.f
 vi.mock('@/api/alarmTriggerService',()=>({alarmTriggerService:{list:vi.fn(),source:vi.fn()}}))
 vi.mock('@/api/aiChannelService',()=>({aiChannelService:{list:vi.fn().mockResolvedValue([{id:'gate',name:'大门'},{id:'east',name:'东围栏'}])}}))
 vi.mock('@/api/behaviorStatisticsService',()=>({behaviorStatisticsService:{query:vi.fn().mockResolvedValue({schema_version:'1.0',from:'a',to:'b',items:[{event_type:'region_traverse',occurrences:4,tracked_targets:4},{event_type:'appearance',occurrences:23,tracked_targets:20}],coverage:{state:'unknown'}})}}))
-vi.mock('@/pages/AlarmCenter/EvidenceThumb',()=>({EvidenceThumb:({eventId,label}:{eventId:string;label:string})=><span data-testid="thumb">{label}:{eventId.slice(0,4)}</span>}))
+vi.mock('@/pages/AlarmCenter/EvidenceThumb',()=>({EvidenceThumb:({eventId,label,onOpen}:{eventId:string;label:string;onOpen?:()=>void})=>onOpen?<button data-testid="thumb" aria-label={`查看${label}截图`} onClick={onOpen}>{label}:{eventId.slice(0,4)}</button>:<span data-testid="thumb">{label}:{eventId.slice(0,4)}</span>}))
 const square:[number,number][]=[[.3,.2],[.7,.2],[.7,.8],[.3,.8]]  // edges 上 右 下 左
 const fact=(n:number)=>String(n).repeat(64)
 const trigger=(id:string,behavior:AlarmTrigger['behavior'],extra:Partial<AlarmTrigger>={}):AlarmTrigger=>({trigger_id:id,name:id==='pass'?'门前禁区':'围栏接近',behavior,labels:[{label_id:'class:0',name:'人员'}],duration_ms:3000,alarm_enabled:true,state:'enabled',schedule:{mode:'always'},version:1,
@@ -22,12 +23,20 @@ const alarm=(id:string,extra:Partial<AlarmEvent>={}):AlarmEvent=>({alarm_id:id,o
     {event_id:'s3',behavior:'region_traverse',trigger_id:'pass',at:'2026-10-20T02:02:16Z',direction:{entry_edge:2,exit_edge:0},behavior_event_ids:[fact(3)]}],...extra})
 beforeEach(()=>{
   vi.clearAllMocks()
+  vi.mocked(alarmEventService.confirm).mockReset()
   vi.mocked(alarmTriggerService.list).mockResolvedValue({items:[trigger('pass','region_traverse')]})
   vi.mocked(alarmEventService.list).mockResolvedValue({items:[alarm('a'),alarm('b',{channel_id:'east',lifecycle:{state:'active'},stages:[{event_id:'x',behavior:'appearance',at:'2026-10-20T01:58:31Z',direction:null}],behavior:'appearance',trigger_id:'missing'})],next_cursor:null})
   vi.mocked(alarmEventService.confirm).mockImplementation(async items=>({items:items.map(i=>({alarm_id:i.alarm_id,outcome:'succeeded'}))}))
+  vi.mocked(alarmEventService.get).mockImplementation(async id=>alarm(id))
 })
 const open=async()=>{render(<MemoryRouter><AlarmListPage/></MemoryRouter>);return screen.findAllByRole('article')}
 const card=(name:RegExp)=>screen.getAllByRole('article').find(a=>name.test(a.textContent??''))!
+const handleRow=async(name:RegExp,disposition:'handled'|'false_positive')=>{
+ fireEvent.click(within(card(name)).getByRole('button',{name:disposition==='handled'?'确认已处理':'标记误报'}))
+ const dialog=await screen.findByRole('dialog',{name:disposition==='handled'?'确认告警':'标记误报'})
+ await within(dialog).findByLabelText('处理备注')
+ fireEvent.click(within(dialog).getByRole('button',{name:disposition==='handled'?'确认已处理':'确认标记误报'}))
+}
 
 it('turns an alarm into one sentence per level, naming the zone edges',()=>{
   const t=trigger('pass','region_traverse'),a=alarm('a')
@@ -38,11 +47,12 @@ it('turns an alarm into one sentence per level, naming the zone edges',()=>{
   expect(describeAlarm({...a,stages:[]},undefined).sentence).toBe('目标穿过热区。')
   expect(describeAlarm({...a,behavior:'appearance'},{...t,labels:[{label_id:'class:0',name:'person'}]}).sentence).toBe('人员在画面中连续出现 3 秒。')
 })
-it('shows each alarm as a feed card with its level, stages and evidence',async()=>{
+it('shows one compact alarm row and one representative image; earlier stages stay in the detail view',async()=>{
   await open()
   const a=card(/门前禁区/)
   for(const text of ['大门','禁区','穿过','人员从下边进入「禁区」，5 秒后从上边离开。','出现','碰撞侵入'])expect(a).toHaveTextContent(text)
-  expect(within(a).getAllByTestId('thumb').map(t=>t.textContent)).toEqual(['出现:1111','碰撞侵入:2222','穿过:3333'])
+  expect(within(a).getAllByTestId('thumb').map(t=>t.textContent)).toEqual(['穿过:3333'])
+  expect(a).toHaveClass('alarm-list-row')
   expect(card(/东围栏/)).toHaveTextContent('进行中')
 })
 it('filters by status, level, channel and time from the toolbar and the channel rail',async()=>{
@@ -59,12 +69,12 @@ it('filters by status, level, channel and time from the toolbar and the channel 
   fireEvent.change(screen.getByLabelText('时间'),{target:{value:'all'}})
   await waitFor(()=>expect(vi.mocked(alarmEventService.list).mock.lastCall![2]!.from).toBeUndefined())
 })
-it('confirms or marks a false alarm right on the card',async()=>{
+it('confirms or marks a false alarm after the separate confirmation dialog',async()=>{
   await open()
-  fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'确认已处理'}))
+  await handleRow(/门前禁区/,'handled')
   await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalledWith([{alarm_id:'a',expected_handling_revision:0}],'',expect.any(String),'handled'))
   expect(await within(card(/门前禁区/)).findByText(/已确认/)).toBeInTheDocument()
-  fireEvent.click(within(card(/东围栏/)).getByRole('button',{name:'标记误报'}))
+  await handleRow(/东围栏/,'false_positive')
   await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenLastCalledWith([{alarm_id:'b',expected_handling_revision:0}],'',expect.any(String),'false_positive'))
   expect(await within(card(/东围栏/)).findByText(/已标记误报/)).toBeInTheDocument()
 })
@@ -72,7 +82,7 @@ it('confirms every loaded alarm after an on-page confirmation and reports partia
   vi.mocked(alarmEventService.confirm).mockResolvedValueOnce({items:[{alarm_id:'a',outcome:'succeeded'},{alarm_id:'b',outcome:'version_conflict'}]})
   const confirm=vi.spyOn(window,'confirm')
   await open()
-  fireEvent.click(screen.getByRole('button',{name:'全部确认（2）'}))
+  fireEvent.click(screen.getByRole('button',{name:'确认已加载（2）'}))
   expect(alarmEventService.confirm).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
   expect(await screen.findByText('已确认 1 条；1 条记录已变化，请刷新后重试。')).toBeInTheDocument()
@@ -99,7 +109,7 @@ it('the side panel shows today by level',async()=>{
 })
 it('confirms on a LAN page without secure-context crypto helpers',async()=>{
   const original=crypto.randomUUID;Object.defineProperty(crypto,'randomUUID',{configurable:true,value:undefined})
-  try{await open();fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'确认已处理'}))
+  try{await open();await handleRow(/门前禁区/,'handled')
    await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalled())
    expect(vi.mocked(alarmEventService.confirm).mock.calls[0]![2]).toMatch(/^[a-f0-9]{32}$/)}
   finally{Object.defineProperty(crypto,'randomUUID',{configurable:true,value:original})}
@@ -107,7 +117,7 @@ it('confirms on a LAN page without secure-context crypto helpers',async()=>{
 it('an uncertain bulk confirmation is retried with the same operation key',async()=>{
   vi.mocked(alarmEventService.confirm).mockRejectedValueOnce(Error('timeout')).mockResolvedValueOnce({items:[{alarm_id:'a',outcome:'already_acknowledged'},{alarm_id:'b',outcome:'succeeded'}]})
   await open()
-  fireEvent.click(screen.getByRole('button',{name:'全部确认（2）'}));fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
+  fireEvent.click(screen.getByRole('button',{name:'确认已加载（2）'}));fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
   expect(await screen.findByText(/结果未确认/)).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
   expect(await screen.findByText('已确认 2 条。')).toBeInTheDocument()
@@ -140,3 +150,95 @@ it('unhandled alarms from before midnight stay in the default view',async()=>{
   expect(first[0]).toBe('pending');expect(first[2]!.from).toBeUndefined()
   expect(screen.getByLabelText('时间')).toHaveValue('all')
 })
+it('bulk confirmation opens one separate dialog and Escape cancels without writing',async()=>{
+ await open();const entry=screen.getByRole('button',{name:'确认已加载（2）'});entry.focus();fireEvent.click(entry)
+ const dialog=await screen.findByRole('dialog',{name:'批量确认告警'})
+ expect(alarmEventService.confirm).not.toHaveBeenCalled()
+ fireEvent.keyDown(dialog,{key:'Escape'})
+ expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(entry).toHaveFocus()
+ expect(alarmEventService.confirm).not.toHaveBeenCalled()
+})
+it('a representative thumbnail opens its exact stage and never acknowledges the alarm',async()=>{
+ const value=alarm('a');value.stages![2]!.behavior_event_ids=[]
+ vi.mocked(alarmEventService.list).mockResolvedValue({items:[value],next_cursor:null})
+ vi.mocked(alarmEventService.get).mockResolvedValue(value)
+ await open();fireEvent.click(within(screen.getByRole('article')).getByTestId('thumb'))
+ const sheet=await screen.findByRole('dialog',{name:'告警详情'})
+ await waitFor(()=>expect(within(sheet).getAllByRole('button').find(b=>b.getAttribute('aria-pressed')==='true')).toHaveTextContent('碰撞侵入'))
+ expect(alarmEventService.confirm).not.toHaveBeenCalled()
+})
+it('ignores an older filter response that finishes after the current filter',async()=>{
+ await open()
+ let resolve!:(v:{items:AlarmEvent[];next_cursor:null})=>void
+ const old=new Promise<{items:AlarmEvent[];next_cursor:null}>(r=>{resolve=r})
+ vi.mocked(alarmEventService.list).mockImplementation((_s,_c,f)=>f?.behavior==='region_approach'?old:Promise.resolve({items:[alarm('new',{rule:{id:'n',name:'最新筛选'}})],next_cursor:null}))
+ fireEvent.click(screen.getByRole('button',{name:/^接近/}));fireEvent.click(screen.getByRole('button',{name:/^穿过/}))
+ await screen.findByText(/最新筛选/)
+ await act(async()=>resolve({items:[alarm('old',{rule:{id:'o',name:'过期筛选'}})],next_cursor:null}))
+ expect(screen.queryByText(/过期筛选/)).not.toBeInTheDocument()
+})
+it('retries an uncertain single acknowledgement with the original operation key',async()=>{
+ vi.mocked(alarmEventService.confirm).mockRejectedValueOnce(Error('timeout')).mockResolvedValueOnce({items:[{alarm_id:'a',outcome:'already_acknowledged'}]})
+ await open();await handleRow(/门前禁区/,'handled')
+ await screen.findByRole('alert')
+ const dialog=screen.getByRole('dialog',{name:'确认告警'})
+ expect(within(dialog).getByLabelText('处理备注')).toBeDisabled()
+ fireEvent.click(within(dialog).getByRole('button',{name:'确认已处理'}))
+ await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalledTimes(2))
+ const calls=vi.mocked(alarmEventService.confirm).mock.calls;expect(calls[0]![2]).toBe(calls[1]![2])
+})
+it('opening and cancelling the handling dialog never changes an alarm',async()=>{
+ await open();fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'确认已处理'}))
+ const dialog=await screen.findByRole('dialog',{name:'确认告警'})
+ await within(dialog).findByLabelText('处理备注')
+ expect(alarmEventService.confirm).not.toHaveBeenCalled()
+ fireEvent.click(within(dialog).getByRole('button',{name:'取消'}))
+ expect(alarmEventService.confirm).not.toHaveBeenCalled()
+ expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+})
+it('keeps keyboard focus inside details and restores it when Escape closes the dialog',async()=>{
+ vi.mocked(alarmEventService.get).mockResolvedValue(alarm('a'));await open()
+ const button=within(card(/门前禁区/)).getByRole('button',{name:'详情与录像'});button.focus();fireEvent.click(button)
+ const sheet=await screen.findByRole('dialog',{name:'告警详情'})
+ const close=within(sheet).getByRole('button',{name:'关闭详情'})
+ await waitFor(()=>expect(close).toHaveFocus())
+ const last=within(sheet).getByRole('button',{name:'标记误报'});last.focus();fireEvent.keyDown(last,{key:'Tab'})
+ expect(close).toHaveFocus()
+ fireEvent.keyDown(close,{key:'Escape'})
+ expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(button).toHaveFocus()
+ expect(alarmEventService.confirm).not.toHaveBeenCalled()
+})
+it('freezes the bulk selection while its request outcome is uncertain, even if filters change',async()=>{
+ vi.mocked(alarmEventService.confirm).mockRejectedValueOnce(Error('timeout')).mockResolvedValueOnce({items:[{alarm_id:'a',outcome:'already_acknowledged'},{alarm_id:'b',outcome:'succeeded'}]})
+ await open();fireEvent.click(screen.getByRole('button',{name:'确认已加载（2）'}));fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
+ await screen.findByText(/结果未确认/)
+ vi.mocked(alarmEventService.list).mockResolvedValue({items:[alarm('other')],next_cursor:null})
+ fireEvent.click(screen.getByRole('button',{name:/^穿过/}))
+ await waitFor(()=>expect(screen.getAllByRole('article')).toHaveLength(1))
+ fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
+ await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalledTimes(2))
+ const calls=vi.mocked(alarmEventService.confirm).mock.calls;expect(calls[0]).toEqual(calls[1])
+})
+it('opens recording in another page, preserves the alarm list and rejects invalid recording times',async()=>{
+ vi.mocked(alarmEventService.get).mockResolvedValue(alarm('a'));await open()
+ fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'详情与录像'}))
+ const sheet=await screen.findByRole('dialog',{name:'告警详情'})
+ expect(await within(sheet).findByRole('link',{name:/查看录像/})).toHaveAttribute('target','_blank')
+ expect(playbackHref(alarm('a',{occurred_at:'bad'}))).toBeNull()
+ expect(playbackHref(alarm('a',{last_seen_at:'2020-01-01T00:00:00Z'}))).toBeNull()
+})
+
+it('reopens an uncertain acknowledgement with its original note and disposition, even from the other action',async()=>{
+ vi.mocked(alarmEventService.confirm).mockRejectedValueOnce(Error('timeout')).mockResolvedValueOnce({items:[{alarm_id:'a',outcome:'already_acknowledged'}]});
+ await open();fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'确认已处理'}));
+ let dialog=await screen.findByRole('dialog',{name:'确认告警'});
+ fireEvent.change(within(dialog).getByLabelText('处理备注'),{target:{value:'现场核实'}});
+ fireEvent.click(within(dialog).getByRole('button',{name:'确认已处理'}));await screen.findByRole('alert');
+ fireEvent.click(within(dialog).getByRole('button',{name:'取消'}));
+ fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'标记误报'}));
+ dialog=await screen.findByRole('dialog',{name:'确认告警'});
+ expect(within(dialog).getByLabelText('处理备注')).toHaveValue('现场核实');expect(within(dialog).getByLabelText('处理备注')).toBeDisabled();
+ fireEvent.click(within(dialog).getByRole('button',{name:'确认已处理'}));
+ await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalledTimes(2));
+ const calls=vi.mocked(alarmEventService.confirm).mock.calls;expect(calls[1]).toEqual(calls[0]);
+});
