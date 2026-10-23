@@ -39,6 +39,9 @@ def _pts_bytes(pts):
 
 def _frame(pts, key, extra_packets=2):
     pes = b"\x00\x00\x01\xE0\x00\x00\x80\x80\x05" + _pts_bytes(pts % (1 << 33))
+    # Structurally valid Annex-B headers are required, not just the TS RAI bit.
+    pes += (b"\x00\x00\x01\x67\x42\x80\x00\x00\x01\x68\xce\x80" if key else b"")
+    pes += b"\x00\x00\x01" + (b"\x65" if key else b"\x41") + b"\x80"
     out = _pkt(VIDEO_PID, pes, pusi=True, rai=key)
     out += b"".join(_pkt(VIDEO_PID, b"v") for _ in range(extra_packets))
     out += _pkt(AUDIO_PID, b"\x00\x00\x01\xC0", pusi=True)

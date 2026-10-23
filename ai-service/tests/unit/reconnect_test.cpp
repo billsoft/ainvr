@@ -163,3 +163,19 @@ TEST(Reconnect, IsRecoveringCoversRequestedInProgressAndFailedAttempts) {
   sm.DoReconnect();
   EXPECT_FALSE(sm.IsRecovering());
 }
+
+TEST(Reconnect, OpenSuccessWaitsForSustainedDecodedFrames) {
+  ReconnectStateMachine sm("source", 0, 1, 2, 5, [] { return true; }, nullptr, true);
+  sm.TriggerReconnect("lost");
+  ASSERT_TRUE(sm.DoReconnect());
+  EXPECT_FALSE(sm.NeedsReconnect());
+  EXPECT_TRUE(sm.IsRecovering());
+  sm.OnFrameReceived();
+  EXPECT_TRUE(sm.IsRecovering());
+  for (int i=0;i<6;++i) { SleepS(0.21); sm.OnFrameReceived(); }
+  EXPECT_FALSE(sm.IsRecovering());
+  sm.TriggerReconnect("lost again");
+  ASSERT_TRUE(sm.DoReconnect());
+  sm.OnFrameReceived(); SleepS(0.6); sm.OnFrameReceived();
+  EXPECT_TRUE(sm.IsRecovering());
+}

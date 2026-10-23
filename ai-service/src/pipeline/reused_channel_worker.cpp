@@ -567,7 +567,7 @@ void ReusedChannelWorker::CaptureLoop() {
       // ReconnectStream()。直接调 ReconnectStream() 会绕过退避,源不可用时
       // 每 ~2s 无条件重建一次拉流管线(v1 channel.py 用的也是 do_reconnect)。
       bool success = reconnect_->DoReconnect();
-      if (success) SetState(ChannelState::kRunning);
+      if (success && !reconnect_->IsRecovering()) SetState(ChannelState::kRunning);
       continue;
     }
 
@@ -612,7 +612,11 @@ void ReusedChannelWorker::CaptureLoop() {
       last_capture_mono_ = now_mono;
     }
 
-    if (reconnect_) reconnect_->OnFrameReceived();
+    if (reconnect_) {
+      reconnect_->OnFrameReceived();
+      if (!reconnect_->IsRecovering() && state_.load() == ChannelState::kReconnecting)
+        SetState(ChannelState::kRunning);
+    }
 
     // Queue only the immutable frame owner here. VPU decoding already copied
     // packed NV12 into that owner; this is not an end-to-end zero-copy path.
@@ -1176,7 +1180,7 @@ void ReusedChannelWorker::InitComponents() {
     reconnect_ = std::make_unique<stream::ReconnectStateMachine>(
         channel_id_, cfg->stream.reconnect.initial_delay, cfg->stream.reconnect.max_delay,
         cfg->stream.reconnect.backoff_factor, cfg->stream.watchdog_timeout_seconds,
-        [this] { return ReconnectStream(); });
+        [this] { return ReconnectStream(); }, nullptr, true);
   }
 
   // Construct metadata only here. Load and destroy BPU/GLES on InferLoop.

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { WheelPicker, WheelPickerWrapper, type WheelPickerOption } from '@ncdai/react-wheel-picker'
 import '@ncdai/react-wheel-picker/style.css'
 import {
@@ -34,6 +34,7 @@ interface Props {
   to: string
   onConfirm: (from: string, to: string) => void
   onClose: () => void
+  validateRange?: (from: Date, to: Date) => string | null
 }
 
 const WEEKDAY_LABELS = ['一', '二', '三', '四', '五', '六', '日']
@@ -202,38 +203,39 @@ function CalendarPanel({ panelLabel, testId, value, onChange, quickButtons }: Ca
       {/* 时/分/秒——iOS 风格滚轮选择器（@ncdai/react-wheel-picker），同一行
        * 放三列，秒本来就放得下，不用为了省空间单独藏起来。三列包进同一个
        * WheelPickerWrapper 共享分组上下文（左右方向键能跨列切）。
-       * optionItemHeight=44：Apple HIG 最小触摸目标；visibleCount=4：库
-       * 要求必须是 4 的倍数。 */}
+       * optionItemHeight=44：Apple HIG 最小触摸目标；visibleCount=8：库以圆柱角度计算高度，4 会使 tan(90°)
+       * 将滚轮压成 11px；8 保留约 99px、可见当前项及相邻项。列宽显式保留 56px，
+       * 库的绝对定位选项不参与父级固有宽度计算。 */}
       <WheelPickerWrapper className="mt-3 flex items-center justify-center gap-1">
-        <div data-testid={`${testId}-hh`} aria-label={`${panelLabel}·小时`}>
+        <div className="w-14 shrink-0" data-testid={`${testId}-hh`} aria-label={`${panelLabel}·小时`}>
           <WheelPicker
             options={HOUR_OPTIONS}
             value={value.getHours()}
             onValueChange={(hh) => onChange(withTime(value, hh, value.getMinutes(), value.getSeconds()))}
             optionItemHeight={44}
-            visibleCount={4}
+            visibleCount={8}
             classNames={WHEEL_CLASS_NAMES}
           />
         </div>
         <span className="text-ink-faint">:</span>
-        <div data-testid={`${testId}-mm`} aria-label={`${panelLabel}·分钟`}>
+        <div className="w-14 shrink-0" data-testid={`${testId}-mm`} aria-label={`${panelLabel}·分钟`}>
           <WheelPicker
             options={MINUTE_SECOND_OPTIONS}
             value={value.getMinutes()}
             onValueChange={(mm) => onChange(withTime(value, value.getHours(), mm, value.getSeconds()))}
             optionItemHeight={44}
-            visibleCount={4}
+            visibleCount={8}
             classNames={WHEEL_CLASS_NAMES}
           />
         </div>
         <span className="text-ink-faint">:</span>
-        <div data-testid={`${testId}-ss`} aria-label={`${panelLabel}·秒`}>
+        <div className="w-14 shrink-0" data-testid={`${testId}-ss`} aria-label={`${panelLabel}·秒`}>
           <WheelPicker
             options={MINUTE_SECOND_OPTIONS}
             value={value.getSeconds()}
             onValueChange={(ss) => onChange(withTime(value, value.getHours(), value.getMinutes(), ss))}
             optionItemHeight={44}
-            visibleCount={4}
+            visibleCount={8}
             classNames={WHEEL_CLASS_NAMES}
           />
         </div>
@@ -271,7 +273,10 @@ function CalendarPanel({ panelLabel, testId, value, onChange, quickButtons }: Ca
  * 内部数值是不是要转成别的表示（比如录像回放页的 win.from/to 是毫秒
  * 时间戳，在调用处转换，不强迫这个组件认识调用方的数据模型）。
  */
-export function DateTimeRangePicker({ open, from, to, onConfirm, onClose }: Props) {
+export function DateTimeRangePicker({ open, from, to, onConfirm, onClose, validateRange }: Props) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
   const [draftFrom, setDraftFrom] = useState<Date>(() => new Date())
   const [draftTo, setDraftTo] = useState<Date>(() => new Date())
 
@@ -282,11 +287,18 @@ export function DateTimeRangePicker({ open, from, to, onConfirm, onClose }: Prop
     setDraftTo(parseDatetimeLocalValue(to) ?? now)
   }, [open, from, to])
 
-  // 只能点「取消」或右上角关闭：点遮罩、误按 Esc 都不关闭，避免已填写的内容白输入
+  useEffect(() => {
+    if (!open) return
+    const previous = document.activeElement as HTMLElement | null
+    dialogRef.current?.focus()
+    return () => previous?.focus()
+  }, [open])
+  // Cancel and close abandon the local draft; confirmation alone applies it.
 
   if (!open) return null
 
-  const invalid = draftFrom.getTime() > draftTo.getTime()
+  const error = draftFrom.getTime() > draftTo.getTime() ? '起始时间不能晚于结束时间' : validateRange?.(draftFrom, draftTo)
+  const invalid = !!error
 
   return (
     <div
@@ -295,11 +307,21 @@ export function DateTimeRangePicker({ open, from, to, onConfirm, onClose }: Prop
       aria-modal="true"
       aria-label="选择时间范围"
       data-testid="range-picker"
+      ref={dialogRef}
+      tabIndex={-1}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') { event.stopPropagation(); closeRef.current(); return }
+        if (event.key !== 'Tab') return
+        const items = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), [tabindex="0"]') ?? []).filter(el => el.getClientRects().length)
+        const first = items[0], last = items[items.length - 1]
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) { event.preventDefault(); last?.focus() }
+        else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialogRef.current)) { event.preventDefault(); first?.focus() }
+      }}
     >
-      <div className="flex max-h-[90vh] w-[600px] flex-col overflow-y-auto rounded-panel bg-surface p-6 shadow-modal">
-        <h3 className="text-base font-semibold text-ink">选择时间范围</h3>
+      <div className="flex max-h-[90vh] w-[600px] max-w-[calc(100vw-2rem)] flex-col overflow-y-auto rounded-panel bg-surface p-6 shadow-modal">
+        <header className="flex items-center justify-between gap-3"><h3 className="text-base font-semibold text-ink">选择时间范围</h3><button type="button" aria-label="关闭" onClick={onClose} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-page"><X size={18} aria-hidden="true"/></button></header>
 
-        <div className="mt-4 flex gap-6">
+        <div className="mt-4 flex flex-col gap-6 sm:flex-row">
           <CalendarPanel
             panelLabel="起始时间"
             testId="range-picker-from"
@@ -312,7 +334,7 @@ export function DateTimeRangePicker({ open, from, to, onConfirm, onClose }: Prop
               { label: '00:00', onClick: () => setDraftFrom((d) => withTime(d, 0, 0, 0)) },
             ]}
           />
-          <div className="w-px shrink-0 bg-line" />
+          <div className="hidden w-px shrink-0 bg-line sm:block" />
           <CalendarPanel
             panelLabel="结束时间"
             testId="range-picker-to"
@@ -326,10 +348,10 @@ export function DateTimeRangePicker({ open, from, to, onConfirm, onClose }: Prop
           />
         </div>
 
-        <div className="mt-5 flex items-center justify-between border-t border-line pt-4">
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
           <p className="text-xs text-ink-subtle">
             {invalid ? (
-              <span className="text-danger">起始时间不能晚于结束时间</span>
+              <span role="alert" className="text-danger">{error}</span>
             ) : (
               <>
                 {formatRangeFull(draftFrom)} → {formatRangeFull(draftTo)}

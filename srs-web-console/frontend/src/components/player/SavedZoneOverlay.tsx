@@ -7,13 +7,14 @@ import {subscribeZoneOverlay} from '@/features/zoneOverlaySubscriptions'
 import {zoneSourceGeometry,type ZonePreviewSource} from '@/features/zoneSourceGeometry'
 import {computeContainLayout} from './overlayGeometry'
 import {subscribeLiveCounts} from '@/features/flowLiveCounts'
-import {countingDrawing,arrowHead,countingColors} from '@/features/counterGeometry'
+import {countingDrawing,countingArrows,arrowHead,countingColors} from '@/features/counterGeometry'
 import type {LiveCount} from '@/api/flowService'
 import type {ArmingCounterBindingDocument} from '@/features/armingDocument'
 interface Props {video:HTMLVideoElement|null;source:ZonePreviewSource;transformed?:boolean;resetKey?:number;compact?:boolean;camera?:RefObject<PanoramaCamera|null>}
 export function SavedZoneOverlay({video,source,transformed=false,resetKey,compact=false,camera}:Props){
  const [zones,setZones]=useState<(AlarmZone&{edge_ids?:string[]})[]>([]),[bindings,setBindings]=useState<ArmingCounterBindingDocument[]>([])
  const [counts,setCounts]=useState<Record<string,LiveCount>>({}),[flash,setFlash]=useState<Record<string,number>>({})
+ const [countStale,setCountStale]=useState(true)
  const [loaded,setLoaded]=useState(false),[failed,setFailed]=useState(false)
  const [size,setSize]=useState({width:0,height:0,boxWidth:0,boxHeight:0})
  useEffect(()=>{
@@ -27,13 +28,13 @@ export function SavedZoneOverlay({video,source,transformed=false,resetKey,compac
  const hasBindings=bindings.length>0
  useEffect(()=>{
   if(!hasBindings)return
-  return subscribeLiveCounts(source.id,items=>setCounts(old=>{
+  return subscribeLiveCounts(source.id,(items,status)=>{setCountStale(status?.stale??false);setCounts(old=>{
    const next=Object.fromEntries(items.map(i=>[i.binding_id,i]))
    const grown:Record<string,number>={}
    for(const i of items){const before=old[i.binding_id];if(before){const d=i.in+(i.out??0)-before.in-(before.out??0);if(d>0)grown[i.binding_id]=d}}
    if(Object.keys(grown).length){setFlash(grown);setTimeout(()=>setFlash({}),2500)}
    return next
-  }))
+  })})
  },[source.id,hasBindings])
  const geometry=zoneSourceGeometry(source,size.width,size.height)
  const activeZones=zones.filter(z=>z.channel_id===source.id&&z.state==='active')
@@ -61,15 +62,14 @@ export function SavedZoneOverlay({video,source,transformed=false,resetKey,compac
    }))}
    {compatible.flatMap(zone=>bindings.filter(b=>b.zone_id===zone.zone_id&&b.zone_version===zone.version&&zone.edge_ids&&!zone.erp_wrap).map(b=>{
     const W=layout.dispW,H=layout.dispH,d=countingDrawing(b.direction,zone.points as [number,number][],zone.edge_ids!,size.width,size.height)
-    if(!d.arrow)return null
-    const from:[number,number]=[d.arrow.from[0]*W,d.arrow.from[1]*H],to:[number,number]=[d.arrow.to[0]*W,d.arrow.to[1]*H],c=counts[b.binding_id]
+    const arrows=countingArrows(d),anchor=arrows[0]
+    if(!anchor)return null
+    const from:[number,number]=[anchor.from[0]*W,anchor.from[1]*H],to:[number,number]=[anchor.to[0]*W,anchor.to[1]*H],c=counts[b.binding_id]
     // The small grid tile shows only the numbers; a larger player adds the counter name.
-    const numbers=!c?'':!c.counting?'已暂停':`${c.names.in} ${c.in}${c.out!==undefined?` · ${c.names.out} ${c.out}`:''}`,text=c?(compact?numbers:`${c.name} ${numbers}`):''
+    const numbers=!c?'':countStale?'计数待更新':!c.counting?'已暂停':`${c.names.in} ${c.in}${c.out!==undefined?` · ${c.names.out} ${c.out}`:''}`,text=c?(compact?numbers:`${c.name} ${numbers}`):''
     return <g key={b.binding_id} aria-label={text||'计数线'} opacity={c&&!c.counting?.55:1}>
      {d.edges.map((e,i)=><line key={i} x1={e.p[0]*W} y1={e.p[1]*H} x2={e.q[0]*W} y2={e.q[1]*H} stroke={countingColors[e.role]} strokeWidth="4"/>)}
-     <line x1={from[0]} y1={from[1]} x2={to[0]} y2={to[1]} stroke={countingColors.outline} strokeWidth="6" strokeLinecap="round"/>
-     <line x1={from[0]} y1={from[1]} x2={to[0]} y2={to[1]} stroke={countingColors.arrow} strokeWidth="3" strokeLinecap="round"/>
-     <polygon points={arrowHead(from,to,10).map(p=>p.join(',')).join(' ')} fill={countingColors.arrow} stroke={countingColors.outline} strokeWidth="1.5"/>
+     {arrows.map((arrow,i)=>{const a:[number,number]=[arrow.from[0]*W,arrow.from[1]*H],b:[number,number]=[arrow.to[0]*W,arrow.to[1]*H],color=arrow.role?countingColors[arrow.role]:countingColors.arrow;return <g key={i}><line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke={countingColors.outline} strokeWidth="6" strokeLinecap="round"/><line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke={color} strokeWidth="3" strokeLinecap="round"/><polygon points={arrowHead(a,b,Math.min(10,Math.hypot(b[0]-a[0],b[1]-a[1])*.4)).map(p=>p.join(',')).join(' ')} fill={color} stroke={countingColors.outline} strokeWidth="1.5"/></g>})}
      {text&&(()=>{
       // A small badge at the arrow's tail, outside the zone, never over the arrow itself.
       const size=compact?11:12,width=[...text].reduce((n,ch)=>n+(/[\u4e00-\u9fff]/.test(ch)?size:size*.6),0)+12,height=size+8

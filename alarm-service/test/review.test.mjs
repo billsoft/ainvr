@@ -119,3 +119,10 @@ test('approach outer tolerance pauses dwell without resetting or counting uncert
  assert.equal(events.length,1);assert.equal(events[0].frame_id,'6');
  assert.equal(reviewSamples(events[0]).samples.find(s=>s.roles.includes('进入接近带后')).frame_id,'2');
 });
+
+test('review prompt describes the behavior and exact keyframe role, not spatial coordinates',()=>{
+ const [event]=passage([.2,.4,.5,.8]);event.review={policy};
+ const prompt=reviewDescription(event,{roles:['进入后']});
+ assert.ok(prompt.description.includes('穿过'));assert.ok(prompt.description.includes('进入后'));
+ assert.ok(prompt.description.includes('行为由规则引擎判定'));
+});

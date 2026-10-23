@@ -96,10 +96,11 @@ describe('DateTimeRangePicker —— 打开/关闭', () => {
     expect(onConfirm).not.toHaveBeenCalled()
   })
 
-  it('按 Escape 不关闭', async () => {
-    const { onClose } = setup()
+  it('按 Escape 取消草稿，不应用范围', async () => {
+    const { onClose, onConfirm } = setup()
     await userEvent.keyboard('{Escape}')
-    expect(onClose).not.toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(onConfirm).not.toHaveBeenCalled()
   })
 
   it('点击"取消"关闭，不调用 onConfirm', async () => {
@@ -217,4 +218,14 @@ describe('DateTimeRangePicker —— 校验与确定', () => {
     expect(screen.getByText(/09-17 16:35:00/)).toBeInTheDocument()
     expect(screen.getByText(/共 10 分钟/)).toBeInTheDocument()
   })
+})
+
+it('caller capacity validation keeps the picker open without applying invalid dates',async()=>{
+ const {onConfirm,onClose}=setup({validateRange:()=> '流量统计每次最多查询 31 天'})
+ expect(screen.getByRole('alert')).toHaveTextContent('31 天')
+ expect(screen.getByTestId('range-picker-confirm')).toBeDisabled()
+ await userEvent.click(screen.getByTestId('range-picker-confirm'))
+ expect(onConfirm).not.toHaveBeenCalled();expect(onClose).not.toHaveBeenCalled()
+ await userEvent.click(screen.getByRole('button',{name:'关闭'}))
+ expect(onClose).toHaveBeenCalledOnce()
 })

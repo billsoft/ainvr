@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Publish prebuilt flow reliability changes; roll back all replaced components on failure."""
+from pathlib import Path
+import hashlib,importlib.util,json,os,shutil,subprocess,time,urllib.request
+R=Path('/home/sunrise/ainvr')
+def run(*args):return subprocess.check_output(args,text=True,stderr=subprocess.STDOUT,timeout=60).strip()
+def main():
+ assert Path(__file__).resolve().parents[1]==R and os.geteuid()==0
+ run('git','-C',str(R),'diff','--check')
+ candidates={n:R/f'srs-web-console/{n}/dist.flow-candidate' for n in ['backend','frontend']}
+ assert (candidates['backend']/'server.js').is_file() and (candidates['frontend']/'index.html').is_file()
+ spec=importlib.util.spec_from_file_location('d',R/'deploy-package/deploy-alarm-review.py');d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d)
+ cfg=d.config('alarm-service');headers={'Authorization':'Bearer '+cfg['api_token']};url='http://127.0.0.1:'+str(cfg['port'])+'/v1/status'
+ stamp=time.strftime('%Y%m%d-%H%M%S');backup=R/'deploy/s100p'/('rollback-flow-'+stamp);backup.mkdir()
+ unit=Path('/etc/systemd/system/ainvr-alarm.service');original=unit.read_bytes();(backup/unit.name).write_bytes(original)
+ old=Path(run('systemctl','show','ainvr-alarm','-p','WorkingDirectory','--value'));assert old.parent==R/'deploy/s100p/alarm-service'
+ release=old.parent/('release-flow-'+stamp);release.mkdir();shutil.copytree(R/'alarm-service/src',release/'src');os.symlink(R/'alarm-service/node_modules',release/'node_modules')
+ services=['ainvr-ai','ainvr-recorder','ainvr-ingest','ainvr-llm'];pids={s:run('systemctl','show',s,'-p','MainPID','--value') for s in services}
+ def hashes():return {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (R/'deploy/s100p/runtime').glob('*.json')}
+ before=hashes();swapped=[]
+ def install(data):
+  tmp=unit.with_name(unit.name+'.flow-next');tmp.write_bytes(data);tmp.chmod(unit.stat().st_mode);os.replace(tmp,unit)
+ def wait_ready():
+  for _ in range(30):
+   try:
+    if d.get(url,headers).get('status')=='ready':
+     with urllib.request.urlopen('http://127.0.0.1:8088/api/health',timeout=3) as f:
+      if f.status==200:return
+   except Exception:pass
+   time.sleep(1)
+  raise RuntimeError('Health validation failed')
+ report={'release':str(release),'backup':str(backup),'previous_alarm':str(old)}
+ try:
+  assert str(old).encode() in original
+  install(original.replace(str(old).encode(),str(release).encode()));run('systemctl','daemon-reload');run('systemctl','restart','ainvr-alarm')
+  for n in ['backend','frontend']:
+   target=R/f'srs-web-console/{n}/dist'
+   if n=='frontend':
+    for p in (target/'assets').glob('*'):
+     q=candidates[n]/'assets'/p.name
+     if p.is_file() and not q.exists():shutil.copy2(p,q)
+   target.rename(backup/n)
+   try:candidates[n].rename(target)
+   except BaseException:(backup/n).rename(target);raise
+   swapped.append(n)
+   if n=='backend':run('systemctl','restart','ainvr-backend')
+  wait_ready()
+  assert hashes()==before
+  assert pids=={s:run('systemctl','show',s,'-p','MainPID','--value') for s in services}
+  with urllib.request.urlopen('http://127.0.0.1:8088/',timeout=5) as f:assert f.read()==(R/'srs-web-console/frontend/dist/index.html').read_bytes()
+  report['phase']='deployed'
+ except BaseException:
+  for n in reversed(swapped):
+   target=R/f'srs-web-console/{n}/dist';target.rename(backup/(n+'-failed'));(backup/n).rename(target)
+  install(original);run('systemctl','daemon-reload');run('systemctl','restart','ainvr-alarm');run('systemctl','restart','ainvr-backend');report['phase']='rolled_back';raise
+ finally:(backup/'report.json').write_text(json.dumps(report,indent=2))
+ print(json.dumps(report))
+if __name__=='__main__':main()

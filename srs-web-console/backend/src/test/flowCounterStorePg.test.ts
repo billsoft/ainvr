@@ -202,3 +202,19 @@ it.skipIf(!pgEnabled||!mongoEnabled)('删除计数器连同它的通行与覆盖
     expect(await repository.flow.coverage.countDocuments({assignment_id:'flow-door-other'})).toBeGreaterThan(0);
   }finally{await down.close();await up.close();await analysis.close();await db.dropDatabase();await client.close();}
 }));
+
+it.skipIf(!pgEnabled)('取消关联保留旧位置；新增热区独立成行，后续保存不改写旧位置结束时间',async()=>isolated(async(store,pool)=>{
+ await store.saveCounter(counter,0,'operator','keep-c',lookup);
+ await store.saveArming(arming(),0,'operator','keep-a',lookup,async()=>'g');
+ await store.saveArming(arming(zone(),[]),1,'operator','keep-b',lookup,async()=>'g');
+ const old=(await store.counterBindings(['visitors']))[0]!;
+ expect(old.active).toBe(false);
+ const nextZone={...zone(),zone_id:'door-two',name:'第二登船口'};
+ const nextBinding={...binding(),binding_id:'flow-door-two',zone_id:'door-two'};
+ await store.saveArming({...arming(zone(),[]),zones:[zone(),nextZone],counter_bindings:[nextBinding]},2,'operator','keep-c2',lookup,async()=>'g');
+ const rows=await store.counterBindings(['visitors']);
+ expect(rows).toHaveLength(2);
+ expect(rows.find(r=>r.binding_id===old.binding_id)?.updated_at).toEqual(old.updated_at);
+ expect(rows.find(r=>r.binding_id===nextBinding.binding_id)).toMatchObject({active:true,zone_name:'第二登船口'});
+ expect((await pool.query('SELECT count(*)::int AS n FROM flow_counter_binding_versions WHERE binding_id=$1',[old.binding_id])).rows[0].n).toBeGreaterThan(0);
+}));

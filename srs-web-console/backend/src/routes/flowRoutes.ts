@@ -11,7 +11,7 @@ interface Options{
  connection:()=>Promise<AlarmConnection|null>;
 }
 type Output='in'|'out';
-interface SeriesResult{key:string;occurrences:number;tracked_targets:number;coverage:{state:'complete'|'partial'|'no_data';gaps:{from:string;to:string}[]};buckets:{from:string;to:string;occurrences:number}[]}
+interface SeriesResult{diagnostic?:{reason:string;at:string}|null;key:string;occurrences:number;tracked_targets:number;coverage:{state:'complete'|'partial'|'no_data'|'unknown';gaps:{from:string;to:string}[]};buckets:{from:string;to:string;occurrences:number}[]}
 const validId=(v:unknown):v is string=>typeof v==='string'&&/^[a-zA-Z0-9_.:-]{1,128}$/.test(v);
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v);
 const bad=(message:string):never=>{throw new AlarmConfigError('invalid_query',message);};
@@ -27,8 +27,8 @@ function sum(parts:SeriesResult[]){
  const buckets=new Map<string,{from:string;to:string;occurrences:number}>();
  for(const p of parts)for(const b of p.buckets){const old=buckets.get(b.from);if(old)old.occurrences+=b.occurrences;else buckets.set(b.from,{...b});}
  const states=parts.map(p=>p.coverage.state);
- return {occurrences:parts.reduce((n,p)=>n+p.occurrences,0),tracked_targets:parts.reduce((n,p)=>n+p.tracked_targets,0),gaps:parts.flatMap(p=>p.coverage.gaps??[]),buckets:[...buckets.values()].sort((a,b)=>a.from.localeCompare(b.from)),
-  coverage:!parts.length||states.every(s=>s==='no_data')?'no_data':states.every(s=>s==='complete')?'complete':'partial'};
+ return {diagnostic:parts.map(p=>p.diagnostic).filter(Boolean).sort((a,b)=>b!.at.localeCompare(a!.at))[0]??null,occurrences:parts.reduce((n,p)=>n+p.occurrences,0),tracked_targets:parts.reduce((n,p)=>n+p.tracked_targets,0),gaps:parts.flatMap(p=>p.coverage.gaps??[]),buckets:[...buckets.values()].sort((a,b)=>a.from.localeCompare(b.from)),
+  coverage:!parts.length||states.every(s=>s==='no_data')?'no_data':states.every(s=>s==='complete')?'complete':states.includes('partial')?'partial':states.includes('unknown')?'unknown':'partial'};
 }
 export async function flowRoutes(app:FastifyInstance,options:Options){
  const actors=new WeakMap<FastifyRequest,string>();
@@ -106,15 +106,30 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
   await store().finishDeleteCounter(id);
   return {deleted:true};
  });
+ app.post('/flow/counters/:id/clear',async req=>{
+  const id=(req.params as {id?:unknown}).id,b=req.body,key=req.headers['idempotency-key'];
+  if(!validId(id)||!validId(key)||!object(b)||Object.keys(b).some(k=>!['binding_ids','from','to'].includes(k))||!Array.isArray(b.binding_ids)||!b.binding_ids.length||b.binding_ids.length>1000||!b.binding_ids.every(validId)||new Set(b.binding_ids).size!==b.binding_ids.length)bad('清理范围或操作编号无效');
+  const window=range(b as Record<string,unknown>);
+  if(Date.parse(window.to)>Date.now()+2000)bad('不能清理未来的统计数据');
+  const {bindings}=(await readCounters([id as string]))[0];
+  const ids=(b as Record<string,unknown>).binding_ids as string[];
+  if(ids.some(id=>!bindings.some(row=>row.binding_id===id)))bad('热区关联不属于该计数器，请刷新后重试');
+  const config=await options.connection();if(!config)throw new AlarmConfigError('flow_unavailable','分析服务尚未配置',503);
+  const response=await fetch(endpoint(config,'/v1/flow/clear'),{method:'POST',redirect:'error',signal:AbortSignal.timeout(config.timeoutMs),headers:{authorization:`Bearer ${config.apiToken}`,'content-type':'application/json','x-ainvr-actor':actors.get(req)!,'idempotency-key':key as string},body:JSON.stringify({counter_id:id,rule_ids:ids,...window})});
+  const result=await limitedJson(response) as {cleared?:boolean;error?:{code?:string;message?:string}};
+  if(!response.ok||result.cleared!==true)throw new AlarmConfigError(result.error?.code??'flow_unavailable',response.status===409?'清理范围已变化，请重新打开清理窗口':'清理尚未确认，请重试同一次操作',response.status===409?409:503);
+  return result;
+ });
  app.post('/flow/query',async req=>{
   const b=req.body;
-  if(!object(b)||Object.keys(b).some(k=>!['counter_ids','from','to','bucket','timezone'].includes(k)))bad('查询参数无效');
+  if(!object(b)||Object.keys(b).some(k=>!['counter_ids','from','to','bucket','timezone','totals_only'].includes(k)))bad('查询参数无效');
   const body=b as Record<string,unknown>,window=range(body);
   if(body.counter_ids!==undefined&&(!Array.isArray(body.counter_ids)||body.counter_ids.length>50||body.counter_ids.some(v=>!validId(v))||new Set(body.counter_ids).size!==body.counter_ids.length))bad('计数器选择无效');
   if(body.bucket!==undefined&&body.bucket!==null&&!['minute','hour','day'].includes(String(body.bucket)))bad('时间分段无效');
   const counters=await readCounters(body.counter_ids as string[]|undefined);
   const series=counters.flatMap(({counter,bindings,definitions})=>bindings.flatMap(row=>outputsOf(counter).flatMap(o=>seriesOf(counter,row,definitions,o,window))));
-  const results=await analyse(series,{bucket:body.bucket??null,timezone:body.timezone??'UTC'});
+  if(body.totals_only!==undefined&&typeof body.totals_only!=='boolean')bad('查询参数无效');
+  const results=await analyse(series,{bucket:body.bucket??null,timezone:body.timezone??'UTC',totals_only:body.totals_only===true});
   return {from:window.from,to:window.to,items:counters.map(({counter,bindings,definitions})=>{
    // Zones removed before this period have nothing to show here.
    const zones=bindings.filter(row=>pieces(row,definitions,counter,window).length).map(row=>({binding_id:row.binding_id,source_id:row.source_id,processor_id:row.document.processor_id,zone_id:row.document.zone_id,zone_name:row.zone_name,
@@ -147,9 +162,9 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
   const counters=(await readCounters()).map(c=>({...c,bindings:c.bindings.filter(r=>r.active&&r.source_id===q.source_id)})).filter(c=>c.bindings.length);
   const window={from:new Date(from).toISOString(),to:new Date(to).toISOString()};
   const series=counters.flatMap(({counter,bindings,definitions})=>bindings.flatMap(row=>outputsOf(counter).flatMap(o=>seriesOf(counter,row,definitions,o,window))));
-  const all=await analyse(series,{}),results=new Map(counters.flatMap(({bindings})=>bindings.flatMap(row=>(['in','out'] as Output[]).map(o=>[`${row.binding_id}:${o}`,zoneTotals(all,row.binding_id,o)?.occurrences??0]))));
+  const all=await analyse(series,{totals_only:true}),results=new Map(counters.flatMap(({bindings})=>bindings.flatMap(row=>(['in','out'] as Output[]).map(o=>[`${row.binding_id}:${o}`,zoneTotals(all,row.binding_id,o)?.occurrences??0]))));
   return {items:counters.flatMap(({counter,bindings})=>bindings.map(row=>({binding_id:row.binding_id,counter_id:counter.counter_id,name:counter.name,names:counter.names,
-   outputs:counter.outputs,occupancy:counter.occupancy,counting:row.counting,zone_id:row.document.zone_id,direction:row.document.direction,
+   outputs:counter.outputs,occupancy:counter.occupancy,counting:row.counting,zone_id:row.document.zone_id,direction:row.document.direction,diagnostic:zoneTotals(all,row.binding_id,'in')?.diagnostic??null,
    in:results.get(`${row.binding_id}:in`)??0,...(counter.outputs==='both'?{out:results.get(`${row.binding_id}:out`)??0}:{})})))};
  });
 }

@@ -72,9 +72,10 @@ export function mergeCoverage(segments,from,to,grace={}){
   return {state:!merged.length?'no_data':!gaps.length?'complete':'partial',gaps:gaps.map(asRange)};
 }
 export class FlowStatistics {
-  constructor(db){this.facts=db.collection('behavior_events');this.coverage=db.collection('flow_coverage');}
+  constructor(db){this.clears=db.collection('flow_clear_operations');this.facts=db.collection('behavior_events');this.checkpoints=db.collection('alarm_consumer_checkpoints');this.coverage=db.collection('flow_coverage');}
   async initialize(){
     await this.facts.createIndex({rule_id:1,occurred_at:1});
+    await this.clears.createIndex({rule_ids:1,from:1,to:1});
     await this.coverage.createIndex({segment_id:1},{unique:true});
     await this.coverage.createIndex({assignment_id:1,from:1,to:1});
   }
@@ -86,16 +87,37 @@ export class FlowStatistics {
     const coverage=await this.coverage.deleteMany({assignment_id:{$in:request.rule_ids}});
     return {facts:facts.deletedCount,coverage:coverage.deletedCount};
   }
+  /** Persist the exclusion before physical removal: replay and delayed frames cannot restore counts. */
+  async clear(request,actor,key){
+    if(!object(request)||Object.keys(request).some(k=>!['counter_id','rule_ids','from','to'].includes(k))||!Array.isArray(request.rule_ids)||!request.rule_ids.length||request.rule_ids.length>1000||new Set(request.rule_ids).size!==request.rule_ids.length)fail('invalid_clear','Choose counter bindings');
+    identity(request.counter_id,'counter_id');identity(actor,'actor');identity(key,'operation');request.rule_ids.forEach(id=>identity(id,'rule_id'));
+    const from=Date.parse(request.from),to=Date.parse(request.to);
+    if(typeof request.from!=='string'||typeof request.to!=='string'||!Number.isFinite(from)||!Number.isFinite(to)||to<=from||to-from>MAX_RANGE_MS||to>Date.now()+2000)fail('invalid_time_range','Choose a past range up to 31 days');
+    const scope={counter_id:request.counter_id,rule_ids:[...request.rule_ids].sort(),from:new Date(from).toISOString(),to:new Date(to).toISOString()};
+    const fingerprint=digest([actor,scope]);
+    try{await this.clears.updateOne({_id:key},{$setOnInsert:{...scope,actor,fingerprint,created_at:new Date().toISOString()}},{upsert:true});}catch(e){if(e.code!==11000)throw e;}
+    const saved=await this.clears.findOne({_id:key});
+    if(saved.fingerprint!==fingerprint)fail('operation_conflict','Operation scope changed',409);
+    if(saved.completed)return {cleared:true,from:scope.from,to:scope.to};
+    await this.facts.deleteMany({counter_id:scope.counter_id,rule_id:{$in:scope.rule_ids},occurred_at:{$gte:scope.from,$lt:scope.to}});
+    await this.clears.updateOne({_id:key},{$set:{completed:true}});
+    return {cleared:true,from:scope.from,to:scope.to};
+  }
   async record(segments){
     for(const s of segments??[]){const {to,...base}=s;await this.coverage.updateOne({segment_id:s.segment_id},{$setOnInsert:base,$max:{to}},{upsert:true});}
   }
   async query(request){
-    if(!object(request)||Object.keys(request).some(k=>!['series','bucket','timezone','detail','cursor','limit'].includes(k))||!Array.isArray(request.series)||!request.series.length||request.series.length>100)fail('invalid_query','Bounded counting series required');
+    if(!object(request)||Object.keys(request).some(k=>!['series','bucket','timezone','detail','cursor','limit','totals_only'].includes(k))||!Array.isArray(request.series)||!request.series.length||request.series.length>100)fail('invalid_query','Bounded counting series required');
+    if(request.totals_only!==undefined&&typeof request.totals_only!=='boolean')fail('invalid_query','Invalid totals mode');
     const series=request.series.map(parseSeries);
     if(new Set(series.map(s=>s.key)).size!==series.length)fail('invalid_query','Series keys must be unique');
+    // One bounded ledger read covers totals, trends and records, including late arrivals.
+    const removed=await this.clears.find({rule_ids:{$in:series.map(s=>s.rule_id)},from:{$lt:series.reduce((a,s)=>a>s.to?a:s.to,'')},to:{$gt:series.reduce((a,s)=>a<s.from?a:s.from,series[0].from)}},{projection:{rule_ids:1,from:1,to:1},maxTimeMS:5000}).limit(10001).toArray();
+    if(removed.length>10000)fail('clear_history_capacity','Reduce query range');
+    const visibleQuery=s=>{const excluded=removed.filter(r=>r.rule_ids.includes(s.rule_id)).map(r=>({occurred_at:{$gte:r.from,$lt:r.to}}));return {...seriesQuery(s),...(excluded.length?{$nor:excluded}:{})};};
     if(request.detail){
       // The history pieces of one zone and direction are read as one list.
-      const query=series.length===1?seriesQuery(series[0]):{$or:series.map(seriesQuery)},limit=request.limit??50;
+      const query=series.length===1?visibleQuery(series[0]):{$or:series.map(visibleQuery)},limit=request.limit??50;
       if(!Number.isInteger(limit)||limit<1||limit>100)fail('invalid_limit','Choose 1..100');
       const scope=digest(query);let position;
       if(request.cursor!==undefined){
@@ -113,8 +135,15 @@ export class FlowStatistics {
     try{new Intl.DateTimeFormat('en',{timeZone:timezone});}catch{fail('invalid_timezone','Invalid timezone');}
     const units={minute:60000,hour:3600000,day:86400000};
     if(bucket!==null&&(!Object.hasOwn(units,bucket)||series.some(s=>Math.ceil((Date.parse(s.to)-Date.parse(s.from))/units[bucket])+2>1500)))fail('invalid_bucket','Choose at most 1500 time buckets');
+    const diagnostics=await this.checkpoints.find({'checkpoint.passage_diagnostics.rule_id':{$in:series.map(s=>s.rule_id)}},{projection:{'checkpoint.passage_diagnostics':1},maxTimeMS:5000}).limit(100).toArray();
+    const issues=diagnostics.flatMap(d=>d.checkpoint?.passage_diagnostics??[]);
     const items=[];
     for(const s of series){
+      const diagnostic=issues.filter(d=>d.rule_id===s.rule_id&&d.at>=s.from&&d.at<s.to).sort((a,b)=>b.at.localeCompare(a.at))[0]??null;
+      if(request.totals_only){
+        const occurrences=await this.facts.countDocuments(visibleQuery(s),{maxTimeMS:5000});
+        items.push({key:s.key,occurrences,tracked_targets:0,coverage:{state:'unknown',gaps:[]},buckets:[],diagnostic});continue;
+      }
       // Coverage first: a later materialization must not make an earlier fact snapshot look like a confirmed zero.
       const rows=await this.coverage.find({assignment_id:s.rule_id,from:{$lt:s.to},to:{$gt:s.from}},{projection:{_id:0,from:1,to:1},maxTimeMS:5000}).limit(20001).toArray();
       if(rows.length>20000)fail('coverage_capacity','Reduce query range');
@@ -124,9 +153,9 @@ export class FlowStatistics {
         {$group:{_id:{$dateTrunc:{date:{$toDate:'$occurred_at'},unit:bucket,timezone}},occurrences:{$sum:1}}},{$sort:{_id:1}},
         {$set:{end:{$dateAdd:{startDate:'$_id',unit:bucket,amount:1,timezone}}}},
       ];
-      const [result]=await this.facts.aggregate([{$match:seriesQuery(s)},{$facet:facet}],{maxTimeMS:5000,allowDiskUse:false}).toArray();
+      const [result]=await this.facts.aggregate([{$match:visibleQuery(s)},{$facet:facet}],{maxTimeMS:5000,allowDiskUse:false}).toArray();
       const total=result?.totals?.[0];
-      items.push({key:s.key,from:s.from,to:s.to,occurrences:total?.occurrences??0,tracked_targets:total?.tracked_targets??0,coverage:mergeCoverage(rows,s.from,s.to,s.grace),
+      items.push({key:s.key,diagnostic,from:s.from,to:s.to,occurrences:total?.occurrences??0,tracked_targets:total?.tracked_targets??0,coverage:mergeCoverage(rows,s.from,s.to,s.grace),
         buckets:(result?.series??[]).map(r=>({from:new Date(Math.max(Date.parse(s.from),+r._id)).toISOString(),to:new Date(Math.min(Date.parse(s.to),+r.end)).toISOString(),occurrences:r.occurrences}))});
     }
     return {bucket,timezone,items,time_basis:'passage_completed_at'};

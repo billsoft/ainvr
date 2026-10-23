@@ -1,9 +1,10 @@
+import {counterContinuation} from './low-confidence.mjs';
 import {sampleOf,beginEvidence,sealEvidence} from './compact-evidence.mjs';
 // Copyright AINVR. Pure, checkpointable trigger evaluator. No model execution.
 import {holdPassage,restorePassage} from './passage-continuity.mjs';
 import {coverageStep} from './flow-coverage.mjs';
 import {unwrapErp,liftErp} from './erp-geometry.mjs';
-import {boundaryDistance,boundaryDistancePx,inside} from './geometry.mjs';
+import {boundaryDistancePx,boundaryStable,inside} from './geometry.mjs';
 import {makeAlarm,validateFrame,validateRule,fail,digest} from './domain.mjs';
 import {traversalStep,regionDirection,crossesBoundary} from './traversal.mjs';
 import {createScheduleEvaluator} from './schedule.mjs';
@@ -19,16 +20,19 @@ const elapsedMs=(f,since)=>Number(BigInt(f.source_pts_ns)-BigInt(since))/1e6;
 // Alarm geometry stays strict. Statistics can retain observed endpoints across a
 // bounded same-ID coast; predictions never become geometric evidence.
 function breakEvidence(state) {
+  delete state.tentative;
   delete state.seen_since; // A journal gap is not proof of continuous appearance.
-  delete state.review_trace;delete state.review_trace_truncated;delete state.review_compact;delete state.review_outside;delete state.approach_pause;delete state.last_approach_pts;
+  delete state.review_compact;delete state.review_outside;delete state.approach_pause;delete state.last_approach_pts;
   delete state.entry_origin_point;delete state.side; delete state.traversal; delete state.match; delete state.candidate;
   delete state.unmatched_since; delete state.observedPoint; delete state.triggerDirection; delete state.out_since;
-  delete state.passage_observation;delete state.passage_pending;state.interrupted=true;
+  delete state.passage_visible_pts;delete state.passage_observation;delete state.passage_pending;delete state.passage_rejection;state.interrupted=true;
 }
 // Frame-rate adaptive continuity: a pause longer than 4x the recent median frame
 // interval (at least 1.5 s) is a gap. Long intervals are recorded too, so a channel
 // that runs slowly becomes the new baseline within a few frames.
 const INTERVALS=8;
+// Same-session identity grace affects alarm deduplication only, never crossing evidence.
+export const ACTIVITY_GRACE_MS=3000;
 function continuityLimitMs(cp){
   const recent=[...(cp.intervals??[])].sort((a,b)=>a-b);
   return recent.length?Math.max(1500,4*recent[Math.floor(recent.length/2)]):Infinity;
@@ -43,6 +47,12 @@ export function evaluate(checkpoint,input,rules) {
   const f=validateFrame(input),out=[],issues=[],ended=[],captureIntents=[];
   const cp=structuredClone(checkpoint??{session:null,seq:null,pts:null});
   cp.states??={};cp.episodes??={};cp.first_seen??={};
+  // Upgrade historical checkpoint fields once; new writers only emit compact evidence.
+  if(cp.evidence_state_version!==2){
+    delete cp.review_source;
+    for(const state of Object.values(cp.states)){delete state.review_trace;delete state.review_trace_truncated;}
+    cp.evidence_state_version=2;
+  }
   const sessionChanged=cp.session!==f.stream_session_id;
   if(!sessionChanged&&cp.seq!==null&&BigInt(f.seq)<=BigInt(cp.seq))return {checkpoint:cp,events:[],ended_episodes:[],issues:['duplicate_or_old_seq']};
   const seqGap=!sessionChanged&&cp.seq!==null&&BigInt(f.seq)!==BigInt(cp.seq)+1n;
@@ -57,7 +67,7 @@ export function evaluate(checkpoint,input,rules) {
   if(seqGap||ptsReset||timeGap||f.gap===true){
     issues.push('input_gap');
     // The same ID across a few dropped records is still the same target; a long pause is not.
-    for(const s of Object.values(cp.states)){breakEvidence(s);if(timeGap)delete s.seen_since;}
+    for(const [key,s] of Object.entries(cp.states)){if(s.traversal?.entry){const [id,,track]=JSON.parse(key);issues.push(`passage_input_gap:${id}:${track}`);}breakEvidence(s);if(timeGap)delete s.seen_since;}
   }
   cp.session=f.stream_session_id;cp.seq=f.seq;cp.pts=f.source_pts_ns;
   const atCapture=createScheduleEvaluator(f.captured_at),periods=new Map(),eligible=new Map(),channelRules=[];
@@ -78,19 +88,48 @@ export function evaluate(checkpoint,input,rules) {
     if(periods.get(ruleKey)!==(cp.rule_windows?.[ruleKey]??'always'))delete cp.states[key];
   }
   cp.rule_windows=Object.fromEntries(periods);
-  delete cp.review_source;
   const present=new Set(f.tracks.map(t=>t.track_id)),{width:W,height:H}=f.source;
+  const expiredTracks=new Set();
+  // Expire before processing returning IDs, including a long interval with no frames.
+  for(const [track,e] of Object.entries(cp.episodes)){
+    if(e.missing_since!==undefined&&elapsedMs(f,e.missing_since)>=ACTIVITY_GRACE_MS){
+      ended.push({episode_id:e.id,ended_at:f.captured_at,end_reason:'track_expired'});
+      delete cp.episodes[track];delete cp.first_seen[track];
+      expiredTracks.add(track);
+    }else if(present.has(track))delete e.missing_since;
+    else e.missing_since??=f.source_pts_ns;
+  }
+  for(const key of Object.keys(cp.states))if(expiredTracks.has(JSON.parse(key)[2]))delete cp.states[key];
+  let tentativeStates=Object.values(cp.states).filter(s=>s.tentative).length;
   for(const t of f.tracks)cp.first_seen[t.track_id]??=f.captured_at;
   for(const r of eligible.values()) for(const t of f.tracks) {
     const key=JSON.stringify([r.id,r.version,t.track_id]);
-    if(t.state!=='confirmed'||!labelsCache.get(r).has(t.label_id)){delete cp.states[key];continue;}
-    const detected=t.observation==='detected',evidence=detected&&t.event_eligible!==false;
+    if(!labelsCache.get(r).has(t.label_id)){delete cp.states[key];continue;}
+    if(t.state!=='confirmed'){
+      // Bounded real pre-confirmation context, never a fact or an alarm by itself.
+      // Only traversal consumes this after the SAME identity becomes confirmed.
+      if(r.behavior==='region_traverse'&&t.observation==='detected'&&t.event_eligible!==false&&
+         (cp.states[key]?.tentative||tentativeStates<64)){
+        if(!cp.states[key]?.tentative)tentativeStates++;
+        const prior=cp.states[key]?.tentative??[];
+        const meta={seq:f.seq,source_pts_ns:f.source_pts_ns,captured_at:f.captured_at,frame_id:f.frame_id,source_frame_index:f.source_frame_index,source:f.source};
+        cp.states[key]={tentative:[...prior.filter(x=>elapsedMs(f,x.frame.source_pts_ns)<=1000),{frame:meta,track:t}].slice(-3)};
+      }else delete cp.states[key];
+      continue;
+    }
+    const detected=t.observation==='detected',visible=detected&&t.event_eligible!==false;
+    const rescued=!visible&&counterContinuation(r,f,t,cp.states[key]);
+    const evidence=visible||rescued;
     // A target that has only been a hidden candidate (low confidence, prediction) has no state.
     if(!cp.states[key]&&!evidence)continue;
     const g=geometryCache.get(r);
     const anchor=p=>r.erp_wrap?liftErp(p,g.points):p;
     const s=cp.states[key]??={first_seq:f.seq,since:f.source_pts_ns,fired:false};
-    delete s.review_trace;delete s.review_trace_truncated;
+    s.first_seq??=f.seq;s.since??=f.source_pts_ns;s.fired??=false;
+    if(visible)s.passage_visible_pts=f.source_pts_ns;
+    if(rescued)s.passage_pending=true;
+    const tentative=s.tentative;delete s.tentative;
+    if(tentative){s.first_seq=f.seq;s.since=f.source_pts_ns;s.fired=false;}
     const sample=r.review.enabled?sampleOf(f,t):null;
     const capture=x=>{if(!x?.event_eligible||captureIntents.length>=128)return;captureIntents.push({channel_id:f.channel_id,stream_session_id:f.stream_session_id,source:f.source,sample:x});};
     const begin=()=>{if(sample){beginEvidence(s,sample);capture(s.review_compact.before);capture(sample);}};
@@ -114,7 +153,7 @@ export function evaluate(checkpoint,input,rules) {
       if(!s.fired)remember();else delete s.review_compact;
       continue;
     }
-    if(!evidence){if(r.behavior!=='region_traverse'||!holdPassage(r,f,s))breakEvidence(s);continue;}
+    if(!evidence){if(r.behavior!=='region_traverse'||!holdPassage(r,f,s)){if(s.traversal?.entry)issues.push(`passage_observation_gap:${r.id}:${t.track_id}`);breakEvidence(s);}continue;}
     const b=t.bbox;let p=anchor([(b.x+b.w/2)/W,(b.y+b.h*(r.anchor==='center'?0.5:1))/H]);
     // The centre-nearest copy is sufficient for membership, not for distance
     // to an asymmetric polygon. Compare adjacent copies for outside approach.
@@ -127,7 +166,19 @@ export function evaluate(checkpoint,input,rules) {
     if(s.interrupted){s.since=f.source_pts_ns;delete s.interrupted;}
     const fire=direction=>{out.push(attach(makeAlarm(r,f,t,s.first_seq,canonicalDirection(r,direction))));s.fired=true;};
     if(r.behavior==='region_traverse'){
-      if(!restorePassage(r,f,t,p,s)){breakEvidence(s);restorePassage(r,f,t,p,s);issues.push(`passage_gap_rejected:${r.id}:${t.track_id}`);}
+      if(tentative?.length&&tentative.at(-1).track.label_id===t.label_id&&elapsedMs(f,tentative.at(-1).frame.source_pts_ns)<=1000){
+        for(const old of tentative.filter(x=>elapsedMs(f,x.frame.source_pts_ns)<=1000)){
+          if(old.track.label_id!==t.label_id){breakEvidence(s);break;}
+          const b=old.track.bbox,q=anchor([(b.x+b.w/2)/W,(b.y+b.h*(r.anchor==='center'?.5:1))/H]);
+          const priorEntry=s.traversal?.entry,completed=traversalStep(g,old.frame,q,s);
+          if(completed){breakEvidence(s);continue;} // Never publish an unconfirmed passage.
+          if(sample){const prior=sampleOf(old.frame,old.track);if(!priorEntry&&s.traversal?.entry)beginEvidence(s,prior);s.review_compact??={};s.review_compact.last=prior;}
+        }
+        // Tentative context proves a real origin only; completion requires confirmed detections.
+        if(s.traversal?.line_pending){s.traversal.line_pending.samples=0;s.traversal.line_pending.since=null;}
+        capture(s.review_compact?.before);capture(s.review_compact?.start);
+      }
+      if(!restorePassage(r,f,t,p,s)){const reason=s.passage_rejection??"passage_gap_rejected";breakEvidence(s);restorePassage(r,f,t,p,s);issues.push(`${reason}:${r.id}:${t.track_id}`);}
       const oldEntry=s.traversal?.entry;
       const tr=traversalStep(g,f,p,s);
       if(!oldEntry&&s.traversal?.entry)begin();
@@ -142,7 +193,7 @@ export function evaluate(checkpoint,input,rules) {
       // observation so a new crossing remains reviewable after a long wait.
       if(sample&&!inside(g.points,p)&&!s.traversal?.entry)delete s.review_compact;
     } else if(r.behavior==='region_enter') {
-      const inRegion=inside(g.points,p),stable=boundaryDistance(g.points,p)>=r.hysteresis?(inRegion?'in':'out'):null;
+      const inRegion=inside(g.points,p),stable=boundaryStable(g,f,p)?(inRegion?'in':'out'):null;
       // A concave shortcut cannot prove continuous dwell or a new entry edge.
       // Preserve the fired latch; require fresh outside evidence for a new candidate.
       if(stable==='in'&&s.candidate&&s.observedPoint&&inside(g.points,s.observedPoint)&&crossesBoundary(g.points,s.observedPoint,p)){
@@ -170,7 +221,7 @@ export function evaluate(checkpoint,input,rules) {
       if(stable)s.observedPoint=p; // keep the last stable point for the crossing edge
       if(sample&&stable==='out')delete s.review_compact;
     } else {
-      const inRegion=inside(g.points,p),distance=boundaryDistancePx(g.points,p,W,H),margin=r.hysteresis*Math.min(W,H);
+      const inRegion=inside(g.points,p),distance=boundaryDistancePx(g.points,p,W,H),margin=r.hysteresis_px??r.hysteresis*Math.min(W,H);
       const match=!inRegion&&distance<=r.approach_px;
       // Inner uncertainty preserves an established candidate, but cannot start one
       // from inside the zone. Neither uncertain interval contributes dwell time.
@@ -191,16 +242,21 @@ export function evaluate(checkpoint,input,rules) {
       s.match=match;s.observedPoint=p;
       if(sample&&!match)delete s.review_compact;
     }
-    if(!['region_enter','region_traverse'].includes(r.behavior)||boundaryDistance(g.points,p)>=r.hysteresis)remember();
+    if(!['region_enter','region_traverse'].includes(r.behavior)||boundaryStable(g,f,p))remember();
   }
-  // Disabled, revised or out-of-window rules and vanished targets keep no state.
+  // Missing identities retain only a fired latch during the bounded alarm grace.
   for(const key of Object.keys(cp.states)){
     const [id,version,track]=JSON.parse(key);
-    if(!eligible.has(JSON.stringify([id,version]))||!present.has(track))delete cp.states[key];
+    if(!eligible.has(JSON.stringify([id,version]))||!present.has(track)){
+      if(!present.has(track)&&cp.states[key].traversal?.entry)issues.push(`passage_identity_ended:${id}:${track}`);
+      const keep=!present.has(track)&&eligible.has(JSON.stringify([id,version]))&&cp.episodes[track];
+      if(keep)cp.states[key]={first_seq:cp.states[key].first_seq,since:f.source_pts_ns,fired:cp.states[key].fired===true};
+      else delete cp.states[key];
+    }
   }
-  for(const track of Object.keys(cp.first_seen))if(!present.has(track))delete cp.first_seen[track];
+  for(const track of Object.keys(cp.first_seen))if(!present.has(track)&&!cp.episodes[track])delete cp.first_seen[track];
   // One activity per target on this channel across all triggers; it ends when the
-  // tracker no longer reports the ID. The alarm keeps the highest level reached.
+  // tracker stops reporting the ID beyond the grace. It keeps the highest stage.
   // Only a change to a trigger this activity actually used (or its schedule
   // window) starts a new activity; editing an unrelated trigger on the same
   // channel must not re-alarm everyone currently in view.
@@ -219,8 +275,8 @@ export function evaluate(checkpoint,input,rules) {
     }
     const used=e.used?Object.entries(e.used):null;
     const reason=used?(used.some(([id,u])=>current.get(id)?.version!==u.version)?'configuration_changed':
-      used.some(([id,u])=>current.get(id)?.period!==u.period)?'schedule_ended':!present.has(track)?'track_expired':null):
-      e.rules_key!==rulesKey?'configuration_changed':e.window_key!==windowKey?'schedule_ended':!present.has(track)?'track_expired':null;
+      used.some(([id,u])=>current.get(id)?.period!==u.period)?'schedule_ended':null):
+      e.rules_key!==rulesKey?'configuration_changed':e.window_key!==windowKey?'schedule_ended':null;
     if(reason){ended.push({episode_id:e.id,ended_at:f.captured_at,end_reason:reason});delete cp.episodes[track];}
   }
   for(const event of out){
@@ -239,6 +295,16 @@ export function evaluate(checkpoint,input,rules) {
     reviewBytes+=Buffer.byteLength(JSON.stringify([state.review_compact,state.review_outside]));
     if(reviewBytes>512*1024){delete state.review_compact;delete state.review_outside;state.review_unavailable=true;}
   }
+  // Bounded diagnostic history survives checkpoints; it never alters counting.
+  cp.passage_diagnostics??=[];
+  for(const issue of issues){
+    const prefix=issue.split(':')[0];
+    if(!['passage_input_gap','passage_observation_gap','passage_identity_ended','passage_gap_rejected','passage_gap_timeout','passage_gap_time_invalid','passage_gap_displacement','passage_gap_size_change','passage_gap_label_changed','ambiguous_boundary_crossing','ambiguous_concave_crossing','interior_not_observed','entry_not_observed'].includes(prefix))continue;
+    // IDs may contain colons: match the full rule ID instead of splitting it.
+    const rule=[...eligible.values()].sort((a,b)=>b.id.length-a.id.length).find(r=>issue.startsWith(prefix+':'+r.id+':'));
+    if(rule)cp.passage_diagnostics.push({rule_id:rule.id,reason:prefix,at:f.captured_at,frame_id:f.frame_id,track_id:issue.slice(prefix.length+rule.id.length+2)});
+  }
+  cp.passage_diagnostics=cp.passage_diagnostics.slice(-64);
   const coverage=coverageStep(cp,f,eligible.values(),sessionChanged||seqGap||ptsReset||timeGap||f.gap===true||(interval!==null&&cp.intervals?.length===1&&interval>1500));
   return {checkpoint:cp,events:out,ended_episodes:ended,issues,coverage,capture_intents:captureIntents};
 }

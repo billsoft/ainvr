@@ -15,15 +15,8 @@ export function classify(score,policy){
  if(!Number.isFinite(score)||score<0||score>1)throw Error('invalid_model_result');
  return score<=policy.reject_below?'not_supported':score>=policy.approve_above?'supported':'uncertain';
 }
-// Only the named target and bounded instructions are sent to the model.
-export function reviewDescription(row){
- const r=row.rule.snapshot;
- const label=(r.labels??row.analysis_evidence.review_context.labels).find(l=>l.label_id===row.analysis_evidence.track.label_id)?.name;
- if(!label)throw Error('missing_label');
- const description=`核对图像中心指定目标是否为「${label}」，不要用其他目标代替。${row.review.policy.description}`;
- if(Buffer.byteLength(description)>8192)throw Error('review_context_too_large');
- return {label,description};
-}
+export {reviewDescription} from './review-prompt.mjs';
+import {reviewDescription,REVIEW_PROMPT_VERSION} from './review-prompt.mjs';
 export class ReviewWorker{
  constructor(repository,{invoke,context,policy,qualification=qualifiedReview,readiness=qualification===qualifiedReview?validationAvailable:async()=>true,clock=()=>Date.now()}){
   this.qualification=qualification;this.policy={max_attempts:3,timeout_s:120,retry_delay_s:30,...policy};this.context=context;this.repository=repository;this.rows=repository.events;this.readiness=readiness;this.invoke=invoke;this.clock=clock;
@@ -53,13 +46,13 @@ export class ReviewWorker{
    for(const sample of proof.samples){
     if(!await this.rows.findOne(fence,{projection:{alarm_id:1}}))return true;
     const {data}=await this.context.image(row,sample);
-    const prompt=reviewDescription(row);
-    const result=await this.invoke({request_id:digest([row.alarm_id,row.review.generation,sample.frame_id,'evidence-v2']),image:{jpeg_base64:data.toString('base64'),fit:'letterbox'},
+    const prompt=reviewDescription(row,sample);
+    const result=await this.invoke({request_id:digest([row.alarm_id,row.review.generation,sample.frame_id,REVIEW_PROMPT_VERSION]),image:{jpeg_base64:data.toString('base64'),fit:'letterbox'},
       preparation:{version:1,layout:'target-crop-v1',region:row.rule.snapshot.points??[],approach_width_fraction:row.rule.snapshot.behavior==='region_approach'?row.rule.snapshot.approach_px/row.analysis_evidence.source.width:0,target:[sample.bbox.x/row.analysis_evidence.source.width,sample.bbox.y/row.analysis_evidence.source.height,(sample.bbox.x+sample.bbox.w)/row.analysis_evidence.source.width,(sample.bbox.y+sample.bbox.h)/row.analysis_evidence.source.height]},
       alarm:{kind:prompt.label,description:prompt.description}},{timeoutMs:this.policy.timeout_s*1000});
     if(result.prepared_image&&this.context.savePrepared){const prepared=await this.context.savePrepared(row,sample,result.prepared_image);row.review.prepared_frames=[...(row.review.prepared_frames??[]),prepared];}
     if(result.context_image&&this.context.savePrepared){const context=await this.context.savePrepared(row,sample,result.context_image);row.review.context_frames=[...(row.review.context_frames??[]),context];}
-    if(!await this.qualification(result,row.review.policy))throw Error('unvalidated_profile');
+    if(!await this.qualification({...result,caller_template:REVIEW_PROMPT_VERSION,target_label:prompt.label},row.review.policy))throw Error('unvalidated_profile');
     if(result.schema!=='ainvr.alarm_review.v1'||typeof result.model?.package_sha256!=='string')throw Error('invalid_model_result');
     classify(result.real_score,row.review.policy);results.push(result);
    }
@@ -68,7 +61,7 @@ export class ReviewWorker{
    const scores=results.map(r=>r.real_score),score=Math.max(...scores);
    const state=scores.every(v=>v<=row.review.policy.reject_below)?'not_supported':scores.every(v=>v>=row.review.policy.approve_above)?'supported':'uncertain';
    const result={real_score:score,model:results[0].model},at=new Date(this.clock()).toISOString();
-   const review={...row.review,state,score:result.real_score,model:result.model,completed_at:at,frame_scores:scores,geometry_verified:true,verification:proof.verification,evidence_digest:digest(row.analysis_evidence.review_context),review_scope:'visual_target_with_verified_behavior',
+   const review={...row.review,state,score:result.real_score,model:result.model,completed_at:at,frame_scores:scores,caller_template:REVIEW_PROMPT_VERSION,geometry_verified:true,verification:proof.verification,evidence_digest:digest(row.analysis_evidence.review_context),review_scope:'visual_target_with_verified_behavior',
     lease_until:0,reason:state==='uncertain'?'ambiguous_result':null};
    delete review.token;
    const handled=state==='supported'||state==='not_supported';

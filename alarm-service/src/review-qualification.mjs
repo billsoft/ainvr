@@ -1,6 +1,7 @@
 // Automatic decisions require a signed, deployment-owned validation artifact.
 // No configuration-center checkbox can qualify a model or change these files.
 import {readFile,lstat} from 'node:fs/promises';
+import {REVIEW_PROMPT_VERSION} from './review-prompt.mjs';
 import {verify} from 'node:crypto';
 export function matchesQualification(envelope,publicKey,result,policy,now=Date.now()){
  try{
@@ -12,6 +13,8 @@ export function matchesQualification(envelope,publicKey,result,policy,now=Date.n
    Number.isFinite(Date.parse(p.expires_at))&&Date.parse(p.expires_at)>now&&
    p.model_sha256===result.model?.package_sha256&&p.layout==='target-crop-v1'&&
    p.layout===result.prepared_image?.layout&&p.prompt_template===result.template&&
+   p.caller_template===REVIEW_PROMPT_VERSION&&result.caller_template===REVIEW_PROMPT_VERSION&&
+   Array.isArray(p.labels)&&p.labels.length>0&&p.labels.includes(result.target_label)&&
    p.thresholds?.approve_above===policy.approve_above&&p.thresholds?.reject_below===policy.reject_below&&
    typeof p.thresholds?.version==='string'&&p.thresholds.version.length>0;
  }catch{return false;}
@@ -31,5 +34,5 @@ export async function qualifiedReview(result,policy){
 // The exact model/layout is still checked against each inference result.
 export async function validationAvailable(){
  const a=await artifact();if(!a)return false;
- try{const p=JSON.parse(a.manifest.payload);return matchesQualification(a.manifest,a.key,{model:{package_sha256:p.model_sha256},prepared_image:{layout:p.layout},template:p.prompt_template},p.thresholds);}catch{return false;}
+ try{const p=JSON.parse(a.manifest.payload);return matchesQualification(a.manifest,a.key,{model:{package_sha256:p.model_sha256},prepared_image:{layout:p.layout},template:p.prompt_template,caller_template:REVIEW_PROMPT_VERSION,target_label:p.labels?.[0]},p.thresholds);}catch{return false;}
 }

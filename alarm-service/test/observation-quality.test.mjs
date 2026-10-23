@@ -23,15 +23,15 @@ test('native hidden candidates remain observations for identity but cannot becom
  assert.equal(sample.tracks[0].event_eligible,true); // transport conversion does not edit native input
  assert.throws(()=>validateFrame({...converted,tracks:[{...converted.tracks[0],event_eligible:'yes'}]}),e=>e.code==='invalid_observation');
 });
-test('long runs of retained low-confidence identities do not repeatedly rearm appearance; a dropped ID ends the activity',()=>{
+test('long runs of retained low-confidence identities do not repeatedly rearm appearance; briefly dropping an ID retains the activity',()=>{
  const first=evaluate(null,frame(0,.5,false),[base]);let cp=first.checkpoint;
  assert.equal(first.events.length,1);
  for(let seq=1;seq<8;seq++){const next=evaluate(cp,frame(seq,.5,true),[base]);cp=next.checkpoint;assert.equal(next.events.length,0);assert.equal(next.ended_episodes.length,0);}
  const visible=evaluate(cp,frame(8,.5,false),[base]);cp=visible.checkpoint;assert.equal(visible.events.length,0);
  assert.equal(Object.values(cp.episodes)[0].id,first.events[0].episode_id);
  const absent=frame(9,.5,true);absent.tracks=[];const expired=evaluate(cp,absent,[base]);
- assert.equal(expired.events.length,0);assert.equal(expired.ended_episodes[0].end_reason,'track_expired');
- assert.equal(evaluate(expired.checkpoint,frame(10,.5,false),[base]).events.length,1);
+ assert.equal(expired.events.length,0);assert.equal(expired.ended_episodes.length,0);
+ assert.equal(evaluate(expired.checkpoint,frame(10,.5,false),[base]).events.length,0);
 });
 test('display-only crossings do not prove entry or traversal; visible observed crossing can trigger afterward',()=>{
  const rules=['region_enter','region_traverse'].map(behavior=>({...base,id:'m:'+behavior,behavior,anchor:'center',points:polygon}));

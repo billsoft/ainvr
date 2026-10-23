@@ -69,3 +69,10 @@ export function boxRegionDistance(points,box){
   const [x,y,w,h]=box,corners=[[x,y],[x+w,y],[x+w,y+h],[x,y+h]];
   return Math.min(...corners.map(p=>boundaryDistance(points,p)),...points.map(p=>boundaryDistance(corners,p)));
 }
+
+// Versioned pixel tolerance. Rules without it retain legacy normalized semantics.
+export function boundaryStable(rule,frame,point){
+ return rule.hysteresis_px===undefined
+  ? boundaryDistance(rule.points,point)>=rule.hysteresis
+  : boundaryDistancePx(rule.points,point,frame.source.width,frame.source.height)>=rule.hysteresis_px;
+}

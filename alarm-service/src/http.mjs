@@ -42,6 +42,7 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
     review:{available:!!repository.reviewContext,mode:'asynchronous_image_and_trajectory'},notification:{available:false},
     schedules:['always','weekly'],limits:{bulk_items:200}}));
   app.post('/v1/flow/query',async req=>repository.flow.query(req.body));
+  app.post('/v1/flow/clear',async req=>repository.flow.clear(req.body,actor(req),identity(req.headers['idempotency-key'],'Idempotency-Key')));
   app.post('/v1/flow/purge',async req=>{
     identity(req.body?.counter_id,'counter_id');
     if(!Array.isArray(req.body?.rule_ids)||!req.body.rule_ids.length||req.body.rule_ids.length>1000)fail('invalid_purge','Binding IDs required');

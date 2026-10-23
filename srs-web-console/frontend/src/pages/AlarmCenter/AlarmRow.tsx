@@ -39,7 +39,7 @@ export function AlarmRow({alarm,trigger,channelName,onHandle,onOpen}:Props){
   </div>
   <footer className="col-span-2 flex flex-wrap items-center justify-end gap-2 lg:col-span-1 lg:max-w-[21rem]">
    {done?<span role="status" className="text-xs text-success-700">{alarm.handling.disposition==='false_positive'?'已标记误报':'已确认'}{alarm.handling.acknowledged_by?` · ${alarm.handling.acknowledged_by}`:''}</span>:<>
-    <button type="button" aria-label="确认已处理" title="确认已处理" onClick={()=>onHandle('handled')} className="btn-secondary !min-h-11 text-primary-600"><Check size={16} aria-hidden="true"/>确认</button>
+    <button type="button" aria-label="确认" title="确认" onClick={()=>onHandle('handled')} className="btn-secondary !min-h-11 text-primary-600"><Check size={16} aria-hidden="true"/>确认</button>
     <button type="button" aria-label="标记误报" title="标记误报" onClick={()=>onHandle('false_positive')} className="btn-secondary !min-h-11"><Flag size={16} aria-hidden="true"/>误报</button>
    </>}
    <button type="button" aria-label="详情与录像" title="查看详情、阶段截图与录像" onClick={()=>onOpen()} className="btn-secondary !min-h-11">详情<ChevronRight size={16} aria-hidden="true"/></button>

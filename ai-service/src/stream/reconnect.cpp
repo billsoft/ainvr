@@ -8,7 +8,7 @@ namespace ai_service::stream {
 
 namespace {
 double NowWall() {
-  return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch())
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
 }  // namespace
@@ -16,7 +16,7 @@ double NowWall() {
 ReconnectStateMachine::ReconnectStateMachine(std::string channel_id, double initial_delay,
                                               double max_delay, double backoff_factor,
                                               double watchdog_timeout, ReconnectFn reconnect_fn,
-                                              NotifyFn notify_fn)
+                                              NotifyFn notify_fn, bool require_stable_frames)
     : channel_id_(std::move(channel_id)),
       initial_delay_(initial_delay),
       max_delay_(max_delay),
@@ -25,11 +25,22 @@ ReconnectStateMachine::ReconnectStateMachine(std::string channel_id, double init
       reconnect_fn_(std::move(reconnect_fn)),
       notify_fn_(std::move(notify_fn)),
       started_at_(NowWall()),
-      current_delay_(initial_delay) {}
+      current_delay_(initial_delay), require_stable_frames_(require_stable_frames) {}
 
 void ReconnectStateMachine::OnFrameReceived() {
   std::lock_guard<std::mutex> lock(mutex_);
   last_frame_time_ = NowWall();
+  if (awaiting_frames_) {
+    // An opened socket or cached frame is not proof of sustained recovery.
+    if (!recovery_frames_ || last_frame_time_ - recovery_last_frame_ > std::max(0.5, watchdog_timeout_)) {
+      recovery_first_frame_ = last_frame_time_;
+      recovery_frames_ = 0;
+    }
+    recovery_last_frame_ = last_frame_time_;
+    ++recovery_frames_;
+    if (recovery_frames_ < 3 || last_frame_time_ - recovery_first_frame_ < 1.0) return;
+    awaiting_frames_ = false;
+  }
   current_delay_ = initial_delay_;
   consecutive_failures_ = 0;
   reconnect_requested_ = false;
@@ -41,6 +52,7 @@ void ReconnectStateMachine::TriggerReconnect(const std::string& reason) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (reconnecting_) return;
     reconnect_requested_ = true;
+    recovery_frames_ = 0;
     notify_reason = reason;
   }
   NotifyStackSampler(notify_reason);
@@ -84,7 +96,7 @@ bool ReconnectStateMachine::NeedsReconnect() const {
 
 bool ReconnectStateMachine::IsRecovering() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return reconnect_requested_ || reconnecting_;
+  return reconnect_requested_ || reconnecting_ || awaiting_frames_;
 }
 
 bool ReconnectStateMachine::DoReconnect() {
@@ -111,8 +123,12 @@ bool ReconnectStateMachine::DoReconnect() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (success) {
       reconnect_requested_ = false;
-      consecutive_failures_ = 0;
-      current_delay_ = initial_delay_;
+      awaiting_frames_ = require_stable_frames_;
+      recovery_frames_ = 0;
+      if (!awaiting_frames_) {
+        consecutive_failures_ = 0;
+        current_delay_ = initial_delay_;
+      }
       last_frame_time_ = NowWall();
     } else {
       consecutive_failures_++;

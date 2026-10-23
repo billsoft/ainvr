@@ -104,12 +104,20 @@ def process_snapshot(pid):
             'schedstat': read(f'/proc/{pid}/schedstat', 200)}
 
 def processes(root):
-    queue, result = [root], []
+    # This board kernel lacks /proc/PID/task/TID/children. Enumerate PPIDs
+    # from one bounded ps query, rather than silently observing docker-init only.
+    children = collections.defaultdict(list)
+    for line in command(['ps', '-e', '-o', 'pid=,ppid='], limit=65536).splitlines():
+        parts = line.split()
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            children[int(parts[1])].append(int(parts[0]))
+    queue, result, seen = [root], [], set()
     while queue and len(result) < 12:
         pid = queue.pop(0)
-        if pid <= 0: continue
+        if pid <= 0 or pid in seen: continue
+        seen.add(pid)
         result.append(process_snapshot(pid))
-        queue.extend(int(p) for p in read(f'/proc/{pid}/task/{pid}/children', 256).split() if p.isdigit())
+        queue.extend(children[pid])
     return result
 
 def tcp_events(events):

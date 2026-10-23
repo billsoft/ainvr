@@ -5,10 +5,12 @@ import {matchesQualification} from '../src/review-qualification.mjs';
 test('qualification binds signed report to model, layout, template and both thresholds',()=>{
  const {privateKey,publicKey}=generateKeyPairSync('ed25519');
  const policy={approve_above:.95,reject_below:.05};
- const result={model:{package_sha256:'a'.repeat(64)},prepared_image:{layout:'target-crop-v1'},template:'alarm-review-zh-v1'};
- const payload=JSON.stringify({schema:'ainvr.review-validation.v1',decision:'approved',report_sha256:'b'.repeat(64),dataset:{independent:true,samples:120},expires_at:'2099-01-01T00:00:00Z',model_sha256:result.model.package_sha256,layout:'target-crop-v1',prompt_template:result.template,thresholds:{...policy,version:'test-only'}});
+ const result={model:{package_sha256:'a'.repeat(64)},prepared_image:{layout:'target-crop-v1'},template:'alarm-review-zh-v1',caller_template:'target-context-zh-v2',target_label:'人'};
+ const payload=JSON.stringify({schema:'ainvr.review-validation.v1',decision:'approved',report_sha256:'b'.repeat(64),dataset:{independent:true,samples:120},expires_at:'2099-01-01T00:00:00Z',model_sha256:result.model.package_sha256,layout:'target-crop-v1',prompt_template:result.template,caller_template:result.caller_template,labels:[result.target_label],thresholds:{...policy,version:'test-only'}});
  const envelope={version:1,payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
  assert.equal(matchesQualification(envelope,publicKey,result,policy),true);
+ assert.equal(matchesQualification(envelope,publicKey,{...result,target_label:'火'},policy),false);
+ assert.equal(matchesQualification(envelope,publicKey,{...result,caller_template:'old'},policy),false);
  assert.equal(matchesQualification({...envelope,payload:payload.replace('approved','rejected')},publicKey,result,policy),false);
  assert.equal(matchesQualification(envelope,publicKey,{...result,model:{package_sha256:'c'.repeat(64)}},policy),false);
  assert.equal(matchesQualification(envelope,publicKey,{...result,prepared_image:{layout:'composite-v1'}},policy),false);

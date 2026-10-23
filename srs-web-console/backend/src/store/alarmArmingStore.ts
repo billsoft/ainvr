@@ -310,7 +310,7 @@ export class AlarmArmingStore {
         await this.writeBinding(c,doc.source_id,b,counter.document,counter.version,source,doc.zones.find(z=>z.zone_id===b.zone_id)??null,previous);
         await this.recordLine(c,b,recount.has(b.binding_id),actor);
       }
-      await c.query('UPDATE flow_counter_bindings SET active=FALSE,compiled_rule=NULL,updated_at=now() WHERE source_id=$1 AND NOT (binding_id=ANY($2::text[]))',[doc.source_id,doc.counter_bindings.map(b=>b.binding_id)]);
+      await c.query('UPDATE flow_counter_bindings SET active=FALSE,compiled_rule=NULL,updated_at=now() WHERE active=TRUE AND source_id=$1 AND NOT (binding_id=ANY($2::text[]))',[doc.source_id,doc.counter_bindings.map(b=>b.binding_id)]);
       return {saved:true as const,sourceId:doc.source_id,revision:expected+1,application:{state:'pending' as const,desired_revision:await this.bump(c)}};
     });
   }

@@ -1,4 +1,4 @@
-import {AlertTriangle,Bell,ArrowLeftRight,Pencil,Plus,Trash2} from 'lucide-react'
+import {AlertTriangle,Bell,ArrowLeftRight,Plus,Check,ChevronRight} from 'lucide-react'
 import {useLayoutEffect,useRef,useState} from 'react'
 import {placeMarkers,type MarkerTarget} from '@/features/armingMarkerLayout'
 interface MarkerProps {targets:MarkerTarget[];selected:string|null;disabled:boolean;onSelect:(id:string)=>void;onGroup:(target:MarkerTarget,kind:'trigger'|'counter')=>void}
@@ -15,15 +15,18 @@ export function ArmingMarkers({targets,selected,disabled,onSelect,onGroup}:Marke
   </div>})}
  </div>
 }
-interface SelectionProps {target:MarkerTarget;disabled:boolean;onTrigger:(id:string)=>void;onCounter:(id:string)=>void;onAddTrigger:()=>void;onAddCounter:()=>void;onEditShape:()=>void;onRemove:()=>void}
+interface SelectionProps {target:MarkerTarget;disabled:boolean;onTrigger:(id:string)=>void;onCounter:(id:string)=>void;onAddTrigger:()=>void;onAddCounter:()=>void}
 /** Full controls stay beside/below the image; labels on the image never expand. */
-export function ArmingSelection({target:t,disabled,onTrigger,onCounter,onAddTrigger,onAddCounter,onEditShape,onRemove}:SelectionProps){
+export function ArmingSelection({target:t,disabled,onTrigger,onCounter,onAddTrigger,onAddCounter}:SelectionProps){
  return <section aria-label={`${t.name} 的选用`} className="space-y-5 text-sm">
-  <header className="space-y-2"><h3 className="break-words text-base font-semibold text-ink">{t.name}</h3><p className="text-xs text-ink-subtle">{t.frame?'整个画面的出现检测':'此处设置只影响当前热区，统一保存布防后生效。'}</p></header>
-  {!t.frame&&<div className="flex gap-2"><button type="button" disabled={disabled} className="btn-secondary min-h-11" aria-label={`编辑 ${t.name}`} onClick={onEditShape}><Pencil size={16} aria-hidden="true"/>编辑形状与名称</button><button type="button" disabled={disabled} className="btn-secondary min-h-11 text-danger" aria-label={`移除 ${t.name}`} onClick={onRemove}><Trash2 size={16} aria-hidden="true"/>移除</button></div>}
+  {t.frame&&<header className="space-y-2"><h3 className="break-words text-base font-semibold text-ink">{t.name}</h3><p className="text-xs text-ink-subtle">{t.frame?'整个画面的出现检测':'此处设置只影响当前热区，统一保存布防后生效。'}</p></header>}
   {(['trigger','counter'] as const).filter(k=>!t.frame||k==='trigger').map(kind=>{const items=kind==='trigger'?t.triggers:t.counters,Icon=kind==='trigger'?Bell:ArrowLeftRight;return <div key={kind} className="space-y-2 border-t border-line pt-4">
-   <h4 className="flex items-center gap-2 font-medium"><Icon size={16} aria-hidden="true"/>{kind==='trigger'?'触发器':'计数器'} <span className="text-ink-subtle">{items.length}</span></h4>
-   {items.map(i=><button key={i.id} type="button" disabled={disabled} aria-label={i.label} className={`flex min-h-11 w-full items-center gap-2 rounded-base border px-3 py-2 text-left ${i.warn?'border-warning bg-amber-50':'border-line hover:bg-surface-hover'}`} onClick={()=>kind==='trigger'?onTrigger(i.id):onCounter(i.id)}><Icon size={16} className="shrink-0" aria-hidden="true"/><span className="min-w-0 flex-1 break-words">{i.name}{i.muted&&<span className="ml-1 text-xs text-ink-subtle">未启用</span>}</span>{i.warn&&<AlertTriangle size={16} aria-label="需要重新设置"/>}</button>)}
+   <h4 className="flex items-center gap-2 font-medium text-ink"><Icon size={16} aria-hidden="true"/>已关联{kind==='trigger'?'触发器':'计数器'} <span className="rounded-full bg-surface-page px-2 py-0.5 text-xs text-ink-subtle">{items.length}</span></h4>
+   {items.map(i=><button key={i.id} type="button" disabled={disabled} aria-label={i.label} className={`group flex min-h-11 w-full items-center gap-3 rounded-card border p-3 text-left transition-colors ${i.warn?'border-warning bg-amber-50':kind==='trigger'?'border-blue-200 bg-blue-50/70 hover:border-blue-400 hover:bg-blue-50':'border-teal-200 bg-teal-50/70 hover:border-teal-400 hover:bg-teal-50'}`} onClick={()=>kind==='trigger'?onTrigger(i.id):onCounter(i.id)}>
+    <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-base ${i.warn?'bg-amber-100 text-amber-700':kind==='trigger'?'bg-blue-100 text-blue-700':'bg-teal-100 text-teal-700'}`}><Icon size={18} aria-hidden="true"/></span>
+    <span className="min-w-0 flex-1"><strong className="block break-words text-sm font-semibold text-ink">{i.name}</strong><span className={`mt-1 flex items-center gap-1 text-xs ${i.warn?'text-amber-800':i.muted?'text-ink-subtle':kind==='trigger'?'text-blue-700':'text-teal-700'}`}>{i.warn?<><AlertTriangle size={13} aria-hidden="true"/>需要重新设置</>:i.muted?'未启用':<><Check size={13} aria-hidden="true"/>已关联</>}</span></span>
+    <ChevronRight size={16} className="shrink-0 text-ink-subtle" aria-hidden="true"/>
+   </button>)}
    {!items.length&&<p className="text-ink-subtle">尚未关联{kind==='trigger'?'触发器':'计数器'}</p>}
    <button type="button" disabled={disabled||(kind==='counter'&&!!t.noCounting)} className="btn-secondary min-h-11 w-full" aria-label={kind==='trigger'?(t.frame?'整个画面选用触发器':`为 ${t.name} 选用触发器`):`为 ${t.name} 选用计数器`} onClick={kind==='trigger'?onAddTrigger:onAddCounter}><Plus size={16} aria-hidden="true"/>添加{kind==='trigger'?'触发器':'计数器'}</button>
    {kind==='counter'&&t.noCounting&&<p className="text-xs text-ink-subtle">{t.noCounting}</p>}

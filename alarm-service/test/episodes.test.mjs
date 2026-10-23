@@ -9,7 +9,7 @@ const behaviors=['appearance','region_approach','region_enter','region_traverse'
 const rules=behaviors.map(behavior=>({id:`${behavior}@c`,trigger_id:behavior,version:1,name:'Gate',channel_id:'c',state:'enabled',label_ids:['person'],geometry_revision:'g',label_map_version:'l',behavior,anchor:'center',
   ...(behavior==='appearance'?{}:{points:[[.3,.3],[.7,.3],[.7,.7],[.3,.7]]}),...(behavior==='region_approach'?{approach_px:100}:{})}));
 const frame=(seq,x)=>({schema_version:'1.0',channel_id:'c',input_stream_id:'in',stream_session_id:'s',seq:String(seq),frame_id:String(seq),source_pts_ns:String(seq*1000000000),captured_at:new Date(1760918400000+seq*1000).toISOString(),source:{width:1000,height:1000,coordinate_space:'source_pixels',geometry_revision:'g'},model:{label_map_version:'l'},tracks:[{track_id:'t',label_id:'person',state:'confirmed',observation:'detected',last_observed_pts_ns:String(seq*1000000000),bbox:{x:x*1000-10,y:490,w:20,h:20}}]});
-test('all triggers share one activity per target on the channel; it ends when the ID is gone',()=>{
+test('all triggers share one activity per target on the channel; it ends after the identity grace',()=>{
  let cp=null,events=[];
  for(const [i,x] of [.15,.25,.3,.4,.6,.85].entries()){
   const r=evaluate(cp,frame(i+1,x),rules);cp=r.checkpoint;events.push(...r.events);
@@ -19,9 +19,10 @@ test('all triggers share one activity per target on the channel; it ends when th
  let outside=[];for(let i=7;i<=10;i++){const r=evaluate(cp,frame(i,.9),rules);cp=r.checkpoint;outside.push(...r.ended_episodes);}
  assert.equal(outside.length,0);  // still the same visible target
  const absent=frame(11,.9);absent.tracks=[];
- const gone=evaluate(cp,absent,rules);cp=gone.checkpoint;
+ let gone=evaluate(cp,absent,rules);assert.equal(gone.ended_episodes.length,0);cp=gone.checkpoint;
+ for(let i=12;i<=14;i++){const f=frame(i,.9);f.tracks=[];gone=evaluate(cp,f,rules);cp=gone.checkpoint;}
  assert.equal(gone.ended_episodes.length,1);assert.equal(gone.ended_episodes[0].end_reason,'track_expired');
- const next=evaluate(cp,frame(12,.25),rules);
+ const next=evaluate(cp,frame(15,.25),rules);
  assert.ok(next.events.length&&next.events.every(e=>e.episode_id!==events[0].episode_id));
 });
 test('a target far outside the zone creates no zone facts; appearance fires once per target',()=>{
@@ -54,7 +55,7 @@ test('Mongo merges stages, preserves acknowledgement and recovers prepared input
   assert.equal(new Set(alarm.stages.map(s=>s.event_id)).size,alarm.stages.length);
   assert.equal(await repo.behaviors.collection.countDocuments(),alarm.stages.length);
   assert.equal(alarm.trigger_id,'region_traverse');assert.equal(alarm.rule.id,'region_traverse@c');  // shows the trigger that reached the top level
-  const gone=envelope(7,.9);gone.frame.tracks=[];await consumer.consume(gone);
+  for(let i=7;i<=10;i++){const gone=envelope(i,.9);gone.frame.tracks=[];await consumer.consume(gone);}
   assert.equal((await repo.get(id)).lifecycle.state,'ended');
  }finally{await db.dropDatabase();await client.close();}
 });

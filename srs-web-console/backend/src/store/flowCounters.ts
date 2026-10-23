@@ -87,12 +87,34 @@ export function compileBinding(definition:CounterDefinition,definitionVersion:nu
   if(!zone||zone.zone_id!==b.zone_id||zone.channel_id!==b.input_stream_id||zone.state!=='active'||
     zone.version!==b.zone_version||zone.geometry_revision!==b.geometry_revision)return fail('zone_changed','热区已变化，请重新确认计数线');
   if(zone.erp_wrap)return fail('invalid_binding','全景环绕区域暂不支持计数');
+  // Compilation can also be called outside the arming editor's geometry validation.
+  for(let i=0;i<zone.points.length;i++){
+    const a=zone.points[i]!,b=zone.points[(i+1)%zone.points.length]!;
+    if(Math.hypot(a[0]-b[0],a[1]-b[1])<1e-8)
+      return fail('invalid_geometry','相邻顶点不能重合，请调整热区形状。');
+  }
   if(bindingEdges(b.direction).some(e=>!zone.edge_ids.includes(e)))return fail('direction_changed','热区的边已变化，请重新确认计数线');
   const index=(e:string)=>zone.edge_ids.indexOf(e);
   const passage=b.direction.kind==='line'?{kind:'line',edges:[index(b.direction.edge)],max_gap_ms:d.max_gap_ms}:
     b.direction.kind==='gates'?{kind:'gates',edges:[index(b.direction.from),index(b.direction.to)],max_gap_ms:d.max_gap_ms}:
     {kind:'zone',max_gap_ms:d.max_gap_ms};
+  const tolerance=Math.max(0.5,Math.min(6,Math.min(source.width,source.height)*0.005));
+  if(d.method==='zone'){
+    const pixels=zone.points.map(p=>[p[0]*source.width,p[1]*source.height]);
+    // A rotated narrow region can have a large axis-aligned bounding box.
+    // Check enclosing strips along every edge normal in source pixels instead.
+    // This is a necessary clearance check, not proof of a traversable concave interior.
+    const spans=pixels.map((a,i)=>{
+      const b=pixels[(i+1)%pixels.length]!,dx=b[0]!-a[0]!,dy=b[1]!-a[1]!,length=Math.hypot(dx,dy);
+      if(length<=1e-9)return 0;
+      const projection=pixels.map(p=>(-dy*(p[0]!-a[0]!)+dx*(p[1]!-a[1]!))/length);
+      return Math.max(...projection)-Math.min(...projection);
+    });
+    if(Math.min(...spans)<=2*tolerance+1e-7)
+      return fail('zone_too_narrow','区域太窄，没有稳定的内部空间。请扩大区域，或改用单线／双线计数。');
+  }
   return {
+    hysteresis_px:tolerance,
     id:b.binding_id,assignment_id:b.binding_id,counter_id:d.counter_id,trigger_version:definitionVersion,
     version:executionVersion,name:d.name,state:'enabled',
     channel_id:b.processor_id,input_stream_id:b.input_stream_id,
@@ -132,6 +154,7 @@ export function countingPieces(binding:{created_at:Date|string;updated_at:Date|s
   }
   const labels=[...definitions].sort((a,b)=>t(a.created_at)-t(b.created_at))
   const lo=Math.max(t(window.from),created),hi=Math.min(t(window.to),binding.active?Infinity:t(binding.updated_at))
+  if(hi<=lo)return []
   const cuts=new Set([lo,hi]);for(const l of lines)if(l.from>lo&&l.from<hi)cuts.add(l.from);for(const d of labels)if(t(d.created_at)>lo&&t(d.created_at)<hi)cuts.add(t(d.created_at))
   // Each change of line or targets restarts the rule, so its first seconds may be uncovered.
   const points=[...cuts].sort((a,b)=>a-b),starts=new Set([created,...lines.map(l=>l.from),...labels.map(d=>t(d.created_at))])

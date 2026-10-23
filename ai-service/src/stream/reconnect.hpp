@@ -17,7 +17,8 @@ class ReconnectStateMachine {
 
   ReconnectStateMachine(std::string channel_id, double initial_delay, double max_delay,
                          double backoff_factor, double watchdog_timeout,
-                         ReconnectFn reconnect_fn = nullptr, NotifyFn notify_fn = nullptr);
+                         ReconnectFn reconnect_fn = nullptr, NotifyFn notify_fn = nullptr,
+                         bool require_stable_frames = false);
 
   void OnFrameReceived();
   void TriggerReconnect(const std::string& reason = "");
@@ -50,6 +51,11 @@ class ReconnectStateMachine {
   int consecutive_failures_ = 0;
   bool reconnect_requested_ = false;
   bool reconnecting_ = false;
+  bool require_stable_frames_ = false;
+  bool awaiting_frames_ = false;
+  double recovery_first_frame_ = 0;
+  double recovery_last_frame_ = 0;
+  int recovery_frames_ = 0;
   std::atomic<bool> stop_flag_{false};
 };
 

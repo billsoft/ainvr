@@ -7,8 +7,8 @@
 
 - TsParser：增量解析 188 字节 TS 包；只用 C 级 bytes.find 定位 PAT/PMT/视频 PES
   起始包（每帧一个），不逐包循环，事件循环开销与码率基本无关。
-  H.264：I 帧 = 视频 PES 起始包带 adaptation field 的 random_access_indicator
-  （ffmpeg mpegts 封装对关键帧必置）。
+  H.264：新读流必须从带 SPS/PPS 的 IDR 起步；后续 RAI 切点也要带完整参数。
+  不再仅依赖 random_access_indicator，避免缺编码头的文件反复写入失败。
   H.265：random_access_indicator 对 CRA 也置位，而从 CRA 切开会让新文件开头的 RASL
   帧缺参考而花屏，所以改为扫 NAL：只有首个 VCL 是 IDR（19/20）的帧才算关键帧。
   首个 VCL 前面有 VPS/SPS/PPS/SEI，常落在第 2、3 个 TS 包里、起始码也可能跨包——
@@ -120,7 +120,7 @@ class TsParser:
         H.265 下尚未分类完的帧（及其后字节）暂不返回，留到下次 feed/flush。
         """
         out, starts, rest = self._align(self._carry + chunk)
-        if self.video_codec == "h265" and starts:
+        if self.video_codec in ("h264", "h265") and starts:
             out, starts, held = self._classify_hevc(out, starts, final=False)
             rest = held + rest
         self._carry = rest
@@ -131,7 +131,7 @@ class TsParser:
         out, starts, rest = self._align(self._carry)
         self._carry = b""
         self.lost_bytes += len(rest)
-        if self.video_codec == "h265" and starts:
+        if self.video_codec in ("h264", "h265") and starts:
             out, starts, _ = self._classify_hevc(out, starts, final=True)
         return out, starts
 
@@ -162,13 +162,13 @@ class TsParser:
         """逐帧定 key/params_changed；遇到数据不够判定的帧就在它的起点切开留存。"""
         kept: list[VideoStart] = []
         for s in starts:
-            res = self._classify_au(out, s.offset, final)
+            res = self._classify_au(out, s.offset, final, s.key)
             if res is None:
                 return out[:s.offset], kept, out[s.offset:]
             kept.append(VideoStart(s.offset, res[0], s.pts, res[1]))
         return out, kept, b""
 
-    def _classify_au(self, out: bytes, off: int, final: bool) -> tuple[bool, bool] | None:
+    def _classify_au(self, out: bytes, off: int, final: bool, random_access: bool = False) -> tuple[bool, bool] | None:
         """从视频 PES 起始包往后收集载荷找首个 VCL。→ (是否 IDR, 参数集是否变化)；
         数据不够且未到流尾 → None。"""
         data = bytearray()
@@ -197,10 +197,10 @@ class TsParser:
             data += payload
             i = data.find(b"\x00\x00\x01", scan)
             while i >= 0 and i + 3 < len(data):
-                ntype = (data[i + 3] >> 1) & 0x3F
+                ntype = (data[i + 3] & 0x1F) if self.video_codec == "h264" else (data[i + 3] >> 1) & 0x3F
                 nals.append((i + 3, ntype))
-                if ntype <= 31:
-                    return self._on_vcl(data, nals)
+                if (1 <= ntype <= 5) if self.video_codec == "h264" else (ntype <= 31):
+                    return self._on_vcl(data, nals, random_access)
                 scan = i + 3
                 i = data.find(b"\x00\x00\x01", scan)
             if i >= 0:
@@ -216,8 +216,26 @@ class TsParser:
         self.unknown_aus += 1
         return False, False
 
-    def _on_vcl(self, data: bytearray, nals: list[tuple[int, int]]) -> tuple[bool, bool]:
+    def _on_vcl(self, data: bytearray, nals: list[tuple[int, int]], random_access: bool = False) -> tuple[bool, bool]:
         vcl_type = nals[-1][1]
+        if self.video_codec == "h264":
+            # RAI alone can mark an unusable recovery point. Keep the raw bytes,
+            # but never open a new MP4 at an IDR lacking in-band SPS/PPS.
+            params = {(kind, bytes(data[start:nxt-3]).rstrip(b"\x00"))
+                      for (start, kind), (nxt, _) in zip(nals, nals[1:])
+                      if kind in (7, 8)}
+            # Preserve existing open-GOP segmentation only after initial IDR.
+            # A fresh reader must always acquire a self-contained IDR first.
+            key = (vcl_type == 5 or (random_access and self._param_sig is not None)) and {kind for kind, _ in params} == {7, 8}
+            changed = False
+            if key:
+                sig = tuple(sorted(params))
+                changed = self._param_sig is not None and sig != self._param_sig
+                self._param_sig = sig
+                self.idr_aus += 1
+            elif vcl_type == 5:
+                self.unknown_aus += 1
+            return key, changed
         key = vcl_type in HEVC_IDR
         if vcl_type in HEVC_OPEN_GOP:
             self.open_gop_aus += 1

@@ -30,7 +30,7 @@ test('crossing at a hidden interval needs plausible observed endpoints and uniqu
 });
 test('line counts finite stable segment crossings in both directions, not jitter or endpoint extension',()=>{
  const passage={kind:'line',edges:[3],max_gap_ms:1000};
- const r=replay([.1,.2,.4,.5,.4,.2,.1],{passage});
+ const r=replay([.1,.2,.4,.5,.4,.2,.1,.1],{passage});
  assert.equal(r.events.length,2);assert.deepEqual(r.events.map(e=>e.direction.line_direction),['inward','outward']);
  assert.equal(replay([.29,.301,.299,.302,.298],{passage}).events.length,0);
  assert.equal(replay([{x:.2,y:.1},{x:.4,y:.1}],{passage}).events.length,0);

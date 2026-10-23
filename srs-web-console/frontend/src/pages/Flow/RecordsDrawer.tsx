@@ -11,17 +11,20 @@ const choice='btn-secondary aria-pressed:border-primary aria-pressed:bg-primary-
 export function RecordsDrawer({result,from,to,output:initialOutput,bindingId,zoneName,onClose}:Props){
  const host=useFullscreenPortalHost(),panel=useRef<HTMLDivElement>(null)
  const counter=result.counter,outputs:('in'|'out')[]=counter.outputs==='both'?['in','out']:['in']
- const [zone,setZone]=useState(bindingId??result.zones[0]?.binding_id??''),[output,setOutput]=useState(initialOutput)
+ const [zone,setZone]=useState(bindingId??(result.zones.length===1?result.zones[0]?.binding_id:'')??''),[output,setOutput]=useState(initialOutput)
  const [rows,setRows]=useState<Passage[]>([]),[cursor,setCursor]=useState<string|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[loaded,setLoaded]=useState(false)
+ const requestVersion=useRef(0)
  const selected=result.zones.find(z=>z.binding_id===zone)
  const load=async(next?:string)=>{
-  if(!zone)return
+  const version=++requestVersion.current
+  if(!zone){setBusy(false);return}
   setBusy(true);setError('')
   try{const r=await flowService.records({counter_id:counter.counter_id,binding_id:zone,output,from,to,...(next?{cursor:next}:{}),limit:30})
+   if(version!==requestVersion.current)return
    setRows(old=>next?[...old,...r.items]:r.items);setCursor(r.next_cursor);setLoaded(true)}
-  catch(e){setError(e instanceof Error?e.message:'读取失败')}finally{setBusy(false)}
+  catch(e){if(version===requestVersion.current)setError(e instanceof Error?e.message:'读取失败')}finally{if(version===requestVersion.current)setBusy(false)}
  }
- useEffect(()=>{setRows([]);setLoaded(false);void load()},[zone,output])
+ useEffect(()=>{setRows([]);setCursor(null);setError('');setLoaded(false);void load();return()=>{requestVersion.current++}},[zone,output,from,to])
  useEffect(()=>{const previous=document.activeElement as HTMLElement|null;panel.current?.focus();return()=>previous?.focus()},[])
  const label=(id:string)=>labelDisplay(counter.labels.find(l=>l.label_id===id)?.name??id)
  return createPortal(<div className="fixed inset-0 z-[60] flex justify-end bg-black/40" onClick={onClose}>
@@ -29,10 +32,11 @@ export function RecordsDrawer({result,from,to,output:initialOutput,bindingId,zon
    className="alarm-workspace flex h-full w-full max-w-[520px] flex-col bg-surface shadow-modal outline-none">
    <header className="flex items-center gap-3 border-b border-line px-5 py-4"><div className="min-w-0 flex-1"><h2 className="text-base font-semibold text-ink">通行记录 · {counter.name}</h2>
     <p className="mt-0.5 text-xs text-ink-subtle">{new Date(from).toLocaleString('zh-CN')} — {new Date(to).toLocaleString('zh-CN')}</p></div>
-    <button type="button" className="btn-secondary px-2.5" aria-label="关闭通行记录" onClick={onClose}><X size={16} aria-hidden="true"/></button></header>
+    <button type="button" className="btn-secondary min-h-11 min-w-11 px-2.5" aria-label="关闭" onClick={onClose}><X size={16} aria-hidden="true"/></button></header>
    <div className="space-y-3 border-b border-line px-5 py-3">
-    {result.zones.length>1&&<div role="group" aria-label="热区" className="flex flex-wrap gap-2">{result.zones.map(z=><button key={z.binding_id} type="button" aria-pressed={zone===z.binding_id} className={choice} onClick={()=>setZone(z.binding_id)}>{zoneName(z)}</button>)}</div>}
-    {outputs.length>1&&<div role="group" aria-label="方向" className="flex gap-2">{outputs.map(o=><button key={o} type="button" aria-pressed={output===o} className={choice} onClick={()=>setOutput(o)}>{counter.names[o]} {selected?.[o]?.occurrences??0}</button>)}</div>}
+    {result.zones.length>1?<label className="block text-sm text-ink">统计位置<select aria-label="记录所属热区" className="form-input mt-1 !min-h-11 w-full" value={zone} onChange={e=>setZone(e.target.value)}><option value="">请选择热区查看记录</option>{result.zones.map(z=><option key={z.binding_id} value={z.binding_id}>{zoneName(z)}{!z.active?'（已移除）':''}</option>)}</select></label>:<p className="text-sm text-ink">{selected?zoneName(selected):'没有可查询的统计位置'}</p>}
+    {!selected&&<p role="status" className="text-sm text-ink-subtle">合计包含多个热区，请先选择一个热区查看通行记录。</p>}
+    {selected&&outputs.length>1&&<div role="group" aria-label="方向" className="flex gap-2">{outputs.map(o=><button key={o} type="button" aria-pressed={output===o} className={choice} onClick={()=>setOutput(o)}>{counter.names[o]} {selected?.[o]?.occurrences??0}</button>)}</div>}
    </div>
    <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
     {error&&<p role="alert" className="text-sm text-danger">{error} <button type="button" className="btn-secondary ml-2" onClick={()=>void load()}>重试</button></p>}

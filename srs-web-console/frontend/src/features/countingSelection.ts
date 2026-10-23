@@ -25,3 +25,21 @@ export function pickDirection(pick:CountingPick):BindingDirection|null{
  if(pick.method==='gates')return pick.from&&pick.to?{kind:'gates',from:pick.from,to:pick.to}:null
  return pick.entry.length&&pick.exit.length?{kind:'edges',entry:pick.entry,exit:pick.exit}:null
 }
+
+/** Preview partial choices without accepting an incomplete binding for saving. */
+export function previewDirection(pick:CountingPick):BindingDirection|null{
+ if(pick.method==='line')return pickDirection(pick)
+ if(pick.method==='gates')return pickDirection(pick)??{kind:'edges',entry:pick.from?[pick.from]:[],exit:pick.to?[pick.to]:[]}
+ return {kind:'edges',entry:pick.entry,exit:pick.exit}
+}
+/** Simple polygons with both turn signs are concave, independent of winding. */
+export function isConcaveRegion(points:[number,number][]):boolean{
+ let positive=false,negative=false
+ for(let i=0;i<points.length;i++){
+  const a=points[i]!,b=points[(i+1)%points.length]!,c=points[(i+2)%points.length]!
+  const cross=(b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0])
+  if(cross>1e-10)positive=true
+  if(cross< -1e-10)negative=true
+ }
+ return positive&&negative
+}

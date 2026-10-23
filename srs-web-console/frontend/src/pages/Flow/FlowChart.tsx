@@ -15,7 +15,7 @@ export function FlowChart({series,slots,bucket,label}:Props){
  return <figure className="space-y-2" aria-label={label}>
   <div className="flex flex-wrap items-center gap-4 text-xs text-ink-subtle">{series.map(s=><span key={s.name} className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm" style={{background:s.color}}/>{s.name}</span>)}
    <span className="ml-auto min-h-[1rem] text-ink">{shown?`${periodName(shown.from,bucket)}：${series.map((s,i)=>`${s.name} ${values[active!]![i]}`).join('，')}`:'点柱子查看数值'}</span></div>
-  <svg viewBox={`0 0 ${W} ${H}`} className="h-48 w-full" role="img" aria-label={`${label}：${series.map(s=>`${s.name}共${s.buckets.reduce((n,b)=>n+b.occurrences,0)}`).join('，')}`}>
+  <svg viewBox={`0 0 ${W} ${H}`} className="h-40 w-full" role="img" aria-label={`${label}：${series.map(s=>`${s.name}共${s.buckets.reduce((n,b)=>n+b.occurrences,0)}`).join('，')}`}>
    {Array.from({length:Math.round(top/step)+1},(_,i)=>{const v=i*step,y=8+plotH-v/top*plotH;return <g key={v}><line x1={left} x2={W-8} y1={y} y2={y} stroke="currentColor" className="text-line" strokeWidth="1"/><text x={left-6} y={y+4} textAnchor="end" fontSize="11" className="fill-ink-faint">{v}</text></g>})}
    {slots.map((s,i)=>{const x=left+i*slot,group=bar*series.length,start=x+(slot-group)/2;return <g key={s.from} onMouseEnter={()=>setActive(i)} onClick={()=>setActive(i)} className="cursor-pointer">
     <rect x={x} y={8} width={slot} height={plotH} fill={active===i?'rgba(22,119,255,.06)':'transparent'}/>

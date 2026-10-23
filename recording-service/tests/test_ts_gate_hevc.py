@@ -152,14 +152,14 @@ def test_duplicate_or_reordered_parameters_do_not_force_short_segments():
     assert [s.params_changed for s in starts] == [False, False, False, True]
 
 
-def test_h264_path_still_uses_random_access_indicator_only():
-    # H.264：沿用 RAI 判定，不做 NAL 扫描（264 行为不变）
+def test_h264_rai_without_decoder_headers_is_not_a_safe_cut():
+    # H.264 RAI without SPS/PPS must not start a new file.
     data = _pat() + _pmt(video_type=0x1B) + _frame(90000, b"\x00\x00\x00\x01\x65" + b"\x55" * 300, rai=True) \
         + _frame(93600, b"\x00\x00\x00\x01\x41" + b"\x55" * 300, rai=False)
     parser = TsParser()
     blocks, starts = _feed_all(parser, data)
     assert parser.video_codec == "h264" and blocks == data
-    assert [s.key for s in starts] == [True, False]
+    assert [s.key for s in starts] == [False, False]
 
 
 def _gate_run(frames_spec, segment_seconds=60):
@@ -202,3 +202,19 @@ def test_gate_reports_seconds_since_last_idr():
     spec = [(1 + i * 0.04, IDR_W_RADL if i == 0 else TRAIL_R, 0x55) for i in range(300)]
     gate, _ = _gate_run(spec)
     assert 11.9 <= gate.seconds_since_key() <= 12.0
+
+
+def test_avc_headers_idr_and_parameter_change_across_chunks():
+    def avc(fill, typ=5, headers=True):
+        return ((b"\0\0\1\x67" + bytes([fill, 128]) + b"\0\0\1\x68\xce\x80") if headers else b"") + b"\0\0\1" + bytes([typ, 128])
+    data = _pat()+_pmt(0x1B)+_frame(90000,avc(66),True)+_frame(93600,avc(66,1,False),False)+_frame(97200,avc(77),True)
+    p=TsParser(); blocks, starts=_feed_all(p,data,73)
+    assert blocks==data
+    assert [x.key for x in starts]==[True,False,True]
+    assert [x.params_changed for x in starts]==[False,False,True]
+
+
+def test_avc_false_rai_and_missing_pps_rejected():
+    data=_pat()+_pmt(0x1B)+_frame(90000,b"\0\0\1\x67\x42\x80\0\0\1\x65\x80",True)+_frame(93600,b"\0\0\1\x41\x80",True)
+    _,starts=_feed_all(TsParser(),data,71)
+    assert not any(x.key for x in starts)

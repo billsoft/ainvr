@@ -32,10 +32,10 @@ beforeEach(()=>{
 const open=async()=>{render(<MemoryRouter><AlarmListPage/></MemoryRouter>);return screen.findAllByRole('article')}
 const card=(name:RegExp)=>screen.getAllByRole('article').find(a=>name.test(a.textContent??''))!
 const handleRow=async(name:RegExp,disposition:'handled'|'false_positive')=>{
- fireEvent.click(within(card(name)).getByRole('button',{name:disposition==='handled'?'确认已处理':'标记误报'}))
+ fireEvent.click(within(card(name)).getByRole('button',{name:disposition==='handled'?'确认':'标记误报'}))
  const dialog=await screen.findByRole('dialog',{name:disposition==='handled'?'确认告警':'标记误报'})
  await within(dialog).findByLabelText('处理备注')
- fireEvent.click(within(dialog).getByRole('button',{name:disposition==='handled'?'确认已处理':'确认标记误报'}))
+ fireEvent.click(within(dialog).getByRole('button',{name:disposition==='handled'?'确认':'确认标记误报'}))
 }
 
 it('turns an alarm into one sentence per level, naming the zone edges',()=>{
@@ -98,7 +98,7 @@ it('the detail sheet shows the stages, jumps to the recording and confirms with 
   const from=Date.parse('2026-10-20T02:02:05Z')-15000,to=Date.parse('2026-10-20T02:02:16Z')+15000
   expect(link).toHaveAttribute('href',`/playback/in-gate?from=${from}&to=${to}`)
   fireEvent.change(within(sheet).getByLabelText('处理备注'),{target:{value:'已核实'}})
-  fireEvent.click(within(sheet).getByRole('button',{name:'确认已处理'}))
+  fireEvent.click(within(sheet).getByRole('button',{name:'确认'}))
   await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalledWith([{alarm_id:'a',expected_handling_revision:0}],'已核实',expect.any(String),'handled'))
 })
 it('the side panel shows today by level',async()=>{
@@ -183,12 +183,12 @@ it('retries an uncertain single acknowledgement with the original operation key'
  await screen.findByRole('alert')
  const dialog=screen.getByRole('dialog',{name:'确认告警'})
  expect(within(dialog).getByLabelText('处理备注')).toBeDisabled()
- fireEvent.click(within(dialog).getByRole('button',{name:'确认已处理'}))
+ fireEvent.click(within(dialog).getByRole('button',{name:'确认'}))
  await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalledTimes(2))
  const calls=vi.mocked(alarmEventService.confirm).mock.calls;expect(calls[0]![2]).toBe(calls[1]![2])
 })
 it('opening and cancelling the handling dialog never changes an alarm',async()=>{
- await open();fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'确认已处理'}))
+ await open();fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'确认'}))
  const dialog=await screen.findByRole('dialog',{name:'确认告警'})
  await within(dialog).findByLabelText('处理备注')
  expect(alarmEventService.confirm).not.toHaveBeenCalled()
@@ -230,15 +230,15 @@ it('opens recording in another page, preserves the alarm list and rejects invali
 
 it('reopens an uncertain acknowledgement with its original note and disposition, even from the other action',async()=>{
  vi.mocked(alarmEventService.confirm).mockRejectedValueOnce(Error('timeout')).mockResolvedValueOnce({items:[{alarm_id:'a',outcome:'already_acknowledged'}]});
- await open();fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'确认已处理'}));
+ await open();fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'确认'}));
  let dialog=await screen.findByRole('dialog',{name:'确认告警'});
  fireEvent.change(within(dialog).getByLabelText('处理备注'),{target:{value:'现场核实'}});
- fireEvent.click(within(dialog).getByRole('button',{name:'确认已处理'}));await screen.findByRole('alert');
+ fireEvent.click(within(dialog).getByRole('button',{name:'确认'}));await screen.findByRole('alert');
  fireEvent.click(within(dialog).getByRole('button',{name:'取消'}));
  fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'标记误报'}));
  dialog=await screen.findByRole('dialog',{name:'确认告警'});
  expect(within(dialog).getByLabelText('处理备注')).toHaveValue('现场核实');expect(within(dialog).getByLabelText('处理备注')).toBeDisabled();
- fireEvent.click(within(dialog).getByRole('button',{name:'确认已处理'}));
+ fireEvent.click(within(dialog).getByRole('button',{name:'确认'}));
  await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalledTimes(2));
  const calls=vi.mocked(alarmEventService.confirm).mock.calls;expect(calls[1]).toEqual(calls[0]);
 });
@@ -247,7 +247,7 @@ it('AI confirmation and false positive are completed reviews with human correcti
  vi.mocked(alarmEventService.list).mockResolvedValue({items:[alarm('a',{handling:{state:'acknowledged',revision:1,reviewed_by_kind:'ai',disposition:'false_positive'}})],next_cursor:null})
  await open();const row=card(/门前禁区/)
  expect(within(row).getByText('已 AI 审核 · 误报')).toBeInTheDocument()
- expect(within(row).getByRole('button',{name:'确认已处理'})).toBeEnabled()
+ expect(within(row).getByRole('button',{name:'确认'})).toBeEnabled()
  expect(screen.queryByText('疑似误报')).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'已 AI 审核'}))
  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('ai',undefined,expect.anything()))

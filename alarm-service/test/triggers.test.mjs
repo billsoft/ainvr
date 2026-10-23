@@ -69,14 +69,14 @@ test('approach range is measured in source pixels and filtered by the facing edg
   const short=run([rule('region_approach',{approach_px:50})]);short.step(0,[{x:.1}]);assert.equal(short.step(1,[{x:.27}]).length,0);
   const wrongSide=run([rule('region_approach',{approach_px:60,entry_edges:[1]})]);wrongSide.step(0,[{x:.1}]);assert.equal(wrongSide.step(1,[{x:.27}]).length,0);
 });
-test('all triggers on a channel share one activity per target, ended when the ID is gone',()=>{
+test('all triggers on a channel share one activity per target, ended after the identity grace',()=>{
   const {step,all,ended}=run([rule('appearance'),rule('region_enter'),rule('region_traverse')]);
   for(const [at,y] of [[0,.95],[1,.6],[2,.4],[3,.05]])step(at,[{y}]);
   assert.deepEqual(all.map(e=>e.behavior),['appearance','region_enter','region_traverse']);
   assert.equal(new Set(all.map(e=>e.episode_id)).size,1);
   assert.equal(all[0].episode_started_at,all[2].episode_started_at);
-  step(4,[]);assert.equal(ended.length,1);assert.equal(ended[0].end_reason,'track_expired');
-  step(5,[{y:.95}]);assert.notEqual(all.at(-1).episode_id,all[0].episode_id);
+  step(4,[]);assert.equal(ended.length,0);step(7,[]);assert.equal(ended.length,1);assert.equal(ended[0].end_reason,'track_expired');
+  step(8,[{y:.95}]);assert.notEqual(all.at(-1).episode_id,all[0].episode_id);
 });
 test('facts carry the trigger and the current judgement semantics',()=>{
   const {step}=run([rule('appearance')]);const [event]=step(0,[{}]);

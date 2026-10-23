@@ -330,7 +330,7 @@ class RecordingPipeline:
                 self._inflight_since = None
                 self._inflight_bytes = 0
         except (BrokenPipeError, ConnectionResetError):
-            self._fail("写入进程提前退出（存储写入报错）")
+            self._fail("写入进程提前退出（请检查编码参数、封装和存储错误日志）")
         except Exception as e:  # noqa: BLE001 - 建目录超时/存储熔断等
             self._fail(f"写入失败：{e}")
         finally:
@@ -397,7 +397,7 @@ class RecordingPipeline:
             writer_protection.release(*owned)
         self._closing = [(p, s) for p, s in self._closing if p is not w]
         if rc != 0 and not self._stopping:  # 停止时由我们终止的写端不算写入报错
-            self._fail(f"写入进程退出码 {rc}（存储写入报错）")
+            self._fail(f"写入进程退出码 {rc}（请检查编码参数、封装和存储错误日志）")
         try:
             # 取走管道关闭结果，避免"Future exception was never retrieved"
             await asyncio.wait_for(w.stdin.wait_closed(), 1.0)

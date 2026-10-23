@@ -67,6 +67,7 @@ export function validateRule(input) {
   r.duration_ms ??= 0; range(r.duration_ms,0,3600000,'duration_ms');
   // Internal stability settings, not user parameters.
   r.hysteresis ??= 0.01; r.rearm_ms ??= 3000;
+  if(r.hysteresis_px!==undefined)range(r.hysteresis_px,0.5,64,'hysteresis_px');
   range(r.hysteresis,0.0001,0.2,'hysteresis'); range(r.rearm_ms,1,3600000,'rearm_ms');
   r.entry_edges ??= []; r.exit_edges ??= [];
   if(r.behavior==='appearance'){

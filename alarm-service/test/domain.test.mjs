@@ -80,7 +80,7 @@ test('bound input stream prevents applying a region from another camera and clea
  assert.throws(()=>validateRule(rule({input_stream_id:''})),e=>e.code==='invalid_identity');
 });
 
-test('a retained track ID is the same target; an ID the tracker dropped is gone',()=>{
+test('a retained track ID is the same target; a briefly absent ID keeps its alarm latch',()=>{
  const r=rule({behavior:'appearance'});
  for(const observation of ['lost','predicted']){
   const first=evaluate(null,frame(1,.4),[r]);assert.equal(first.events.length,1);
@@ -89,8 +89,8 @@ test('a retained track ID is the same target; an ID the tracker dropped is gone'
   assert.equal(evaluate(gap.checkpoint,frame(3,.4),[r]).events.length,0);
  }
  const first=evaluate(null,frame(1,.4),[r]),gone=evaluate(first.checkpoint,frame(2,.4,{tracks:[]}),[r]);
- assert.equal(Object.keys(gone.checkpoint.states).length,0);assert.equal(gone.ended_episodes[0].end_reason,'track_expired');
- assert.equal(evaluate(gone.checkpoint,frame(3,.4),[r]).events.length,1);
+ assert.equal(gone.ended_episodes.length,0);
+ assert.equal(evaluate(gone.checkpoint,frame(3,.4),[r]).events.length,0);
 });
 
 test('transport gap preserves deduplication but not dwell or crossing evidence',()=>{

@@ -30,3 +30,14 @@ it('only focused selection controls the approach preview',()=>{
  fireEvent.focus(screen.getAllByLabelText('AI 处理器')[0]!);
  expect(preview).toHaveBeenLastCalledWith({id:'t1',value:5});
 });
+
+it('search filters large libraries without losing selected settings',()=>{
+ const apply=vi.fn()
+ render(<AssignmentPicker sourceId="cam" geometryRevision="g" zone={null} definitions={definitions} sources={[source]} onDirectionChange={vi.fn()} onApply={apply}/>)
+ fireEvent.click(screen.getByLabelText('t1'))
+ fireEvent.change(screen.getByRole('searchbox',{name:'搜索触发器'}),{target:{value:'no-match'}})
+ expect(screen.getByLabelText('t1')).toBeChecked()
+ expect(screen.queryByLabelText('t2')).not.toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
+ expect(apply.mock.calls[0]![0].map((i:any)=>i.assignment.triggerId)).toEqual(['t1'])
+})

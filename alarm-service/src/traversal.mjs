@@ -1,5 +1,5 @@
 // Observed outside -> inside -> outside only. Ambiguous polygon crossings reset.
-import {inside,boundaryDistance} from './geometry.mjs';
+import {inside,boundaryStable} from './geometry.mjs';
 const eps=1e-9;
 function hits(poly,a,b){
   const result=[],v=[b[0]-a[0],b[1]-a[1]];
@@ -10,7 +10,7 @@ function hits(poly,a,b){
     if(t>=-eps&&t<=1+eps&&u>=-eps&&u<=1+eps){
       const point=[a[0]+t*v[0],a[1]+t*v[1]];
       const duplicate=result.find(h=>Math.hypot(h.point[0]-point[0],h.point[1]-point[1])<eps);
-      if(duplicate)duplicate.ambiguous=true;else result.push({point,edge:i,t});
+      if(duplicate)duplicate.ambiguous=true;else result.push({point,edge:i,t,ambiguous:u<=eps||u>=1-eps});
     }
   }return result.sort((x,y)=>x.t-y.t);
 }
@@ -65,31 +65,58 @@ function result(rule,frame,entry,exit,t,extra={}){
 function lineStep(rule,frame,point,state){
   const t=state.traversal??={previous:null,entry:null},edge=rule.passage.edges[0],a=rule.points[edge],b=rule.points[(edge+1)%rule.points.length];
   const area=rule.points.reduce((s,p,i)=>{const q=rule.points[(i+1)%rule.points.length];return s+p[0]*q[1]-q[0]*p[1];},0);
-  const signed=((b[0]-a[0])*(point[1]-a[1])-(b[1]-a[1])*(point[0]-a[0]))*Math.sign(area)/Math.hypot(b[0]-a[0],b[1]-a[1]);
-  if(Math.abs(signed)<rule.hysteresis)return null;
+  const pixel=rule.hysteresis_px!==undefined;
+  const scale=q=>pixel?[q[0]*frame.source.width,q[1]*frame.source.height]:q;
+  const [sa,sb,sp]=[a,b,point].map(scale);
+  const signed=((sb[0]-sa[0])*(sp[1]-sa[1])-(sb[1]-sa[1])*(sp[0]-sa[0]))*Math.sign(area)/Math.hypot(sb[0]-sa[0],sb[1]-sa[1]);
+  if(Math.abs(signed)<(rule.hysteresis_px??rule.hysteresis)){
+    // Boundary uncertainty neither proves the destination nor flips the origin.
+    if(t.line_pending){t.line_pending.samples=0;t.line_pending.since=null;}
+    return null;
+  }
   const current={point,side:Math.sign(signed),pts:frame.source_pts_ns,at:frame.captured_at,seq:frame.seq,frame_id:frame.frame_id};
-  const prev=t.previous;t.previous=current;
-  if(!prev||prev.side===current.side)return null;
+  const prev=t.previous;
+  if(!prev||prev.side===current.side){
+    // A one-frame jump and return is cancelled, not counted once each way.
+    delete t.line_pending;
+    t.line_samples=prev?Math.min(2,(t.line_samples??1)+1):1;
+    t.previous=current;return null;
+  }
+  const pending=t.line_pending;
+  if(pending){
+    if(current.pts===pending.last_pts)return null;
+    pending.last_pts=current.pts;pending.since??=current.pts;pending.samples++;
+    const stableMs=Number(BigInt(current.pts)-BigInt(pending.since))/1e6;
+    if(pending.samples<2||stableMs<120)return null;
+    delete t.line_pending;t.previous=current;t.line_samples=2;
+    const passage=result(rule,frame,pending.entry,pending.exit,t,{line_direction:current.side>0?'inward':'outward'});
+    return {...passage,confirmation:{policy:'line-observed-sides-v1',before_samples:2,after_samples:pending.samples,stable_ms:stableMs,confirmed_at:current.at,confirmed_frame_id:current.frame_id}};
+  }
+  // One observation on either side is insufficient even for a confirmed track.
+  if((t.line_samples??1)<2){t.previous=current;t.line_samples=1;return null;}
   const h=hits([a,b],prev.point,point).find(h=>h.edge===0);
   // hits([a,b]) sees the reverse edge too. Finite edge endpoints are ambiguous.
-  if(!h||Math.hypot(h.point[0]-a[0],h.point[1]-a[1])<eps||Math.hypot(h.point[0]-b[0],h.point[1]-b[1])<eps)return null;
-  return result(rule,frame,{...prev,boundary:h.point,edge},{...current,boundary:h.point,edge},t,{line_direction:current.side>0?'inward':'outward'});
+  if(!h||Math.hypot(h.point[0]-a[0],h.point[1]-a[1])<eps||Math.hypot(h.point[0]-b[0],h.point[1]-b[1])<eps){t.previous=current;t.line_samples=1;return null;}
+  t.line_pending={entry:{...prev,boundary:h.point,edge},exit:{...current,boundary:h.point,edge},samples:1,since:current.pts,last_pts:current.pts};
+  return null;
 }
 export function traversalStep(rule,frame,point,state){
+  // A stationary real observation can confirm a crossing already observed.
+  if(rule.passage?.kind==='line')return lineStep(rule,frame,point,state);
   const last=state.traversal?.previous;
   if(last&&last.point[0]===point[0]&&last.point[1]===point[1]){
     state.traversal.previous={...last,pts:frame.source_pts_ns,at:frame.captured_at,seq:frame.seq,frame_id:frame.frame_id};
     return null; // Stationary real observation cannot cross a boundary.
   }
-  if(rule.passage?.kind==='line')return lineStep(rule,frame,point,state);
   const t=state.traversal??={previous:null,entry:null};
-  if(boundaryDistance(rule.points,point)<rule.hysteresis)return null;
+  if(!boundaryStable(rule,frame,point))return null;
   const current={point,inside:inside(rule.points,point),pts:frame.source_pts_ns,at:frame.captured_at,seq:frame.seq,frame_id:frame.frame_id};
   const prev=t.previous;t.previous=current;
   if(!prev)return null;
   if(prev.inside===current.inside){
     // A concave shortcut may leave and re-enter between samples; never assume continuity.
     if(current.inside&&crossesBoundary(rule.points,prev.point,point)){t.entry=null;state.traversal_issue='ambiguous_concave_crossing';}
+    if(!current.inside&&rule.passage?.kind!=='gates'&&crossesBoundary(rule.points,prev.point,point))state.traversal_issue='interior_not_observed';
     if(!current.inside&&rule.passage?.kind==='gates'){
       const h=hits(rule.points,prev.point,point),gates=rule.passage.edges;
       if(h.length===2&&h.every(h=>!h.ambiguous&&gates.includes(h.edge))&&h[0].edge!==h[1].edge)
@@ -103,7 +130,7 @@ export function traversalStep(rule,frame,point,state){
   if(rule.passage?.kind==='gates'&&!rule.passage.edges.includes(hit.edge)){t.entry=null;return null;}
   if(current.inside){t.entry={...current,boundary:hit.point,edge:hit.edge};return null;}
   const entry=t.entry;t.entry=null;
-  if(!entry)return null; // First observed inside does not prove entry.
+  if(!entry){state.traversal_issue='entry_not_observed';return null;} // First observed inside does not prove entry.
   if(entry.edge===hit.edge)return null; // Stepping back out over the entry edge is not a passage.
   const elapsed=Number(BigInt(current.pts)-BigInt(entry.pts))/1e6;
   if(elapsed<rule.duration_ms)return null;

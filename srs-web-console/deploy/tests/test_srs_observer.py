@@ -119,3 +119,9 @@ class ObserverTest(unittest.TestCase):
         self.assertEqual(len(observer.recent_tcp_events(events, 1000)), 40)
 
 if __name__ == '__main__': unittest.main()
+
+
+class ProcessTreeTest(unittest.TestCase):
+    def test_missing_kernel_children_file_does_not_hide_srs_workers(self):
+        with patch.object(observer, 'command', return_value='2282 1\n2331 2282\n2441 2331\n99 1'), patch.object(observer, 'process_snapshot', side_effect=lambda pid: {'pid':pid}):
+            self.assertEqual([p['pid'] for p in observer.processes(2282)], [2282,2331,2441])

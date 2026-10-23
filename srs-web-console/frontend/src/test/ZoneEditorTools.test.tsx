@@ -12,6 +12,7 @@ function setup(){
 }
 it('inserts at the tapped edge midpoint, deletes the selected vertex, and retains shape through undo',async()=>{
  const save=setup()
+ fireEvent.click(screen.getByRole('button',{name:'多边形'}))
  fireEvent.click(screen.getByRole('button',{name:'在边 1 中点插入顶点'}))
  expect(screen.getAllByRole('button',{name:/顶点 \d+，/})).toHaveLength(5)
  fireEvent.click(screen.getByRole('button',{name:'删除选中顶点'}))
@@ -34,6 +35,7 @@ it('explicit pan supports keyboard, keeps shape inside frame, and can be undone'
 it('drawing tools sit in the toolbar above the picture and deleting below three vertices is blocked',()=>{
  setup()
  const image=screen.getByAltText('警戒区原始参考画面')
+ fireEvent.click(screen.getByRole('button',{name:'多边形'}))
  // Like the arming toolbar it replaces: tools on top, the picture below.
  expect(image.compareDocumentPosition(screen.getByRole('toolbar',{name:'热区绘制工具'})) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
  fireEvent.click(screen.getByRole('button',{name:/顶点 1，/}))
@@ -44,6 +46,7 @@ it('drawing tools sit in the toolbar above the picture and deleting below three 
 
 it('undo removes the inserted vertex and its edge handle',()=>{
  setup()
+ fireEvent.click(screen.getByRole('button',{name:'多边形'}))
  fireEvent.click(screen.getByRole('button',{name:'在边 4 中点插入顶点'}))
  expect(screen.getByRole('button',{name:'在边 5 中点插入顶点'})).toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'撤销'}))
@@ -146,6 +149,7 @@ it('clearing and redrawing the zone is reported as a redraw; moving vertices is 
 it('a zone redrawn from another corner is marked redrawn so its counting lines must be set again',async()=>{
  const save=setup()
  fireEvent.click(screen.getByRole('button',{name:'清空顶点'}))
+ fireEvent.click(screen.getByRole('button',{name:'多边形'}))
  const canvas=screen.getByLabelText('警戒区绘图区域')
  vi.spyOn(canvas.parentElement!,'getBoundingClientRect').mockReturnValue({left:0,top:0,width:1000,height:500,right:1000,bottom:500,x:0,y:0,toJSON:()=>({})})
  for(const [x,y] of [[800,50],[800,400],[100,400],[100,50]])fireEvent.click(canvas,{clientX:x,clientY:y})
@@ -171,3 +175,71 @@ it('preview stays closed while vertex selection permits more points, and undo re
  await waitFor(()=>expect(save).toHaveBeenCalledOnce())
  expect(save.mock.calls[0]![0]).toMatchObject({name:'热区 1',points:[[.1,.2],[.5,.2],[.5,.8]]})
 })
+
+
+it('rectangle corners scale proportionally; edge handles preserve the opposite side and undo',()=>{
+ const save=setup()
+ expect(screen.queryByRole('button',{name:/中点插入顶点/})).not.toBeInTheDocument()
+ expect(screen.getAllByRole('button',{name:/拖动边/})).toHaveLength(4)
+ fireEvent.click(screen.getByRole('button',{name:/顶点 1，/}))
+ expect(screen.getByRole('button',{name:'删除选中顶点'})).toBeDisabled()
+ fireEvent.keyDown(screen.getByRole('button',{name:/顶点 1，/}),{key:'ArrowRight',shiftKey:true})
+ expect(screen.getByRole('button',{name:/顶点 4，/})).toHaveStyle({left:'10.8%'})
+ fireEvent.keyDown(screen.getByRole('button',{name:'拖动边 1 调整高度'}),{key:'ArrowDown',shiftKey:true})
+ expect(parseFloat(screen.getByRole('button',{name:/顶点 2，/}).style.top)).toBeCloseTo(11.8)
+ expect(screen.getByRole('button',{name:/顶点 3，/})).toHaveStyle({top:'80%',left:'80%'})
+ fireEvent.click(screen.getByRole('button',{name:'撤销'}))
+ fireEvent.click(screen.getByRole('button',{name:'撤销'}))
+ fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
+ expect(save).not.toHaveBeenCalled()
+})
+it('rectangle edge touch cancellation restores all corners and committed drag is undoable',()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent)
+ try{
+  setup()
+  const svg=screen.getByLabelText('警戒区绘图区域')
+  vi.spyOn(svg.parentElement!,'getBoundingClientRect').mockReturnValue({left:0,top:0,width:1000,height:500} as DOMRect)
+  const handle=screen.getByRole('button',{name:'拖动边 2 调整宽度'})
+  handle.setPointerCapture=vi.fn()
+  fireEvent.pointerDown(handle,{clientX:800,clientY:225})
+  fireEvent.pointerMove(handle,{clientX:900,clientY:325})
+  expect(parseFloat(screen.getByRole('button',{name:/顶点 2，/}).style.left)).toBeCloseTo(90)
+  expect(screen.getByRole('button',{name:/顶点 2，/})).toHaveStyle({top:'10%'})
+  fireEvent.pointerCancel(handle)
+  expect(screen.getByRole('button',{name:/顶点 2，/})).toHaveStyle({left:'80%'})
+  expect(screen.getByRole('button',{name:'撤销'})).toBeDisabled()
+  fireEvent.pointerDown(handle,{clientX:800,clientY:225})
+  fireEvent.pointerMove(handle,{clientX:900,clientY:325})
+  fireEvent.pointerUp(handle)
+  fireEvent.click(screen.getByRole('button',{name:'撤销'}))
+  expect(screen.getByRole('button',{name:/顶点 3，/})).toHaveStyle({left:'80%',top:'80%'})
+ }finally{vi.unstubAllGlobals()}
+})
+
+it('rectangle rotation supports keyboard, undo and keeps a single draft commit',async()=>{
+ const save=setup(),handle=screen.getByRole('button',{name:'旋转矩形'});
+ const before=screen.getByRole('button',{name:/顶点 1，/}).getAttribute('style');
+ fireEvent.keyDown(handle,{key:'ArrowRight'});
+ expect(screen.getByRole('button',{name:/顶点 1，/}).getAttribute('style')).not.toEqual(before);
+ fireEvent.click(screen.getByRole('button',{name:'撤销'}));
+ expect(screen.getByRole('button',{name:/顶点 1，/}).getAttribute('style')).toEqual(before);
+ fireEvent.keyDown(handle,{key:'ArrowRight'});
+ fireEvent.click(screen.getByRole('button',{name:'提交草稿'}));
+ await waitFor(()=>expect(save).toHaveBeenCalledOnce());
+ expect(save.mock.calls[0]![0].points).toHaveLength(4);
+});
+it('rotation pointer cancellation restores the rectangle without committing',()=>{
+ vi.stubGlobal('PointerEvent',MouseEvent)
+ try{
+  setup();const svg=screen.getByLabelText('警戒区绘图区域');
+  vi.spyOn(svg.parentElement!,'getBoundingClientRect').mockReturnValue({left:0,top:0,width:1000,height:500} as DOMRect)
+  const handle=screen.getByRole('button',{name:'旋转矩形'});
+  handle.setPointerCapture=vi.fn();
+  const before=screen.getByRole('button',{name:/顶点 1，/}).getAttribute('style');
+  fireEvent.pointerDown(handle,{clientX:450,clientY:20,button:0});
+  fireEvent.pointerMove(handle,{clientX:470,clientY:20});
+  expect(screen.getByRole('button',{name:/顶点 1，/}).getAttribute('style')).not.toEqual(before);
+  fireEvent.pointerCancel(handle);
+  expect(screen.getByRole('button',{name:/顶点 1，/}).getAttribute('style')).toEqual(before);
+ }finally{vi.unstubAllGlobals()}
+});

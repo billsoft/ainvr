@@ -3,7 +3,7 @@ import {MemoryRouter} from 'react-router-dom'
 import {beforeEach,expect,it,vi} from 'vitest'
 import {ArmingModal} from '@/pages/AlarmCenter/ArmingModal'
 import {tapEdge,pickFrom,pickDirection} from '@/features/countingSelection'
-import {countingDrawing} from '@/features/counterGeometry'
+import {countingDrawing,countingArrowLabel} from '@/features/counterGeometry'
 import type {ArmingDocument} from '@/features/armingDocument'
 import type {Counter,CounterResult} from '@/api/flowService'
 import type {AlarmSource} from '@/api/alarmTriggerService'
@@ -16,7 +16,7 @@ const counter:Counter={counter_id:'visitors',name:'客流',labels:[{label_id:'pe
 const result=(inside:number,outside:number):CounterResult=>({counter,in:{occurrences:inside,buckets:[],coverage:'complete'},out:{occurrences:outside,buckets:[],coverage:'complete'},
  zones:[{...counter.bindings[0]!,in:{occurrences:inside,tracked_targets:inside,coverage:{state:'complete'},buckets:[]},out:{occurrences:outside,tracked_targets:outside,coverage:{state:'complete'},buckets:[]}}]})
 beforeEach(()=>{vi.mocked(flowService.list).mockReset();vi.mocked(flowService.query).mockReset()})
-it('一条计数线的“进”箭头指向热区内侧，翻转后指向外侧',()=>{
+it('一条计数线的“进”箭头指从右向左侧，翻转后指向外侧',()=>{
  const square:[number,number][]=[[.3,.3],[.7,.3],[.7,.7],[.3,.7]],ids=['top','right','bottom','left']
  const inward=countingDrawing({kind:'line',edge:'right',in_side:'inward'},square,ids,1000,1000).arrow!
  expect(inward.to[0]).toBeLessThan(inward.from[0])
@@ -45,28 +45,43 @@ it('布防里为热区选用计数器：点画面上的边设置计数线，保�
   definitions={[]} sources={[source]} counters={[{...counter,bindings:[]}]} send={send} onClose={vi.fn()} onSaved={vi.fn()}/>)
  fireEvent.click(screen.getByRole('button',{name:'选择热区 门口'}))
  fireEvent.click(screen.getByRole('button',{name:'为 门口 选用计数器'}))
+ expect(screen.queryByRole('region',{name:'门口 的选用'})).not.toBeInTheDocument()
+ expect(screen.queryByRole('button',{name:'为 门口 选用触发器'})).not.toBeInTheDocument()
+ expect(screen.queryByLabelText('热区名称')).not.toBeInTheDocument()
+ expect(screen.getByText('先点击下方计数器选用，再在画面上选择计数边。')).toBeInTheDocument()
+ expect(screen.queryByRole('button',{name:'设置计数线：边 2'})).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('radio',{name:/客流/}))
+ expect(screen.getByRole('radio',{name:/客流/})).toHaveAttribute('aria-checked','true')
  expect(screen.queryByRole('button',{name:'确定'})).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'保存布防'}));expect(send).not.toHaveBeenCalled()
  fireEvent.click(screen.getByRole('button',{name:'设置计数线：边 2'}))
- expect(screen.getByText(/箭头方向记为“进”，反方向记为“出”/)).toBeInTheDocument()
+ expect(screen.getByText(/顺着箭头通过记为“进”，反方向记为“出”/)).toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'完成关联'}))
+ expect(screen.queryByRole('region',{name:'选用计数器'})).not.toBeInTheDocument()
+ expect(screen.getByRole('heading',{name:'已关联计数器 1'})).toBeInTheDocument()
+ expect(screen.getByRole('button',{name:'调整计数线 客流 · 门口'})).toHaveTextContent('已关联')
+ expect(screen.getByLabelText('热区名称')).toHaveValue('门口')
+ expect(screen.getByRole('button',{name:'为 门口 选用触发器'})).toBeInTheDocument()
+ expect(send).not.toHaveBeenCalled()
+
 
  fireEvent.click(screen.getByRole('button',{name:'保存布防'}))
  await waitFor(()=>expect(send).toHaveBeenCalledOnce())
  expect(send.mock.calls[0]![0].counterBindings).toEqual([expect.objectContaining({counter_id:'visitors',processor_id:'ai',zone_id:'z',zone_version:1,label_map_version:'lm',direction:{kind:'line',edge:'b',in_side:'inward'}})])
 })
-it('流量概览默认今天，显示进、出、在场并与上期比较；点数字打开通行记录',async()=>{
+it('流量概览默认今天，显示进、出、净流入并与上期比较；点数字打开通行记录',async()=>{
  vi.mocked(flowService.list).mockResolvedValue({items:[counter]})
  vi.mocked(flowService.query).mockImplementation(async input=>({from:input.from,to:input.to,items:[input.bucket?result(12,9):result(6,9)]}))
  vi.mocked(flowService.records).mockResolvedValue({items:[{event_id:'e',occurred_at:new Date().toISOString(),track_id:'t',label_id:'person',frame_id:'f',stream_session_id:'s'}],next_cursor:null})
  render(<MemoryRouter><FlowPage/></MemoryRouter>)
  const card=await screen.findByRole('article',{name:'客流'})
- await waitFor(()=>expect(within(card).getByText('12')).toBeInTheDocument())
- expect(within(card).getByText('3')).toBeInTheDocument()
+ await waitFor(()=>expect(within(card).getByRole('button',{name:'进合计 12，查看通行记录'})).toBeInTheDocument())
+ expect(within(card).getByText('本期净流入')).toBeInTheDocument()
+ expect(within(card).getAllByText('+3').length).toBeGreaterThan(0)
  expect(within(card).getByText(/比昨天同时段 ↑ 100%/)).toBeInTheDocument()
  expect(screen.getByRole('button',{name:'今天'})).toHaveAttribute('aria-pressed','true')
  expect(vi.mocked(flowService.query).mock.calls[0]![0]).toMatchObject({bucket:'hour'})
- fireEvent.click(within(card).getByText('12').closest('button')!)
+ fireEvent.click(within(card).getByRole('button',{name:'进合计 12，查看通行记录'}).closest('button')!)
  const drawer=await screen.findByRole('dialog',{name:'通行记录 · 客流'})
  await waitFor(()=>expect(within(drawer).getByRole('link',{name:/录像/})).toHaveAttribute('href',expect.stringMatching(/^\/playback\/cam\?from=\d+&to=\d+$/)))
 })
@@ -75,7 +90,7 @@ it('前一时段还没有选用到热区时不显示“为 0”的比较',async(
  vi.mocked(flowService.query).mockImplementation(async input=>({from:input.from,to:input.to,items:[input.bucket?result(5,2):{...result(0,0),zones:[]}]}))
  render(<MemoryRouter><FlowPage/></MemoryRouter>)
  const card=await screen.findByRole('article',{name:'客流'})
- await waitFor(()=>expect(within(card).getByText('5')).toBeInTheDocument())
+ await waitFor(()=>expect(within(card).getByRole('button',{name:'进合计 5，查看通行记录'})).toBeInTheDocument())
  expect(within(card).queryByText(/昨天同时段/)).not.toBeInTheDocument()
 })
 it('没有计数器时引导两步开始，不显示空白统计',async()=>{
@@ -97,7 +112,7 @@ it('切换时段时晚到的旧结果不会覆盖新时段，失败时不保留�
  const [today,yesterday]=pending.filter(p=>p.bucket)
  yesterday!.resolve({from:'',to:'',items:[result(7,1)]})
  const card=await screen.findByRole('article',{name:'客流'})
- await waitFor(()=>expect(within(card).getByText('7')).toBeInTheDocument())
+ await waitFor(()=>expect(within(card).getByRole('button',{name:'进合计 7，查看通行记录'})).toBeInTheDocument())
  today!.resolve({from:'',to:'',items:[result(99,98)]})
  await new Promise(r=>setTimeout(r,20))
  expect(within(card).queryByText('99')).not.toBeInTheDocument()
@@ -112,11 +127,11 @@ it('一页一个计数器一张卡片：统计与编辑、暂停、删除在一�
  vi.mocked(flowService.query).mockImplementation(async input=>({from:input.from,to:input.to,items:[result(4,3)]}))
  render(<MemoryRouter><FlowPage/></MemoryRouter>)
  const card=await screen.findByRole('article',{name:'客流'})
- await waitFor(()=>expect(within(card).getByText('4')).toBeInTheDocument())
+ await waitFor(()=>expect(within(card).getByRole('button',{name:'进合计 4，查看通行记录'})).toBeInTheDocument())
  expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
  expect(screen.queryByText(/归档/)).not.toBeInTheDocument()
  for(const name of ['编辑','暂停','删除'])expect(within(card).getByRole('button',{name})).toBeInTheDocument()
- expect(within(card).getByText(/门口/)).toBeInTheDocument()
+ expect(within(card).getByRole('button',{name:/查看 .*门口 的趋势/})).toBeInTheDocument()
 })
 it('删除前说明会连同历史记录一起删除；确认后删除并刷新',async()=>{
  vi.mocked(flowService.list).mockResolvedValueOnce({items:[counter]}).mockResolvedValue({items:[]})
@@ -158,7 +173,7 @@ it('调整已有计数线时提供“以前的记录”选项，默认保持原�
  fireEvent.click(screen.getByRole('button',{name:'选择热区 门口'}))
  fireEvent.click(screen.getByRole('button',{name:'调整计数线 客流 · 门口'}))
  expect(screen.queryByRole('group',{name:'以前的记录'})).not.toBeInTheDocument()
- fireEvent.click(screen.getByRole('button',{name:'翻转方向'}))
+ fireEvent.click(screen.getByRole('button',{name:'从左向右'}))
  const history=screen.getByRole('group',{name:'以前的记录'})
  expect(within(history).getByRole('radio',{name:/保持原统计/})).toBeChecked()
  fireEvent.click(within(history).getByRole('radio',{name:/按新计数线重新统计/}))
@@ -174,7 +189,17 @@ it('从参数库读回的计数线字段顺序不同，不算改动：未修改�
  fireEvent.click(screen.getByRole('button',{name:'门口：触发器 0，计数器 1'}))
  fireEvent.click(screen.getByRole('button',{name:'调整计数线 客流 · 门口'}))
  expect(screen.queryByRole('group',{name:'以前的记录'})).not.toBeInTheDocument()
- fireEvent.click(screen.getByRole('button',{name:'翻转方向'}))
- fireEvent.click(screen.getByRole('button',{name:'翻转方向'}))
+ fireEvent.click(screen.getByRole('button',{name:'从左向右'}))
+ fireEvent.click(screen.getByRole('button',{name:'从右向左'}))
  expect(screen.queryByRole('group',{name:'以前的记录'})).not.toBeInTheDocument()
+})
+
+it('方向文字取自画面像素中的箭头，支持八方向且反向成对',()=>{
+ const names=['从左向右','从左上向右下','从上向下','从右上向左下','从右向左','从右下向左上','从下向上','从左下向右上']
+ for(let i=0;i<8;i++){
+  const angle=i*Math.PI/4,from:[number,number]=[.5,.5],to:[number,number]=[.5+Math.cos(angle)*.1,.5+Math.sin(angle)*.2]
+  expect(countingArrowLabel({from,to},1000,500)).toBe(names[i])
+  expect(countingArrowLabel({from:to,to:from},1000,500)).toBe(names[(i+4)%8])
+ }
+ expect(countingArrowLabel(null,1000,500)).toBe('请先选择计数边')
 })

@@ -2,7 +2,7 @@ import {request} from './httpClient'
 export interface AlarmEvent {
  version?:number;
  alarm_id:string;occurred_at:string;last_seen_at:string;channel_id:string;behavior:string;input_stream_id?:string;trigger_id?:string;activity_started_at?:string
- analysis_evidence?:{source:{width:number;height:number};review_context?:{schema_version?:string;anchor?:string;approach_px?:number|null;region:{points:[number,number][]}|null;trace:{frame_id?:string;bbox:{x:number;y:number;w:number;h:number};event_eligible:boolean;observation:string;source_pts_ns:string}[]}}
+ analysis_evidence?:{started_at?:string;source:{width:number;height:number};review_context?:{schema_version?:string;anchor?:string;approach_px?:number|null;region:{points:[number,number][]}|null;trace:{frame_id?:string;bbox:{x:number;y:number;w:number;h:number};event_eligible:boolean;observation:string;source_pts_ns:string}[]}}
  rule:{id:string;name:string};severity:string;lifecycle:{state:string;end_reason?:string}
  handling:{reviewed_by_kind?:'human'|'ai';state:string;revision:number;acknowledged_by?:string;acknowledged_at?:string;note?:string;disposition?:string}
  stages?:{event_id:string;behavior:string;at:string;direction:unknown;behavior_event_ids?:string[];trigger_id?:string;zone_id?:string|null}[]

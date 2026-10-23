@@ -1,10 +1,13 @@
 import type {BindingDirection} from '@/api/flowService'
 type Point=[number,number]
+export type CountingArrow={from:Point;to:Point;role?:'entry'|'exit'}
 export interface CountingDrawing {
  /** Edges to emphasise, in normalised coordinates; role tells the colour. */
  edges:{p:Point;q:Point;role:'line'|'entry'|'exit'}[]
  /** The "in" direction arrow, normalised. */
- arrow:{from:Point;to:Point}|null
+ arrow:CountingArrow|null
+ /** Region mode uses local edge normals, never a fictitious route across the polygon. */
+ edgeArrows?:CountingArrow[]
 }
 const mid=(p:Point,q:Point):Point=>[(p[0]+q[0])/2,(p[1]+q[1])/2]
 const signedArea=(points:Point[])=>points.reduce((s,p,i)=>{const q=points[(i+1)%points.length]!;return s+p[0]*q[1]-q[0]*p[1]},0)
@@ -31,9 +34,27 @@ export function countingDrawing(direction:BindingDirection,points:Point[],edgeId
  }
  if(direction.kind==='edges'){
   const entry=direction.entry.map(edge).filter(Boolean) as {p:Point;q:Point}[],exit=direction.exit.map(edge).filter(Boolean) as {p:Point;q:Point}[]
-  const centre=(list:{p:Point;q:Point}[]):Point|null=>list.length?[list.reduce((s,e)=>s+mid(e.p,e.q)[0],0)/list.length,list.reduce((s,e)=>s+mid(e.p,e.q)[1],0)/list.length]:null
-  const from=centre(entry),to=centre(exit)
-  return {edges:[...entry.map(e=>({...e,role:'entry' as const})),...exit.map(e=>({...e,role:'exit' as const}))],arrow:from&&to?{from,to}:null}
+  const edges=[...entry.map(e=>({...e,role:'entry' as const})),...exit.map(e=>({...e,role:'exit' as const}))]
+  const edgeArrows=edges.flatMap(e=>{
+   const dx=(e.q[0]-e.p[0])*width,dy=(e.q[1]-e.p[1])*height,n=Math.hypot(dx,dy)
+   if(n<1e-9)return []
+   const side=Math.sign(signedArea(points))*(e.role==='entry'?1:-1)
+   const nx=-dy/n*side,ny=dx/n*side,m:Point=[e.p[0]+(e.q[0]-e.p[0])/3,e.p[1]+(e.q[1]-e.p[1])/3]
+   const length=Math.min(.035*Math.min(width,height),n*.2)
+   // Clip each half separately, so an edge on the image border still has an arrow.
+   const reach=(x:number,y:number)=>{
+    let result=length
+    if(x>1e-9)result=Math.min(result,(1-m[0])*width/x)
+    if(x< -1e-9)result=Math.min(result,-m[0]*width/x)
+    if(y>1e-9)result=Math.min(result,(1-m[1])*height/y)
+    if(y< -1e-9)result=Math.min(result,-m[1]*height/y)
+    return Math.max(0,result)
+   }
+   const before=reach(-nx,-ny),after=reach(nx,ny)
+   if(before+after<1e-6)return []
+   return [{from:[m[0]-nx*before/width,m[1]-ny*before/height] as Point,to:[m[0]+nx*after/width,m[1]+ny*after/height] as Point,role:e.role}]
+  })
+  return {edges,arrow:null,edgeArrows}
  }
  return {edges:[],arrow:null}
 }
@@ -44,3 +65,16 @@ export function arrowHead(from:Point,to:Point,size:number):Point[]{
 }
 /** Counting colours stay apart from the selected-zone yellow and the zone blue. */
 export const countingColors={line:'#2dd4bf',entry:'#22c55e',exit:'#f97316',arrow:'#2dd4bf',outline:'rgba(15,23,42,.75)'}
+
+/** Human-readable screen direction only; the actual arrow and counting geometry remain exact. */
+export function countingArrowLabel(arrow:CountingDrawing['arrow'],width:number,height:number):string{
+ if(!arrow)return '请先选择计数边'
+ const dx=(arrow.to[0]-arrow.from[0])*width,dy=(arrow.to[1]-arrow.from[1])*height
+ if(!Number.isFinite(dx)||!Number.isFinite(dy)||Math.hypot(dx,dy)<1e-9)return '方向尚未确定'
+ const labels=['从左向右','从左上向右下','从上向下','从右上向左下','从右向左','从右下向左上','从下向上','从左下向右上']
+ return labels[(Math.round(Math.atan2(dy,dx)/(Math.PI/4))+8)%8]!
+}
+
+export function countingArrows(drawing:CountingDrawing):CountingArrow[]{
+ return drawing.edgeArrows??(drawing.arrow?[drawing.arrow]:[])
+}
