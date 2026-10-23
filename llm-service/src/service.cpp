@@ -147,7 +147,9 @@ struct Service {
         ainvr::VpuDecoder jpeg(ainvr::Codec::Jpeg,job->request.width,job->request.height);
         if(!jpeg.Submit(job->request.jpeg,1,1000))throw std::runtime_error("image_submit_timeout");
         auto frame=jpeg.Receive(3000);if(!frame)throw std::runtime_error("image_decode_timeout");
-        auto patches=image->RunNv12(frame->pixels,frame->width,frame->height,false,true,job->request.letterbox);
+        std::vector<float> patches;std::vector<uint8_t> actualImage;
+        if(job->request.target){auto preparedImage=image->RunTarget(frame->pixels,frame->width,frame->height,*job->request.target);patches=std::move(preparedImage.first);actualImage=std::move(preparedImage.second);}
+        else patches=image->RunNv12(frame->pixels,frame->width,frame->height,false,true,job->request.letterbox);
         auto prepared=Clock::now();
         auto logits=engine->Infer(ids,patches,[&]{
           while(true){
@@ -168,6 +170,13 @@ struct Service {
           {"timing_ms",{{"queue",std::chrono::duration<double,std::milli>(start-job->queued).count()},
                         {"preprocess",std::chrono::duration<double,std::milli>(prepared-start).count()},
                         {"total",std::chrono::duration<double,std::milli>(Clock::now()-start).count()}}}};
+        if(!actualImage.empty()){
+          std::string encoded(4*((actualImage.size()+2)/3),'\0');EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),actualImage.data(),int(actualImage.size()));
+          result["prepared_image"]={{"layout","target-crop-v1"},{"jpeg_base64",encoded},{"width",896},{"height",448},{"target",*job->request.target},{"expansion",1.5}};
+          const auto marked=image->RunContext(frame->pixels,frame->width,frame->height,*job->request.target,job->request.region,job->request.approach);
+          std::string context64(4*((marked.size()+2)/3),'\0');EVP_EncodeBlock(reinterpret_cast<unsigned char*>(context64.data()),marked.data(),int(marked.size()));
+          result["context_image"]={{"layout","context-marked-v1"},{"jpeg_base64",context64},{"width",896},{"height",448},{"target",*job->request.target},{"region",job->request.region},{"approach_width_fraction",job->request.approach},{"fit","letterbox"}};
+        }
         auto words=engine->manifest().at("decision_vocabulary").at("words");
         for(size_t i=0;i<logits.size();++i)result["decision_logits"][words[i].get<std::string>()]=logits[i];
         Record(job,true);job->result.set_value(result);
@@ -262,7 +271,8 @@ int main(int argc,char** argv) {
         if(openai)result=Json({{"id",job->request.id},{"object","chat.completion"},{"created",time(nullptr)},
           {"model","qwen3vl-4b-review-v3"},{"choices",Json::array({{{"index",0},{"message",{{"role","assistant"},{"content",result["real_score"].get<double>()>=0.5?"是":"否"}}},{"finish_reason","stop"}}})},{"ainvr",result}});
         res.set_content(result.dump(),"application/json");
-      }catch(const nlohmann::json::exception&){Error(res,400,"invalid_request","Invalid request fields");}
+      }catch(const ainvr::llm::InputError& e){Error(res,422,e.code,e.what());}
+      catch(const nlohmann::json::exception&){Error(res,400,"invalid_request","Invalid request fields");}
       catch(const std::invalid_argument& e){Error(res,400,"invalid_request",e.what());}
       catch(const std::exception& e){
         std::string code=e.what();

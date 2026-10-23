@@ -15,7 +15,7 @@ export class AlarmRepository {
     this.flow=new FlowStatistics(db);
     this.ruleSnapshots=new RuleSnapshots(db,{clock});
     this.db=db;this.events=db.collection('alarms');this.rules=db.collection('alarm_rules');
-    this.checkpoints=db.collection('alarm_consumer_checkpoints');this.clock=clock;
+    this.captureJobs=db.collection('alarm_capture_jobs');this.checkpoints=db.collection('alarm_consumer_checkpoints');this.clock=clock;
   }
   async initialize() {
     await this.behaviors.initialize();
@@ -28,6 +28,8 @@ export class AlarmRepository {
     await this.events.createIndex({channel_id:1,occurred_at:-1,alarm_id:-1});
     await this.rules.createIndex({id:1},{unique:true});
     await this.checkpoints.createIndex({channel_id:1},{unique:true});
+    await this.captureJobs.createIndex({state:1,next_at:1,created_at:1});
+    await this.captureJobs.createIndex({finished_at:1},{expireAfterSeconds:86400});
   }
   async insert(event) {
     if(event.episode_id)return this.mergeEpisode(event);
@@ -79,6 +81,7 @@ export class AlarmRepository {
       if(current.stages.length===0||(stageRank[event.behavior]??0)>(stageRank[current.behavior]??0))Object.assign(set,{
         behavior:event.behavior,direction:event.direction,analysis_evidence:event.analysis_evidence,frame_id:event.frame_id,source_pts_ns:event.source_pts_ns,
         rule:event.rule,trigger_id:event.trigger_id,severity:event.severity,review:reviewFor(event)});
+      if(Object.hasOwn(set,'review')&&current.handling?.reviewed_by_kind==='human')set.review={...set.review,state:'skipped',reason:'human_handled'};
       // A new highest-stage evidence invalidates an AI decision, never a human one.
       if(Object.hasOwn(set,'review')&&current.handling?.reviewed_by_kind==='ai')set.handling={state:'unacknowledged',revision:current.handling.revision+1,disposition:'unset'};
       // Human acknowledgement/audit are never replaced.

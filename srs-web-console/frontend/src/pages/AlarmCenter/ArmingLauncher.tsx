@@ -1,4 +1,5 @@
 import {useEffect,useState} from 'react'
+import {X} from 'lucide-react'
 import {createPortal} from 'react-dom'
 import {useFullscreenPortalHost} from '@/hooks/useFullscreenPortalHost'
 import type {ChannelWithStatus} from '@/types/channel'
@@ -41,7 +42,7 @@ export function ArmingLauncher({channel,video,onClose,onSaved}:Props){
     setData({base:arming.arming,definitions:definitions.items,counters,legacyZones,
      sources:results.flatMap(r=>r.status==='fulfilled'&&r.value.input_stream_id===channel.id?[r.value]:[]),
      panoramic:channels.some((c,i)=>{const r=results[i];return r?.status==='fulfilled'&&r.value.input_stream_id===channel.id&&c.config.snapshot?.projection_mode==='erp_equirect'}),
-     warning:results.some(r=>r.status==='rejected')?'部分处理器暂不可用，不能新增选用；已有选用会保留并在保存时再次验证。':'',
+     warning:results.some(r=>r.status==='rejected')?'部分处理器信息暂不可用；仅能选用已就绪的处理器，已有配置会保留。':'',
      reference:{url,width:canvas.width,height:canvas.height,geometryRevision,capturedAt:new Date().toLocaleString()}})
    }catch(e){if(alive)setError(e instanceof Error?e.message:'读取布防失败，请重试。')}
   })()
@@ -49,10 +50,10 @@ export function ArmingLauncher({channel,video,onClose,onSaved}:Props){
  },[channel.id,channel.inputGeneration,channel.createdAt,video,retry])
  const legacyMismatch=!!data&&!data.base&&data.legacyZones.some(z=>z.geometry_revision!==data.reference.geometryRevision)
  if(data&&((data.base&&data.base.geometry_revision!==data.reference.geometryRevision)||legacyMismatch)&&!resetGeometry)return createPortal(
-  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div role="dialog" aria-modal="true" aria-label="画面规格已变化" className="max-w-lg rounded-panel bg-surface p-5 text-sm text-ink shadow-modal">
-   <h2 className="text-base font-semibold">画面规格已变化</h2><p className="my-4">原热区不能直接用于当前画面。重新布防将从空白草稿开始，需重新绘制热区和选用触发器。只有最后点击保存，才会替换原配置；取消不会修改。</p>
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div role="dialog" aria-modal="true" aria-label="画面规格已变化" className="relative max-w-lg rounded-panel bg-surface p-5 text-sm text-ink shadow-modal">
+   <button aria-label="关闭" className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-muted" onClick={onClose}><X size={18}/></button><h2 className="pr-10 text-base font-semibold">画面规格已变化</h2><p className="my-4">原热区不能直接用于当前画面。重新布防将从空白草稿开始，需重新绘制热区和选用触发器。只有最后点击保存，才会替换原配置；取消不会修改。</p>
    <div className="flex flex-wrap gap-3"><button autoFocus className="btn-secondary" onClick={onClose}>取消</button><button className="btn-secondary" onClick={()=>setResetGeometry(true)}>按当前画面重新布防</button></div>
   </div></div>,portalHost)
  if(data)return <ArmingModal sourceId={channel.id} sourceName={channel.name} base={data.base} reference={data.reference} definitions={data.definitions} counters={data.counters} sources={data.sources} legacyZones={legacyMismatch?[]:data.legacyZones} panoramic={data.panoramic} warning={data.warning} resetGeometry={resetGeometry&&!legacyMismatch} resetLegacyGeometry={resetGeometry&&legacyMismatch} onClose={onClose} onSaved={()=>{onSaved();onClose()}}/>
- return createPortal(<div role="dialog" aria-modal="true" aria-label="读取布防" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="rounded-panel bg-surface p-5 text-sm text-ink shadow-modal"><p role={error?'alert':'status'}>{error||'正在读取布防与参考画面…'}</p><div className="mt-4 flex gap-3">{error&&<button className="btn-secondary" onClick={()=>setRetry(n=>n+1)}>重试读取布防</button>}<button className="btn-secondary" onClick={onClose}>取消</button></div></div></div>,portalHost)
+ return createPortal(<div role="dialog" aria-modal="true" aria-label="读取布防" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="relative rounded-panel bg-surface p-5 pr-14 text-sm text-ink shadow-modal"><button aria-label="关闭" className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-muted" onClick={onClose}><X size={18}/></button><p role={error?'alert':'status'}>{error||'正在读取布防与参考画面…'}</p><div className="mt-4 flex gap-3">{error&&<button className="btn-secondary" onClick={()=>setRetry(n=>n+1)}>重试读取布防</button>}<button className="btn-secondary" onClick={onClose}>取消</button></div></div></div>,portalHost)
 }

@@ -1,0 +1,13 @@
+{
+  "group_counts": {
+    "dev": 32,
+    "final": 64
+  },
+  "all_groups_found_in_original_pairing_list": true,
+  "source_component_overlap": [],
+  "component_counts": {
+    "dev": 64,
+    "final": 128
+  },
+  "pairing_list_sha256": "e0ff835bae5603a2386edd206d625410f202707d5728b64c772ce4768e8c4d15"
+}

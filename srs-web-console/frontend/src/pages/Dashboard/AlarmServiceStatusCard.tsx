@@ -2,6 +2,7 @@ import {useEffect,useState} from 'react'
 import {Link} from 'react-router-dom'
 import {request} from '@/api/httpClient'
 interface AlarmStatus {
+ review?:{counts?:Record<string,number>;last_error?:string;evidence?:{capture_counts?:Record<string,number>;cache?:{written:number;dropped:number;failed:number;evicted:number};max_bytes?:number;retention_days?:number}}
  evidence_vault?:{enabled:boolean;used_bytes?:number;max_bytes?:number;counts?:{stored:number;pending:number;capturing:number;unavailable:number};last_error?:string|null}
  sampled_at:string;status:string;config:{applied_version:number};storage:{writable:boolean}
  input:{received:number;persisted:number;failed:number;last_persisted_at:string|null}
@@ -41,6 +42,7 @@ export function AlarmServiceStatusCard(){
    <div><dt className="text-slate-500">最近持久化</dt><dd>{status?.input.last_persisted_at?new Date(status.input.last_persisted_at).toLocaleTimeString():'尚无已确认结果'}</dd></div>
   </dl>
   <p className="mt-3 text-xs text-slate-500">计数随服务重启重新开始。消费失败尝试不等于丢失条数；未知数据显示“—”。</p>
+  {status?.review&&<div className="mt-3 border-t border-line pt-3 text-sm"><p>AI 审核：待验证 {number(status.review.counts?.waiting_validation??0)} · 排队 {number(status.review.counts?.queued??0)} · 执行 {number(status.review.counts?.running??0)} · 未完成 {number(status.review.counts?.failed??0)}</p><p>关键帧：待保留 {number(status.review.evidence?.capture_counts?.queued??0)} · 缺失 {number(status.review.evidence?.capture_counts?.missing??0)} · 缓存丢帧 {number(status.review.evidence?.cache?.dropped)} · 淘汰 {number(status.review.evidence?.cache?.evicted)}</p><p className="text-xs text-ink-subtle">审核不阻塞告警生成；缺图或待验证项保留人工审核。</p></div>}
   {status?.evidence_vault&&<div className="mt-3 border-t border-slate-200 pt-3 text-sm"><p>告警截图独立保存：{status.evidence_vault.enabled?'已启用':'未保存新截图'}{status.evidence_vault.last_error?' · 最近取证需检查':''}</p><p className="mt-1 text-xs text-slate-500">已保存 {number(status.evidence_vault.counts?.stored)} 项 · 待保存 {number(status.evidence_vault.counts?status.evidence_vault.counts.pending+status.evidence_vault.counts.capturing:undefined)} 项 · 未取得 {number(status.evidence_vault.counts?.unavailable)} 项 · 已用 {number(status.evidence_vault.used_bytes===undefined?undefined:Math.round(status.evidence_vault.used_bytes/1024/1024))} MiB。截图数量来自持久化存储，不随重启清零。</p></div>}
   <div className="mt-2 flex gap-4 text-sm"><Link className="min-h-11 py-3 text-blue-600" to="/alarms">查看告警列表</Link><Link className="min-h-11 py-3 text-blue-600" to="/alarm-analysis">管理分析规则</Link></div>
  </section>

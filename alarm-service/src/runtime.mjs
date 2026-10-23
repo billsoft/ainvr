@@ -12,7 +12,7 @@ import {EvidenceVault,validateEvidencePolicy} from './evidence-vault.mjs';
 import {resolve} from 'node:path';
 
 export function validateConfig(value) {
-  const keys=['schema_version','version','operation_id','host','port','mongo_uri','database','api_token','producer_token','evidence'];
+  const keys=['schema_version','version','operation_id','host','port','mongo_uri','database','api_token','producer_token','evidence','review'];
   if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(k=>!keys.includes(k)))throw Error('Invalid service configuration');
   if(value.schema_version!=='1.0'||!Number.isSafeInteger(value.version)||value.version<1)throw Error('Invalid configuration version');
   if(typeof value.operation_id!=='string'||!/^[a-zA-Z0-9_-]{1,128}$/.test(value.operation_id))throw Error('Invalid configuration operation');
@@ -22,6 +22,7 @@ export function validateConfig(value) {
   if(typeof value.database!=='string'||!/^[a-zA-Z0-9_-]{1,63}$/.test(value.database)||['admin','config','local'].includes(value.database))throw Error('Dedicated alarm database required');
   for(const key of ['api_token','producer_token'])if(typeof value[key]!=='string'||value[key].length<32||value[key].length>512)throw Error('Service credentials required');
   if(value.api_token===value.producer_token)throw Error('Separate producer credentials required');
+  if(value.review){const v=value.review;for(const [k,min,max] of [['max_attempts',1,5],['timeout_s',10,440],['retry_delay_s',1,300],['retention_days',1,365],['max_bytes',134217728,1099511627776]])if(!Number.isSafeInteger(v[k])||v[k]<min||v[k]>max)throw Error('Invalid review settings');if(Object.keys(v).length!==5)throw Error('Unknown review setting');}
   return Object.freeze({...value,...(value.evidence!==undefined?{evidence:validateEvidencePolicy(value.evidence)}:{})});
 }
 
@@ -51,7 +52,7 @@ export async function startService(input,{evidenceSource,reviewInvoke}={}) {
       vault=new EvidenceVault(db,{root:resolve(base,config.database),policy:config.evidence,source:evidenceSource});
       await vault.initialize();repository.evidenceVault=vault;
     }
-    if(reviewInvoke){context=new ReviewContext(repository,process.env.AINVR_REVIEW_FRAME_ROOT??'/mnt/ainvr-ssd/ainvr-review-frames');await context.initialize();repository.reviewContext=context;review=new ReviewWorker(repository,{source:evidenceSource,vault,invoke:reviewInvoke,context});await review.initialize();}
+    if(reviewInvoke){context=new ReviewContext(repository,process.env.AINVR_REVIEW_FRAME_ROOT??'/mnt/ainvr-ssd/ainvr-review-frames');context.policy=config.review;await context.initialize();repository.reviewContext=context;review=new ReviewWorker(repository,{invoke:reviewInvoke,context,policy:config.review});await review.initialize();}
     const health=db.collection('alarm_service_health');
     await health.createIndex({expires_at:1},{expireAfterSeconds:0});
     const probe=async()=>{

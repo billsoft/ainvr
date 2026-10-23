@@ -1,0 +1,18 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {generateKeyPairSync,sign} from 'node:crypto';
+import {matchesQualification} from '../src/review-qualification.mjs';
+test('qualification binds signed report to model, layout, template and both thresholds',()=>{
+ const {privateKey,publicKey}=generateKeyPairSync('ed25519');
+ const policy={approve_above:.95,reject_below:.05};
+ const result={model:{package_sha256:'a'.repeat(64)},prepared_image:{layout:'target-crop-v1'},template:'alarm-review-zh-v1'};
+ const payload=JSON.stringify({schema:'ainvr.review-validation.v1',decision:'approved',report_sha256:'b'.repeat(64),dataset:{independent:true,samples:120},expires_at:'2099-01-01T00:00:00Z',model_sha256:result.model.package_sha256,layout:'target-crop-v1',prompt_template:result.template,thresholds:{...policy,version:'test-only'}});
+ const envelope={version:1,payload,signature:sign(null,Buffer.from(payload),privateKey).toString('base64')};
+ assert.equal(matchesQualification(envelope,publicKey,result,policy),true);
+ assert.equal(matchesQualification({...envelope,payload:payload.replace('approved','rejected')},publicKey,result,policy),false);
+ assert.equal(matchesQualification(envelope,publicKey,{...result,model:{package_sha256:'c'.repeat(64)}},policy),false);
+ assert.equal(matchesQualification(envelope,publicKey,{...result,prepared_image:{layout:'composite-v1'}},policy),false);
+ assert.equal(matchesQualification(envelope,publicKey,result,{...policy,approve_above:.8}),false);
+ assert.equal(matchesQualification(envelope,publicKey,{...result,template:'changed'},policy),false);
+ assert.equal(matchesQualification(envelope,publicKey,result,policy,Date.parse('2100-01-01')),false);
+});

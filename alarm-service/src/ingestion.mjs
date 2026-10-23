@@ -41,7 +41,14 @@ export class ObservationConsumer {
       const gap=doc.offset!==null&&offset!==BigInt(doc.offset)+1n;
       const rules=(await this.repository.listRules(channel)).map(({history,...r})=>r);
       const result=evaluate(doc.checkpoint,{...frame,...(gap?{gap:true}:{})},rules);
-      const pending={offset:envelope.offset,fingerprint,checkpoint:result.checkpoint,events:result.events,coverage:result.coverage??[],ended_episodes:result.ended_episodes??[],issues:result.issues};
+      const pending={offset:envelope.offset,fingerprint,checkpoint:result.checkpoint,capture_intents:result.capture_intents??[],events:result.events,coverage:result.coverage??[],ended_episodes:result.ended_episodes??[],issues:result.issues};
+      // Optional evidence must never turn an otherwise valid frame into a retry loop.
+      if(Buffer.byteLength(JSON.stringify(pending))>7*1024*1024){
+        pending.capture_intents=[];
+        for(const state of Object.values(pending.checkpoint.states??{})){delete state.review_compact;state.review_unavailable=true;}
+        for(const event of pending.events)if(event.analysis_evidence?.review_context){event.analysis_evidence.review_context={schema_version:'2.0',truncated:true,samples:[],trace:[],reason:'evidence_capacity'};}
+        pending.issues=[...pending.issues,'optional_evidence_capacity'];
+      }
       if(Buffer.byteLength(JSON.stringify(pending))>8*1024*1024)fail('checkpoint_capacity','Channel state exceeds bounded checkpoint capacity',503);
       const prepared=await this.collection.findOneAndUpdate({...validFence(),pending:null},{$set:{pending}},{returnDocument:'after'});
       if(!prepared)fail('lease_expired','Input lease expired; retry same input',503);
@@ -54,6 +61,10 @@ export class ObservationConsumer {
   }
   async finish(doc,fence) {
     const p=doc.pending;
+    if(this.repository.captureJobs)for(const intent of p.capture_intents??[]){
+      const id=digest([intent.channel_id,intent.stream_session_id,intent.sample.frame_id]);
+      await this.repository.captureJobs.updateOne({_id:id},{$setOnInsert:{...intent,state:'queued',next_at:0,created_at:Date.now()}},{upsert:true});
+    }
     for(const event of p.events){
       const behaviorId=await this.repository.behaviors.insert(event);
       await this.hook('behavior_inserted');

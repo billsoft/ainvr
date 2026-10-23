@@ -1,3 +1,4 @@
+import {ApproachBand} from './ApproachBand'
 import {SquarePlus,MousePointerClick,Globe,Undo2,Redo2,Save,X,ArrowLeft,RefreshCw} from 'lucide-react'
 import {ToolButton,ToolSelect,ToolDivider} from './ToolButton'
 import {ArmingMarkers,ArmingSelection} from './ArmingMarkers'
@@ -60,6 +61,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
  const [,refresh]=useState(0),[editZone,setEditZone]=useState<string|null>(null)
  const [select,setSelect]=useState<{zoneId:string|null;initial?:DraftAssignment}|null>(null)
  const [activeZone,setActiveZone]=useState<string|null>(null),[removeZone,setRemoveZone]=useState<string|null>(null)
+ const [approach,setApproach]=useState<{id:string;value:number}|null>(null),[approachEdit,setApproachEdit]=useState<{id:string;value:number;revision:number}>()
  const [highlight,setHighlight]=useState<{entry:string[];exit:string[]}>({entry:[],exit:[]})
  const [error,setError]=useState(''),[busy,setBusy]=useState(false),[discard,setDiscard]=useState(false)
  const confirmation=useRef<HTMLElement>(null)
@@ -70,7 +72,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
  const startCounting=(zoneId:string,initial?:DraftCounterBinding)=>{setActiveZone(zoneId);setCounting({zoneId,initial});const c=initial&&counters.find(x=>x.counter_id===initial.counterId);setPick(c?pickFrom(c.method,initial.needsConfirmation?undefined:initial.direction):null)}
  const stopCounting=()=>{setCounting(null);setPick(null)}
  const changed=()=>{refresh(n=>n+1);setError('')}
- const clearEditor=()=>{editor.current=null;setEditZone(null);setSelect(null);stopCounting();setHighlight({entry:[],exit:[]});setError('');dialog.current?.focus()}
+ const clearEditor=()=>{setApproach(null);setApproachEdit(undefined);editor.current=null;setEditZone(null);setSelect(null);stopCounting();setHighlight({entry:[],exit:[]});setError('');dialog.current?.focus()}
  const discardEditor=()=>{if(locked)return;if(editor.current?.dirty())setLocalDiscard(true);else clearEditor()}
  const leaveEditor=(offerDiscard=true)=>{
   if(locked)return false
@@ -132,7 +134,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
   changed()
  }
  const showSpace=panoramic||current.coordinateSpace==='erp'
- const openTrigger=(a:DraftAssignment)=>{setActiveZone(a.zoneId??FRAME);setHighlight({entry:a.entryEdges,exit:a.exitEdges});setSelect({zoneId:a.zoneId,initial:a})}
+ const openTrigger=(a:DraftAssignment)=>{setApproach(null);setApproachEdit(undefined);setActiveZone(a.zoneId??FRAME);setHighlight({entry:a.entryEdges,exit:a.exitEdges});setSelect({zoneId:a.zoneId,initial:a})}
  const targets:MarkerTarget[]=[
   {id:FRAME,name:'整个画面',frame:true,counters:[],triggers:current.assignments.filter(a=>!a.zoneId).map(a=>({id:a.id,name:triggerName(a.triggerId),label:`调整 ${triggerName(a.triggerId)} · 整个画面`,muted:definitions.find(t=>t.trigger_id===a.triggerId)?.state!=='enabled'}))},
   ...current.zones.map(z=>({id:z.id,name:z.name,points:z.points,erpWrap:z.erpWrap,noCounting:z.erpWrap?'全景环绕区域暂不支持计数':'',
@@ -195,6 +197,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
          points={poly.map(([x,y])=>`${x*reference.width},${y*reference.height}`).join(' ')} fill={activeZone===z.id?'rgba(22,119,255,.32)':'rgba(22,119,255,.12)'} stroke={activeZone===z.id?'#facc15':'#60a5fa'} strokeWidth={activeZone===z.id?3:2} vectorEffect="non-scaling-stroke" className={busyPanel?'pointer-events-none':'cursor-pointer'}/>)}
         {erpDisplayPolygons(z.points,z.erpWrap).flatMap((poly,copy)=>poly.map((p,i)=>{const q=poly[(i+1)%poly.length]!,id=z.edgeIds[i]!,isEntry=select?.zoneId===z.id&&highlight.entry.includes(id),isExit=select?.zoneId===z.id&&highlight.exit.includes(id);return (isEntry||isExit)?<line key={`${id}:${copy}`} className="pointer-events-none" x1={p[0]*reference.width} y1={p[1]*reference.height} x2={q[0]*reference.width} y2={q[1]*reference.height} stroke={isEntry?'#4ade80':'#fb923c'} strokeWidth="5" vectorEffect="non-scaling-stroke"/>:null}))}
        </g>)}
+       {select&&selectedZone&&!selectedZone.erpWrap&&approach&&<ApproachBand points={selectedZone.points} width={reference.width} height={reference.height} percent={approach.value} onChange={value=>{setApproach({...approach,value});setApproachEdit({id:approach.id,value,revision:Date.now()})}}/>}
        {current.counterBindings.filter(b=>b.id!==counting?.initial?.id&&!b.needsConfirmation).flatMap(b=>{const z=current.zones.find(z=>z.id===b.zoneId);return z?[drawCounting(b.id,b.direction,z,true)]:[]})}
        {countingZone&&pickDrawing&&drawCounting('pick',pickDrawing,countingZone)}
        {countingZone&&pick&&!countingZone.erpWrap&&countingZone.points.map((p,i)=>{const q=countingZone.points[(i+1)%countingZone.points.length]!,id=countingZone.edgeIds[i]!;return <line key={`tap-${id}`} role="button" tabIndex={0} aria-label={`设置计数线：边 ${i+1}`} aria-disabled={locked}
@@ -216,10 +219,10 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
        used={current.counterBindings.filter(b=>b.zoneId===counting.zoneId&&b.id!==counting.initial?.id).map(b=>b.counterId)} initial={counting.initial} pick={pick} onPick={setPick}
        onRemove={counting.initial?()=>{draft.removeCounterBinding(counting.initial!.id);stopCounting();changed()}:undefined}
        onApply={(binding,labelVersion)=>{draft.putCounterBinding(binding);bindingLabels.current[binding.id]=labelVersion;changed()}}/>:
-      select?select.initial?<AssignmentEditor workspace={editor} key={`${select.zoneId}:${select.initial?.id??'new'}`} sourceId={sourceId} geometryRevision={reference.geometryRevision} zone={selectedZone??null} definitions={definitions} sources={sources} initial={select.initial} onDirectionChange={setHighlight}
+      select?select.initial?<AssignmentEditor workspace={editor} key={`${select.zoneId}:${select.initial?.id??'new'}`} sourceId={sourceId} geometryRevision={reference.geometryRevision} zone={selectedZone??null} definitions={definitions} sources={sources} initial={select.initial} approachEdit={approachEdit} onApproachChange={setApproach} onDirectionChange={setHighlight}
        onRemove={()=>{draft.removeAssignment(select.initial!.id);setSelect(null);changed()}}
        onApply={(assignment,labelVersion)=>{draft.putAssignment(assignment);labels.current[labelKey(assignment)]=labelVersion;changed()}}/>:
-       <AssignmentPicker workspace={editor} sourceId={sourceId} geometryRevision={reference.geometryRevision} zone={selectedZone??null} definitions={definitions} sources={sources} onDirectionChange={setHighlight} onApply={items=>{draft.putAssignments(items.map(i=>i.assignment));for(const item of items)labels.current[labelKey(item.assignment)]=item.labelVersion;changed()}}/>:selectedTarget?<ArmingSelection target={selectedTarget} disabled={locked}
+       <AssignmentPicker workspace={editor} sourceId={sourceId} geometryRevision={reference.geometryRevision} zone={selectedZone??null} definitions={definitions} sources={sources} approachEdit={approachEdit} onApproachChange={setApproach} onDirectionChange={setHighlight} onApply={items=>{draft.putAssignments(items.map(i=>i.assignment));for(const item of items)labels.current[labelKey(item.assignment)]=item.labelVersion;changed()}}/>:selectedTarget?<ArmingSelection target={selectedTarget} disabled={locked}
        onTrigger={id=>{const a=current.assignments.find(x=>x.id===id);if(a)openTrigger(a)}}
        onCounter={id=>{const b=current.counterBindings.find(x=>x.id===id);if(b)startCounting(b.zoneId,b)}}
        onAddTrigger={()=>{setHighlight({entry:[],exit:[]});setSelect({zoneId:selectedTarget.frame?null:selectedTarget.id})}}

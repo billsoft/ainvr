@@ -7,6 +7,7 @@ export const alarmSettingsSchema=z.object({
   database:z.string().regex(/^[a-zA-Z0-9_-]{1,63}$/).refine(v=>!['admin','config','local'].includes(v)),
   mongo_uri:z.string().refine(v=>/^\$\{secret:alarm-service\/mongo_uri(?:\/[a-zA-Z0-9_-]+)?\}$/.test(v)||/^mongodb(?:\+srv)?:\/\//.test(v)),
   api_token:secret('api_token'),producer_token:secret('producer_token'),
+  review:z.object({max_attempts:z.number().int().min(1).max(5),timeout_s:z.number().int().min(10).max(440),retry_delay_s:z.number().int().min(1).max(300),retention_days:z.number().int().min(1).max(365),max_bytes:z.number().int().min(134217728).max(1099511627776)}).strict().optional(),
   evidence:z.object({enabled:z.boolean(),retention_days:z.number().int().min(1).max(3650),max_bytes:z.number().int().min(128*1024*1024).max(1024**4)}).strict().optional(),
 }).strict().refine(v=>v.api_token!==v.producer_token,'管理接口和数据输入必须使用不同密钥');
 export class AlarmConfigAdapter extends PullModeAdapter {

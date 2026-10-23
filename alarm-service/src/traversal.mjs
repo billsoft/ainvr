@@ -14,6 +14,8 @@ function hits(poly,a,b){
     }
   }return result.sort((x,y)=>x.t-y.t);
 }
+// Shared conservative continuity check: endpoints alone cannot prove an in-zone path.
+export function crossesBoundary(poly,a,b){return hits(poly,a,b).length>0;}
 function center(poly){
   let area=0,x=0,y=0;
   for(let i=0;i<poly.length;i++){const a=poly[i],b=poly[(i+1)%poly.length],c=a[0]*b[1]-b[0]*a[1];area+=c;x+=(a[0]+b[0])*c;y+=(a[1]+b[1])*c;}
@@ -87,7 +89,7 @@ export function traversalStep(rule,frame,point,state){
   if(!prev)return null;
   if(prev.inside===current.inside){
     // A concave shortcut may leave and re-enter between samples; never assume continuity.
-    if(current.inside&&hits(rule.points,prev.point,point).length){t.entry=null;state.traversal_issue='ambiguous_concave_crossing';}
+    if(current.inside&&crossesBoundary(rule.points,prev.point,point)){t.entry=null;state.traversal_issue='ambiguous_concave_crossing';}
     if(!current.inside&&rule.passage?.kind==='gates'){
       const h=hits(rule.points,prev.point,point),gates=rule.passage.edges;
       if(h.length===2&&h.every(h=>!h.ambiguous&&gates.includes(h.edge))&&h[0].edge!==h[1].edge)

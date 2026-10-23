@@ -21,6 +21,16 @@ int main() {
   Invalid([&] { JpegDimensions(progressive); });
   auto chroma = jpeg; chroma[13] = 0x11;
   Invalid([&] { JpegDimensions(chroma); });
+  std::string encoded(4*((jpeg.size()+2)/3),'\0');EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),jpeg.data(),int(jpeg.size()));
+  nlohmann::json request={{"alarm",{{"kind","person"},{"description","target"}}},{"image",{{"jpeg_base64",encoded}}},{"preparation",{{"version",1},{"layout","target-crop-v1"},{"target",{.1,.1,.8,.8}}}}};
+  assert(ParseReview(request).target.has_value());
+  request["preparation"]["region"]={{.1,.1},{.8,.1},{.8,.8}};request["preparation"]["approach_width_fraction"]=.05;
+  assert(ParseReview(request).region.size()==3);
+  request["preparation"]["approach_width_fraction"]=2;Invalid([&]{ParseReview(request);});request["preparation"]["approach_width_fraction"]=0;
+  request["preparation"]["region"]={{-.1,.1},{.8,.1},{.8,.8}};Invalid([&]{ParseReview(request);});request["preparation"].erase("region");
+  request["preparation"]["target"]={.1,.1,.101,.101};
+  try{ParseReview(request);assert(false);}catch(const InputError& e){assert(e.code=="insufficient_target_pixels");}
+  request["preparation"]["layout"]="unknown";Invalid([&]{ParseReview(request);});
   jpeg.resize(12);
   Invalid([&] { JpegDimensions(jpeg); });
   for (const auto& kind : {"", "<|image_pad|>"}) {

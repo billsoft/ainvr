@@ -41,6 +41,7 @@ export default function AlarmListPage(){
  const [channels,setChannels]=useState<{id:string;name:string}[]>([]),[triggers,setTriggers]=useState<AlarmTrigger[]>([])
  const [definitions,setDefinitions]=useState<TriggerDefinition[]>([]),[armings,setArmings]=useState<Record<string,ArmingDocument|null>>({})
  const [rows,setRows]=useState<AlarmEvent[]>([]),[cursor,setCursor]=useState<string|null>(null),[loaded,setLoaded]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(false)
+ const [updated,setUpdated]=useState(0)
  const [fresh,setFresh]=useState(0),[detail,setDetail]=useState<{id:string;stageId?:string;intent?:AckDisposition}|null>(null)
  const [bulk,setBulk]=useState<{phase:'asking'|'working';items:AckItem[];key:string;scope:string;uncertain?:boolean}|null>(null),[bulkResult,setBulkResult]=useState('')
  const [singleAttempts,setSingleAttempts]=useState<Record<string,PendingAcknowledgement>>({})
@@ -61,13 +62,13 @@ export default function AlarmListPage(){
   setBusy(true);setError(false)
   try{const page=await alarmEventService.list(status,more?cursor??undefined:undefined,filters)
    if(!live.current||requestId!==loadRequest.current)return
-   setRows(old=>more?[...new Map([...old,...page.items].map(r=>[r.alarm_id,r])).values()]:page.items);setCursor(page.next_cursor);setLoaded(true);if(!more){setFresh(0);setBulkResult('')}}
+   setRows(old=>more?[...new Map([...old,...page.items].map(r=>[r.alarm_id,r])).values()]:page.items);setCursor(page.next_cursor);setLoaded(true);if(!more){setFresh(0);setUpdated(0);setBulkResult('')}}
   catch{if(live.current&&requestId===loadRequest.current)setError(true)}finally{if(live.current&&requestId===loadRequest.current)setBusy(false)}
  },[status,filters,cursor])
  useEffect(()=>{void load()},[status,filters]) // eslint-disable-line react-hooks/exhaustive-deps
  // Newer alarms are announced, not pushed into the feed under the user's finger.
  useEffect(()=>{let active=true;const timer=setInterval(()=>{if(document.hidden)return
-  void alarmEventService.list(status,undefined,filters).then(page=>{if(active&&live.current)setFresh(page.items.filter(i=>!rows.some(r=>r.alarm_id===i.alarm_id&&JSON.stringify(r.review)===JSON.stringify(i.review)&&r.handling.revision===i.handling.revision)).length)}).catch(()=>undefined)},15000)
+  void alarmEventService.list(status,undefined,filters).then(page=>{if(active&&live.current){const newest=Math.max(0,...rows.map(r=>Date.parse(r.occurred_at)));setFresh(page.items.filter(i=>!rows.some(r=>r.alarm_id===i.alarm_id)&&Date.parse(i.occurred_at)>=newest).length);setUpdated(page.items.filter(i=>rows.some(r=>r.alarm_id===i.alarm_id&&r.version!==i.version)).length)}}).catch(()=>undefined)},15000)
   return()=>{active=false;clearInterval(timer)}},[status,filters,rows])
  // Zone names come from the source's arming; read each source once while its alarms are shown.
  useEffect(()=>{
@@ -98,6 +99,7 @@ export default function AlarmListPage(){
    const ok=result.items.some(i=>i.alarm_id===a.alarm_id&&ackOk(i.outcome));if(ok)markDone([a.alarm_id],attempt.disposition);return ok}
   catch{return false}
  }
+ const groups=[...rows.reduce((map,a)=>{const zone=a.stages?.at(-1)?.zone_id??'frame';const key=JSON.stringify([a.channel_id,zone,Math.floor(Date.parse(a.occurred_at)/60000)]);map.set(key,[...(map.get(key)??[]),a]);return map},new Map<string,AlarmEvent[]>()).entries()]
  const pending=rows.filter(r=>r.handling.state!=='acknowledged')
  const askBulk=()=>setBulk({phase:'asking',items:pending.slice(0,200).map(r=>({alarm_id:r.alarm_id,expected_handling_revision:r.handling.revision})),key:newAlarmOperationId(),scope:`${channel?channelName(channel):'全部通道'} · ${triggerBehaviors.find(b=>b.id===level)?.name??'全部级别'} · ${range==='all'?'全部时间':range==='today'?'今天':'近7天'}`})
  const confirmAll=async()=>{
@@ -133,7 +135,7 @@ export default function AlarmListPage(){
       <button key={id} type="button" aria-pressed={status===id} onClick={()=>pickStatus(id)} className={`!min-h-11 rounded-base px-3 py-1.5 text-sm ${status===id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle'}`}>{label}</button>)}</div>
      <label className="flex items-center gap-2 text-sm text-ink-subtle">结论<select aria-label="审核结论" value={review} onChange={e=>setReview(e.target.value)} className="form-input !min-h-11 w-auto"><option value="">全部</option><option value="handled">确认</option><option value="false_positive">误报</option></select></label>
      <label className="flex items-center gap-2 text-sm text-ink-subtle">时间<select value={range} onChange={e=>{rangeTouched.current=true;setRange(e.target.value as Range)}} className="form-input !min-h-11 w-auto py-1.5"><option value="today">今天</option><option value="7d">近 7 天</option><option value="all">全部</option></select></label>
-     {fresh>0&&<button type="button" onClick={()=>void load()} className="btn-primary ml-auto">新告警 {fresh} 条 · 点击刷新</button>}
+     {updated>0&&<button type="button" className="btn-secondary min-h-11" onClick={()=>void load()}>有 {updated} 条记录状态更新，点击刷新</button>}{fresh>0&&<button type="button" onClick={()=>void load()} className="btn-primary ml-auto">新告警 {fresh} 条 · 点击刷新</button>}
      {status!=='acknowledged'&&pending.length>0&&<button type="button" disabled={!!bulk} onClick={askBulk} className={`btn-secondary !min-h-11 ${fresh>0?'':'ml-auto'}`}>确认已加载（{Math.min(200,pending.length)}）</button>}
     </div>
     <div role="group" aria-label="级别" className="flex flex-wrap gap-2">{[{id:'',name:'全部级别'},...triggerBehaviors].map(b=><button key={b.id||'all'} type="button" aria-pressed={level===b.id} onClick={()=>setLevel(b.id)} className={pill}>
@@ -147,7 +149,7 @@ export default function AlarmListPage(){
    <div aria-busy={busy} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 md:px-6">
     {error&&<p role="alert">告警读取失败，已加载的记录保留。<button className="btn-secondary ml-2" onClick={()=>void load()}>重试</button></p>}
     {loaded&&!rows.length&&<p className="py-10 text-center text-ink-subtle">当前筛选下没有告警。</p>}
-    {!!rows.length&&<div aria-label="告警记录" className="shrink-0 overflow-hidden rounded-panel border border-line bg-surface">{rows.map(a=><AlarmRow key={a.alarm_id} alarm={a} trigger={triggerOf(a)} channelName={channelName(a.channel_id)} onOpen={stageId=>setDetail({id:a.alarm_id,stageId})} onHandle={intent=>setDetail({id:a.alarm_id,intent})}/>)}</div>}
+    {!!rows.length&&<div aria-label="告警记录" className="shrink-0 overflow-hidden rounded-panel border border-line bg-surface">{groups.map(([key,items])=>{const content=items.map(a=><AlarmRow key={a.alarm_id} alarm={a} trigger={triggerOf(a)} channelName={channelName(a.channel_id)} onOpen={stageId=>setDetail({id:a.alarm_id,stageId})} onHandle={intent=>setDetail({id:a.alarm_id,intent})}/>);return items.length===1?<div key={key}>{content}</div>:<details key={key} open className="border-b border-line"><summary className="min-h-11 cursor-pointer bg-surface-subtle px-3 py-2 text-sm">{channelName(items[0]!.channel_id)} · 同一区域一分钟内 {items.length} 条告警（分别审核）</summary>{content}</details>})}</div>}
     {busy&&<p role="status" className="text-center text-sm text-ink-subtle">正在读取…</p>}
     {cursor&&!busy&&<button type="button" onClick={()=>void load(true)} className="btn-secondary mx-auto">加载更早的告警</button>}
    </div>

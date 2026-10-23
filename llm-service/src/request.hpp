@@ -2,11 +2,14 @@
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <array>
+#include <optional>
+#include <cmath>
 #include <string>
 #include <vector>
 #include <stdexcept>
 namespace ainvr::llm {
-struct ReviewRequest { std::string kind,description,id; std::vector<uint8_t> jpeg; int width,height; bool letterbox=false; double temperature=1; };
+struct InputError:std::invalid_argument{std::string code;InputError(std::string c,std::string m):std::invalid_argument(m),code(std::move(c)) {}};
+struct ReviewRequest { std::string kind,description,id; std::vector<uint8_t> jpeg; int width,height; bool letterbox=false; double temperature=1; std::optional<std::array<float,4>> target; std::vector<std::array<float,2>> region; float approach=0; };
 inline std::vector<uint8_t> DecodeBase64(const std::string& text) {
   if(text.empty()||text.size()>12*1024*1024||text.size()%4)throw std::invalid_argument("invalid image encoding or size");
   size_t padding=text.back()=='=' ? 1:0;
@@ -56,10 +59,22 @@ inline ReviewRequest ParseReview(const nlohmann::json& j) {
     throw std::invalid_argument("reserved template delimiter");
   r.id=j.value("request_id",std::string());
   if(r.id.size()>128)throw std::invalid_argument("request_id too long");
-  r.jpeg=DecodeBase64(j.at("image").at("jpeg_base64").get<std::string>());
+  try{r.jpeg=DecodeBase64(j.at("image").at("jpeg_base64").get<std::string>());}catch(const std::invalid_argument& e){throw InputError("unsupported_image",e.what());}
   const auto fit=j.at("image").value("fit",std::string("strict"));
   if(fit!="strict"&&fit!="letterbox")throw std::invalid_argument("invalid image fit");
   r.letterbox=fit=="letterbox";
-  auto size=JpegDimensions(r.jpeg,r.letterbox); r.width=size[0];r.height=size[1];return r;
+  std::array<int,2> size;try{size=JpegDimensions(r.jpeg,r.letterbox);}catch(const std::invalid_argument& e){throw InputError("unsupported_image",e.what());} r.width=size[0];r.height=size[1];
+  if(j.contains("preparation")){
+    const auto& p=j.at("preparation");
+    if(p.at("version")!=1||p.at("layout")!="target-crop-v1")throw InputError("invalid_request","Unsupported preparation profile");
+    auto box=p.at("target").get<std::array<float,4>>();
+    for(auto v:box)if(!std::isfinite(v)||v<0||v>1)throw InputError("invalid_request","Invalid normalized target");
+    if(box[2]<=box[0]||box[3]<=box[1])throw InputError("invalid_request","Empty target");
+    if((box[2]-box[0])*r.width<16||(box[3]-box[1])*r.height<16)throw InputError("insufficient_target_pixels","Target has insufficient source detail");
+    r.target=box;
+    if(p.contains("region")){r.region=p.at("region").get<std::vector<std::array<float,2>>>();if(r.region.size()>32||(!r.region.empty()&&r.region.size()<3))throw InputError("invalid_request","Invalid region");for(auto xy:r.region)for(auto v:xy)if(!std::isfinite(v)||v<0||v>1)throw InputError("invalid_request","Invalid region coordinate");}
+    r.approach=p.value("approach_width_fraction",0.f);if(!std::isfinite(r.approach)||r.approach<0||r.approach>1)throw InputError("invalid_request","Invalid approach distance");
+  }
+  return r;
 }
 } // namespace ainvr::llm

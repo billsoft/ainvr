@@ -11,18 +11,21 @@ interface Props {
  sourceId:string;geometryRevision:string;zone:DraftZone|null;
  workspace:WorkspaceDraftRef;
  defaultTriggerId?:string;
+ previewActive?:boolean;
  definitions:TriggerDefinition[];sources:AlarmSource[];initial?:DraftAssignment;
+ approachEdit?:{id:string;value:number;revision:number};
+ onApproachChange?:(value:{id:string;value:number}|null)=>void;
  onDirectionChange?:(edges:{entry:string[];exit:string[]})=>void;
  onApply:(assignment:DraftAssignment,labelMapVersion:string)=>void
  /** Present when editing an existing selection: takes it out of the draft. */
  onRemove?:()=>void
 }
 /** Only updates the parent arming draft. No network mutation occurs here. */
-export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sources,initial,onApply,onRemove,onDirectionChange,defaultTriggerId,workspace}:Props){
+export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sources,initial,onApply,onRemove,onDirectionChange,defaultTriggerId,workspace,approachEdit,onApproachChange,previewActive=true}:Props){
  const [triggerId,setTriggerId]=useState(initial?.triggerId??defaultTriggerId??'')
  const [processorId,setProcessorId]=useState(initial?.processorId??'')
  const [entry,setEntry]=useState(initial?.entryEdges??[]),[exit,setExit]=useState(initial?.exitEdges??[])
- useEffect(()=>{onDirectionChange?.({entry,exit})},[entry,exit,onDirectionChange])
+ useEffect(()=>{if(previewActive)onDirectionChange?.({entry,exit})},[entry,exit,onDirectionChange,previewActive])
  const [distance,setDistance]=useState(initial?.approachWidthPercent?.toString()??'')
  const [error,setError]=useState('')
  const [directionConfirmed,setDirectionConfirmed]=useState(!initial?.needsDirectionConfirmation)
@@ -33,6 +36,8 @@ export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sou
  const size=sourceSize(geometryRevision),names=zone?edgeNames(zone.erpWrap?unwrapErp(zone.points):zone.points,size?.width,size?.height):[]
  const directional=trigger?.behavior==='region_enter'||trigger?.behavior==='region_traverse'
  const distanceValue=distance===''?undefined:Number(distance)
+ useEffect(()=>{if(approachEdit?.id===triggerId)setDistance(String(approachEdit.value))},[approachEdit,triggerId])
+ useEffect(()=>{if(!previewActive)return;if(trigger?.behavior==='region_approach')onApproachChange?.({id:triggerId,value:distanceValue??trigger.approach_width_percent??0});else onApproachChange?.(null)},[previewActive,triggerId,trigger?.behavior,trigger?.approach_width_percent,distanceValue,onApproachChange])
  const badDistance=trigger?.behavior==='region_approach'&&distanceValue!==undefined&&(!Number.isFinite(distanceValue)||distanceValue<=0||distanceValue>100)
  const invalidEdges=zone&&[...entry,...exit].some(e=>!zone.edgeIds.includes(e))
  const generatedId=useRef(newAlarmOperationId())
@@ -48,7 +53,7 @@ export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sou
  useWorkspaceDraft(workspace,{flush:()=>!initial&&!triggerId?true:apply(),dirty:()=>JSON.stringify({triggerId,processorId,entry,exit,distance})!==original.current||!!defaultTriggerId})
  const button='btn-secondary aria-pressed:border-primary aria-pressed:bg-primary-50 aria-pressed:text-primary'
  const field='form-input'
- return <section aria-label="选用触发器" className="space-y-3 rounded border border-line p-4">
+ return <section onFocusCapture={()=>{onApproachChange?.(trigger?.behavior==='region_approach'?{id:triggerId,value:distanceValue??trigger.approach_width_percent??0}:null)}} aria-label="选用触发器" className="space-y-3 rounded border border-line p-4">
   <h3 className="font-medium">选用范围：{zone?.name??'整个画面'}</h3>
   <label className="block">触发器<select className={field} value={triggerId} disabled={!!initial||!!defaultTriggerId} onChange={e=>{setTriggerId(e.target.value);setProcessorId('');setEntry([]);setExit([]);setDistance('');setError('')}}>
    <option value="">请选择触发器</option>{available.map(t=><option key={t.trigger_id} value={t.trigger_id}>{t.name}</option>)}
@@ -61,7 +66,7 @@ export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sou
    {processorId&&!effective&&<p role="alert">原选择的 AI 处理器暂不可用或不再兼容。请明确重新选择处理器，或取消以保留原选用。</p>}
    {!compatible.length&&<p role="status">没有兼容的 AI 处理器：需要当前来源、相同画面规格、目标标签及可用跟踪信息。</p>}
    {compatible.length>1&&<p className="text-sm text-ink-subtle">请选择负责此选用的处理器，避免多路重复分析。</p>}
-   {trigger.behavior==='region_approach'&&<label className="block">接近范围（画面宽度 %）<input type="number" min="0" max="100" step="any" className={field} value={distance} placeholder={`沿用触发器：${trigger.approach_width_percent}%`} onChange={e=>setDistance(e.target.value)}/><span className="text-sm">留空沿用触发器；仅对当前热区覆盖。</span></label>}
+   {trigger.behavior==='region_approach'&&<label className="block">接近范围（画面宽度 %）<input type="number" min="0" max="100" step="any" className={field} value={distance} placeholder={`沿用触发器：${trigger.approach_width_percent}%`} onChange={e=>setDistance(e.target.value)}/><span className="text-sm">{distance===''?'使用默认值':'本处自定义'} · 约 {Math.round((distanceValue??trigger.approach_width_percent??0)*(size?.width??0)/100)} 像素。留空恢复默认。</span></label>}
    {directional&&zone&&<fieldset className="space-y-2"><legend>进入方向（未选边表示不限）</legend><p className="text-sm">参考画面：绿色为进入边，橙色为离开边。</p><div className="flex flex-wrap gap-2">{zone.edgeIds.map((id,i)=><button type="button" className={`${button} ${entry.includes(id)?'border-green-600 bg-green-100 text-green-900':''}`} key={id} aria-pressed={entry.includes(id)} onClick={()=>{setEntry(entry.includes(id)?entry.filter(e=>e!==id):[...entry,id]);setExit(exit.filter(e=>e!==id))}}>进入边 {i+1} · {names[i]}</button>)}</div>
     {trigger.behavior==='region_traverse'&&<><p>离开方向（未选边表示不限；同边返回不算穿过）</p><div className="flex flex-wrap gap-2">{zone.edgeIds.map((id,i)=><button type="button" className={`${button} ${exit.includes(id)?'border-orange-600 bg-orange-100 text-orange-900':''}`} key={id} aria-pressed={exit.includes(id)} onClick={()=>{setExit(exit.includes(id)?exit.filter(e=>e!==id):[...exit,id]);setEntry(entry.filter(e=>e!==id))}}>离开边 {i+1} · {names[i]}</button>)}</div></>}
    </fieldset>}

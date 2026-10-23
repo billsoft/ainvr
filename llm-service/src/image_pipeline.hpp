@@ -5,6 +5,7 @@
 // Reference: https://github.com/python-pillow/Pillow/blob/9.3.0/src/libImaging/Resample.c
 #pragma once
 #include "gles_context.h"
+#include "jpeg_encoder.hpp"
 #include "gles_preprocess.hpp"
 #include <algorithm>
 #include <cmath>
@@ -97,7 +98,76 @@ class QwenReviewImagePipeline final {
     return RunRgba(color_->RunNv12Rgba(nv12,width,height,t),width,height);
   }
 
+  std::pair<std::vector<float>,std::vector<uint8_t>> RunTarget(const std::vector<uint8_t>& nv12,int width,int height,const std::array<float,4>& box){
+    if(!color_)color_=std::make_unique<GlesPreprocessor>();
+    const float cx=(box[0]+box[2])*width/2,cy=(box[1]+box[3])*height/2;
+    float w=(box[2]-box[0])*width*1.5f,h=(box[3]-box[1])*height*1.5f;
+    w=std::max(w,2*h);h=w/2;
+    ImageTransform crop;crop.width=896;crop.height=448;crop.letterbox=false;crop.yuv_bt709=false;crop.yuv_full_range=true;
+    crop.source_region=std::array<float,4>{cx-w/2,cy-h/2,w,h};
+    auto rgba=color_->RunNv12Rgba(nv12,width,height,crop);
+    ImageTransform jpeg;jpeg.width=896;jpeg.height=448;jpeg.letterbox=false;
+    auto encoded=color_->RunRgbaJpegNv12(rgba,896,448,jpeg);
+    if(!jpeg_)jpeg_=std::make_unique<JpegEncoder>(896,448,90);
+    auto bytes=jpeg_->EncodeFullRangeNv12(encoded);
+    return {RunRgba(rgba,896,448),std::move(bytes)};
+  }
+  // Context-only annotation. Neural input remains the untouched target crop.
+  std::vector<uint8_t> RunContext(const std::vector<uint8_t>& nv12,int width,int height,
+      const std::array<float,4>& target,const std::vector<std::array<float,2>>& region,float approach){
+    if(owner_!=std::this_thread::get_id())throw std::logic_error("Context GPU thread mismatch");
+    if(region.size()>32)throw std::invalid_argument("Context polygon too large");
+    if(!color_)color_=std::make_unique<GlesPreprocessor>();
+    ImageTransform t;t.width=896;t.height=448;t.letterbox=true;t.yuv_bt709=false;t.yuv_full_range=true;
+    auto rgba=color_->RunNv12Rgba(nv12,width,height,t);
+    Binding saved;Activate();
+    if(!context_program_){
+      const char* source=R"GLSL(#version 310 es
+precision highp float;
+precision highp int;
+layout(local_size_x=16,local_size_y=8) in;
+layout(binding=0) uniform highp usampler2D source_image;
+layout(std430,binding=2) writeonly buffer Output {uint pixels[];};
+uniform vec2 source_size;
+uniform vec4 image_rect,target;
+uniform vec2 vertices[32];
+uniform int count;
+uniform float approach;
+float segment(vec2 p,vec2 a,vec2 b){vec2 d=b-a;return length(p-a-clamp(dot(p-a,d)/max(dot(d,d),.000001),0.,1.)*d);}
+void main(){
+ ivec2 ip=ivec2(gl_GlobalInvocationID.xy);if(ip.x>=896||ip.y>=448)return;
+ vec2 p=vec2(ip)+.5;uvec4 color=texelFetch(source_image,ip,0);
+ vec2 uv=(p-image_rect.xy)/image_rect.zw;
+ if(all(greaterThanEqual(uv,vec2(0)))&&all(lessThanEqual(uv,vec2(1)))){
+  vec2 q=uv*source_size;float d=1e30;bool inside=false;
+  for(int i=0;i<count;i++){vec2 a=vertices[i]*source_size,b=vertices[(i+1)%count]*source_size;d=min(d,segment(q,a,b));if((a.y>q.y)!=(b.y>q.y)&&q.x<(b.x-a.x)*(q.y-a.y)/(b.y-a.y)+a.x)inside=!inside;}
+  float scale=image_rect.z/source_size.x;
+  if(count>0&&d*scale<1.4)color=uvec4(96,165,250,255);
+  else if(count>0&&!inside&&approach>0.&&abs(d-approach*source_size.x)*scale<1.4&&mod(p.x+p.y,12.)<7.)color=uvec4(251,191,36,255);
+  vec2 lo=target.xy*source_size,hi=target.zw*source_size;
+  float bd=min(min(segment(q,lo,vec2(hi.x,lo.y)),segment(q,vec2(hi.x,lo.y),hi)),min(segment(q,hi,vec2(lo.x,hi.y)),segment(q,vec2(lo.x,hi.y),lo)));
+  if(bd*scale<1.4)color=uvec4(52,211,153,255);
+ }
+ pixels[ip.y*896+ip.x]=color.r|(color.g<<8)|(color.b<<16)|0xff000000u;
+})GLSL";
+      GLuint shader=glCreateShader(GL_COMPUTE_SHADER);glShaderSource(shader,1,&source,nullptr);glCompileShader(shader);GLint ok=0;glGetShaderiv(shader,GL_COMPILE_STATUS,&ok);
+      if(!ok){glDeleteShader(shader);throw std::runtime_error("Context shader compile failed");}
+      context_program_=glCreateProgram();glAttachShader(context_program_,shader);glLinkProgram(context_program_);glDeleteShader(shader);glGetProgramiv(context_program_,GL_LINK_STATUS,&ok);if(!ok)throw std::runtime_error("Context shader link failed");
+    }
+    glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,texture_);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8UI,896,448,0,GL_RGBA_INTEGER,GL_UNSIGNED_BYTE,rgba.data());
+    Upload(2,nullptr,rgba.size(),GL_STREAM_READ);glBindBufferBase(GL_SHADER_STORAGE_BUFFER,2,buffers_[2]);glUseProgram(context_program_);
+    const float scale=std::min(896.f/width,448.f/height),w=width*scale,h=height*scale;
+    glUniform2f(glGetUniformLocation(context_program_,"source_size"),width,height);
+    glUniform4f(glGetUniformLocation(context_program_,"image_rect"),(896-w)/2,(448-h)/2,w,h);
+    glUniform4fv(glGetUniformLocation(context_program_,"target"),1,target.data());glUniform1i(glGetUniformLocation(context_program_,"count"),region.size());
+    if(!region.empty())glUniform2fv(glGetUniformLocation(context_program_,"vertices[0]"),region.size(),region[0].data());
+    glUniform1f(glGetUniformLocation(context_program_,"approach"),approach);glDispatchCompute(56,56,1);glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);Check();
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER,buffers_[2]);const void* data=glMapBufferRange(GL_SHADER_STORAGE_BUFFER,0,rgba.size(),GL_MAP_READ_BIT);if(!data)throw std::runtime_error("Context readback failed");std::memcpy(rgba.data(),data,rgba.size());if(!glUnmapBuffer(GL_SHADER_STORAGE_BUFFER))throw std::runtime_error("Context readback invalid");
+    ImageTransform j;j.width=896;j.height=448;j.letterbox=false;auto pixels=color_->RunRgbaJpegNv12(rgba,896,448,j);if(!jpeg_)jpeg_=std::make_unique<JpegEncoder>(896,448,90);return jpeg_->EncodeFullRangeNv12(pixels);
+  }
  private:
+  std::unique_ptr<JpegEncoder> jpeg_;
+  GLuint context_program_=0;
   struct Binding {
     EGLDisplay display=eglGetCurrentDisplay();EGLContext context=eglGetCurrentContext();
     EGLSurface draw=eglGetCurrentSurface(EGL_DRAW),read=eglGetCurrentSurface(EGL_READ);
@@ -142,7 +212,7 @@ class QwenReviewImagePipeline final {
   void Close(){
     if(context_.context!=EGL_NO_CONTEXT){
       if(eglBindAPI(EGL_OPENGL_ES_API)&&eglMakeCurrent(context_.display,context_.surface,context_.surface,context_.context)){
-        glDeleteBuffers(5,buffers_);if(texture_)glDeleteTextures(1,&texture_);if(program_)glDeleteProgram(program_);
+        if(context_program_)glDeleteProgram(context_program_);glDeleteBuffers(5,buffers_);if(texture_)glDeleteTextures(1,&texture_);if(program_)glDeleteProgram(program_);
       }
     }
     hw_gl_close(&context_);

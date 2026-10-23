@@ -20,3 +20,13 @@ it('a duplicate in a batch leaves the entire draft unchanged and creates no undo
  expect(()=>draft.putAssignments([a,{...a,id:'b'}])).toThrow('同一范围不能重复选用')
  expect(draft.read().assignments).toEqual([]);expect(draft.canUndo()).toBe(false)
 })
+
+it('only focused selection controls the approach preview',()=>{
+ const preview=vi.fn();const zone={id:'z',name:'区域',points:[[.2,.2],[.8,.2],[.8,.8],[.2,.8]] as [number,number][],edgeIds:['a','b','c','d'],version:1};
+ const defs=definitions.map((d,i)=>({...d,behavior:'region_approach' as const,approach_width_percent:i?10:5}));
+ render(<AssignmentPicker sourceId="cam" geometryRevision="g" zone={zone} definitions={defs} sources={[source]} onApproachChange={preview} onDirectionChange={vi.fn()} onApply={vi.fn()}/>);
+ fireEvent.click(screen.getByLabelText('t1'));fireEvent.click(screen.getByLabelText('t2'));
+ expect(preview).toHaveBeenLastCalledWith({id:'t2',value:10});
+ fireEvent.focus(screen.getAllByLabelText('AI 处理器')[0]!);
+ expect(preview).toHaveBeenLastCalledWith({id:'t1',value:5});
+});

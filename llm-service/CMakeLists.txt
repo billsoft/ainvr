@@ -41,6 +41,7 @@ find_library(HB_GBM gbm PATHS /usr/hobot/lib REQUIRED NO_DEFAULT_PATH)
 add_library(ainvr_llm_image
   ../ai-service/src/platform/vpu_decoder.cpp
   ../ai-service/src/platform/media_memory.cpp
+  ../ai-service/src/platform/jpeg_encoder.cpp
   ../ai-service/src/platform/gles_preprocess.cpp)
 target_include_directories(ainvr_llm_image PUBLIC ../ai-service/src/platform PRIVATE /usr/hobot/include)
 target_link_libraries(ainvr_llm_image PUBLIC ${HB_MEDIA} ${HB_MEM} ${HB_EGL} ${HB_GLES} ${HB_GBM} PkgConfig::WAYLAND PkgConfig::AVFORMAT)

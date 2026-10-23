@@ -1,3 +1,4 @@
+import {compactProof} from './compact-evidence.mjs';
 import {readFile,mkdir,writeFile,rename,stat,unlink,readdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {join,resolve} from 'node:path';
@@ -8,6 +9,7 @@ export function contextKey(row,sample){return hash([row.channel_id,row.stream_se
 // model or performs I/O; disabling review avoids collecting a second trace.
 export function reviewSamples(row){
  const c=row.analysis_evidence?.review_context,r=row.rule?.snapshot;
+ if(c?.schema_version==='2.0')return compactProof(row);
  const trace=c?.trace;
  const no=reason=>({ok:false,reason,samples:[]});
  if(!r||!Array.isArray(trace)||!trace.length)return no('missing_trajectory');
@@ -62,7 +64,7 @@ export function jpegDimensions(data){
 }
 export class ReviewContext {
  constructor(repository,root){this.repository=repository;this.root=resolve(root);if(!this.root.startsWith('/mnt/ainvr-ssd/'))throw Error('SSD context required');this.lastPolicy=0;this.lastMaintenance=0;this.closing=false;this.inFlight=null;}
- async initialize(){await mkdir(join(this.root,'pinned'),{recursive:true,mode:0o700});}
+ async initialize(){for(const dir of ['pinned','candidates'])await mkdir(join(this.root,dir),{recursive:true,mode:0o700});}
  async publish(){
   if(Date.now()-this.lastPolicy<5000)return;this.lastPolicy=Date.now();
   const snapshot=await this.repository.ruleSnapshots.current();
@@ -71,41 +73,35 @@ export class ReviewContext {
  }
  async maintain(){
   if(Date.now()-this.lastMaintenance<60000)return;this.lastMaintenance=Date.now();
-  const root=join(this.root,'pinned'),files=[];let size=0;
+  await this.prunePool('candidates',this.policy?.candidate_max_bytes??128*1024**2,24*3600000);
+  await this.prunePool('pinned',this.policy?.max_bytes??1024**3,(this.policy?.retention_days??7)*86400000);
+ }
+ async prunePool(pool,maxBytes,maxAge){
+  const root=join(this.root,pool),files=[];let size=0;
   for(const name of await readdir(root)){if(!/^[a-f0-9]{64}\.jpg$/.test(name))continue;const s=await stat(join(root,name));files.push({name,size:s.size,at:s.mtimeMs});size+=s.size;}
   files.sort((a,b)=>a.at-b.at);
-  for(const f of files)if(f.at<Date.now()-7*86400000||size>1024**3){await unlink(join(root,f.name));size-=f.size;}
+  for(const f of files)if(f.at<Date.now()-maxAge||size>maxBytes){await unlink(join(root,f.name));size-=f.size;}
  }
- // Pin the start/entry images before an eventual exit alarm is produced. This
- // runs off the ingestion path and survives restart via durable checkpoints.
- async pinActive(){
-  if(!this.repository.checkpoints)return;
-  const cursor=this.repository.checkpoints.find({'checkpoint.review_source':{$exists:true}},
-   {projection:{'checkpoint.review_source':1,'checkpoint.states':1}});
-  const candidates=[];
-  for await(const doc of cursor){
-   const cp=doc.checkpoint,source=cp.review_source;
-   for(const state of Object.values(cp.states??{})){
-    if(!state.traversal?.entry&&!state.candidate&&state.seen_since===undefined)continue;
-    const trace=state.review_trace??[];
-    for(const sample of trace.slice(0,2)){
-     if(!sample.event_eligible||sample.observation!=='detected')continue;
-     candidates.push([{...source,analysis_evidence:{source:source.source}},sample]);
-    }
-   }
-  }
-  const start=(this.pinOffset??0)%Math.max(1,candidates.length),count=Math.min(64,candidates.length);
-  for(let i=0;i<count;i++){try{await this.image(...candidates[(start+i)%candidates.length]);}catch{/* Retry pending captures next tick. */}}
-  this.pinOffset=start+count;
+ async processCaptureJobs(){
+  const jobs=this.repository.captureJobs;if(!jobs)return;
+  const rows=await jobs.find({state:'queued',next_at:{$lte:Date.now()}}).sort({created_at:1}).limit(64).toArray();
+  for(const job of rows){try{
+   const dest=join(this.root,'candidates',contextKey(job,job.sample)+'.jpg');
+   try{await stat(dest);}catch{await this.image({...job,analysis_evidence:{source:job.source}},job.sample,true);}
+   await jobs.updateOne({_id:job._id},{$set:{state:'done',finished_at:new Date()}});
+  }catch{
+   const expired=Date.now()-job.created_at>10000;
+   await jobs.updateOne({_id:job._id},{$set:{state:expired?'missing':'queued',next_at:Date.now()+500,...(expired?{finished_at:new Date()}: {})}});
+  }}
  }
  async step(){
-  await this.publish();await this.maintain();await this.pinActive();
+  await this.publish();await this.maintain();await this.processCaptureJobs();
   const rows=await this.repository.events.find({'handling.state':'unacknowledged','review.state':'queued','review.context_state':{$exists:false}}).sort({occurred_at:1}).limit(100).toArray();
   for(const row of rows){
    const proof=reviewSamples(row),fence={alarm_id:row.alarm_id,'review.generation':row.review.generation,'review.context_state':{$exists:false}};
    if(!proof.ok){await this.repository.events.updateOne(fence,{$set:{'review.state':'uncertain','review.reason':proof.reason,'review.context_state':'incomplete'}});continue;}
    try{
-    const frames=[];for(const s of proof.samples){const {key}=await this.image(row,s);frames.push({...s,key});}
+    const frames=[];for(const s of proof.samples){const {key,data}=await this.image(row,s);frames.push({...s,key,content_sha256:hash(data)});}
     await this.repository.events.updateOne(fence,{$set:{'review.context_state':'ready','review.frames':frames}});
    }catch{
     if(Date.now()-Date.parse(row.last_seen_at)>30000)await this.repository.events.updateOne(fence,{$set:{'review.state':'uncertain','review.reason':'missing_context','review.context_state':'incomplete'}});
@@ -115,18 +111,43 @@ export class ReviewContext {
  tick(){if(this.inFlight)return this.inFlight;if(this.closing)return Promise.resolve();this.inFlight=this.step().finally(()=>{this.inFlight=null});return this.inFlight;}
  run(){const work=async()=>{try{await this.tick()}catch{}if(!this.closing)this.timer=setTimeout(work,1000)};void work();}
  async close(){this.closing=true;clearTimeout(this.timer);await this.inFlight;}
+ async status(){
+  let cache=null;try{cache=JSON.parse(await readFile(join(this.root,'cache-status.json'),'utf8'));}catch{}
+  const rows=this.repository.captureJobs?await this.repository.captureJobs.aggregate([{$group:{_id:'$state',count:{$sum:1}}}],{maxTimeMS:2000}).toArray():[];
+  return {capture_counts:Object.fromEntries(rows.map(r=>[r._id,r.count])),cache,retention_days:this.policy?.retention_days??7,max_bytes:this.policy?.max_bytes??1024**3};
+ }
+ async savePrepared(row,sample,image){
+  if(!['target-crop-v1','context-marked-v1'].includes(image.layout)||typeof image.jpeg_base64!=='string'||image.jpeg_base64.length>2*1024*1024)throw Error('invalid_model_result');
+  const data=Buffer.from(image.jpeg_base64,'base64');jpegDimensions(data);
+  const key=hash(data),path=join(this.root,'pinned',key+'.jpg');
+  await writeFile(path+'.tmp',data,{mode:0o600});await rename(path+'.tmp',path);
+  const meta={frame_id:sample.frame_id,key,layout:image.layout,target:image.target,width:image.width,height:image.height,...(image.layout==='target-crop-v1'?{expansion:image.expansion}:{region:image.region,approach_width_fraction:image.approach_width_fraction,fit:image.fit})};
+  const field=image.layout==='context-marked-v1'?'review.context_frames':'review.prepared_frames';
+  await this.repository.events.updateOne({alarm_id:row.alarm_id,'review.generation':row.review.generation},{$addToSet:{[field]:meta}});
+  return meta;
+ }
  async retained(alarmId,key){
   if(!/^[a-f0-9]{64}$/.test(key))throw Error('missing_context');
-  const row=await this.repository.events.findOne({alarm_id:alarmId,'review.frames.key':key});if(!row)throw Error('missing_context');
+  const row=await this.repository.events.findOne({alarm_id:alarmId,$or:[{'review.frames.key':key},{'review.prepared_frames.key':key},{'review.context_frames.key':key}]});if(!row)throw Error('missing_context');
   const data=await readFile(join(this.root,'pinned',key+'.jpg'));if(data.length>8*1024*1024)throw Error('missing_context');return data;
  }
- async image(row,sample){
-  const key=contextKey(row,sample),dest=join(this.root,'pinned',key+'.jpg');
+ // Candidate captures never consume the retention quota of actual alarms.
+ // A frame is copied into pinned only when an alarm references it.
+ async image(row,sample,candidate=false){
+  const key=contextKey(row,sample),dest=join(this.root,candidate?'candidates':'pinned',key+'.jpg');
   let data;
   try{data=await readFile(dest);}catch{
-   const meta=JSON.parse(await readFile(join(this.root,key+'.json'),'utf8'));
+   if(!candidate){try{data=await readFile(join(this.root,'candidates',key+'.jpg'));}catch{}}
+   if(!data){
+   // Read-only compatibility for frames captured before the v2 rolling cache upgrade.
+   let raw='/dev/shm/ainvr-review-frames';try{await stat(join(raw,key+'.json'));}catch{raw=this.root;}
+   if(raw.startsWith('/dev/shm/')&&Date.now()-(await stat(join(raw,key+'.jpg'))).mtimeMs>10000)throw Error('missing_context');
+   const meta=JSON.parse(await readFile(join(raw,key+'.json'),'utf8'));
    for(const [k,v] of Object.entries({channel_id:row.channel_id,stream_session_id:row.stream_session_id,source_pts_ns:sample.source_pts_ns,source_frame_index:sample.source_frame_index,frame_width:row.analysis_evidence.source.width,frame_height:row.analysis_evidence.source.height}))if(meta[k]!==v)throw Error('missing_context');
-   data=await readFile(join(this.root,key+'.jpg'));if(data.length>8*1024*1024)throw Error('missing_context');
+   data=await readFile(join(raw,key+'.jpg'));if(data.length>8*1024*1024)throw Error('missing_context');
+   }
+   jpegDimensions(data);
+   if(candidate){const limit=this.policy?.candidate_max_bytes??128*1024**2;if(data.length>limit)throw Error('missing_context');await this.prunePool('candidates',limit-data.length,24*3600000);}
    await writeFile(dest+'.tmp',data,{mode:0o600});await rename(dest+'.tmp',dest);
   }
   if(data.length<4||data.length>8*1024*1024||data[0]!==255||data[1]!==216)throw Error('missing_context');return {key,data,...jpegDimensions(data)};

@@ -1,3 +1,4 @@
+#include "request.hpp"
 #include "engine.hpp"
 #include <openssl/sha.h>
 #include <filesystem>
@@ -75,7 +76,7 @@ std::vector<int> Engine::Encode(const std::string& kind,const std::string& descr
   std::string text=template_.at("prefix");
   for(int i=0;i<392;++i)text+=template_.at("image_token").get<std::string>();
   std::string suffix=template_.at("suffix"); Replace(suffix,"{prompt}",prompt); text+=suffix;
-  auto ids=tokenizer_->Encode(text); Positions(ids); return ids;
+  auto ids=tokenizer_->Encode(text); if(ids.size()>1024)throw InputError("input_too_long","Complete image and text input exceeds 1024 tokens"); Positions(ids); return ids;
 }
 void Engine::Load() {
   if(head_)return;
