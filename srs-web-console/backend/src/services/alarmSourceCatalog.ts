@@ -9,7 +9,7 @@ const id=z.string().min(1).max(128).regex(/^[a-zA-Z0-9_.:-]+$/);
 const label=z.object({class_id:z.number().int().nonnegative(),label_id:id,name:z.string().max(4096),description:z.string().max(4096)});
 const catalogSchema=z.object({schema_version:z.literal('1.0'),adapter:z.string(),labels:z.array(label).min(1).max(128)});
 const modelSchema=z.object({name:z.string(),adapter:z.string(),class_names:z.array(z.string()).nullable().optional(),description:z.string().optional(),label_id:z.string().optional(),label_name:z.string().optional(),prompts:z.array(z.object({description:z.string(),label_id:z.string(),label_name:z.string()})).nullable().optional()}).passthrough();
-const channelSchema=z.object({id,state:z.string(),config:z.object({model:modelSchema,stream:z.object({url:z.string()}),inference_fps:z.number().positive(),analytics:z.object({enabled:z.boolean()}).passthrough().optional()}).passthrough()}).passthrough();
+const channelSchema=z.object({id,state:z.string(),config:z.object({model:modelSchema,stream:z.object({url:z.string()}),inference_fps:z.number().nonnegative(),analytics:z.object({enabled:z.boolean()}).passthrough().optional()}).passthrough()}).passthrough();
 const frameSchema=z.object({channel_id:id,stream_url:z.string(),timestamp:z.number().finite(),frame_width:z.number().int().positive().max(32768),frame_height:z.number().int().positive().max(32768),model:z.object({name:z.string()}),model_extra:z.object({label_catalog:catalogSchema,analytics:z.object({status:z.string(),stream_session_id:z.string()}).passthrough().optional()})}).passthrough();
 export interface AlarmSourceCatalog extends TriggerSourceCatalog {channel_name:string;input_name:string;labels:z.infer<typeof label>[];width:number;height:number;observed_at:string;stream_fingerprint:string}
 export function buildAlarmSourceCatalog(rawChannel:unknown,rawFrame:unknown,inputs:Channel[],now=Date.now()):AlarmSourceCatalog|null {
@@ -17,7 +17,7 @@ export function buildAlarmSourceCatalog(rawChannel:unknown,rawFrame:unknown,inpu
  if(!parsedChannel.success||!parsedFrame.success)return null;
  const c=parsedChannel.data,f=parsedFrame.data,m=c.config.model,cat=f.model_extra.label_catalog;
  if(c.state!=='running'||c.id!==f.channel_id||f.stream_url!==c.config.stream.url||f.model.name!==m.name||cat.adapter!==m.adapter)return null;
- const age=now-f.timestamp*1000,maxAge=Math.min(600000,Math.max(60000,2000/c.config.inference_fps));
+ const age=now-f.timestamp*1000,maxAge=Math.min(600000,Math.max(60000,2000/(c.config.inference_fps||30)));
  if(age< -5000||age>maxAge)return null;
  let url:URL;try{url=new URL(c.config.stream.url)}catch{return null}
  if(url.protocol!=='rtmp:'||!['127.0.0.1','localhost','[::1]'].includes(url.hostname)||(url.port&&url.port!=='1935')||url.username||url.password||url.search||url.hash)return null;
@@ -39,7 +39,8 @@ export function buildAlarmSourceCatalog(rawChannel:unknown,rawFrame:unknown,inpu
  return {channel_id:c.id,channel_name:typeof c.name==='string'?c.name:c.id,input_stream_id:input.id,input_name:input.name,
   label_map_version:version,label_ids:labels.map(l=>l.label_id),labels,
   geometry_revision:`source-frame-v2:${input.id}:${input.inputGeneration||new Date(input.createdAt).toISOString()}:${f.frame_width}x${f.frame_height}`,
-  tracking_available:c.config.analytics?.enabled===true&&f.model_extra.analytics?.status==='active',
+  tracking_available:c.config.analytics?.enabled===true&&m.adapter!=='locateanything_bpu'&&(c.config.inference_fps===0||c.config.inference_fps>=3)&&f.model_extra.analytics?.status==='active',
+  detection_available:['active','detection_only'].includes(f.model_extra.analytics?.status??''),
   width:f.frame_width,height:f.frame_height,observed_at:new Date(f.timestamp*1000).toISOString(),stream_fingerprint:createHash('sha256').update(c.config.stream.url).digest('hex')};
 }
 export async function readAlarmSourceCatalog(channelId:string,settings:AppSettings,inputs:Channel[],fallbackBaseUrl:string,pgStore:PgConfigStore|null):Promise<AlarmSourceCatalog|null>{

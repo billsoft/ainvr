@@ -30,13 +30,21 @@ export function observationEnvelope(sample,rules){
   if(distinct.size!==1)throw Error('Conflicting active source bindings');
   const binding=eligible[0];
   if(!Array.isArray(sample.tracks))throw Error('Invalid tracks');
-  const tracks=sample.tracks.map(t=>({...t,...(t.display_kind==='low_confidence'?{event_eligible:false}:{})}));
+  if(sample.observation_mode!==undefined&&!['tracks','detections'].includes(sample.observation_mode))throw Error('Invalid observation mode');
+  const detectionOnly=sample.observation_mode==='detections';
+  if(detectionOnly&&(!Array.isArray(sample.detections)||sample.detections.length>4096||sample.tracks.length))throw Error('Invalid detections');
+  // These IDs identify a real observation in ONE frame, never a tracked person.
+  const observations=detectionOnly?sample.detections.map((d,i)=>({
+    track_id:`detection:${sample.producer_id}:${sample.offset}:${i}`,identity_kind:'detection',
+    label_id:d.label_id,bbox:d.bbox,state:'confirmed',observation:'detected',last_observed_pts_ns:sample.source_pts_ns,
+  })):sample.tracks;
+  const tracks=observations.map(t=>({...t,...(t.display_kind==='low_confidence'?{event_eligible:false}:{})}));
   const frame=validateFrame({schema_version:'1.0',channel_id:sample.channel_id,input_stream_id:binding.input_stream_id,
     stream_session_id:sample.stream_session_id,seq:sample.offset,
     frame_id:`${sample.stream_session_id}:${sample.source_frame_index}`,source_pts_ns:sample.source_pts_ns,source_frame_index:sample.source_frame_index,
     captured_at:new Date(sample.timestamp*1000).toISOString(),
     source:{width:sample.width,height:sample.height,coordinate_space:'source_pixels',geometry_revision:binding.geometry_revision},
-    model:{id:sample.model.id,label_map_version:labelVersion},tracks});
+    model:{id:sample.model.id,label_map_version:labelVersion},observation_mode:detectionOnly?'detections':'tracks',tracks});
   if(frame.tracks.some(t=>!labels.some(l=>l.label_id===t.label_id)))throw Error('Unknown track label');
   return {envelope:{schema_version:'1.0',producer_id:sample.producer_id,offset:sample.offset,frame}};
 }

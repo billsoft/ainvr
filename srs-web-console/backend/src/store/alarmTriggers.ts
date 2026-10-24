@@ -16,7 +16,7 @@ const schema=z.object({trigger_id:id,name:z.string().trim().min(1).max(128),beha
   duration_ms:z.number().int().min(0).max(3600000),alarm_enabled:z.boolean(),state:z.enum(['draft','enabled','paused','archived']),
   schedule:alarmScheduleSchema.default({mode:'always'}),bindings:z.array(binding).min(1).max(64)}).strict();
 /** Obtained by the BFF from the actual input/model configuration, never from request claims. */
-export interface TriggerSourceCatalog {channel_id:string;input_stream_id:string;label_map_version:string;label_ids:string[];labels?:{label_id:string;name?:string;description?:string}[];geometry_revision:string;tracking_available:boolean;width?:number;height?:number;observed_at?:string;stream_fingerprint?:string}
+export interface TriggerSourceCatalog {channel_id:string;input_stream_id:string;label_map_version:string;label_ids:string[];labels?:{label_id:string;name?:string;description?:string}[];geometry_revision:string;tracking_available:boolean;detection_available?:boolean;width?:number;height?:number;observed_at?:string;stream_fingerprint?:string}
 type Lookup=(channelId:string)=>Promise<TriggerSourceCatalog|null>;
 const invalid=(message:string)=>new AlarmConfigError('invalid_trigger',message);
 function check(trigger:z.infer<typeof schema>){

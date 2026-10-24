@@ -1,11 +1,12 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, it, expect, vi } from 'vitest'
+const { documentsMock } = vi.hoisted(() => ({ documentsMock: vi.fn(async () => []) }))
 vi.mock('@/api/configService', () => ({ configService: {
-  listDocuments: async () => [], listServiceStates: async () => [], getApplyOperation: async () => null,
+  listDocuments: documentsMock, listServiceStates: async () => [], getApplyOperation: async () => null,
   getPgInfo: async () => ({ host: 'postgres', port: '5432', database: 'console', user: 'console', connected: true }),
 } }))
-vi.mock('@/api/systemService', () => ({ systemService: { getSettings: async () => ({ adminPasswordSet: false }) } }))
+vi.mock('@/api/systemService', () => ({ systemService: { getSettings: async () => ({ adminPasswordSet: false, srsApiHost: '127.0.0.1:21985' }) } }))
 // 2026-09-22：网络管理并入第 6 个分类，切进去会真的调 networkService，独立测试页已下线
 const { listInterfacesMock } = vi.hoisted(() => ({
   listInterfacesMock: vi.fn(async () => [
@@ -28,8 +29,42 @@ vi.mock('@/api/networkService', () => ({
   },
 }))
 import ConfigCenter from '@/pages/ConfigCenter'
-describe('六类配置页面', () => {
-  it('only exposes six categories and no developer/publish controls', async () => {
+describe('系统配置页面', () => {
+  it('uses actual runtime settings before the first parameter document is saved', async () => {
+    render(<MemoryRouter initialEntries={['/config-center?category=streaming']}><ConfigCenter /></MemoryRouter>)
+    expect(await screen.findByLabelText('流媒体服务地址')).toHaveValue('127.0.0.1:21985')
+  })
+  it('network recovery remains accessible when the parameter database fails', async () => {
+    documentsMock.mockRejectedValueOnce(new Error('database unavailable'))
+    render(<MemoryRouter initialEntries={['/config-center?category=network']}><ConfigCenter /></MemoryRouter>)
+    expect(await screen.findByText('eth0')).toBeInTheDocument()
+    expect(screen.queryByText('配置应用状态')).not.toBeInTheDocument()
+  })
+  it('protects unsaved alarm settings when changing categories', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      render(<MemoryRouter initialEntries={['/config-center?category=alarm-service']}><ConfigCenter /></MemoryRouter>)
+      fireEvent.change(await screen.findByLabelText('监听端口'), {target:{value:'8201'}})
+      fireEvent.click(screen.getByRole('button',{name:/基础配置/}))
+      expect(confirm).toHaveBeenCalled()
+      expect(screen.getByLabelText('监听端口')).toHaveValue(8201)
+      confirm.mockReturnValue(true)
+      fireEvent.click(screen.getByRole('button',{name:/基础配置/}))
+      expect(await screen.findByText('监看与轮询')).toBeInTheDocument()
+    } finally { confirm.mockRestore() }
+  })
+  it('protects draft pull settings before leaving streaming configuration', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      render(<MemoryRouter initialEntries={['/config-center?category=streaming']}><ConfigCenter /></MemoryRouter>)
+      fireEvent.change(await screen.findByLabelText(/最大同时拉流数/), {target:{value:'3'}})
+      expect(screen.getByLabelText(/最大同时拉流数/).closest('section')).toHaveAttribute('data-unsaved','true')
+      fireEvent.click(screen.getByRole('button',{name:/基础配置/}))
+      expect(confirm).toHaveBeenCalled()
+      expect(screen.getByLabelText(/最大同时拉流数/)).toHaveValue(3)
+    } finally { confirm.mockRestore() }
+  })
+  it('exposes product categories without developer/publish controls', async () => {
     render(<MemoryRouter><ConfigCenter /></MemoryRouter>)
     await screen.findByText('监看与轮询')
     for (const title of ['基础配置', '数据库配置', '流媒体配置', 'AI微服务配置', '录像微服务配置', '网络管理']) {

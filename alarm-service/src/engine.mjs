@@ -45,6 +45,7 @@ const canonicalDirection=(r,d)=>r.erp_wrap&&d?.boundary_point?{...d,boundary_poi
 
 export function evaluate(checkpoint,input,rules) {
   const f=validateFrame(input),out=[],issues=[],ended=[],captureIntents=[];
+  const detectionOnly=f.observation_mode==='detections';
   const cp=structuredClone(checkpoint??{session:null,seq:null,pts:null});
   cp.states??={};cp.episodes??={};cp.first_seen??={};
   // Upgrade historical checkpoint fields once; new writers only emit compact evidence.
@@ -62,7 +63,7 @@ export function evaluate(checkpoint,input,rules) {
   if(interval!==null)cp.intervals=[...(cp.intervals??[]),interval].slice(-INTERVALS);
   if(sessionChanged||ptsReset){
     for(const e of Object.values(cp.episodes))ended.push({episode_id:e.id,ended_at:f.captured_at,end_reason:sessionChanged?'session_changed':'pts_reset'});
-    cp.states={};cp.episodes={};cp.first_seen={};delete cp.intervals;
+    cp.states={};cp.episodes={};cp.first_seen={};cp.detection_latches={};delete cp.intervals;
   }
   if(seqGap||ptsReset||timeGap||f.gap===true){
     issues.push('input_gap');
@@ -80,6 +81,9 @@ export function evaluate(checkpoint,input,rules) {
     if(r.source_binding&&Date.parse(f.captured_at)<Date.parse(r.source_binding.not_before))continue;
     if(r.input_stream_id!==undefined&&r.input_stream_id!==f.input_stream_id){issues.push(`rule_input_mismatch:${r.id}`);continue;}
     if(r.geometry_revision!==f.source.geometry_revision||r.label_map_version!==f.model.label_map_version){issues.push(`rule_config_mismatch:${r.id}`);continue;}
+    if(detectionOnly&&(r.alarm_enabled===false||!['appearance','region_approach'].includes(r.behavior)||r.duration_ms>0||r.entry_edges.length||r.exit_edges.length||r.erp_wrap)) {
+      issues.push(`tracking_required:${r.id}`);continue;
+    }
     eligible.set(JSON.stringify([r.id,r.version]),r);
   }
   // A new active window cannot reuse old dwell or crossing evidence.
@@ -101,8 +105,38 @@ export function evaluate(checkpoint,input,rules) {
   }
   for(const key of Object.keys(cp.states))if(expiredTracks.has(JSON.parse(key)[2]))delete cp.states[key];
   let tentativeStates=Object.values(cp.states).filter(s=>s.tentative).length;
-  for(const t of f.tracks)cp.first_seen[t.track_id]??=f.captured_at;
-  for(const r of eligible.values()) for(const t of f.tracks) {
+  if(detectionOnly) {
+    // Scene presence, not person continuity. A fresh empty interval rearms the
+    // label/zone latch. Suppression never transfers one target's review result.
+    const next={};
+    for(const r of eligible.values()) for(const label of r.label_ids) {
+      const key=JSON.stringify([r.id,r.version,label,periods.get(JSON.stringify([r.id,r.version]))]);
+      const latch=cp.detection_latches?.[key]??{fired:false};next[key]=latch;
+      const matches=f.tracks.filter(t=>{
+        if(t.label_id!==label||t.event_eligible===false)return false;
+        const b=t.bbox,p=[(b.x+b.w/2)/W,(b.y+b.h*(r.anchor==='center'?.5:1))/H];
+        return r.behavior==='appearance'?(!r.points||inside(r.points,p)):
+          !inside(r.points,p)&&boundaryDistancePx(r.points,p,W,H)<=r.approach_px;
+      });
+      if(!matches.length) {
+        latch.empty_since??=f.source_pts_ns;
+        if(elapsedMs(f,latch.empty_since)>=r.rearm_ms)latch.fired=false;
+        continue;
+      }
+      delete latch.empty_since;
+      if(latch.fired)continue;
+      latch.fired=true;
+      for(const t of matches) {
+        const event=makeAlarm(r,f,t,f.seq,null),sample=sampleOf(f,t);
+        event.analysis_evidence.judgement='single_frame_presence';
+        event.analysis_evidence.review_context=sealEvidence(event,{},sample,r);
+        out.push(event);
+        if(captureIntents.length<128)captureIntents.push({channel_id:f.channel_id,stream_session_id:f.stream_session_id,source:f.source,sample});
+      }
+    }
+    cp.detection_latches=next;cp.states={};
+  } else {delete cp.detection_latches;for(const t of f.tracks)cp.first_seen[t.track_id]??=f.captured_at;}
+  for(const r of eligible.values()) for(const t of detectionOnly?[]:f.tracks) {
     const key=JSON.stringify([r.id,r.version,t.track_id]);
     if(!labelsCache.get(r).has(t.label_id)){delete cp.states[key];continue;}
     if(t.state!=='confirmed'){
@@ -281,6 +315,7 @@ export function evaluate(checkpoint,input,rules) {
   }
   for(const event of out){
     if(event.rule.snapshot.alarm_enabled===false)continue;
+    if(detectionOnly){event.episode_id=event.alarm_id;event.episode_started_at=f.captured_at;continue;}
     const track=event.track_ids[0];
     const e=cp.episodes[track]??={id:digest(['episode',f.channel_id,f.stream_session_id,track,f.seq]),started_at:cp.first_seen[track]??f.captured_at,used:{}};
     // Legacy checkpoints only know the old channel-wide signatures. Keep that

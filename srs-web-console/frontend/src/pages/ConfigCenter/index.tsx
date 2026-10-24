@@ -1,3 +1,4 @@
+import { configApplySummary } from '@/features/configApplySummary'
 import {AlarmServiceConfigForm} from './AlarmServiceConfigForm'
 import {LlmServiceConfigForm} from './LlmServiceConfigForm'
 import { useState, useEffect, useCallback, useRef } from 'react'
@@ -7,6 +8,7 @@ import { configService, type ApplyOperation, type ConfigDocument, type ConfigCha
 import { useConfigApply } from '@/hooks/useConfigApply'
 import { ConfigApplyOverlay } from '@/components/common/ConfigApplyOverlay'
 import { Toaster } from '@/components/ui/Toaster'
+import { systemService } from '@/api/systemService'
 import { useSettingsStore } from '@/store/settings'
 import { BasicConfigForm } from './BasicConfigForm'
 import { DatabaseConfigForm } from './DatabaseConfigForm'
@@ -54,14 +56,15 @@ const stateView: Record<ServiceState['status'], { label: string; tone: string }>
 
 function ConfigStatus({ states, operation, error }: { states: ServiceState[]; operation: ApplyOperation | null; error: string }) {
   const latest = states.map(s => s.appliedAt ? Date.parse(s.appliedAt) : 0).filter(Boolean).sort((a, b) => b - a)[0]
-  const operationText = operation?.status === 'succeeded' ? '最近一次保存已应用' : operation?.stage ?? (latest ? '当前配置已应用' : '等待首次配置应用')
+  const summary = configApplySummary(states, operation, SERVICES.map(s => s.key), error)
+  const operationText = summary.text
   return <section className="ui-panel p-4 sm:p-5" aria-labelledby="config-status-title">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h2 id="config-status-title" className="text-sm font-semibold text-ink">配置应用状态</h2>
         <p className="mt-1 text-xs text-ink-subtle">保存只应用本次涉及的服务；页面会等待服务确认后再报告成功。</p></div>
       <div className="text-right text-xs text-ink-subtle">
         <div className="flex items-center justify-end gap-1.5 font-medium text-ink">
-          {operation?.status === 'running' ? <Loader2 size={14} className="animate-spin text-primary" /> : operation?.status === 'failed' || operation?.status === 'timeout' ? <CircleAlert size={14} className="text-danger" /> : <CheckCircle2 size={14} className="text-success" />}
+          {summary.tone === 'running' ? <Loader2 size={14} className="animate-spin text-primary" /> : summary.tone !== 'success' ? <CircleAlert size={14} className="text-danger" /> : <CheckCircle2 size={14} className="text-success" />}
           {operationText}
         </div>
         <div className="mt-1">{latest ? `最近确认 ${new Date(latest).toLocaleString('zh-CN', { hour12: false })}` : '暂无应用时间'} · <Link className="text-primary-600 hover:underline" to="/dashboard?tab=logs">查看运行日志</Link></div>
@@ -87,10 +90,11 @@ export default function ConfigCenterPage() {
   const [params, setParams] = useSearchParams()
   const category = categories.some(c => c[0] === params.get('category')) ? params.get('category')! : 'basic'
   const [documents, setDocuments] = useState<ConfigDocument[]>([])
+  const [runtimeSettings, setRuntimeSettings] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(true)
   const applying = useConfigApply()
   const [passwordBusy, setPasswordBusy] = useState(false)
-  const form = useRef<HTMLFieldSetElement>(null)
+  const form = useRef<HTMLDivElement>(null)
   const [loadError, setLoadError] = useState('')
   const [serviceStates, setServiceStates] = useState<ServiceState[]>([])
   const [lastOperation, setLastOperation] = useState<ApplyOperation | null>(null)
@@ -113,7 +117,11 @@ export default function ConfigCenterPage() {
   }, [])
   useEffect(() => {
     let cancelled = false
-    void configService.listDocuments().then(docs => { if (!cancelled) setDocuments(docs) })
+    void configService.listDocuments().then(async docs => {
+      const backend = docs.find(d => d.service === 'backend' && d.group === 'system' && d.name === 'settings')
+      const runtime = backend ? null : await systemService.getSettings()
+      if (!cancelled) { setDocuments(docs); setRuntimeSettings(runtime ? { ...runtime } : null) }
+    })
       .catch(() => { if (!cancelled) setLoadError('加载失败，请重新进入本页重试') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -133,12 +141,13 @@ export default function ConfigCenterPage() {
   const savePartial = (service: string, group: string, name: string, config: Record<string, unknown>, description?: string) =>
     saveBatch([{ service, group, name, config, description }])
   // 授权管理、远程协助不走配置发布，不显示配置应用状态
-  const standalone = category === 'license' || category === 'remote-assist' || category === 'time'
+  const standalone = category === 'license' || category === 'remote-assist' || category === 'time' || category === 'network'
   const doc = (service: string) => documents.find(d => d.service === service && d.group === 'system' && d.name === 'settings')
+    ?? (service === 'backend' && runtimeSettings ? { service, group: 'system', name: 'settings', config: runtimeSettings } as ConfigDocument : undefined)
   return <div className="flex flex-col gap-4">
     <Toaster />
     <div><h1 className="page-title">系统配置</h1>
-      <p className="page-description">集中管理各服务参数，保存后自动应用；必要时自动重启对应服务</p></div>
+      <p className="page-description">集中管理各服务参数，各项配置会说明生效方式；保存后请确认应用结果，部分操作会短暂中断对应服务</p></div>
     {!standalone && <ConfigStatus states={serviceStates} operation={lastOperation} error={statusError} />}
     {!standalone && (applying.outcome || loadError) && <div role="status" className="rounded-base border border-line bg-surface p-3 text-sm">{applying.outcome || loadError}</div>}
     <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[220px_1fr]">
@@ -153,11 +162,13 @@ export default function ConfigCenterPage() {
           <div className="text-sm font-medium">{label}</div><div className="text-xs text-ink-faint">{description}</div>
         </button>)}
       </nav>
+      <div ref={form} className="min-w-0">
       {category === 'license' ? <div className="min-w-0"><LicensePage embedded /></div>
         // 远程协助不依赖参数库：参数库故障时恰恰需要它，不能被文档加载挡住。
         : category === 'remote-assist' ? <div className="min-w-0"><RemoteAssistForm /></div>
         // 日期和时间同样不依赖参数库：时间无效、业务暂停时必须能进来校准
-        : category === 'time' ? <div className="min-w-0"><SystemTimeForm /></div> : loading ? <p>加载中…</p> : loadError ? null : <fieldset ref={form} disabled={busy} className="min-w-0">
+        : category === 'time' ? <div className="min-w-0"><SystemTimeForm /></div>
+        : category === 'network' ? <NetworkConfigForm /> : loading ? <p>加载中…</p> : loadError ? null : <fieldset disabled={busy} className="min-w-0">
         {category === 'basic' && <BasicConfigForm backendDoc={doc('backend')} onSavePartial={savePartial}
           onBusyChange={setPasswordBusy} />}
         {category === 'alarm-service' && <AlarmServiceConfigForm document={doc('alarm-service')} onSaveBatch={saveBatch} />}
@@ -166,8 +177,8 @@ export default function ConfigCenterPage() {
         {category === 'streaming' && <StreamingConfigForm backendDoc={doc('backend')} srsDoc={doc('srs')} onSavePartial={savePartial} />}
         {category === 'ai-service' && <AiServiceConfigForm backendDoc={doc('backend')} aiServiceDoc={doc('ai-service')} onSaveBatch={saveBatch} />}
         {category === 'recorder' && <RecorderConfigForm recorderDoc={doc('recorder')} onSavePartial={savePartial} />}
-        {category === 'network' && <NetworkConfigForm />}
       </fieldset>}
+      </div>
     </div>
     <ConfigApplyOverlay busy={busy} stage={passwordBusy ? '正在更新访问密码' : applying.stage} remaining={passwordBusy ? 30 : applying.remaining} />
   </div>

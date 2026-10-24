@@ -45,7 +45,7 @@ export function DatabaseConfigForm({ aiServiceDoc, onSavePartial }: Props) {
     finally { setSaving(false) }
   }
   return <div className="space-y-5" data-unsaved={dirty} onChange={() => setDirty(true)}>
-    <Section title="参数库" hint="配置中心自身数据库。连接参数通过部署环境修改，不在本页修改。">
+    <Section title="参数库" hint="配置中心自身数据库。连接参数通过部署环境修改，不在本页修改；修改后需要重启 Web 后端，重启前应确认新参数库包含现有配置。">
       {pgError ? <p role="alert">{pgError}</p> : !pgInfo ? <p>加载中…</p> : <dl className="grid grid-cols-2 gap-3 text-sm">
         <dt>地址</dt><dd>{pgInfo.host}</dd><dt>端口</dt><dd>{pgInfo.port}</dd>
         <dt>数据库</dt><dd>{pgInfo.database}</dd><dt>用户</dt><dd>{pgInfo.user}</dd>

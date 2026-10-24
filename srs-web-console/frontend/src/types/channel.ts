@@ -48,6 +48,7 @@ export interface Channel {
 
 /** 通道实时状态（从 SRS API 聚合，mock 先模拟） */
 export interface ChannelStatus {
+  srsOnline?: boolean
   channelId: string
   online: boolean
   inputState?: string

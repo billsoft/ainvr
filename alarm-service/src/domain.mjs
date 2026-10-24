@@ -123,10 +123,13 @@ export function validateFrame(input) {
   range(f.source.width,1,32768,'width');range(f.source.height,1,32768,'height');
   if(f.source.coordinate_space!=='source_pixels') fail('invalid_coordinates','coordinate_space');
   identity(f.source.geometry_revision,'geometry_revision'); identity(f.model?.label_map_version,'label_map_version');
+  if(f.observation_mode!==undefined&&!['tracks','detections'].includes(f.observation_mode))fail('invalid_observation','mode');
   if(!Array.isArray(f.tracks)||f.tracks.length>4096) fail('invalid_tracks','tracks');
   const ids=new Set();
   for(const t of f.tracks) {
     identity(t.track_id,'track_id');identity(t.label_id,'label_id');
+    if(f.observation_mode==='detections'&&(t.identity_kind!=='detection'||t.observation!=='detected'))fail('invalid_observation','detections cannot claim tracking');
+    if(f.observation_mode!=='detections'&&t.identity_kind==='detection')fail('invalid_observation','detection identity cannot count');
     if(ids.has(t.track_id)) fail('duplicate_track','track_id'); ids.add(t.track_id);
     if(!['confirmed','tentative'].includes(t.state)||!['detected','lost','predicted'].includes(t.observation)) fail('invalid_observation','track');
     integerText(t.last_observed_pts_ns,'last_observed_pts_ns');
@@ -146,7 +149,7 @@ export function makeAlarm(rule,frame,track,firstSeq,direction=null) {
     stream_session_id:frame.stream_session_id,track_ids:[track.track_id],trigger_id:rule.trigger_id??rule.id,rule:{id:rule.id,version:rule.version,name:rule.name,snapshot:structuredClone(rule)},
     behavior:rule.behavior,severity:rule.severity,occurred_at:frame.captured_at,last_seen_at:frame.captured_at,
     source_pts_ns:frame.source_pts_ns,frame_id:frame.frame_id,direction,model_snapshot:structuredClone(frame.model),
-    analysis_evidence:{engine_semantics:ENGINE_SEMANTICS,first_seq:firstSeq,trigger_seq:frame.seq,source_frame_index:frame.source_frame_index??null,track:structuredClone(track),source:structuredClone(frame.source)},
+    analysis_evidence:{observation_mode:frame.observation_mode??'tracks',engine_semantics:ENGINE_SEMANTICS,first_seq:firstSeq,trigger_seq:frame.seq,source_frame_index:frame.source_frame_index??null,track:structuredClone(track),source:structuredClone(frame.source)},
     lifecycle:{state:'ended',end_reason:'discrete_trigger'},
     review:rule.review.enabled?{state:'queued',attempt:1,profile_id:rule.review.profile_id,profile_version:rule.review.version}:{state:'skipped',reason:'policy_disabled',attempt:0},
     handling:{state:'unacknowledged',revision:0,disposition:'unset'},evidence:{state:'pending',refs:[]},version:1};

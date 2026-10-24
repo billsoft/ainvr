@@ -10,12 +10,12 @@ import {compileAssignment,parseTriggerDefinition,validateAssignmentSet,type Assi
 const identifier=z.string().min(1).max(128).regex(/^[a-zA-Z0-9_.:-]+$/);
 const point=z.tuple([z.number().finite().min(0).max(1),z.number().finite().min(0).max(1)]);
 const zoneSchema=z.object({
-  zone_id:identifier,channel_id:identifier,geometry_revision:identifier,
+  processor_id:identifier.optional(),legacy_processor_ids:z.array(identifier).min(2).max(1000).optional(),zone_id:identifier,channel_id:identifier,geometry_revision:identifier,
   version:z.number().int().positive(),state:z.literal('active'),
   erp_wrap:z.boolean().optional(),name:z.string().trim().min(1).max(128),points:z.array(point).min(3).max(32),edge_ids:z.array(identifier).min(3).max(32),
 }).strict();
 const armingSchema=z.object({
-  coordinate_space:z.enum(['planar','erp']).optional(),source_id:identifier,geometry_revision:identifier,zones:z.array(zoneSchema).max(1000),assignments:z.array(z.unknown()).max(1000),
+  processor_id:identifier.optional(),coordinate_space:z.enum(['planar','erp']).optional(),source_id:identifier,geometry_revision:identifier,zones:z.array(zoneSchema).max(1000),assignments:z.array(z.unknown()).max(1000),
   counter_bindings:z.array(z.unknown()).max(1000).optional(),
 }).strict();
 type Zone=z.infer<typeof zoneSchema>;
@@ -42,6 +42,44 @@ function geometry(points:[number,number][]){
   }
   if(Math.abs(area)<1e-8)fail('invalid_geometry','区域面积不能为零');
 }
+function owners(doc:Arming,z:Zone):Set<string>{
+  return new Set([...(z.processor_id?[z.processor_id]:[]),...(z.legacy_processor_ids??[]),...doc.assignments.filter(a=>a.zone_id===z.zone_id).map(a=>a.processor_id),...(doc.counter_bindings??[]).filter(b=>b.zone_id===z.zone_id).map(b=>b.processor_id)]);
+}
+// Preserve known ownership before references are removed. Shared legacy geometry
+// remains shared/read-only; it is never silently assigned to one processor.
+function retainZoneOwners(doc:Arming):Arming{
+  return {...doc,zones:doc.zones.map(z=>{
+    const ids=[...owners(doc,z)].sort();
+    return ids.length>1?{...z,legacy_processor_ids:ids}:ids.length===1?{...z,processor_id:ids[0]}:z;
+  })};
+}
+function scopeArming<T extends Arming>(doc:T,processorId:string):T{
+  return {...doc,zones:doc.zones.filter(z=>owners(doc,z).has(processorId)),assignments:doc.assignments.filter(a=>a.processor_id===processorId),counter_bindings:(doc.counter_bindings??[]).filter(b=>b.processor_id===processorId)};
+}
+function mergeProcessorArming(previous:Arming|undefined,draft:Arming,processorId:string):Arming{
+  if([...draft.assignments,...draft.counter_bindings].some(a=>a.processor_id!==processorId))fail('invalid_arming','只能编辑当前 AI 输出的关联');
+  if(previous&&previous.geometry_revision!==draft.geometry_revision&&
+    (previous.zones.some(z=>!owners(previous,z).has(processorId)||owners(previous,z).size>1)||[...previous.assignments,...(previous.counter_bindings??[])].some(a=>a.processor_id!==processorId)))
+    fail('source_changed','同源其他处理器仍有布防，请先统一确认画面规格');
+  const foreignZones=previous?retainZoneOwners(previous).zones.filter(z=>!owners(previous,z).has(processorId)||owners(previous,z).size>1):[];
+  const zones=draft.zones.map(z=>{
+    const old=previous?.zones.find(o=>o.zone_id===z.zone_id);
+    if(old){
+      const os=owners(previous!,old);
+      if(!os.has(processorId))fail('invalid_arming','区域属于其他处理器');
+      if(os.size>1){if(!isDeepStrictEqual({...old,processor_id:undefined,legacy_processor_ids:undefined},{...z,processor_id:undefined,legacy_processor_ids:undefined}))fail('invalid_arming','历史共享区域不能在单个输出中修改，请新建独立区域');return old;}
+    }
+    if(z.legacy_processor_ids)fail('invalid_arming','不能新建或变更历史共享区域归属');
+    if(z.processor_id&&z.processor_id!==processorId)fail('invalid_arming','区域属于其他处理器');
+    return {...z,processor_id:processorId};
+  });
+  const foreignAssignments=previous?.assignments.filter(a=>a.processor_id!==processorId)??[];
+  const foreignCounters=(previous?.counter_bindings??[]).filter(b=>b.processor_id!==processorId);
+  if(draft.assignments.some(a=>foreignAssignments.some(b=>b.assignment_id===a.assignment_id))||draft.counter_bindings.some(a=>foreignCounters.some(b=>b.binding_id===a.binding_id)))fail('invalid_arming','不能覆盖其他处理器的关联编号');
+  const result={...draft,zones:[...foreignZones,...zones.filter(z=>!foreignZones.some(f=>f.zone_id===z.zone_id))],assignments:[...foreignAssignments,...draft.assignments],counter_bindings:[...foreignCounters,...draft.counter_bindings]};
+  if(result.zones.length>1000||result.assignments.length>1000||result.counter_bindings.length>1000)fail('capacity','同源布防数量超过上限');
+  return result;
+}
 export class AlarmArmingStore {
   constructor(private pool:Pool){}
   async listDefinitions(){
@@ -57,10 +95,12 @@ export class AlarmArmingStore {
     if(rows.rows.length>1000)fail('capacity','触发器数量超过上限');
     return rows.rows.map(r=>({...r.document,version:r.version,usages:r.usages}));
   }
-  async readArming(sourceId:string){
+  async readArming(sourceId:string,processorId?:string){
+    if(processorId&&!identifier.safeParse(processorId).success)fail('invalid_source','处理器编号无效');
     if(!identifier.safeParse(sourceId).success)fail('invalid_source','来源编号无效');
     const row=(await this.pool.query('SELECT document,revision FROM alarm_arming_sources WHERE source_id=$1',[sourceId])).rows[0];
-    return row?{counter_bindings:[],...row.document,revision:row.revision}:null;
+    const doc=row?{counter_bindings:[],...row.document,revision:row.revision}:null;
+    return doc&&processorId?scopeArming(doc,processorId):doc;
   }
   private async operation<T>(kind:string,input:unknown,expected:number,actor:string,key:string,run:(c:PoolClient)=>Promise<T>):Promise<T>{
     if(!Number.isInteger(expected)||expected<0||expected>=2147483646||!identifier.safeParse(actor).success||!identifier.safeParse(key).success)fail('invalid_operation','操作身份、版本或编号无效');
@@ -112,7 +152,7 @@ export class AlarmArmingStore {
       if(definition.state==='archived'){
         for(const sourceId of new Set(rows.map(r=>r.source_id))){
           const row=(await c.query('SELECT document,revision FROM alarm_arming_sources WHERE source_id=$1',[sourceId])).rows[0];
-          const doc=row.document as Arming;doc.assignments=doc.assignments.filter(a=>a.trigger_id!==definition.trigger_id);
+          const doc=retainZoneOwners(row.document as Arming);doc.assignments=doc.assignments.filter(a=>a.trigger_id!==definition.trigger_id);
           await this.writeSource(c,doc,row.revision+1,actor);
         }
       }
@@ -194,7 +234,7 @@ export class AlarmArmingStore {
         if(old.version!==expected)fail('version_conflict','计数器已变化，请重新读取');
         for(const sourceId of new Set(rows.filter(r=>r.active).map(r=>r.source_id))){
           const row=(await c.query('SELECT document,revision FROM alarm_arming_sources WHERE source_id=$1',[sourceId])).rows[0];
-          const doc=row.document as Arming;doc.counter_bindings=(doc.counter_bindings??[]).filter(b=>b.counter_id!==counterId);
+          const doc=retainZoneOwners(row.document as Arming);doc.counter_bindings=(doc.counter_bindings??[]).filter(b=>b.counter_id!==counterId);
           await this.writeSource(c,doc,row.revision+1,actor);
         }
         await c.query('UPDATE flow_counter_bindings SET active=FALSE,compiled_rule=NULL,updated_at=now() WHERE counter_id=$1',[counterId]);
@@ -237,10 +277,11 @@ export class AlarmArmingStore {
   async saveArming(input:unknown,expected:number,actor:string,key:string,lookup:Lookup,sourceGeometry:(id:string)=>Promise<string|null>){
     const parsed=armingSchema.safeParse(input);
     if(!parsed.success)fail('invalid_arming','布防参数无效');
+    const {processor_id:processorId,...parsedDocument}=parsed.data;
     const bindingInputs=validateBindingSet(parsed.data.counter_bindings??[]);
     // "Recount history" is an instruction for this save only; the stored selection never carries it.
     const recount=new Set(bindingInputs.filter(b=>b.reclassify_history).map(b=>b.binding_id));
-    const doc:Arming={...parsed.data,assignments:validateAssignmentSet(parsed.data.assignments),counter_bindings:bindingInputs.map(({reclassify_history:_,...b})=>b)};
+    let doc:Arming={...parsedDocument,assignments:validateAssignmentSet(parsed.data.assignments),counter_bindings:bindingInputs.map(({reclassify_history:_,...b})=>b)};
     const zoneIds=new Set<string>(),names=new Set<string>();
     for(const z of doc.zones){
       if(z.erp_wrap&&doc.coordinate_space!=='erp')fail('panorama_confirmation_required','请先明确确认来源画面是全景画面，普通相机不能使用全景环绕区域');
@@ -257,20 +298,26 @@ export class AlarmArmingStore {
       if(b.input_stream_id!==doc.source_id||b.geometry_revision!==doc.geometry_revision)fail('source_changed','计数选用来源不匹配');
       if(!zoneIds.has(b.zone_id))fail('zone_required','删除区域时必须解除计数选用');
     }
-    return this.operation('arming',doc,expected,actor,key,async c=>{
+    return this.operation('arming',processorId?{...doc,processor_id:processorId}:doc,expected,actor,key,async c=>{
       const current=await sourceGeometry(doc.source_id);
       if(current===null)fail('source_unavailable','来源暂不可用，请保留草稿');
       if(current!==doc.geometry_revision)fail('source_changed','画面规格已变化，请重新读取');
       const old=(await c.query('SELECT revision,document FROM alarm_arming_sources WHERE source_id=$1',[doc.source_id])).rows[0];
       if((old?.revision??0)!==expected)fail('version_conflict','布防已修改，请重新读取');
+      if(processorId){
+        const processor=await lookup(processorId);
+        if(!processor||processor.input_stream_id!==doc.source_id)fail('source_changed','AI 处理器与输入来源不匹配');
+        doc=mergeProcessorArming(old?.document,doc,processorId);
+      }
       for(const z of doc.zones){
         const previous=(old?.document.zones as Zone[]|undefined)?.find(p=>p.zone_id===z.zone_id);
-        const changed=previous&&!isDeepStrictEqual({...previous,version:0},{...z,version:0});
+        const changed=previous&&!isDeepStrictEqual({...previous,processor_id:undefined,legacy_processor_ids:undefined,version:0},{...z,processor_id:undefined,legacy_processor_ids:undefined,version:0});
         const required=previous?previous.version+(changed?1:0):1;
         if(z.version!==required)fail('version_conflict','区域版本无效');
       }
       await this.writeSource(c,doc,expected+1,actor);
       for(const a of doc.assignments){
+        if(processorId&&a.processor_id!==processorId)continue;
         const previous=(await c.query('SELECT source_id,trigger_id,execution_version,compiled_rule,active FROM alarm_trigger_assignments WHERE assignment_id=$1',[a.assignment_id])).rows[0];
         if(previous&&(previous.source_id!==doc.source_id||previous.trigger_id!==a.trigger_id))fail('assignment_identity','选用编号不能迁移到其他来源或触发器');
         const trigger=(await c.query('SELECT document,version FROM alarm_trigger_definitions WHERE trigger_id=$1',[a.trigger_id])).rows[0];
@@ -301,6 +348,7 @@ export class AlarmArmingStore {
       }
       await c.query('UPDATE alarm_trigger_assignments SET active=FALSE,compiled_rule=NULL,updated_at=now() WHERE source_id=$1 AND NOT (assignment_id=ANY($2::text[]))',[doc.source_id,doc.assignments.map(a=>a.assignment_id)]);
       for(const b of doc.counter_bindings){
+        if(processorId&&b.processor_id!==processorId)continue;
         const previous=(await c.query('SELECT source_id,counter_id,execution_version,compiled_rule,active FROM flow_counter_bindings WHERE binding_id=$1',[b.binding_id])).rows[0];
         if(previous&&(previous.source_id!==doc.source_id||previous.counter_id!==b.counter_id))fail('binding_identity','计数选用编号不能迁移到其他来源或计数器');
         const counter=(await c.query('SELECT document,version FROM flow_counter_definitions WHERE counter_id=$1',[b.counter_id])).rows[0];

@@ -24,7 +24,7 @@ export function SavedZoneOverlay({video,source,transformed=false,resetKey,compac
   video.addEventListener('loadedmetadata',measure);video.addEventListener('resize',measure);video.addEventListener('emptied',measure)
   return()=>{observer.disconnect();video.removeEventListener('loadedmetadata',measure);video.removeEventListener('resize',measure);video.removeEventListener('emptied',measure)}
  },[video,resetKey])
- useEffect(()=>subscribeZoneOverlay(source.id,state=>{setZones(state.zones);setBindings(state.bindings);setLoaded(state.loaded);setFailed(state.failed)}),[source.id])
+ useEffect(()=>subscribeZoneOverlay(source.id,state=>{setZones(state.zones);setBindings(state.bindings);setLoaded(state.loaded);setFailed(state.failed)},source.processorId),[source.id,source.processorId])
  const hasBindings=bindings.length>0
  useEffect(()=>{
   if(!hasBindings)return

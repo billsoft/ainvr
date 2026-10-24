@@ -2,6 +2,9 @@
 """Read-only bounded incident recorder. Never restarts or controls services."""
 import collections
 import json
+import logging
+from logging.handlers import RotatingFileHandler
+import re
 import os
 from pathlib import Path
 import shutil
@@ -11,7 +14,65 @@ import threading
 import time
 import urllib.request
 
+ARCHIVE = logging.getLogger('srs-incidents')
+ARCHIVE.propagate = False
+ARCHIVE.addHandler(logging.NullHandler())
 STOP = threading.Event()
+
+def configure_archive(directory):
+    # Dedicated bounded files survive noisy Docker/journal rotation. This runs
+    # only in the observer process, never in the media pipeline.
+    handler = RotatingFileHandler(Path(directory) / 'incidents.jsonl',
+        maxBytes=8 * 1024 * 1024, backupCount=7, encoding='utf-8')
+    handler.setFormatter(logging.Formatter('%(message)s'))
+    ARCHIVE.addHandler(handler)
+    ARCHIVE.setLevel(logging.INFO)
+    return handler
+
+def srs_error_summary(line):
+    # Do not persist raw URLs, stream keys, query strings or user log content.
+    # Keep the SRS timestamp/session/code for correlation with original logs.
+    match = re.search(r'\[(Warn|Error)\](?:\[\d+\])?\[([A-Za-z0-9_-]{1,40})\]', line)
+    if not match:
+        return None
+    stamp = re.search(r'\[(\d{4}-\d{2}-\d{2} [0-9:.]+)\]', line)
+    return {'severity': match[1], 'session': match[2],
+            'srs_time_utc': stamp[1] if stamp else None,
+            'codes': re.findall(r'\bcode=(\d+)\b', line)[:8],
+            'signals': [word for word in ('timeout', 'reset', 'closed', 'publish',
+                'handshake', 'socket', 'No space') if word.lower() in line.lower()]}
+
+def srs_errors(events):
+    while not STOP.is_set():
+        try:
+            proc = subprocess.Popen(['docker', 'logs', '--follow', '--since', '5s',
+                '--tail', '200', 'ainvr-srs'], stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, errors='replace')
+        except OSError:
+            events.append({'kind': 'log_reader_unavailable'})
+            STOP.wait(5)
+            continue
+        def consume():
+            for line in proc.stdout:
+                event = srs_error_summary(line)
+                if event:
+                    events.append({'kind': 'srs_error', 'captured_at': time.time(), **event})
+        reader = threading.Thread(target=consume, daemon=True)
+        reader.start()
+        try:
+            while not STOP.wait(1) and proc.poll() is None:
+                pass
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try: proc.wait(timeout=2)
+                except subprocess.TimeoutExpired: proc.kill(); proc.wait(timeout=2)
+            reader.join(timeout=2)
+            proc.stdout.close()
+        if not STOP.is_set():
+            events.append({'kind': 'log_reader_reconnecting'})
+            STOP.wait(5)
+
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 def read(path, limit=16384):
@@ -147,14 +208,22 @@ def tcp_events(events):
         proc.stdout.close()
 
 def emit(kind, **values):
-    print(json.dumps({'kind': kind, 'wall': time.time(), **values}, ensure_ascii=False), flush=True)
+    record = json.dumps({'kind': kind, 'wall': time.time(), **values}, ensure_ascii=False)
+    ARCHIVE.info(record)
+    print(record, flush=True)
 
 def main():
+    directory = os.environ.get('LOGS_DIRECTORY')
+    if directory:
+        configure_archive(directory)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: STOP.set())
     events = collections.deque(maxlen=120)
     thread = threading.Thread(target=tcp_events, args=(events,), daemon=True)
     thread.start()
+    errors = collections.deque(maxlen=256)
+    error_thread = threading.Thread(target=srs_errors, args=(errors,), daemon=True)
+    error_thread.start()
     history = collections.deque(maxlen=6)
     last_event = last_heartbeat = last_pid_refresh = 0
     last_sample = time.monotonic()
@@ -175,7 +244,25 @@ def main():
                 'vm': selected('/proc/vmstat', {'pswpin', 'pswpout', 'pgmajfault', 'allocstall_normal'}),
                 'diskstats': [l.strip() for l in read('/proc/diskstats').splitlines() if 'nvme' in l],
                 'netdev': read('/proc/net/dev', 4000)}
-            pending.update(triggers(history[-1] if history else None, sample))
+            reasons = triggers(history[-1] if history else None, sample)
+            # Preserve each sampled transition immediately; expensive snapshots
+            # stay throttled. An outage and recovery within 15s must not collapse.
+            if 'publisher_changed' in reasons:
+                emit('publisher_transition', previous=history[-1]['api'], current=sample['api'])
+            if history and history[-1]['api']['ok'] != sample['api']['ok']:
+                emit('api_availability_changed', available=sample['api']['ok'])
+            pending.update(reasons)
+            # Drain bounded queue once per sample. Repeated error storms are
+            # aggregated, keeping CPU, memory and disk use bounded.
+            summaries = collections.Counter()
+            for _ in range(min(len(errors), 256)):
+                event = errors.popleft()
+                event.pop('captured_at', None)
+                summaries[json.dumps(event, sort_keys=True)] += 1
+            if summaries:
+                emit('srs_error_batch', records=[{'detail': json.loads(k), 'count': n}
+                    for k, n in summaries.items()], queue_capacity=256,
+                    note='bounded best-effort samples, not an exhaustive error count')
             last_sample = now
             if pending and now-last_event >= 15:
                 # Full TCP queue/retransmit state and stacks only on anomalies.
@@ -203,7 +290,7 @@ def main():
             history.append(sample)
             STOP.wait(max(0, 1-(time.monotonic()-now)))
     finally:
-        STOP.set(); thread.join(timeout=4)
+        STOP.set(); thread.join(timeout=4); error_thread.join(timeout=4)
 
 if __name__ == '__main__':
     main()

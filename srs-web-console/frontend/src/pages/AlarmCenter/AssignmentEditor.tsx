@@ -31,7 +31,7 @@ export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sou
  const [directionConfirmed,setDirectionConfirmed]=useState(!initial?.needsDirectionConfirmation)
  const available=definitions.filter(d=>d.state!=='archived'&&(!d.migration_review?.required||d.trigger_id===initial?.triggerId)&&(zone||d.behavior==='appearance'))
  const trigger=available.find(d=>d.trigger_id===triggerId)
- const compatible=sources.filter(s=>s.input_stream_id===sourceId&&s.geometry_revision===geometryRevision&&s.tracking_available&&trigger&&trigger.labels.every(l=>s.labels.some(v=>sameLabel(l,v))))
+ const compatible=sources.filter(s=>s.input_stream_id===sourceId&&s.geometry_revision===geometryRevision&&trigger&&(s.tracking_available||(s.detection_available&&trigger.alarm_enabled&&['appearance','region_approach'].includes(trigger.behavior)&&trigger.duration_ms===0&&!zone?.erpWrap))&&trigger.labels.every(l=>s.labels.some(v=>sameLabel(l,v))))
  const effective=compatible.find(s=>s.channel_id===processorId)??(!processorId&&compatible.length===1?compatible[0]:undefined)
  const size=sourceSize(geometryRevision),names=zone?edgeNames(zone.erpWrap?unwrapErp(zone.points):zone.points,size?.width,size?.height):[]
  const directional=trigger?.behavior==='region_enter'||trigger?.behavior==='region_traverse'
@@ -64,7 +64,8 @@ export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sou
     <option value="">请选择 AI 处理器</option>{compatible.map(s=><option key={s.channel_id} value={s.channel_id}>{s.channel_name}</option>)}
    </select></label>
    {processorId&&!effective&&<p role="alert">原选择的 AI 处理器暂不可用或不再兼容。请明确重新选择处理器，或取消以保留原选用。</p>}
-   {!compatible.length&&<p role="status">没有兼容的 AI 处理器：需要当前来源、相同画面规格、目标标签及可用跟踪信息。</p>}
+   {!compatible.length&&<p role="status">没有兼容的 AI 处理器：需要当前来源、相同画面规格及目标标签。侵入、穿过、持续停留需要可靠跟踪；无跟踪可选持续时间为 0 的出现或接近。</p>}
+   {effective&&!effective.tracking_available&&<p role="status" className="rounded bg-amber-50 p-3 text-sm text-amber-900">无跟踪：{trigger.behavior==='appearance'?(zone?'区内检出':'画面检出'):'接近带内检出'}，仅判断当前真实检测，不证明进入方向或同一目标停留。同类目标持续存在期间只报一次；连续检出空场达到重新布防时间后再报。不同目标不共享审核结论。</p>}
    {compatible.length>1&&<p className="text-sm text-ink-subtle">请选择负责此选用的处理器，避免多路重复分析。</p>}
    {trigger.behavior==='region_approach'&&<label className="block">接近范围（画面宽度 %）<input type="number" min="0" max="100" step="any" className={field} value={distance} placeholder={`沿用触发器：${trigger.approach_width_percent}%`} onChange={e=>setDistance(e.target.value)}/><span className="text-sm">{distance===''?'使用默认值':'本处自定义'} · 约 {Math.round((distanceValue??trigger.approach_width_percent??0)*(size?.width??0)/100)} 像素。留空恢复默认。</span></label>}
    {directional&&zone&&<fieldset className="space-y-2"><legend>进入方向（未选边表示不限）</legend><p className="text-sm">参考画面：绿色为进入边，橙色为离开边。</p><div className="flex flex-wrap gap-2">{zone.edgeIds.map((id,i)=><button type="button" className={`${button} ${entry.includes(id)?'border-green-600 bg-green-100 text-green-900':''}`} key={id} aria-pressed={entry.includes(id)} onClick={()=>{setEntry(entry.includes(id)?entry.filter(e=>e!==id):[...entry,id]);setExit(exit.filter(e=>e!==id))}}>进入边 {i+1} · {names[i]}</button>)}</div>

@@ -103,6 +103,26 @@ async function selectSourceAndNext(user: ReturnType<typeof userEvent.setup>, cha
 }
 
 describe('AiChannelWizard', () => {
+  it('低帧率变更须确认，取消保留原配置，确认后不可重新开启跟踪', async () => {
+    const user=userEvent.setup()
+    render(<AiChannelWizard {...baseProps({mode:'edit',initial:makeChannel({analytics:{enabled:true}})})}/> )
+    await user.click(screen.getByRole('button',{name:'下一步 →'}))
+    const fps=screen.getByLabelText('推理帧率或采集间隔')
+    fireEvent.change(fps,{target:{value:''}})
+    expect(screen.queryByRole('dialog',{name:'关闭目标跟踪'})).not.toBeInTheDocument()
+    fireEvent.change(fps,{target:{value:'5'}})
+    fireEvent.change(fps,{target:{value:'2'}})
+    expect(screen.getByRole('dialog',{name:'关闭目标跟踪'})).toBeInTheDocument()
+    await user.click(screen.getByRole('button',{name:'取消变更'}))
+    expect(fps).toHaveValue(5)
+    fireEvent.change(fps,{target:{value:'2'}})
+    await user.click(screen.getByRole('button',{name:'关闭跟踪并继续'}))
+    expect(fps).toHaveValue(2)
+    await user.click(screen.getByRole('button',{name:'下一步 →'}))
+    expect(screen.getByLabelText('开启目标跟踪')).not.toBeChecked()
+    expect(screen.getByLabelText('开启目标跟踪')).toBeDisabled()
+  })
+
   it.each([[5, '0.20 秒'], [0.5, '2.00 秒'], [0, '跟随源流']] as const)(
     'tracking explains configured sampling without promising accurate counts (%s FPS)', async (fps, expected) => {
       const user=userEvent.setup()
@@ -112,6 +132,7 @@ describe('AiChannelWizard', () => {
       expect(screen.getByTestId('tracking-sampling-guidance')).toHaveTextContent(expected)
       expect(screen.getByTestId('tracking-sampling-guidance')).toHaveTextContent('不补造越线或进入事件')
       await user.click(screen.getByLabelText('开启目标跟踪'))
+    await user.click(screen.getByRole('button',{name:'关闭跟踪并继续'}))
       expect(screen.queryByTestId('tracking-sampling-guidance')).not.toBeInTheDocument()
     },
   )
@@ -138,6 +159,7 @@ describe('AiChannelWizard', () => {
     expect(screen.getByTestId('wizard-output-select')).toBeInTheDocument()
     await user.click(screen.getByRole('button',{name:'← 上一步'}))
     await user.click(screen.getByLabelText('开启目标跟踪'))
+    await user.click(screen.getByRole('button',{name:'关闭跟踪并继续'}))
     await user.click(screen.getByRole('button',{name:'下一步 →'}))
     await user.selectOptions(screen.getByTestId('wizard-output-select'),'ch-offline')
     await user.click(screen.getByRole('button',{name:'← 上一步'}))

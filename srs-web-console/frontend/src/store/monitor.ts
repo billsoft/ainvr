@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { automaticLayout, fitSlots, HARD_LIMIT, LAYOUT_CAPACITY, MONITOR_LAYOUTS, type MonitorLayout } from '@/utils/monitorLayout'
+import { fitSlots, HARD_LIMIT, LAYOUT_CAPACITY, MONITOR_LAYOUTS, type MonitorLayout } from '@/utils/monitorLayout'
 
 const STORAGE_KEY = 'ainvr-monitor-workspace-v1'
 interface MonitorState {
@@ -33,6 +33,7 @@ export function createMonitorStore(persist = false) {
   if (persist) {
     try {
       const value = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')
+      if (value?.layout === '1x1') value.layout = '2x2'
       if (value && MONITOR_LAYOUTS.includes(value.layout) && Array.isArray(value.slots) && value.slots.length <= 4096) {
         const seen = new Set<string>()
         const slots = value.slots.map((id: unknown) => {
@@ -41,19 +42,22 @@ export function createMonitorStore(persist = false) {
           return id
         })
         const selectedOutputs = Object.fromEntries(Object.entries(value.selectedOutputs ?? {}).filter(([id, output]) => seen.has(id) && typeof output === 'string' && output.length <= 512)) as Record<string, string>
-        saved = { layout: value.layout, mode: value.mode === 'auto' ? 'auto' : 'manual', slots: fitSlots(slots, value.layout), selectedOutputs, initialized: true }
+        const fitted = fitSlots(slots, value.layout)
+        const page = Number.isInteger(value.page) ? Math.max(0, Math.min(value.page, fitted.length / LAYOUT_CAPACITY[value.layout as MonitorLayout] - 1)) : 0
+        const focusedChannelId = typeof value.focusedChannelId === 'string' && value.focusedChannelId.length <= 512 ? value.focusedChannelId : null
+        saved = { layout: value.layout, mode: 'manual', slots: fitted, selectedOutputs, page, focusedChannelId, initialized: true }
       }
     } catch { unavailable = true }
   }
   const store = create<MonitorState>((set, get) => ({
-    layout: '2x2', mode: 'auto', slots: fitSlots([], '2x2'), page: 0,
+    layout: '2x2', mode: 'manual', slots: fitSlots([], '2x2'), page: 0,
     initialized: false, persistenceUnavailable: unavailable, hardLimit: HARD_LIMIT,
     focusedChannelId: null, selectedOutputs: {}, ...saved,
     selectOutput(id, output) { set(s => ({ selectedOutputs: { ...s.selectedOutputs, [id]: output } })) },
     initialize(ids) { if (!get().initialized) get().arrange(ids) },
     arrange(ids) {
       const unique = [...new Set(ids)].slice(0, 4096)
-      const layout = get().mode === 'auto' ? automaticLayout(unique.length) : get().layout
+      const layout = get().layout
       set({ layout, slots: fitSlots(unique, layout), selectedOutputs: {}, initialized: true, page: 0, focusedChannelId: null })
     },
     setLayout(layout) {
@@ -109,8 +113,8 @@ export function createMonitorStore(persist = false) {
     },
   }))
   if (persist) store.subscribe((state, previous) => {
-    if (!state.initialized || (state.slots === previous.slots && state.layout === previous.layout && state.mode === previous.mode && state.selectedOutputs === previous.selectedOutputs)) return
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ layout: state.layout, mode: state.mode, slots: state.slots, selectedOutputs: state.selectedOutputs })) }
+    if (!state.initialized || (state.slots === previous.slots && state.layout === previous.layout && state.mode === previous.mode && state.selectedOutputs === previous.selectedOutputs && state.page === previous.page && state.focusedChannelId === previous.focusedChannelId)) return
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ layout: state.layout, mode: state.mode, slots: state.slots, selectedOutputs: state.selectedOutputs, page: state.page, focusedChannelId: state.focusedChannelId })) }
     catch { if (!state.persistenceUnavailable) store.setState({ persistenceUnavailable: true }) }
   })
   return store

@@ -3,6 +3,9 @@ import { Link } from 'react-router-dom'
 import { Plus, ScanFace, AlertTriangle, Video } from 'lucide-react'
 import { useAiChannelsStore } from '@/store/aiChannels'
 import { useChannelsStore } from '@/store/channels'
+import { channelService } from '@/api/channelService'
+import type { ChannelWithStatus } from '@/types/channel'
+import { sourceAvailability, aiPresentationState } from '@/features/aiSourceState'
 import { usePolling } from '@/hooks/usePolling'
 import { useSettingsStore } from '@/store/settings'
 import { aiChannelService } from '@/api/aiChannelService'
@@ -37,6 +40,19 @@ export default function AiChannelsPage() {
   const [streamsError, setStreamsError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [deleteBusy, setDeleteBusy] = useState(false)
+
+  const [sourceSnapshot, setSourceSnapshot] = useState<{ channels: ChannelWithStatus[]; checkedAt: number }>({ channels: [], checkedAt: 0 })
+  // Independent unfiltered snapshot: access-management search must not hide a source.
+  usePolling(async () => {
+    try {
+      const channels = await channelService.list()
+      setSourceSnapshot({ channels, checkedAt: Date.now() })
+    } catch {
+      setSourceSnapshot({ channels: [], checkedAt: 0 })
+    }
+  }, 5000)
+  const availability = (ch: AiChannel) => serviceUnreachable ? 'unknown' as const :
+    sourceAvailability(ch, sourceSnapshot.channels, sourceSnapshot.checkedAt)
 
   // 筛选器状态
   const [statusFilter, setStatusFilter] = useState<string>('all')
@@ -164,7 +180,10 @@ export default function AiChannelsPage() {
   const STATUS_OPTIONS = [
     { value: 'all', label: '全部' },
     { value: 'running', label: '运行中' },
-    { value: 'idle', label: '空闲' },
+    { value: 'idle', label: '已停止' },
+    { value: 'waiting-source', label: '等待源视频' },
+    { value: 'starting', label: '启动中' },
+    { value: 'reconnecting', label: '重连中' },
     { value: 'error', label: '异常' },
     { value: 'no_source', label: '未配置源' },
   ]
@@ -176,7 +195,7 @@ export default function AiChannelsPage() {
       if (statusFilter === 'no_source') {
         if (sourceChannelMap.has(ch.id)) return false
       } else if (statusFilter !== 'all') {
-        if (ch.state !== statusFilter) return false
+        if (aiPresentationState(ch, availability(ch)) !== statusFilter) return false
       }
 
       // 模型筛选
@@ -191,7 +210,7 @@ export default function AiChannelsPage() {
 
       return true
     })
-  }, [channels, statusFilter, modelFilter, sourceFilter, sourceChannelMap])
+  }, [channels, statusFilter, modelFilter, sourceFilter, sourceChannelMap, sourceSnapshot, serviceUnreachable])
 
   // 请求发起时记下这次是给哪个通道查的；响应回来时比对是否还是"当前
   // 正在等的那一次"，不一致就丢弃——防止快速切换查看目标（A 还没返回就
@@ -323,6 +342,7 @@ export default function AiChannelsPage() {
                     channel={ch}
                     disabled={serviceUnreachable}
                     sourceChannelName={sourceChannelMap.get(ch.id)}
+                    sourceAvailability={availability(ch)}
                     onStart={() => startChannel(ch.id).catch((e) => toast.error(e?.message || '启动失败'))}
                     onStop={() => stopChannel(ch.id).catch((e) => toast.error(e?.message || '停止失败'))}
                     onEdit={() => { setEditing(ch); setWizardOpen(true) }}

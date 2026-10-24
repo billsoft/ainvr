@@ -26,7 +26,7 @@ const assignmentSchema=z.object({
 export type TriggerAssignment=z.infer<typeof assignmentSchema>;
 export interface AssignmentSource {
   channel_id:string;input_stream_id:string;geometry_revision:string;label_map_version:string;
-  tracking_available:boolean;labels:{label_id:string;name?:string;description?:string}[];
+  tracking_available:boolean;detection_available?:boolean;labels:{label_id:string;name?:string;description?:string}[];
   width:number;height:number;
   stream_fingerprint?:string;observed_at?:string;
 }
@@ -78,7 +78,8 @@ export function compileAssignment(
   if(source.channel_id!==a.processor_id||source.input_stream_id!==a.input_stream_id||
     source.geometry_revision!==a.geometry_revision||source.label_map_version!==a.label_map_version)return fail('source_changed','来源或模型目录已变化');
   if(!source.stream_fingerprint||!/^[a-f0-9]{64}$/.test(source.stream_fingerprint)||!source.observed_at||!Number.isFinite(Date.parse(source.observed_at)))return fail('source_unavailable','来源证据尚未确认');
-  if(!source.tracking_available)return fail('tracking_required','请启用目标跟踪');
+  if(!source.tracking_available&&!(source.detection_available&&d.alarm_enabled&&['appearance','region_approach'].includes(d.behavior)&&d.duration_ms===0&&!a.entry_edges.length&&!a.exit_edges.length&&!zone?.erp_wrap))
+    return fail('tracking_required','此规则需要可靠跟踪；无跟踪仅支持无持续时间的出现、区内检出及接近带检出。');
   if(!Number.isSafeInteger(source.width)||source.width<=0||!Number.isSafeInteger(source.height)||source.height<=0)return fail('source_unavailable','原图尺寸尚未确认');
   if(d.labels.some(l=>!source.labels.some(s=>s.label_id===l.label_id&&(s.name||s.description||s.label_id)===l.name)))return fail('labels_unavailable','模型不支持所选目标，请确认目标映射');
   if(d.behavior!=='appearance'&&a.zone_id===null)return fail('zone_required','此行为需要热区');

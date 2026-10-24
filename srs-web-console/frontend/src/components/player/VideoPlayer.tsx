@@ -82,11 +82,8 @@ export interface VideoPlayerProps {
   /** 底层 <video> 元素就绪/卸载时回调——供需要读取 videoWidth/videoHeight
    * 的调用方拿到引用。可选字段，不传不影响任何现有行为。 */
   onVideoElement?: (video: HTMLVideoElement | null) => void
-  /** 这路流是某个 AI 通道的输出流时传它的 id——传了就在控制栏出现"识别框"
-   * 开关，播放器内部自己叠加检测框图层（见 AiDetectionOverlay），不用调用方
-   * 自己接线。不是 AI 输出流（没有识别结果可显示）时不传，控制栏不出现这个
-   * 按钮。这样实时监看宫格/聚焦大画面/AI 通道衍生流预览用的是同一份实现，
-   * 不用每个页面各自接一遍。 */
+  /** AI 输出流传入通道 id，播放器始终叠加识别框和轨迹。
+   * 宫格、聚焦画面和衍生流预览共用此逻辑；非 AI 流不传。 */
   aiChannelId?: string
   /** 传了就在 webrtc 协议下每 5s 上报一次 RTCPeerConnection.getStats() 里的
    * jitterBufferDelay 等播放延迟指标（见 webrtc.ts::extractWebrtcVideoStats），
@@ -219,9 +216,6 @@ export function VideoPlayer({
     (mode: 'exact' | 'approx') => setOverlaySync(mode === 'exact' ? 'synced' : 'approx'),
     [],
   )
-  // 默认开——这路流已经被判定为 AI 输出流（aiChannelId 有值）时，用户大概率
-  // 就是为了看识别框才点进来的，不用每次都手动开一遍；不想看直接点掉。
-  const [overlayEnabled, setOverlayEnabled] = useState(true)
   // WebRTC 自动重连节流：记录最近自动重连的时间戳（ms），见常量注释。
   // 用 ref 不用 state——纯事件节流，不需要触发渲染。
   const autoReconnectsRef = useRef<number[]>([])
@@ -369,7 +363,7 @@ export function VideoPlayer({
 
   // 首次同步超时要区分接收、解析和显示对齐；不能把所有失败都说成流没有 SEI。
   useEffect(() => {
-    if (!overlayEnabled || !aiChannelId || proto !== 'webrtc' || overlaySync !== 'syncing') return
+    if (!aiChannelId || proto !== 'webrtc' || overlaySync !== 'syncing') return
     if (state.status !== 'playing') return
     const t = setTimeout(() => {
       if (!mountedRef.current) return
@@ -389,7 +383,7 @@ export function VideoPlayer({
       setOverlaySync('no_sei')
     }, 8000)
     return () => clearTimeout(t)
-  }, [overlayEnabled, aiChannelId, proto, overlaySync, state.status, state.generation])
+  }, [aiChannelId, proto, overlaySync, state.status, state.generation])
 
   // 预算属于当前通道，不能在 connecting 时归零，否则永久无 SEI 会无限重连。
   const noSeiRetryRef = useRef(0)
@@ -398,7 +392,7 @@ export function VideoPlayer({
   // 真正重建接收链路，复用页面恢复时的限流入口，而不是仅切换提示文字。
   // 达到上限后仍监听晚到的数据；成功对齐依然可以自行恢复显示。
   useEffect(() => {
-    if (!overlayEnabled || !aiChannelId || proto !== 'webrtc') return
+    if (!aiChannelId || proto !== 'webrtc') return
     if (overlaySync !== 'no_sei') return
     if (state.status !== 'playing') return
     if (noSeiRetryRef.current >= MAX_NO_SEI_RETRIES) return
@@ -408,7 +402,7 @@ export function VideoPlayer({
       scheduleWebRtcReconnect('识别框首次同步超时，重建接收连接')
     }, 15000)
     return () => clearTimeout(t)
-  }, [overlayEnabled, aiChannelId, proto, overlaySync, state.status, scheduleWebRtcReconnect])
+  }, [aiChannelId, proto, overlaySync, state.status, scheduleWebRtcReconnect])
 
   useEffect(() => {
     noSeiRetryRef.current = 0
@@ -820,7 +814,7 @@ export function VideoPlayer({
         <AiDetectionOverlay
           video={videoEl}
           enabled={true}
-          showDetections={overlayEnabled}
+          showDetections={true}
           showTrails={true}
           drawFrame={panorama ? drawPanoramaFrame : undefined}
           channelId={aiChannelId}
@@ -834,7 +828,7 @@ export function VideoPlayer({
         />
       )}
 
-      {aiChannelId && overlayEnabled && canConnect && overlaySync !== 'synced' && state.status === 'playing' && (
+      {aiChannelId && canConnect && overlaySync !== 'synced' && state.status === 'playing' && (
         <div className="pointer-events-none absolute bottom-10 left-2 z-10 rounded-base bg-black/65 px-2 py-1 text-xs text-white" role="status">
           {overlaySync === 'unsupported'
             ? plan.kind === 'hls'
@@ -934,9 +928,6 @@ export function VideoPlayer({
           isMuted={isMuted}
           togglePlay={togglePlay}
           toggleMute={toggleMute}
-          aiChannelId={aiChannelId}
-          overlayEnabled={overlayEnabled}
-          setOverlayEnabled={setOverlayEnabled}
           onArming={onArming}
           chain={chain}
           selectedProtocol={proto ?? state.chain[state.index] ?? ''}

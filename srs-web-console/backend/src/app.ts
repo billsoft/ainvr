@@ -453,6 +453,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         pgStore,
         orchestrator,
         serviceTokens,
+        readBackendSettings: () => settingsStore.read(),
+        aiServiceBaseUrl,
       });
     }
   }, { prefix: '/api' });

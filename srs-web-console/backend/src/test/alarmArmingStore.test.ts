@@ -44,6 +44,7 @@ it.skipIf(!enabled)('PG 画面规格重画原子停用旧选用，保留历史�
   expect(await store.readArming('camera')).toMatchObject({revision:2,geometry_revision:'new',zones:input.zones});
   await expect(store.saveArming(arming(),1,'operator','restore-old',lookup,async()=>'new')).rejects.toMatchObject({code:'source_changed'});
   expect((await store.snapshot()).rules).toHaveLength(1);
+
 }));
 it.skipIf(!enabled)('PG 修改一个区域不会重置其他选用的执行版本，重复快照保留活动连续性',async()=>isolated(async store=>{
   await store.saveDefinition(definition,0,'operator','d1',lookup);
@@ -144,4 +145,97 @@ it.skipIf(!enabled)('PG preserves ERP seam topology in source, compiled selectio
  await expect(store.saveArming({...input,coordinate_space:'planar'},0,'operator','erp-invalid',lookup,async()=>'g')).rejects.toThrow(/全景/);
  await store.saveArming(input,0,'operator','erp-save',lookup,async()=>'g');
  expect((await store.readArming('camera'))?.revision).toBe(1);
+}));
+
+it.skipIf(!enabled)('PG processor-scoped arming isolates shared input, preserves foreign rules, and supports retries',async()=>isolated(async store=>{
+ const lookupBoth=async(id:string)=>({...source,channel_id:id});
+ await store.saveDefinition(definition,0,'operator','scope-definition',lookupBoth);
+ const full=arming();full.assignments[1]!.processor_id='ai2';
+ await store.saveArming(full,0,'operator','scope-initial',lookupBoth,async()=>'g');
+ const before=(await store.snapshot()).rules.find((r:any)=>r.id==='b');
+ const mine=await store.readArming('camera','ai');
+ expect(mine.zones).toHaveLength(1);expect(mine.assignments.map((a:any)=>a.assignment_id)).toEqual(['a']);
+ const {revision,...draft}=mine;
+ draft.zones[0].name='output one';draft.zones[0].version++;
+ draft.assignments[0].zone_version++;
+ const scoped={...draft,processor_id:'ai'};
+ const unavailableOther=async(id:string)=>id==='ai'?({...source}):null;
+ const result=await store.saveArming(scoped,revision,'operator','scope-save',unavailableOther,async()=>'g');
+ expect(await store.saveArming(scoped,revision,'operator','scope-save',async()=>null,async()=>null)).toEqual(result);
+ expect((await store.snapshot()).rules.find((r:any)=>r.id==='b')).toEqual(before);
+ expect((await store.readArming('camera','ai2')).assignments.map((a:any)=>a.assignment_id)).toEqual(['b']);
+ const now=await store.readArming('camera','ai');
+ const {revision:next,...remove}=now;remove.assignments=[];
+ await store.saveArming({...remove,processor_id:'ai'},next,'operator','scope-unbind',unavailableOther,async()=>'g');
+ expect((await store.readArming('camera','ai')).zones).toHaveLength(1);
+ expect((await store.readArming('camera','ai2')).zones).toHaveLength(1);
+ await expect(store.saveArming({...remove,processor_id:'ai2'},next+1,'operator','scope-steal',lookupBoth,async()=>'g')).rejects.toMatchObject({code:'invalid_arming'});
+ await expect(store.saveArming({...remove,processor_id:'ai'},next,'operator','scope-stale',lookupBoth,async()=>'g')).rejects.toMatchObject({code:'version_conflict'});
+}));
+
+it.skipIf(!enabled)('PG separate AI outputs can use same zone name and counter without merging counts or deleting foreign bindings',async()=>isolated(async store=>{
+ const lookupBoth=async(id:string)=>({...source,channel_id:id});
+ const counter={counter_id:'visitors',name:'客流',labels:[{label_id:'person',name:'人员'}],method:'zone',outputs:'both',names:{in:'进',out:'出'},occupancy:true,max_gap_ms:1000,state:'enabled'};
+ await store.saveCounter(counter,0,'operator','counter',lookupBoth);
+ const make=(id:string)=>{
+  const z={...zone('zone-'+id),name:'热区 1',edge_ids:['top','right','bottom','left'],points:[[.2,.2],[.8,.2],[.8,.8],[.2,.8]]};
+  return {processor_id:id,source_id:'camera',geometry_revision:'g',zones:[z],assignments:[],counter_bindings:[{binding_id:'flow-count-'+id,counter_id:'visitors',input_stream_id:'camera',processor_id:id,zone_id:z.zone_id,zone_version:1,geometry_revision:'g',label_map_version:'lm',direction:{kind:'edges',entry:['left'],exit:['right']}}]};
+ };
+ await store.saveArming(make('ai'),0,'operator','first',lookupBoth,async()=>'g');
+ await store.saveArming(make('ai2'),1,'operator','second',lookupBoth,async()=>'g');
+ expect((await store.readArming('camera','ai')).counter_bindings.map((b:any)=>b.binding_id)).toEqual(['flow-count-ai']);
+ expect((await store.readArming('camera','ai2')).counter_bindings.map((b:any)=>b.binding_id)).toEqual(['flow-count-ai2']);
+ const other=(await store.snapshot()).rules.find((r:any)=>r.id==='flow-count-ai2');
+ await store.saveArming({...make('ai'),zones:[],counter_bindings:[]},2,'operator','remove-first',async id=>id==='ai'?source:null,async()=>'g');
+ expect((await store.snapshot()).rules).toEqual([other]);
+ const history=await store.counterBindings(['visitors']);
+ expect(history.find(b=>b.binding_id==='flow-count-ai')?.active).toBe(false);
+ expect(history.find(b=>b.binding_id==='flow-count-ai2')?.active).toBe(true);
+}));
+
+
+it.skipIf(!enabled)('PG archive preserves legacy single and shared zone ownership without changing geometry',async()=>isolated(async(store)=>{
+ const both=async(id:string)=>({...source,channel_id:id});
+ await store.saveDefinition(definition,0,'operator','legacy-def',both);
+ await store.saveArming({...arming(),assignments:[assignment('a','one'),assignment('b','two'),{...assignment('c','two'),processor_id:'ai2'}]},0,'operator','legacy-save',both,async()=>'g');
+ await store.saveDefinition({...definition,state:'archived'},1,'operator','legacy-archive',both);
+ const first=await store.readArming('camera','ai'),second=await store.readArming('camera','ai2');
+ expect(first.zones.map((z:any)=>z.zone_id)).toEqual(['one','two']);
+ expect(second.zones.map((z:any)=>z.zone_id)).toEqual(['two']);
+ expect(first.zones.every((z:any)=>z.version===1)).toBe(true);
+ expect(first.assignments).toEqual([]);
+ const {revision,...draft}=second;
+ draft.zones[0].name='steal shared';
+ await expect(store.saveArming({...draft,processor_id:'ai2'},revision,'operator','shared-edit',both,async()=>'g')).rejects.toMatchObject({code:'invalid_arming'});
+}));
+
+it.skipIf(!enabled)('PG deleting last legacy counter retains zone in its AI output and retry is idempotent',async()=>isolated(async(store)=>{
+ const counter={counter_id:'visitors',name:'visitors',labels:[{label_id:'person',name:'人员'}],method:'zone',outputs:'both',names:{in:'进',out:'出'},occupancy:true,max_gap_ms:1000,state:'enabled'};
+ await store.saveCounter(counter,0,'operator','legacy-counter',lookup);
+ const z=zone('one');
+ const input={source_id:'camera',geometry_revision:'g',zones:[z],assignments:[],counter_bindings:[{binding_id:'flow-count-legacy',counter_id:'visitors',input_stream_id:'camera',processor_id:'ai',zone_id:'one',zone_version:1,geometry_revision:'g',label_map_version:'lm',direction:{kind:'edges',entry:['d'],exit:['b']}}]};
+ await store.saveArming(input,0,'operator','legacy-counter-save',lookup,async()=>'g');
+ const result=await store.beginDeleteCounter('visitors',1,'operator','legacy-delete');
+ expect(await store.beginDeleteCounter('visitors',1,'operator','legacy-delete')).toEqual(result);
+ const saved=await store.readArming('camera','ai');
+ expect(saved.zones).toHaveLength(1);expect(saved.zones[0]).toMatchObject({processor_id:'ai',version:1,points:z.points});
+ expect(saved.counter_bindings).toEqual([]);
+ expect((await store.readArming('camera','ai2')).zones).toEqual([]);
+}));
+
+it.skipIf(!enabled)('PG removing a scoped association preserves all legacy shared owners',async()=>isolated(async(store)=>{
+ const both=async(id:string)=>({...source,channel_id:id});
+ await store.saveDefinition(definition,0,'operator','shared-def',both);
+ await store.saveArming({...arming(),zones:[zone('one')],assignments:[assignment('a','one'),{...assignment('b','one'),processor_id:'ai2'}]},0,'operator','shared-save',both,async()=>'g');
+ const {revision,...draft}=await store.readArming('camera','ai');
+ draft.assignments=[];
+ await store.saveArming({...draft,processor_id:'ai'},revision,'operator','shared-remove',both,async()=>'g');
+ expect((await store.readArming('camera','ai')).zones).toHaveLength(1);
+ expect((await store.readArming('camera','ai2')).zones).toHaveLength(1);
+ expect((await store.snapshot()).rules).toHaveLength(1);
+ const saved=await store.readArming('camera','ai2');
+ const {revision:rev,...uiDraft}=saved;
+ uiDraft.zones=uiDraft.zones.map(({processor_id,legacy_processor_ids,...z}:any)=>z);
+ await store.saveArming({...uiDraft,processor_id:'ai2'},rev,'operator','shared-ui-save',both,async()=>'g');
+ expect((await store.readArming('camera','ai')).zones).toHaveLength(1);
 }));

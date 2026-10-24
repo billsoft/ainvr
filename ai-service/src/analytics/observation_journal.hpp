@@ -55,7 +55,8 @@ class ObservationJournal {
     std::lock_guard guard(mutex_);
     if(result.channel_id!=channel_||result.frame_pts_ns<0||result.frame_index<0||!std::isfinite(result.timestamp))throw std::invalid_argument("Invalid observation source");
     const auto& analytics=result.model_extra.at("analytics");
-    if(analytics.at("status")!="active")throw std::invalid_argument("Tracking result unavailable");
+    const bool detection_only=analytics.at("status")=="detection_only";
+    if(analytics.at("status")!="active"&&!detection_only)throw std::invalid_argument("Observation result unavailable");
     if(next_==std::numeric_limits<uint64_t>::max())throw std::runtime_error("Observation offset exhausted");
     const auto offset=next_;
     nlohmann::json value={{"schema_version","1.0"},{"producer_id",producer_},{"offset",std::to_string(offset)},
@@ -64,6 +65,14 @@ class ObservationJournal {
       {"timestamp",result.timestamp},{"width",result.frame_width},{"height",result.frame_height},
       {"model",{{"id",result.model_name},{"label_catalog",result.model_extra.at("label_catalog")}}},
       {"tracks",analytics.at("tracks")}};
+    value["observation_mode"]=detection_only?"detections":"tracks";
+    if(detection_only) {
+      value["detections"]=nlohmann::json::array();
+      // Only exported detections: hidden low-confidence candidates cannot alarm.
+      for(const auto& d:result.detections) value["detections"].push_back({
+        {"label_id",d.label_id.empty()?"class:"+std::to_string(d.class_id):d.label_id},
+        {"bbox",{{"x",d.bbox[0]},{"y",d.bbox[1]},{"w",d.bbox[2]},{"h",d.bbox[3]}}}});
+    }
     const auto data=value.dump();if(data.size()>1024*1024)throw std::runtime_error("Observation record capacity exceeded");
     // Only this locked producer can add files; the consumer can only delete.
     // Cached usage is therefore a conservative upper bound. Recount only when

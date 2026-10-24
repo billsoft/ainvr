@@ -162,7 +162,7 @@ void ReusedChannelWorker::Start() {
   // 整个进程(所有通道)就没了。
   if (capture_thread_.joinable()) capture_thread_.join();
   if (infer_thread_.joinable()) infer_thread_.join();
-  if(LoadCfg()->analytics.enabled&&!std::atomic_load(&observation_journal_)){
+  if(!std::atomic_load(&observation_journal_)){
     if(const char* root=std::getenv("AINVR_OBSERVATION_SPOOL_ROOT");root&&*root)
       std::atomic_store(&observation_journal_,std::make_shared<analytics::ObservationJournal>(root,channel_id_));
   }
@@ -426,6 +426,11 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
          }},
         {"result_buffer_size", result_buffer_.Size()},
     };
+  }
+  if(auto latest=result_buffer_.Latest();latest&&latest->model_extra.contains("analytics")) {
+    const auto& a=latest->model_extra.at("analytics");
+    stats["tracking_capability"]={{"status",a.value("status",std::string("unavailable"))},
+      {"reason",a.value("reason",std::string())}};
   }
   if(auto outbox=std::atomic_load(&event_outbox_)) {
     stats["analytics_storage"]={{"pending",outbox->Pending()},
@@ -1022,7 +1027,12 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   result.detections = rescaled;
   result.model_extra = adapter_->ResultMetadata();
   // Inference-thread owned; source epoch/generation resets track identity.
-  if (!analytics_) analytics_ = std::make_unique<analytics::FrameAnalytics>(analytics::PhaseEffective(cfg->analytics));
+  if (!analytics_) {
+    auto policy=analytics::PhaseEffective(cfg->analytics);
+    policy.enabled=policy.enabled && cfg->model.adapter!="locateanything_bpu" &&
+      (cfg->inference_fps==0 || cfg->inference_fps>=3);
+    analytics_=std::make_unique<analytics::FrameAnalytics>(policy,true);
+  }
   if(cfg->analytics.enabled) {
     FrameResult tracked=result;
     tracked.detections=pipeline::rescale_detections(tracking_candidates,scale_x,scale_y);
@@ -1031,7 +1041,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     analytics::CopyTrackIdentities(tracked.detections,result.detections);
     analytics::MarkHiddenObservations(result);
     analytics::LinkEventArchive(result,cfg->snapshot.enabled);
-  }
+  } else analytics_->Apply(result,frame.epoch,frame.stream_generation.value_or(-1));
 
   if(auto journal=std::atomic_load(&observation_journal_)){
     try{

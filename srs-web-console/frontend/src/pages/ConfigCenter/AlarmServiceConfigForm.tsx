@@ -10,6 +10,7 @@ export function AlarmServiceConfigForm({document,onSaveBatch}:{document?:ConfigD
   const initialReview=config.review as Record<string,number>|undefined
   const [review,setReview]=useState({max_attempts:initialReview?.max_attempts??3,timeout_s:initialReview?.timeout_s??120,retry_delay_s:initialReview?.retry_delay_s??30,retention_days:initialReview?.retention_days??7,max_bytes:initialReview?.max_bytes??1024**3})
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[saved,setSaved]=useState(false)
+  const [dirty,setDirty]=useState(false)
   async function save(){
     setError('');setSaved(false)
     const n=Number(port)
@@ -22,12 +23,12 @@ export function AlarmServiceConfigForm({document,onSaveBatch}:{document?:ConfigD
     setBusy(true)
     try{await onSaveBatch([{service:'alarm-service',group:'system',name:'settings',config:{host:'127.0.0.1',port:n,database,
       mongo_uri:mongo||config.mongo_uri,api_token:api||config.api_token,producer_token:producer||config.producer_token,review,evidence:{enabled:retain,retention_days:retention,max_bytes:bytes}}}]);
-      setMongo('');setApi('');setProducer('');setSaved(true)
+      setMongo('');setApi('');setProducer('');setSaved(true);setDirty(false)
     }catch{setError('配置应用未完成，请查看配置应用状态；输入仍保留')}
     finally{setBusy(false)}
   }
   const field='form-input'
-  return <section className="space-y-4" aria-label="告警微服务配置"><h2 className="text-base font-semibold text-ink">告警微服务配置</h2>
+  return <section className="space-y-4" aria-label="告警微服务配置" data-unsaved={dirty} onChange={()=>{setDirty(true);setSaved(false)}}><h2 className="text-base font-semibold text-ink">告警微服务配置</h2>
     <p>独立处理行为、告警和统计。支持异步 AI 复核；未经验证的模型输入保留人工处理。通知暂未启用。</p>
     <fieldset disabled={busy} className="space-y-3">
       <label className="block">监听端口<input className={field} type="number" min={1024} max={65535} value={port} onChange={e=>setPort(e.target.value)}/></label>
@@ -42,7 +43,7 @@ export function AlarmServiceConfigForm({document,onSaveBatch}:{document?:ConfigD
         <p className="text-sm text-ink-subtle">保存后的图片独立于识别历史。到期或达到容量时优先清理最早事件的图片，保留告警与行为记录。关闭后停止保存新截图，已有截图仍按此策略清理。仅统计的规则不保存图片，旧记录不会自动补存。</p>
       </fieldset>
       <fieldset className="space-y-3 rounded border border-line p-3"><legend>AI 审核与证据</legend><p className="text-sm">同一时间审核 1 项，告警入库不等待审核。</p>{([{key:'max_attempts',label:'最大尝试次数',min:1,max:5},{key:'timeout_s',label:'单张审核超时（秒）',min:10,max:440},{key:'retry_delay_s',label:'首次重试等待（秒）',min:1,max:300},{key:'retention_days',label:'审核图保留天数',min:1,max:365}] as const).map(f=><label key={f.key} className="block">{f.label}<input className={field} type="number" min={f.min} max={f.max} value={review[f.key]} onChange={e=>setReview({...review,[f.key]:Number(e.target.value)})}/></label>)}<label className="block">审核图容量（GiB）<input className={field} type="number" min="0.125" max="1024" step="0.125" value={review.max_bytes/1024**3} onChange={e=>setReview({...review,max_bytes:Number(e.target.value)*1024**3})}/></label></fieldset>
-      <p className="text-sm text-ink-subtle">敏感参数加密保存，不回显。监听限本机；服务确认新版本后才算应用完成。</p>
+      <p className="text-sm text-ink-subtle">敏感参数加密保存，不回显。保存后会重建告警服务的连接和后台任务，短暂暂停告警消费，随后恢复；不重启录像或推流。服务确认新版本后才算应用完成。</p>
       <button className="btn-primary" onClick={()=>void save()}>{busy?'正在应用…':'保存并应用'}</button>
     </fieldset>{error&&<p role="alert">{error}</p>}{saved&&<p role="status">本次配置操作已完成，请以页面上方服务状态为准。</p>}
   </section>

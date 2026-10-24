@@ -11,9 +11,11 @@ export function IngestConfigPanel({ config, onSave }: {
   const [timeout, setConnectTimeout] = useState(saved?.connectTimeoutSec ?? 10)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [loadError, setLoadError] = useState(false)
+  const dirty = max !== (saved?.maxPullChannels ?? 4) || timeout !== (saved?.connectTimeoutSec ?? 10)
   useEffect(() => {
     const abort = new AbortController()
-    ingestService.capabilities(abort.signal).then(setCaps).catch(() => {})
+    ingestService.capabilities(abort.signal).then(setCaps).catch(() => { if (!abort.signal.aborted) setLoadError(true) })
     return () => abort.abort()
   }, [])
   useEffect(() => { setMax(saved?.maxPullChannels ?? 4); setConnectTimeout(saved?.connectTimeoutSec ?? 10) }, [saved?.maxPullChannels, saved?.connectTimeoutSec])
@@ -26,9 +28,9 @@ export function IngestConfigPanel({ config, onSave }: {
     catch { setMessage('保存失败，请重试') }
     finally { setBusy(false) }
   }
-  return <section className="rounded-panel border border-line bg-surface p-4">
+  return <section data-unsaved={dirty} className="rounded-panel border border-line bg-surface p-4">
     <h3 className="font-medium">摄像头接入能力</h3>
-    {!caps ? <p className="text-xs">正在查询接入服务…</p> : <ul className="my-3 text-sm">
+    {loadError ? <p role="alert" className="text-xs text-danger">接入服务状态暂时不可用，请检查服务连接后重新进入本页。</p> : !caps ? <p className="text-xs">正在查询接入服务…</p> : <ul className="my-3 text-sm">
       {(['rtmp','srt','webrtc','rtsp'] as const).map(p => <li key={p}>{p.toUpperCase()} · {caps[p].enabled ? '已启用，H.264 / H.265' : caps[p].reason || '尚未启用'}</li>)}
     </ul>}
     <p className="text-xs text-ink-faint">SRT 接入端口：10080 / UDP。监听端口、加密及防火墙由部署配置管理，变更需要维护窗口。WebRTC 输入使用 WHIP 和专用发布凭据；不拉取任意网页。拉流首期只接入视频。</p>

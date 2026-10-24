@@ -5,7 +5,7 @@ import type {AlarmTrigger,TriggerInput} from '@/features/alarmTriggers'
 /** One AI channel's current input, model labels and tracking state, as confirmed by the console. */
 export interface AlarmSource {
  channel_id:string;channel_name:string;input_stream_id:string;input_name:string
- label_map_version:string;geometry_revision:string;tracking_available:boolean
+ label_map_version:string;geometry_revision:string;tracking_available:boolean;detection_available?:boolean
  labels:{class_id:number;label_id:string;name:string;description:string}[]
 }
 export interface TriggerApplication {state:'applied'|'pending'|'unavailable';desired_revision?:string|null;applied_revision?:string|null;reason?:string}

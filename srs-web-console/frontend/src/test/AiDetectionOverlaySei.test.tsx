@@ -309,3 +309,50 @@ describe('AiDetectionOverlay 叠框模式（设计 §8.2：逐帧 / 近似 / 不
     expect(onMode).not.toHaveBeenCalled()
   })
 })
+
+describe("metadata freshness", () => {
+  it('repeated timestamp cannot renew expiry; a newer result resumes drawing', () => {
+    let now = 1000
+    const callbacks = new Map<number, FrameRequestCallback>()
+    let next = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { callbacks.set(++next, cb); return next })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => callbacks.delete(id))
+    const strokeRect = vi.fn()
+    const context = { setTransform: vi.fn(), clearRect: vi.fn(), strokeRect,
+      measureText: () => ({ width: 10 }), fillRect: vi.fn(), fillText: vi.fn(), globalAlpha: 1 }
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D)
+    try {
+      const v = makeVideo()
+      vi.spyOn(v.el, 'getBoundingClientRect').mockReturnValue({ width: 400, height: 200 } as DOMRect)
+      let stamp = 1000000000
+      render(<AiDetectionOverlay video={v.el} enabled getSeiForFrame={() => ({
+        ptsNs: stamp, displayAgeMs: 200,
+        detections: [{ class_id: 0, class_name: 'face', confidence: 1, bbox: { x: 1, y: 2, w: 3, h: 4 } }],
+      })} />)
+      const draw = () => { const pending = [...callbacks]; callbacks.clear(); pending.forEach(([, cb]) => cb(now)) }
+      v.present(9000)
+      draw()
+      expect(strokeRect).toHaveBeenCalledTimes(1)
+      now = 1050
+      v.present(9001)
+      now = 1101
+      v.present(9002)
+      draw()
+      expect(strokeRect).toHaveBeenCalledTimes(1)
+      expect(context.clearRect).toHaveBeenCalledTimes(2)
+      now = 1200
+      v.present(9003)
+      draw()
+      expect(strokeRect).toHaveBeenCalledTimes(1)
+      stamp += 1000000000
+      v.present(9004)
+      draw()
+      expect(strokeRect).toHaveBeenCalledTimes(2)
+    } finally {
+      cleanup()
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    }
+  })
+})

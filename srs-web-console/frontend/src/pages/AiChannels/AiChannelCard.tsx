@@ -4,12 +4,14 @@ import { useState } from 'react'
 import { MoreVertical, Play, Square, Eye, Pencil, Trash2 } from 'lucide-react'
 import { AiChannelStatusBadge } from '@/components/common/AiChannelStatusBadge'
 import { getAiModelDisplayName, type AiChannel } from '@/types/aiChannel'
+import { aiPresentationState, type SourceAvailability } from '@/features/aiSourceState'
 import { formatCodec, isH265 } from '@/utils/codec'
 
 interface Props {
   channel: AiChannel
   disabled: boolean
   sourceChannelName?: string
+  sourceAvailability?: SourceAvailability
   onStart: () => void
   onStop: () => void
   onEdit: () => void
@@ -18,13 +20,16 @@ interface Props {
   onPreview: () => void
 }
 
-export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, onStop, onEdit, onDelete, onViewResult, onPreview }: Props) {
+export function AiChannelCard({ channel, disabled, sourceChannelName, sourceAvailability = 'unknown', onStart, onStop, onEdit, onDelete, onViewResult, onPreview }: Props) {
   const [eventsOpen,setEventsOpen]=useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const { config, stats } = channel
-  const canStart = !config.deletion_pending && (channel.state === 'idle' || channel.state === 'error')
+  const presentation = aiPresentationState(channel, disabled ? 'unknown' : sourceAvailability)
+  const waiting = presentation === 'waiting-source'
+  const stopped = presentation === 'idle'
+  const canStart = !config.deletion_pending && (channel.state === 'idle' || channel.state === 'error') && !waiting
   // 出错通道会按退避反复重试；停止是终止重试的唯一入口
-  const canStop = channel.state === 'running' || channel.state === 'reconnecting' ||
+  const canStop = channel.state === 'running' || channel.state === 'starting' || channel.state === 'reconnecting' ||
     (channel.state === 'error' && !config.manually_stopped)
   const receiving = channel.state === 'running'
   const slowOpenVocabulary = ['locateanything_bpu', 'locateanything_trt'].includes(config.model.adapter)
@@ -48,7 +53,8 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
             <p className="truncate text-base font-semibold text-ink">{channel.name}</p>
             {config.deletion_pending
               ? <span className="text-xs font-medium text-danger">删除待完成</span>
-              : <AiChannelStatusBadge state={channel.state} />}
+              : waiting ? <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">等待源视频</span>
+              : <AiChannelStatusBadge state={presentation} unreachable={disabled} />}
             {!config.deletion_pending && config.manually_stopped && (channel.state === 'idle' || channel.state === 'error') && (
               <span className="text-xs text-ink-subtle" data-testid="ai-card-manual-stop">手动停止，服务重启后保持</span>
             )}
@@ -101,11 +107,15 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
         </div>
       </div>
 
+      {receiving&&stats.tracking_capability?.status==='detection_only'&&<p className="mt-3 rounded-base bg-amber-50 p-3 text-sm text-amber-900" role="status">
+        {stats.tracking_capability.reason==='tracking_disabled'?'仅检测：目标跟踪未启用或当前模型不支持。':'仅检测：正在确认采样速度，或实际采样不足以可靠跟踪。'}
+        计数、侵入、穿过及持续停留暂停；已有配置和历史保留。无持续时间的出现、区内检出和接近带检出仍可用。
+      </p>}
       <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm text-ink-subtle">
         <span>模型：{getAiModelDisplayName(config.model)}</span>
         <span>{slowOpenVocabulary
           ? `采集：每 ${(1 / config.inference_fps).toFixed(1)} 秒一次（${receiving && stats.inference_fps_actual > 0 ? `实测约 ${(1 / stats.inference_fps_actual).toFixed(1)} 秒` : '等待识别结果'}）`
-          : `推理：${config.inference_fps > 0 ? `${config.inference_fps} FPS` : '跟随源流'}（${receiving ? `实测 ${stats.inference_fps_actual?.toFixed?.(1) ?? '0.0'}` : '等待视频恢复'}）`}</span>
+          : `推理：${config.inference_fps > 0 ? `${config.inference_fps} FPS` : '跟随源流'}（${receiving ? `实测 ${stats.inference_fps_actual?.toFixed?.(1) ?? '0.0'}` : stopped ? '已停止' : waiting ? '等待源视频' : '等待处理恢复'}）`}</span>
         <span>处理耗时 p95：{receiving ? `${stats.timing?.total?.p95_ms?.toFixed?.(1) ?? '0.0'}ms` : '—'}</span>
         {/* 源 30fps、推理 15fps 时每次天然跳 1 帧，这是按设定帧率抽帧，不是
             丢帧；过载丢帧才是推理跟不上源。旧版 ai-service 没有拆分字段，回退
@@ -122,7 +132,13 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
         </span>
       </div>
 
-      {(channel.state === 'error' || channel.state === 'reconnecting' || slowOpenVocabulary || ['yoloe_bpu', 'yoloe_pt'].includes(config.model.adapter)) && stats.last_error && (
+      {waiting && <div role="status" className="mt-3 rounded-base border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <p className="font-medium">{sourceAvailability === 'waiting-video' ? '源连接已建立，尚未收到有效视频' : '尚未收到源视频'}</p>
+        <p className="mt-1">请检查相机或 OBS 是否正在推流。系统正在自动重试，源恢复后会重新尝试识别，无需重复启动。</p>
+        {channel.stats.last_error && <details className="mt-2 text-xs"><summary className="cursor-pointer py-2">诊断详情</summary>{channel.stats.last_error}</details>}
+      </div>}
+
+      {!waiting && !stopped && (channel.state === 'error'  || channel.state === 'reconnecting' || slowOpenVocabulary || ['yoloe_bpu', 'yoloe_pt'].includes(config.model.adapter)) && stats.last_error && (
         <p className="mt-3 rounded-base border border-danger-200 bg-danger-50 px-3 py-2 text-sm text-danger-700"
            data-testid="ai-card-last-error">
           ⚠ {stats.last_error}
@@ -130,7 +146,7 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
       )}
 
       {(stats.demux_dropped_frames ?? 0) > 0 && (
-        <p className="mt-3 rounded-base border border-warning-200 bg-warning-50 px-3 py-2 text-sm text-warning-700"
+        <p className="mt-3 rounded-base border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
            data-testid="ai-card-demux">
           ⚠ H.265 源输入异常：已丢弃 {stats.demux_dropped_frames} 帧
           {(stats.demux_resyncs ?? 0) > 0 ? `、重同步 ${stats.demux_resyncs} 次` : ''}（损坏或等待关键帧），请检查网络与相机
@@ -138,14 +154,14 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
       )}
 
       {stats.source_bframes && (
-        <p className="mt-3 rounded-base border border-warning-200 bg-warning-50 px-3 py-2 text-sm text-warning-700"
+        <p className="mt-3 rounded-base border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
            data-testid="ai-card-bframes">
           ⚠ 源流含 B 帧：WebRTC 播放可能卡顿或花屏，建议在相机上关闭 B 帧
         </p>
       )}
 
       {stats.under_capacity && (
-        <p className="mt-3 rounded-base border border-warning-200 bg-warning-50 px-3 py-2 text-sm text-warning-700"
+        <p className="mt-3 rounded-base border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
            data-testid="ai-card-under-capacity">
           ⚠ 处理速度未达到目标：实测 {stats.inference_fps_actual.toFixed(slowOpenVocabulary ? 3 : 1)} / 目标 {stats.inference_fps_target?.toFixed(slowOpenVocabulary ? 3 : 1)} FPS。
           请检查解码、帧映射和推理耗时；可降低推理帧率或减少并行通道数。
@@ -174,10 +190,10 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
         const recentError = pub?.last_error_at != null && nowS - pub.last_error_at < RECENT_ERROR_WINDOW_S
         const degraded = !receiving || !pub || !pub.running || (recentError || pub.reconnecting)
         return (
-          <p className={`mt-3 text-sm ${degraded ? 'text-danger' : 'text-ink-faint'}`}
+          <p className={`mt-3 text-sm ${degraded && !waiting && !stopped ? 'text-danger' : 'text-ink-faint'}`}
              title={degraded && pub?.last_error ? `最近一次错误：${pub.last_error}` : undefined}>
             推流 {config.publish.effective_target_url.split('/').slice(-2).join('/')} ·{' '}
-            {!receiving ? 'SEI 等待源视频恢复' : pub && !pub.running
+            {waiting ? '等待源视频，暂未输出识别流' : stopped ? '识别已停止' : !receiving ? 'SEI 尚未输出，请查看通道状态和错误原因' : pub && !pub.running
               ? 'SEI ⚠ 输出已停止，请检查原因后重启通道' : degraded ? 'SEI ⚠ 推流异常，重连中' : 'SEI ✓'}
             {pub && !pub.running && pub.last_error?.includes('输出缓存容量不足') && (
               <span className="mt-1 block">等待识别结果所需的缓存超过设备容量，请降低源码率或更换模型后重启。</span>
@@ -194,8 +210,8 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, onStart, o
         <button
           type="button"
           onClick={onPreview}
-          disabled={!config.publish.enabled}
-          title={!config.publish.enabled ? '该通道未开启推流' : undefined}
+          disabled={disabled || !config.publish.enabled || !receiving}
+          title={!config.publish.enabled ? '该通道未开启推流' : !receiving ? '识别流尚未就绪' : undefined}
           className="rounded-base border border-line px-3.5 py-2 text-sm text-ink-subtle hover:bg-surface-page disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Play size={14} className="mr-1 inline" aria-hidden />播放衍生流

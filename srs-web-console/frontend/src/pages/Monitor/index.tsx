@@ -6,7 +6,7 @@ import { Toaster } from '@/components/ui/Toaster'
 import { toast } from '@/store/toast'
 import { useMonitorStore } from '@/store/monitor'
 import { useSettingsStore } from '@/store/settings'
-import { LAYOUT_CAPACITY, MONITOR_LAYOUTS, gridClassFor, type MonitorLayout } from '@/utils/monitorLayout'
+import { LAYOUT_CAPACITY, MONITOR_LAYOUTS, gridClassFor } from '@/utils/monitorLayout'
 import { useMonitorCatalog } from './useMonitorCatalog'
 import { isH265 } from '@/utils/codec'
 import {ArmingLauncher} from '@/pages/AlarmCenter/ArmingLauncher'
@@ -19,16 +19,16 @@ export default function MonitorPage() {
   const catalogue = useMonitorCatalog()
   const { allChannels, outputIds, variants, ready, error } = catalogue
   const state = useMonitorStore()
-  const { layout, slots, page, mode, hardLimit, focusedChannelId } = state
+  const { layout, slots, page, hardLimit, focusedChannelId } = state
   const { settings, fetchSettings } = useSettingsStore()
   const [search, setSearch] = useState('')
-  const [arming,setArming]=useState<{channel:ChannelWithStatus;video:HTMLVideoElement}|null>(null)
+  const [arming,setArming]=useState<{channel:ChannelWithStatus;processorId:string;outputName:string;video:HTMLVideoElement}|null>(null)
   const zoneChannelId=arming?.channel.id??null
   const outputs = state.selectedOutputs
   const [moving, setMoving] = useState<number | null>(null)
   const dragFrom = useRef<number | null>(null)
   const softWarned = useRef(false)
-  const defaults = useMemo(() => allChannels.filter(c => !outputIds.has(`${c.upstream.app}/${c.upstream.stream}`)).map(c => c.id), [allChannels, outputIds])
+  const defaults = useMemo(() => allChannels.map(c => c.id), [allChannels])
   const byId = useMemo(() => new Map(allChannels.map(c => [c.id, c])), [allChannels])
   useEffect(() => { void fetchSettings() }, [fetchSettings])
   useEffect(() => { if (settings) state.setHardLimit(settings.monitorHardLimit) }, [settings, state.setHardLimit])
@@ -64,9 +64,8 @@ export default function MonitorPage() {
   const used = slots.filter(Boolean).length
   const filtered = allChannels.filter(c => `${c.name} ${c.upstream.app}/${c.upstream.stream}`.toLowerCase().includes(search.toLowerCase()))
 
-  function arrange(auto = false) {
+  function arrange() {
     if (!ready) { toast.info('接入通道尚未加载完成，请稍后重试'); return }
-    if (auto) useMonitorStore.setState({ mode: 'auto' })
     state.arrange(defaults)
     setMoving(null)
   }
@@ -81,13 +80,13 @@ export default function MonitorPage() {
     if (!c) return <div className="p-4 text-center text-sm text-slate-300">通道暂不可用，位置已保留</div>
     if (!c.status.online) return <div className="p-4 text-center text-sm text-slate-300">{c.name} · 离线</div>
     if (!settings) return <div className="p-4 text-center text-sm text-slate-300">正在读取监看上限，请稍候</div>
-    const direct=byId.get(id)
-    const parents=allChannels.filter(source=>variants.get(source.id)?.some(output=>output.id===c.id))
-    const original=direct&&!outputIds.has(`${direct.upstream.app}/${direct.upstream.stream}`)?direct:parents.length===1?parents[0]:undefined
-    const zoneSource=original&&original.registered!==false&&!outputIds.has(`${original.upstream.app}/${original.upstream.stream}`)?{id:original.id,updatedAt:original.updatedAt,createdAt:original.createdAt,inputGeneration:original.inputGeneration}:undefined
+    const processorId=outputIds.get(`${c.upstream.app}/${c.upstream.stream}`)
+    const parents=processorId?allChannels.filter(source=>variants.get(source.id)?.some(output=>output.id===c.id)):[]
+    const original=parents.length===1?parents[0]:undefined
+    const zoneSource=processorId&&original&&original.registered!==false?{id:original.id,processorId,updatedAt:original.updatedAt,createdAt:original.createdAt,inputGeneration:original.inputGeneration}:undefined
     return <VideoPlayer key={c.id} title="" protocols={c.downstream.protocols} primary={c.downstream.primary}
       savedZoneSource={zoneSource} compactZones={focusedChannelId!==id}
-      onArming={zoneSource&&original?video=>setArming({channel:original,video}):undefined}
+      onArming={zoneSource&&original&&processorId?video=>setArming({channel:original,processorId,outputName:c.name,video}):undefined}
       stream={{ host: window.location.hostname, app: c.upstream.app, stream: c.upstream.stream }}
       muted allowPanorama className="h-full w-full" aiChannelId={outputIds.get(`${c.upstream.app}/${c.upstream.stream}`)}
       videoInfo={{ codec: c.status.videoCodec, level: c.status.videoLevel, width: c.status.videoWidth, height: c.status.videoHeight }}
@@ -123,21 +122,18 @@ export default function MonitorPage() {
           </button></li>
         })}
       </ul>{!filtered.length && <p className="p-3 text-xs text-ink-subtle">{ready ? '没有匹配的通道' : '正在加载通道…'}</p>}</div>
-      <p className="border-t border-line p-3 text-xs leading-5 text-ink-subtle">按接入顺序排列，AI 输出可手动加入。已加入的通道点击定位，移除请使用画面右上角。</p>
+      <p className="border-t border-line p-3 text-xs leading-5 text-ink-subtle">恢复通道顺序会按本列表顺序安排全部通道，超出一页自动分页。已加入的通道点击定位，移除请使用画面右上角。</p>
     </aside>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 id="monitor-title" className="page-title">实时监看</h1>
         {focusedChannelId ? <button className={button} disabled={!!zoneChannelId} onClick={state.exitFocus} data-testid="focus-back"><ArrowLeft size={14} className="mr-1 inline" />返回宫格</button> :
           <div className="flex flex-wrap items-center gap-2">
-            <select aria-label="监看布局" className={button} value={mode === 'auto' ? 'auto' : layout} onChange={e => {
-              setMoving(null)
-              if (e.target.value === 'auto') arrange(true)
-              else state.setLayout(e.target.value as MonitorLayout)
-            }}>
-              <option value="auto" disabled={!ready}>自动 · {capacity} 宫格</option>
-              {MONITOR_LAYOUTS.map(l => <option key={l} value={l}>{LAYOUT_CAPACITY[l]} 宫格</option>)}
-            </select>
+            <div role="group" aria-label="监看布局" className="flex items-center gap-1 rounded-base border border-line bg-surface p-1">
+              {MONITOR_LAYOUTS.map(l => <button key={l} type="button" aria-label={`${LAYOUT_CAPACITY[l]} 宫格`} aria-pressed={layout === l}
+                className={`min-h-11 min-w-11 rounded px-2 text-sm font-medium transition-colors ${layout === l ? 'bg-primary text-white' : 'text-ink-subtle hover:bg-primary-50'}`}
+                onClick={() => { setMoving(null); state.setLayout(l) }}>{LAYOUT_CAPACITY[l]}</button>)}
+            </div>
             <button className={button} disabled={!ready} onClick={() => arrange()}>恢复通道顺序</button>
             <button className={button} onClick={() => { state.clear(); setMoving(null) }}>清空监看</button>
           </div>}
@@ -180,7 +176,7 @@ export default function MonitorPage() {
       </div>}
       <p className="text-xs leading-5 text-ink-subtle">仅播放当前页；放大时释放其他连接。双击画面放大，拖动手柄交换位置。布局保存在当前浏览器，新增通道不会挤动已有画面。</p>
     </div>
-    {arming&&<ArmingLauncher channel={arming.channel} video={arming.video} onClose={()=>setArming(null)} onSaved={()=>{toast.success("布防已保存，应用状态将在配置同步后更新");window.dispatchEvent(new Event("ainvr-arming-saved"))}}/>}
+    {arming&&<ArmingLauncher outputName={arming.outputName} processorId={arming.processorId} channel={arming.channel} video={arming.video} onClose={()=>setArming(null)} onSaved={()=>{toast.success("布防已保存，应用状态将在配置同步后更新");window.dispatchEvent(new Event("ainvr-arming-saved"))}}/>}
     <Toaster />
   </section>
 }

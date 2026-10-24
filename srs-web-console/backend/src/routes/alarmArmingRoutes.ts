@@ -46,7 +46,11 @@ export async function alarmArmingRoutes(app:FastifyInstance,options:Options){
     const r=request(req,'definition','expected_version');
     return apply(await options.store!.saveDefinition(r.input,r.version,r.actor,r.key,options.catalog));
   });
-  app.get('/alarms/arming/:id',async req=>({arming:await options.store!.readArming(source(req))}));
+  app.get('/alarms/arming/:id',async req=>{
+    const processorId=(req.query as {processor_id?:unknown}).processor_id;
+    if(processorId!==undefined&&!identifier(processorId))throw new AlarmConfigError('invalid_source','处理器编号无效');
+    return {arming:await options.store!.readArming(source(req),processorId as string|undefined)};
+  });
   app.post('/alarms/arming/:id',async req=>{
     const r=request(req,'arming','expected_revision');
     if(r.input.source_id!==source(req))throw new AlarmConfigError('invalid_source','布防来源不一致');

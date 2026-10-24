@@ -53,6 +53,7 @@ export function SystemTimeForm() {
   const offsetRef = useRef(0)
   const [, setTick] = useState(0)
   const [manual, setManual] = useState('')
+  const [manualDirty, setManualDirty] = useState(false)
   const [manualError, setManualError] = useState<string | null>(null)
   const [pending, setPending] = useState<{ target: 'computer' | number; warning: string } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -118,6 +119,7 @@ export function SystemTimeForm() {
     try {
       const r = await systemTimeService.setTime(target)
       apply(r)
+      setManualDirty(false)
       const message = r.restarted.length ? `已校准，${r.restarted.join('、')}正在重启` : '已校准'
       setResult(message)
       toast.success(message)
@@ -156,7 +158,7 @@ export function SystemTimeForm() {
   const state = syncState(status)
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-unsaved={manualDirty || servers !== status.ntp_servers.join(', ')}>
       <section className="ui-panel space-y-4 p-4 sm:p-5">
         <div>
           <h3 className="text-sm font-semibold text-ink">日期和时间</h3>
@@ -190,7 +192,7 @@ export function SystemTimeForm() {
           <label className="flex min-w-[240px] flex-1 flex-col gap-1 text-xs text-ink-subtle">
             或手动设置
             <input type="datetime-local" step={1} aria-label="设备时间" value={manual} disabled={busy}
-              onChange={e => { setManual(e.target.value); setManualError(null) }}
+              onChange={e => { setManual(e.target.value); setManualDirty(true); setManualError(null) }}
               className="rounded-base border border-line bg-surface px-3 py-2.5 text-base text-ink" />
           </label>
           <button type="button" className="btn-secondary py-2.5" disabled={busy} onClick={askManual}>设置时间</button>

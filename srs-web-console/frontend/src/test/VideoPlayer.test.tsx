@@ -241,8 +241,7 @@ describe('VideoPlayer · AI 识别框叠加（aiChannelId）', () => {
     expect(aiChannelService.resultHistory).not.toHaveBeenCalled()
   })
 
-  it('传了 aiChannelId 且协议列表含 webrtc：强制 WebRTC 优先，默认开启叠加层，隐藏识别框仍保留常显轨迹', async () => {
-    const user = userEvent.setup()
+  it('传了 aiChannelId 且协议列表含 webrtc：强制 WebRTC 优先，识别框与轨迹常显且没有隐藏开关', async () => {
     render(
       <VideoPlayer
         {...baseProps}
@@ -254,15 +253,13 @@ describe('VideoPlayer · AI 识别框叠加（aiChannelId）', () => {
 
     // 强制 WebRTC 优先（即使 primary 是 flv）
     expect(screen.getByText(/正在连接 WebRTC/)).toBeInTheDocument()
-    expect(screen.getByTestId('btn-toggle-ai-overlay')).toBeInTheDocument()
+    expect(screen.queryByTestId('btn-toggle-ai-overlay')).not.toBeInTheDocument()
     // 默认开启叠加层 canvas
     expect(screen.getByTestId('ai-detection-overlay')).toBeInTheDocument()
     // 不再拉历史结果轮询（识别框只走逐帧 SEI 路径）
     await Promise.resolve()
     expect(aiChannelService.resultHistory).not.toHaveBeenCalled()
 
-    await user.click(screen.getByTestId('btn-toggle-ai-overlay'))
-    expect(screen.getByTestId('btn-toggle-ai-overlay')).toHaveAttribute('title','显示识别框')
     expect(screen.getByTestId('ai-detection-overlay')).toBeInTheDocument()
     expect(screen.queryByTestId('btn-toggle-trails')).not.toBeInTheDocument()
   })
@@ -277,22 +274,7 @@ describe('VideoPlayer · AI 识别框叠加（aiChannelId）', () => {
     })
   })
 
-  it('识别框开关点击不冒泡——宫格瓦片外层的"点击进聚焦"容器不应被连带触发', async () => {
-    const user = userEvent.setup()
-    const onTileClick = vi.fn()
-    render(
-      <div onClick={onTileClick}>
-        <VideoPlayer
-          {...baseProps}
-          protocols={['flv', 'webrtc']}
-          primary="flv"
-          aiChannelId="cam01"
-        />
-      </div>,
-    )
-    await user.click(screen.getByTestId('btn-toggle-ai-overlay'))
-    expect(onTileClick).not.toHaveBeenCalled()
-  })
+
 })
 
 describe('VideoPlayer · WebRTC 延迟/冻屏看门狗自动重连', () => {

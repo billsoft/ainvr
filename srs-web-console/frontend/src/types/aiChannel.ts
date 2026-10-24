@@ -238,6 +238,7 @@ export interface AiPublishStats {
 }
 
 export interface AiChannelStats {
+  tracking_capability?: {status:string;reason?:string}
   analytics_storage?: {pending:number;delivered:number;delivery_failures:number;stage_failures:number}
   state: AiChannelState
   elapsed_seconds: number

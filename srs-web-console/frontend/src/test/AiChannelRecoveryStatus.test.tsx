@@ -75,9 +75,9 @@ describe('AI input recovery status', () => {
     render(<AiChannelCard channel={channel} disabled={false}
       onStart={vi.fn()} onStop={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()}
       onViewResult={vi.fn()} onPreview={vi.fn()} />)
-    expect(screen.getByText(/等待视频恢复/)).toBeInTheDocument()
+    expect(screen.getByText(/等待处理恢复/)).toBeInTheDocument()
     expect(screen.getByTestId('ai-card-last-error')).toHaveTextContent('实际 SPS 无效或截断')
-    expect(screen.getByText(/SEI 等待源视频恢复/)).toBeInTheDocument()
+    expect(screen.getByText(/SEI 尚未输出/)).toBeInTheDocument()
     expect(screen.queryByText(/14\.8|50\.6|SEI ✓/)).not.toBeInTheDocument()
   })
 })

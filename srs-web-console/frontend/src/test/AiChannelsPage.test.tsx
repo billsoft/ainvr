@@ -5,6 +5,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { aiChannelService, createMockAiChannelService } from '@/api/aiChannelService'
 import { useAiChannelsStore } from '@/store/aiChannels'
 import type { AiChannel } from '@/types/aiChannel'
+import { channelService } from '@/api/channelService'
+import type { ChannelWithStatus } from '@/types/channel'
 
 // AiChannelsPage 消费的是模块级单例 useAiChannelsStore/aiChannelService，
 // 不注入 —— 直接用真实单例，每个用例前重置状态与底层 mock service，
@@ -69,6 +71,24 @@ beforeEach(() => {
 })
 
 describe('AiChannelsPage', () => {
+  it('缺源卡片和状态筛选一致，独立查询不受接入管理搜索影响', async () => {
+    const input = makeChannel('door', { state: 'error' })
+    input.stats.last_error = '初始化失败: Open media: Input/output error'
+    reseed([input])
+    const list = vi.spyOn(channelService, 'list').mockResolvedValue([{
+      name: '后门', upstream: { app: 'live', stream: 'door' },
+      status: { online: false, srsOnline: true, inputState: 'waiting-source' },
+    } as ChannelWithStatus])
+    try {
+      await renderPage()
+      expect(await screen.findByRole('status')).toHaveTextContent('系统正在自动重试')
+      expect(list).toHaveBeenCalledWith()
+      await userEvent.selectOptions(screen.getAllByRole('combobox')[0]!, 'error')
+      expect(screen.queryByText('door')).not.toBeInTheDocument()
+      await userEvent.selectOptions(screen.getAllByRole('combobox')[0]!, 'waiting-source')
+      expect(screen.getByText('door')).toBeInTheDocument()
+    } finally { list.mockRestore() }
+  })
   it('空列表展示 EmptyState 与创建入口', async () => {
     await renderPage()
     expect(await screen.findByText('还没有 AI 通道')).toBeInTheDocument()
@@ -110,9 +130,9 @@ describe('AiChannelsPage', () => {
       makeChannel('c4', { state: 'error' }),
     ])
     await renderPage()
-    expect(await screen.findAllByText('已停止')).toHaveLength(1) // 只有卡片里的，统计区没有"已停止"
+    expect(await screen.findByText('已停止', { selector: 'span' })).toBeInTheDocument()
     expect(screen.getAllByText('运行中').length).toBeGreaterThan(0)
-    expect(screen.getByText('启动中')).toBeInTheDocument()
+    expect(screen.getByText('启动中', { selector: 'span' })).toBeInTheDocument()
     expect(screen.getByText('错误')).toBeInTheDocument()
   })
 

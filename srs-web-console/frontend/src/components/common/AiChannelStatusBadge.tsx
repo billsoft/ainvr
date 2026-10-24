@@ -8,11 +8,11 @@ import type { AiChannelState } from '@/types/aiChannel'
 type Bucket = 'running' | 'stopped' | 'transitioning' | 'error' | 'unreachable'
 
 const BUCKET_STYLE: Record<Bucket, { label: string; className: string }> = {
-  running: { label: '运行中', className: 'bg-success-100 text-success-700' },
-  stopped: { label: '已停止', className: 'bg-ink-100 text-ink-500' },
-  transitioning: { label: '', className: 'bg-info-100 text-info-700' }, // label 动态填状态文字
-  error: { label: '错误', className: 'bg-danger-100 text-danger-700' },
-  unreachable: { label: '服务不可达', className: 'bg-ink-100 text-ink-400' },
+  running: { label: '运行中', className: 'bg-success-50 text-success-700' },
+  stopped: { label: '已停止', className: 'bg-surface-page text-ink-subtle' },
+  transitioning: { label: '', className: 'bg-primary-50 text-primary-700' }, // label 动态填状态文字
+  error: { label: '错误', className: 'bg-danger-50 text-danger-700' },
+  unreachable: { label: '服务不可达', className: 'bg-surface-page text-ink-faint' },
 }
 
 function bucketOf(state: AiChannelState): Bucket {

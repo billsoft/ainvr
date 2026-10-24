@@ -37,7 +37,7 @@ export class TrackTrailBuffer {
   private readonly maxPoints: number
   private readonly maxGapSeconds: number
   constructor(
-    // Last 5 s per target; 120 points keep all of it up to 24 detections per second.
+    // Keep five seconds independently of display sampling density.
     durationSeconds = 5,
     maxTracks = 128,
     maxPoints = 120,
@@ -88,7 +88,7 @@ export class TrackTrailBuffer {
       // The trail follows the centre of the drawn box.
       points.push({ x: x + w/2, y: y + h/2, ptsNs, ...(detection.predicted ? { predicted: true } : {}) })
       this.tracks.delete(id)
-      this.tracks.set(id, points.slice(-this.maxPoints))
+      this.tracks.set(id, sampleTrail(points, Math.max(512, this.maxPoints)))
       while (this.tracks.size > this.maxTracks) this.tracks.delete(this.tracks.keys().next().value!)
     }
     // The target is gone (left, lost beyond the prediction time, or tracking reset).
@@ -96,6 +96,21 @@ export class TrackTrailBuffer {
     return this.snapshot()
   }
   private snapshot(): TrackTrail[] {
-    return [...this.tracks].map(([id, points]) => ({id, points: points.map(p => ({...p}))}))
+    return [...this.tracks].map(([id, points]) => ({id, points: sampleTrail(points, this.maxPoints).map(p => ({...p}))}))
   }
+}
+
+/** Display-only reduction; retain both time endpoints. A skipped prediction
+ * marks its replacement segment dashed, never as wholly real observation. */
+function sampleTrail(points: TrailPoint[], limit: number): TrailPoint[] {
+  if (points.length <= limit) return points
+  const result: TrailPoint[] = [points[0]!]
+  let previous = 0
+  for (let i = 1; i < limit; i++) {
+    const index = Math.round(i * (points.length - 1) / (limit - 1))
+    const predicted = points.slice(previous, index + 1).some(p => p.predicted)
+    result.push({ ...points[index]!, ...(predicted ? { predicted: true } : {}) })
+    previous = index
+  }
+  return result
 }

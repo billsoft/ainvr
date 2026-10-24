@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AiDetection } from '@/types/aiChannel'
 import { drawDetections } from './detectionDrawing'
 import { reportOverlayDiag } from '@/api/diagService'
@@ -46,6 +46,9 @@ export function AiDetectionOverlay({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const frameRef = useRef<DisplayResult | null>(null)
   const expiresRef = useRef(0)
+  const lastPtsRef = useRef<number | null>(null)
+  const startedRef = useRef(0)
+  const [staleSeconds, setStaleSeconds] = useState(0)
   const trailBuffer = useRef(new TrackTrailBuffer())
   const trails = useRef<TrackTrail[]>([])
   // Trails are history:drawn whether or not the current frame has its own result,
@@ -59,10 +62,22 @@ export function AiDetectionOverlay({
     frameRef.current = null
     modeSeenRef.current = null
     expiresRef.current = 0
+    lastPtsRef.current = null
+    startedRef.current = performance.now()
+    setStaleSeconds(0)
     trailBuffer.current.clear()
     trails.current = []
     lastResultRef.current = Number.NEGATIVE_INFINITY
   }, [resetKey, video, enabled, channelId])
+
+  useEffect(() => {
+    if (!enabled || !video || (!getSeiForFrame && !getSeiApprox)) return
+    const timer = window.setInterval(() => {
+      const age = performance.now() - (Number.isFinite(lastResultRef.current) ? lastResultRef.current : startedRef.current)
+      setStaleSeconds(age >= 3000 ? Math.floor(age / 1000) : 0)
+    }, 500)
+    return () => window.clearInterval(timer)
+  }, [enabled, video, getSeiForFrame, getSeiApprox, resetKey])
 
   useEffect(() => {
     countersRef.current = { displayed: 0, matched: 0, held: 0, missing: 0, drawn: 0 }
@@ -84,12 +99,20 @@ export function AiDetectionOverlay({
     let cancelled = false
     let handle = 0
     const apply = (hit: DisplayResult | null, mode: 'exact' | 'approx') => {
-      frameRef.current = hit
-      if (hit) {
-        trails.current = trailBuffer.current.update(hit.ptsNs, hit.detections)
-        lastResultRef.current = performance.now()
+      const nowMono = performance.now()
+      const pts = hit?.ptsNs
+      const hasPts = typeof pts === 'number' && Number.isFinite(pts)
+      // Repeated SEI or out-of-order metadata must not renew a stale box/trail.
+      const fresh = !!hit && (!hasPts || lastPtsRef.current === null || pts > lastPtsRef.current)
+      if (fresh) {
+        if (hasPts) lastPtsRef.current = pts
+        trails.current = trailBuffer.current.update(hit!.ptsNs, hit!.detections)
+        lastResultRef.current = nowMono
+        expiresRef.current = nowMono + Math.max(0, 300 - (hit!.displayAgeMs ?? 0))
       }
-      expiresRef.current = performance.now() + Math.max(0, 300 - (hit?.displayAgeMs ?? 0))
+      const same = hasPts && pts === lastPtsRef.current
+      frameRef.current = hit && (fresh || same) && nowMono < expiresRef.current ? hit : null
+      if (!fresh && hit) expiresRef.current = Math.min(expiresRef.current, nowMono + Math.max(0, 300 - (hit.displayAgeMs ?? 0)))
       const counters = countersRef.current
       counters.displayed++
       if (!hit) counters.missing++
@@ -219,5 +242,5 @@ export function AiDetectionOverlay({
     return () => cancelAnimationFrame(animation)
   }, [enabled, video, drawFrame, showTrails, showDetections])
 
-  return enabled ? <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" data-testid="ai-detection-overlay" /> : null
+  return enabled ? <><canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" data-testid="ai-detection-overlay" />{staleSeconds > 0 && <div role="status" className="pointer-events-none absolute bottom-12 left-2 z-20 max-w-[90%] rounded bg-black/75 px-2 py-1 text-xs text-amber-200">识别结果已 {staleSeconds} 秒未更新，旧框已隐藏</div>}</> : null
 }

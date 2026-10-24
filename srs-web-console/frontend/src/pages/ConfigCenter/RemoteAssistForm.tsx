@@ -183,7 +183,7 @@ export function RemoteAssistForm() {
   const live = status.enabled === true || status.running === true
   /** 只有确认已关闭且已停止才去开启；其余（开启、仍在运行、未知）一律走关闭，偏向安全 */
   const target: Target = stopped ? 'enable' : 'disable'
-  return <div className="space-y-4">
+  return <div className="space-y-4" data-unsaved={editing && (host !== (status.server?.host ?? '') || port !== String(status.server?.port ?? 443) || !!password)}>
     <Section title="远程协助" hint="开启后，技术支持人员可经中转服务器远程登录本设备排查问题；不影响本机录像与识别">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">

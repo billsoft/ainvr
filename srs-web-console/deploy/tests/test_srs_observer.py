@@ -4,6 +4,34 @@ import unittest
 from unittest.mock import patch
 import io
 import json
+import tempfile
+
+
+class ArchiveTest(unittest.TestCase):
+    def test_error_summary_excludes_credentials_and_polling(self):
+        self.assertIsNone(observer.srs_error_summary('[Info][abc] HTTP GET /api/v1/streams/'))
+        result = observer.srs_error_summary('[2026-10-24 02:03:04.123][Warn][123][abc] code=1007 socket closed rtmp://user:secret@host/live/key?token=private')
+        self.assertEqual(result['codes'], ['1007'])
+        self.assertEqual(result['srs_time_utc'], '2026-10-24 02:03:04.123')
+        self.assertEqual(result['signals'], ['closed', 'socket'])
+        self.assertNotIn('secret', json.dumps(result))
+        self.assertNotIn('private', json.dumps(result))
+
+    def test_archive_rotates_and_preserves_latest_record(self):
+        with tempfile.TemporaryDirectory() as folder:
+            handler = observer.configure_archive(folder)
+            handler.maxBytes = 256
+            try:
+                with patch('builtins.print'):
+                    for i in range(100):
+                        observer.emit('test', sequence=i, value='x' * 100)
+                files = list(Path(folder).glob('incidents.jsonl*'))
+                self.assertLessEqual(len(files), 8)
+                latest = json.loads((Path(folder) / 'incidents.jsonl').read_text().splitlines()[-1])
+                self.assertEqual(latest['sequence'], 99)
+            finally:
+                observer.ARCHIVE.removeHandler(handler)
+                handler.close()
 
 spec = importlib.util.spec_from_file_location('observer', Path(__file__).resolve().parents[1] / 'srs-observer.py')
 observer = importlib.util.module_from_spec(spec)

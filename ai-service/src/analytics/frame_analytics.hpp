@@ -1,6 +1,7 @@
 // Copyright AINVR. Shared post-detection analytics for every model adapter.
 #pragma once
 #include "config.hpp"
+#include "tracking_cadence.hpp"
 #include "bytetrack_adapter.hpp"
 #include "../output/result.hpp"
 #include <chrono>
@@ -10,13 +11,13 @@
 namespace ai_service::analytics {
 class FrameAnalytics {
  public:
-  explicit FrameAnalytics(const Config& config):config_(config),tracker_(config.options),byte_tracker_(config.options.max_gap_seconds) {
+  explicit FrameAnalytics(const Config& config, bool enforce_cadence=false):enforce_cadence_(enforce_cadence),config_(config),tracker_(config.options),byte_tracker_(config.options.max_gap_seconds) {
     std::random_device random;
     instance_=std::to_string(std::chrono::system_clock::now().time_since_epoch().count())+
       "-"+std::to_string(random());
   }
   void Apply(FrameResult& result,int64_t epoch,int64_t generation) {
-    if(!config_.enabled) return;
+
     if(result.frame_pts_ns<0 || result.frame_width<=0 || result.frame_height<=0) {
       result.model_extra["analytics"]={{"status","unavailable"},{"reason","missing_source_time_or_dimensions"}};
       return;
@@ -28,12 +29,23 @@ class FrameAnalytics {
     }
     const std::string key=std::to_string(epoch)+":"+std::to_string(generation)+":"+
       std::to_string(result.frame_width)+":"+std::to_string(result.frame_height)+":"+algorithm_;
-    if(key!=key_) {
-      key_=key;session_=result.channel_id+":"+instance_+":"+std::to_string(++reset_);
+    if(key!=key_) cadence_.Reset();
+    const bool ready=config_.enabled && (!enforce_cadence_ || cadence_.Observe(
+      static_cast<double>(result.frame_pts_ns)/1e9,
+      std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count()));
+    if(key!=key_ || ready!=tracking_ready_) {
+      tracking_ready_=ready;key_=key;session_=result.channel_id+":"+instance_+":"+std::to_string(++reset_);
       tracker_.Reset(session_);byte_tracker_.Reset();last_pts_=-1;observed_pts_.clear();
     }
     if(result.frame_pts_ns<=last_pts_) {
       result.model_extra["analytics"]={{"status","stale"},{"algorithm",algorithm_}};
+      return;
+    }
+    if(!ready) {
+      last_pts_=result.frame_pts_ns;
+      result.model_extra["analytics"]={{"schema_version","1.0"},{"status","detection_only"},
+        {"reason",config_.enabled?"insufficient_tracking_cadence":"tracking_disabled"},
+        {"stream_session_id",session_},{"tracks",nlohmann::json::array()},{"events",nlohmann::json::array()}};
       return;
     }
     std::vector<ScoredBox> scored_boxes;
@@ -134,6 +146,7 @@ class FrameAnalytics {
       {"algorithm",algorithm_},{"stream_session_id",session_},{"tracks",tracks},{"events",events}};
   }
  private:
+  TrackingCadence cadence_;bool enforce_cadence_=false,tracking_ready_=false;
   struct ClassOf {int id=0;std::string name,label;};
   std::map<uint64_t,ClassOf> classes_;
   std::map<uint64_t,int64_t> observed_pts_;

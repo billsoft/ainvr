@@ -88,6 +88,7 @@ function mapStatus(bff: BffChannel): ChannelStatus {
     channelId: bff.id,
     online: bff.status.online,
     inputState: bff.status.inputState,
+    srsOnline: bff.status.srsOnline,
     viewerCount: bff.status.clients,
     bitrateKbps: bff.status.bitrate,
     videoCodec: bff.status.videoCodec,

@@ -3,7 +3,7 @@ import {buildAlarmSourceCatalog} from '../services/alarmSourceCatalog.js';
 import type {Channel} from '../types/channel.js';
 const now=Date.parse('2026-10-19T12:00:00Z');
 const input:Channel={id:'input',name:'大门',streamName:'xm',upstreamProtocol:'rtmp',downstreamProtocols:['flv'],createdAt:now,updatedAt:now};
-const channel={id:'processor',name:'AI 大门',state:'running',config:{model:{name:'yoloe',adapter:'yoloe_bpu',prompts:[{description:'person',label_id:'p',label_name:'行人'}]},stream:{url:'rtmp://127.0.0.1:1935/live/xm'},inference_fps:1,analytics:{enabled:true}}};
+const channel={id:'processor',name:'AI 大门',state:'running',config:{model:{name:'yoloe',adapter:'yoloe_bpu',prompts:[{description:'person',label_id:'p',label_name:'行人'}]},stream:{url:'rtmp://127.0.0.1:1935/live/xm'},inference_fps:5,analytics:{enabled:true}}};
 const frame={channel_id:'processor',stream_url:channel.config.stream.url,timestamp:now/1000,frame_width:3840,frame_height:2160,model:{name:'yoloe'},model_extra:{label_catalog:{schema_version:'1.0',adapter:'yoloe_bpu',labels:[{class_id:0,label_id:'p',name:'行人',description:'person'}]},analytics:{status:'active',stream_session_id:'s'}}};
 it('binds separate processor and input identities and matches preview geometry version',()=>{
  const c=buildAlarmSourceCatalog(channel,frame,[input],now)!;
@@ -33,4 +33,13 @@ it('display-name/remark changes preserve zones; input identity or resolution cha
  for(const changed of [{...input,inputGeneration:'new-source'},{...input,id:'replacement'}])
   expect(buildAlarmSourceCatalog(channel,frame,[changed],now)!.geometry_revision).not.toBe(initial.geometry_revision);
  expect(buildAlarmSourceCatalog(channel,{...frame,frame_width:1920},[input],now)!.geometry_revision).not.toBe(initial.geometry_revision);
+});
+
+it('low rate and runtime detection-only cannot offer tracking; zero FPS means follow source',()=>{
+ const low={...channel,config:{...channel.config,inference_fps:2}};
+ expect(buildAlarmSourceCatalog(low,frame,[input],now)!.tracking_available).toBe(false);
+ expect(buildAlarmSourceCatalog({...channel,config:{...channel.config,inference_fps:0}},frame,[input],now)!.tracking_available).toBe(true);
+ const slowFrame={...frame,model_extra:{...frame.model_extra,analytics:{status:'detection_only',stream_session_id:'s'}}};
+ const source=buildAlarmSourceCatalog(channel,slowFrame,[input],now)!;
+ expect(source.tracking_available).toBe(false);expect(source.detection_available).toBe(true);
 });

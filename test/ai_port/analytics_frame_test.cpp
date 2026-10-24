@@ -20,7 +20,8 @@ int main() {
   auto old=Frame(0,400);
   auto original=old.ToDict();
   disabled.Apply(old,1,1);
-  assert(old.ToDict()==original);
+  assert(old.model_extra.at("analytics").at("status")=="detection_only");
+  assert(old.detections[0].track_id.empty());
   c.enabled=true;c.options.confirmation_hits=1;c.options.association_distance=.3;
   c.options.rules={{"gate","line","person",{{.5,.2},{.5,.8}},5}};
   analytics::FrameAnalytics enabled(c);

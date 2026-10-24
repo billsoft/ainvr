@@ -1,3 +1,4 @@
+import { trackingUnavailableReason } from './trackingPolicy'
 import { notificationError } from './analyticsNotification'
 import { ruleError } from './analyticsRules'
 import { ANALYTICS_PHASE } from './analyticsPhase'
@@ -207,6 +208,8 @@ export function validateStep3(v: AiWizardFormValue): FieldErrors {
 export function validateVisibleAnalytics(v: AiWizardFormValue): FieldErrors {
   const errors: FieldErrors = ANALYTICS_PHASE.rulesAndEvents || ANALYTICS_PHASE.review || ANALYTICS_PHASE.notification
     ? validateAnalyticsStep(v) : {}
+  const trackingReason = trackingUnavailableReason(v.modelPreset, v.inferenceFps)
+  if (v.analytics?.enabled && trackingReason) errors.analytics = trackingReason
   const coast = v.analytics?.coast_seconds
   if (v.analytics?.enabled && coast !== undefined && (!Number.isFinite(coast) || coast < 0 || coast > 2))
     errors.coastSeconds = '推算显示时长须为 0–2 秒（0 表示不推算）'

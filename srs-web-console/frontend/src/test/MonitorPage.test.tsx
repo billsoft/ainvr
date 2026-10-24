@@ -9,13 +9,14 @@ import MonitorPage from '@/pages/Monitor'
 vi.mock('@/components/player/VideoPlayer', () => ({ VideoPlayer: (props:{onArming?:(video:HTMLVideoElement)=>void;savedZoneSource?:{id:string;createdAt?:string;inputGeneration?:string}}) => <div data-testid="vp" data-zone-source={JSON.stringify(props.savedZoneSource)}>{props.onArming&&<button onClick={()=>props.onArming!(document.createElement('video'))}>布防</button>}</div> }))
 vi.mock('@/pages/AlarmCenter/ArmingLauncher',()=>({ArmingLauncher:({onClose}:{onClose:()=>void})=><div role="dialog" aria-label="布防"><button onClick={onClose}>取消布防</button></div>}))
 vi.mock('@/pages/Monitor/useMonitorCatalog', () => ({ useMonitorCatalog: () => ({
-  allChannels: mockChannels, outputIds: new Map(), variants: new Map(), ready: true, error: '',
+  allChannels: mockChannels, outputIds: new Map([[`${mockChannels[1]!.upstream.app}/${mockChannels[1]!.upstream.stream}`,"processor-one"]]), variants: new Map([[mockChannels[0]!.id,[mockChannels[1]!]]]), ready: true, error: '',
 }) }))
 const settings = { monitorHardLimit: 2, monitorSoftLimit: 2 }
 const fetchSettings = vi.fn()
 vi.mock('@/store/settings', () => ({ useSettingsStore: () => ({ settings, fetchSettings }) }))
 
 beforeEach(() => {
+  mockChannels[1]!.status.online=true;
   useMonitorStore.setState({ layout: '2x2', mode: 'auto', page: 0, slots: [null, null, null, null], selectedOutputs: {}, initialized: false, focusedChannelId: null })
 })
 const renderPage = () => render(<MemoryRouter><MonitorPage /></MemoryRouter>)
@@ -43,7 +44,7 @@ describe('MonitorPage stable layout', () => {
     const user = userEvent.setup()
     renderPage()
     await waitFor(() => expect(useMonitorStore.getState().initialized).toBe(true))
-    await user.selectOptions(screen.getByLabelText('监看布局'), '1x1')
+    await user.click(screen.getByRole('button', { name: '4 宫格' }))
     expect(useMonitorStore.getState().slots.filter(Boolean)).toHaveLength(mockChannels.length)
     expect(screen.getByLabelText('下一页')).toBeEnabled()
     await user.click(screen.getByLabelText('下一页'))
@@ -59,19 +60,39 @@ describe('MonitorPage stable layout', () => {
   })
 })
 
-it('focused source forwards its stable generation or creation identity to the saved zone overlay',async()=>{
- const user=userEvent.setup();renderPage();await user.click(await screen.findByTestId('slot-focus-0'))
+it('focused AI output forwards its stable generation or creation identity to the saved zone overlay',async()=>{
+ const user=userEvent.setup();renderPage();await user.click(await screen.findByTestId('slot-focus-1'))
  const value=JSON.parse(screen.getByTestId('vp').getAttribute('data-zone-source')!)
- expect(value.id).toBe(mockChannels[0]!.id);expect(value.createdAt).toBe(mockChannels[0]!.createdAt)
+ expect(value.processorId).toBe('processor-one');expect(value.id).toBe(mockChannels[0]!.id);expect(value.createdAt).toBe(mockChannels[0]!.createdAt)
  expect(value.inputGeneration||value.createdAt).toBeTruthy()
 })
 
 it('arming opens over the focused player without replacing its playback element',async()=>{
- const user=userEvent.setup();renderPage();await user.click(await screen.findByTestId('slot-focus-0'))
+ const user=userEvent.setup();renderPage();await user.click(await screen.findByTestId('slot-focus-1'))
  const player=screen.getByTestId('vp')
  await user.click(screen.getByRole('button',{name:'布防'}))
  expect(screen.getByRole('dialog',{name:'布防'})).toBeInTheDocument()
  expect(screen.getByTestId('vp')).toBe(player)
  await user.click(screen.getByRole('button',{name:'取消布防'}))
  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(screen.getByTestId('vp')).toBe(player)
+})
+
+it('restores every channel in catalogue order after clearing and keeps the chosen capacity', async () => {
+  const user = userEvent.setup(); renderPage()
+  await user.click(screen.getByRole('button', {name: '32 宫格'}))
+  expect(screen.getByRole('button', {name: '32 宫格'})).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.queryByRole('combobox', {name: '监看布局'})).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', {name: '清空监看'}))
+  expect(useMonitorStore.getState().slots.filter(Boolean)).toHaveLength(0)
+  await user.click(screen.getByRole('button', {name: '恢复通道顺序'}))
+  expect(useMonitorStore.getState().slots.filter(Boolean)).toEqual(mockChannels.map(c => c.id))
+  expect(useMonitorStore.getState().layout).toBe('8x4')
+  expect(useMonitorStore.getState().page).toBe(0)
+  expect(screen.getAllByTestId('vp').length).toBeLessThanOrEqual(2)
+})
+
+it('raw input has neither arming action nor saved-zone overlay',async()=>{
+ const user=userEvent.setup();renderPage();await user.click(await screen.findByTestId('slot-focus-0'))
+ expect(screen.getByTestId('vp')).not.toHaveAttribute('data-zone-source')
+ expect(screen.queryByRole('button',{name:'布防'})).not.toBeInTheDocument()
 })

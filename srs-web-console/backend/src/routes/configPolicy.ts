@@ -24,6 +24,8 @@ export interface ConfigRoutesOptions extends FastifyPluginOptions {
   /** 服务 token → 服务名绑定（每服务独立，防冒充拉别家 secrets）。
    *  未配置时快照解密功能整体关闭（占位符永不解析）。 */
   serviceTokens?: Map<string, string>;
+  aiServiceBaseUrl?: string;
+  readBackendSettings?: () => Promise<import("../types/channel.js").AppSettings>;
 }
 
 /** ${secret:key} 占位符：配置文档里敏感值只存引用，明文只在 PG config_secrets

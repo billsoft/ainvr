@@ -15,8 +15,9 @@ export async function configRoutes(fastify: FastifyInstance, opts: ConfigRoutesO
     if (service !== 'ai-service') return true;
     // A startup config report may precede uvicorn binding its listening socket.
     const doc = await pgStore.getDocument('backend', 'system', 'settings');
-    const ai = doc?.config.aiService as { baseUrl?: string } | undefined;
-    const base = ai?.baseUrl || process.env.AI_SERVICE_BASE_URL;
+    const settings = doc?.config ?? await opts.readBackendSettings?.();
+    const ai = settings?.aiService as { baseUrl?: string } | undefined;
+    const base = ai?.baseUrl || opts.aiServiceBaseUrl || process.env.AI_SERVICE_BASE_URL;
     if (!base) return false;
     try {
       const response = await fetch(`${base.replace(/\/+$/, '')}/health`, { signal: AbortSignal.timeout(3000) });
@@ -66,7 +67,25 @@ export async function configRoutes(fastify: FastifyInstance, opts: ConfigRoutesO
                 throw new Error('监看上限须为 1–16 路');
             }
           }
-          const config = { ...(old.rows[0]?.config ?? {}), ...change.config };
+          // Bootstrap a partial first save from the actual runtime configuration.
+          // Do not substitute deployment defaults or expose legacy credentials.
+          const baseline = old.rows[0]?.config ?? (change.service === 'backend'
+            ? await opts.readBackendSettings?.() : undefined) ?? {};
+          const config = { ...baseline, ...change.config };
+          if (change.service === 'backend') {
+            delete config.adminPasswordHash;
+            config.aiService = { ...baseline.aiService, ...change.config.aiService };
+            const legacyKey = config.aiService.apiKey;
+            if (legacyKey) {
+              // The proxy already prefers this canonical secret. Never overwrite
+              // a newer canonical credential while migrating the fallback.
+              const ciphertext = await pgStore.encryptSecret(legacyKey);
+              await client.query(`INSERT INTO config_secrets (key_path, ciphertext, algorithm, key_version)
+                VALUES ($1,$2,'aes-256-gcm',1) ON CONFLICT (key_path) DO NOTHING`,
+                ['ai-service/server.api_key', ciphertext]);
+              config.aiService.apiKey = '';
+            }
+          }
           if (change.service === 'recorder' && Object.hasOwn(change.config, 'channelSchedules')) {
             const schedules = change.config.channelSchedules;
             if (!schedules || typeof schedules !== 'object' || Array.isArray(schedules) ||

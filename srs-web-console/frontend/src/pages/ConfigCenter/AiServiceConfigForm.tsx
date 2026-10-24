@@ -64,7 +64,7 @@ export function AiServiceConfigForm({ backendDoc, aiServiceDoc, onSaveBatch }: P
 
   const originalBackendKey = str(ai.apiKey)
   const originalServerKey = str(server.api_key)
-  const keyAlreadySet = !!(originalBackendKey || originalServerKey)
+  const keyAlreadySet = !!(originalBackendKey || originalServerKey || ai.aiApiKeySet)
 
   async function handleTest() {
     setTesting(true)
@@ -91,7 +91,7 @@ export function AiServiceConfigForm({ backendDoc, aiServiceDoc, onSaveBatch }: P
         const changes: ConfigChange[] = [{ service: 'backend', group: 'system', name: 'settings', config: {
           aiService: { ...ai, baseUrl: aiBaseUrl.trim(), pollIntervalMs: Number(aiPollMs),
             // Canonical key is encrypted on the AI document; never copy plaintext to backend.
-            apiKey: keyInput || clearKey ? '' : originalBackendKey },
+            ...(keyInput || clearKey ? { apiKey: '' } : {}) },
         } }]
         if (keyInput || clearKey) changes.push({ service: 'ai-service', group: 'system', name: 'settings', config: {
           server: { ...server, api_key: clearKey ? null : keyInput },
@@ -110,7 +110,7 @@ export function AiServiceConfigForm({ backendDoc, aiServiceDoc, onSaveBatch }: P
     <div className="space-y-5" data-unsaved={dirty}>
       <Section
         title="AI 识别服务连接"
-        hint="本机一体化部署时保持默认即可，系统自动连接本机 AI 服务；仅在 AI 服务部署在其他机器时填写"
+        hint="本机一体化部署时保持默认即可。地址与鉴权在后续请求生效，无需重启识别通道；保存不会搬迁或重新启动远端服务"
       >
         <Field label="服务地址">
           <input type="text" value={aiBaseUrl}

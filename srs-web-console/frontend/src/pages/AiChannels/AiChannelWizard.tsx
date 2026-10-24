@@ -1,3 +1,4 @@
+import { trackingUnavailableReason } from '@/features/trackingPolicy'
 import { AnalyticsNotificationSettings } from './AnalyticsNotificationSettings'
 import { AnalyticsReviewSettings } from './AnalyticsReviewSettings'
 import { AnalyticsRuleEditor } from './AnalyticsRuleEditor'
@@ -82,6 +83,7 @@ export function AiChannelWizard({
   onClose, onSubmit,
   aiCapabilities,
 }: Props) {
+  const [pendingTrackingChange, setPendingTrackingChange] = useState<AiWizardFormValue | null>(null)
   const [step, setStep] = useState(0)
   const [value, setValue] = useState<AiWizardFormValue>(DEFAULT_WIZARD_VALUE)
   const [errors, setErrors] = useState<FieldErrors>({})
@@ -169,6 +171,7 @@ export function AiChannelWizard({
       const v = fromChannel(initial)
       setValue({ ...v, publishEnabled: true })
       setStep(0)
+      setPendingTrackingChange(null)
       setErrors({})
       setSubmitError(null)
     } else if (open && mode === 'create') {
@@ -185,6 +188,7 @@ export function AiChannelWizard({
       }
       setValue(base)
       setStep(0)
+      setPendingTrackingChange(null)
       setErrors({})
       setSubmitError(null)
     }
@@ -201,10 +205,20 @@ export function AiChannelWizard({
   }, [open, onlineStreamMap, value.streamUrl, value.h265])
 
   if (!open) return null
+  const trackingReason = trackingUnavailableReason(value.modelPreset, value.inferenceFps)
+  function changeDraft(next: AiWizardFormValue) {
+    const capabilityChanged = next.modelPreset !== value.modelPreset || next.inferenceFps !== value.inferenceFps
+    const validRate = Number.isFinite(next.inferenceFps) && next.inferenceFps >= 0
+    if (value.analytics?.enabled && ((capabilityChanged && validRate && trackingUnavailableReason(next.modelPreset, next.inferenceFps)) || next.analytics?.enabled === false)) {
+      setPendingTrackingChange({ ...next, analytics: { ...next.analytics, enabled: false } })
+      return
+    }
+    setValue(next)
+  }
 
   const set = <K extends keyof AiWizardFormValue>(key: K, v: AiWizardFormValue[K]) => {
     setSubmitError(null)
-    setValue((prev) => ({ ...prev, [key]: v }))
+    changeDraft({ ...value, [key]: v })
   }
 
   function selectSrsChannel(ch: ChannelWithStatus) {
@@ -225,7 +239,7 @@ export function AiChannelWizard({
   }
 
   function selectModel(key: keyof typeof AI_MODEL_PRESETS) {
-    setValue((prev) => applyModelPreset(prev, key))
+    changeDraft(applyModelPreset(value, key))
   }
 
   function handleNext() {
@@ -474,7 +488,7 @@ export function AiChannelWizard({
               <div>
                 <label className="text-sm font-medium text-ink">{value.modelPreset === 'locateanything-3b' ? '采集间隔（秒）' : '推理帧率（FPS）'}</label>
                 <input
-                  type="number" step="any" min={value.modelPreset === 'locateanything-3b' ? 1 : 0}
+                  aria-label="推理帧率或采集间隔" type="number" step="any" min={value.modelPreset === 'locateanything-3b' ? 1 : 0}
                   max={value.modelPreset === 'locateanything-3b' ? 3600 : 30}
                   value={Number.isFinite(value.inferenceFps) && (value.modelPreset !== 'locateanything-3b' || value.inferenceFps > 0)
                     ? (value.modelPreset === 'locateanything-3b' ? 1 / value.inferenceFps : value.inferenceFps) : ''}
@@ -503,6 +517,7 @@ export function AiChannelWizard({
               <section className="rounded-lg border border-line p-4" aria-label="目标跟踪设置">
                 <label className="flex items-center gap-2 text-sm font-medium text-ink">
                   <input type="checkbox" checked={value.analytics?.enabled ?? false}
+                    disabled={!!trackingReason && !value.analytics?.enabled}
                     onChange={(e) => set('analytics', {
                       ...value.analytics, enabled: e.target.checked,
                     })} />
@@ -511,6 +526,8 @@ export function AiChannelWizard({
                 <p className="mt-2 text-xs text-ink-faint">
                   为同一目标保持编号，并在实时预览中显示它的运动轨迹。修改此项保存后会重新启动本 AI 处理器。
                 </p>
+                {trackingReason && <p role="status" className="mt-2 rounded-base bg-amber-50 p-3 text-sm text-amber-800">{trackingReason}计数、跨边界侵入、穿过及持续停留需要可靠轨迹。</p>}
+                {errors.analytics && <p role="alert" className="mt-2 text-sm text-danger">{errors.analytics}</p>}
                 {value.analytics?.enabled && <>
                   <p className="mt-2 text-sm text-ink">
                     {value.modelPreset === 'locateanything-3b'
@@ -535,7 +552,7 @@ export function AiChannelWizard({
                     目标被遮挡或漏检时，在这段时间内按原来的运动方向推算，用虚线框和虚线轨迹显示并标“推算”，不是真实检测，不进入识别记录、统计和告警。0 表示不推算。
                   </p>
                   <p className="mt-1 text-xs text-ink-faint">
-                    实时预览中的“轨迹”按钮只控制显示，不会重启处理器。
+                    实时预览始终显示可用的识别框与轨迹。
                     {value.modelPreset === 'locateanything-3b'
                       ? ' 当前模型采样较慢，快速移动或长时间遮挡可能导致目标编号改变。'
                       : ' 低置信度候选可用于续跟，不改变识别结果的显示和归档阈值。'}
@@ -718,7 +735,22 @@ export function AiChannelWizard({
         </div>
       </div>
 
-
+      {pendingTrackingChange && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="关闭目标跟踪" onKeyDown={e=>{
+        if(e.key==='Escape'){e.preventDefault();e.stopPropagation();setPendingTrackingChange(null)}
+        if(e.key==='Tab'){
+          const buttons=e.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')
+          const first=buttons[0],last=buttons[buttons.length-1]
+          if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}
+          else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}
+        }
+      }}>
+        <div className="relative w-full max-w-md rounded-panel bg-surface p-6 shadow-modal">
+          <button type="button" aria-label="关闭" className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center" onClick={()=>setPendingTrackingChange(null)}><X size={18}/></button>
+          <h3 className="pr-8 text-lg font-semibold">关闭目标跟踪？</h3>
+          <p className="mt-3 text-sm leading-6 text-ink-subtle">此次变更会关闭目标跟踪。已有计数器和触发器关联及历史保留；计数、跨边界侵入、穿过和持续停留暂停。持续时间为 0 的出现（含区内检出）与接近带检出仍可用。确认后只修改当前草稿，保存后生效。</p>
+          <div className="mt-5 flex justify-end gap-2"><button type="button" className="btn-secondary" autoFocus onClick={()=>setPendingTrackingChange(null)}>取消变更</button><button type="button" className="btn-primary" onClick={()=>{setValue(pendingTrackingChange);setPendingTrackingChange(null)}}>关闭跟踪并继续</button></div>
+        </div>
+      </div>}
     </div>
   )
 }

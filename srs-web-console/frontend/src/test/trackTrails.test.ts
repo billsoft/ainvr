@@ -65,3 +65,37 @@ describe('display-time trajectory buffer', () => {
     expect(cache.update(0,[])[0]!.points[0]!.x).toBe(20)
   })
 })
+
+describe('frame-rate independent trail window', () => {
+  for (const fps of [3, 5, 10, 15, 30]) it(`keeps five seconds at ${fps} FPS`, () => {
+    const cache = new TrackTrailBuffer()
+    let trails = cache.update(0, [box('a')])
+    for (let i = 1; i <= fps * 10; i++) trails = cache.update(i / fps * 1e9, [box('a', i)])
+    const points = trails[0]!.points
+    expect(points.length).toBeLessThanOrEqual(120)
+    expect(points[0]!.ptsNs).toBe(5e9)
+    expect(points.at(-1)!.ptsNs).toBe(10e9)
+  })
+  it('retains the time window while frame rate changes', () => {
+    const cache = new TrackTrailBuffer()
+    let time = 0
+    let trails = cache.update(0, [box('a')])
+    for (const fps of [30, 3, 15, 5, 10]) {
+      for (let i = 0; i < fps * 3; i++) {
+        time += 1 / fps
+        trails = cache.update(time * 1e9, [box('a', time)])
+        const points = trails[0]!.points
+        expect(points.length).toBeLessThanOrEqual(120)
+        if (time > 5.34) expect((points.at(-1)!.ptsNs - points[0]!.ptsNs) / 1e9).toBeGreaterThan(4.66)
+      }
+    }
+  })
+  it('preserves a skipped prediction as a dashed segment', () => {
+    const cache = new TrackTrailBuffer(5, 128, 2)
+    cache.update(0, [box('a')])
+    cache.update(1e9, [{ ...box('a'), predicted: true }])
+    const points = cache.update(2e9, [box('a')])[0]!.points
+    expect(points).toHaveLength(2)
+    expect(points[1]!.predicted).toBe(true)
+  })
+})
