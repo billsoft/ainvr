@@ -1,0 +1,6 @@
+[submodule "third_party/reference/wvp-GB28181-pro"]
+	path = third_party/reference/wvp-GB28181-pro
+	url = https://github.com/648540858/wvp-GB28181-pro.git
+[submodule "third_party/reference/ZLMediaKit"]
+	path = third_party/reference/ZLMediaKit
+	url = https://github.com/ZLMediaKit/ZLMediaKit.git
