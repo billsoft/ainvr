@@ -7,7 +7,7 @@ import {describeAlarm} from '@/features/alarmSentences'
 import {alarmEventService,type AlarmEvent} from '@/api/alarmEventService'
 import {alarmTriggerService} from '@/api/alarmTriggerService'
 import type {AlarmTrigger} from '@/features/alarmTriggers'
-vi.mock('@/api/alarmEventService',()=>({alarmEventService:{list:vi.fn(),get:vi.fn(),confirm:vi.fn()}}))
+vi.mock('@/api/alarmEventService',()=>({alarmEventService:{list:vi.fn(),get:vi.fn(),confirm:vi.fn(),summary:vi.fn().mockResolvedValue({pending:2,as_of:new Date().toISOString(),reference:{active:true,counts:{completed:1,waiting:1}}})}}))
 vi.mock('@/api/alarmTriggerService',()=>({alarmTriggerService:{list:vi.fn(),source:vi.fn()}}))
 vi.mock('@/api/aiChannelService',()=>({aiChannelService:{list:vi.fn().mockResolvedValue([{id:'gate',name:'大门'},{id:'east',name:'东围栏'}])}}))
 vi.mock('@/api/behaviorStatisticsService',()=>({behaviorStatisticsService:{query:vi.fn().mockResolvedValue({schema_version:'1.0',from:'a',to:'b',items:[{event_type:'region_traverse',occurrences:4,tracked_targets:4},{event_type:'appearance',occurrences:23,tracked_targets:20}],coverage:{state:'unknown'}})}}))
@@ -73,10 +73,12 @@ it('confirms or marks a false alarm after the separate confirmation dialog',asyn
   await open()
   await handleRow(/门前禁区/,'handled')
   await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalledWith([{alarm_id:'a',expected_handling_revision:0}],'',expect.any(String),'handled'))
-  expect(await within(card(/门前禁区/)).findByText(/已确认/)).toBeInTheDocument()
+  await waitFor(()=>expect(screen.getAllByRole('article')).toHaveLength(1))
+  expect(screen.getAllByRole('article')[0]).toHaveTextContent('东围栏')
   await handleRow(/东围栏/,'false_positive')
   await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenLastCalledWith([{alarm_id:'b',expected_handling_revision:0}],'',expect.any(String),'false_positive'))
-  expect(await within(card(/东围栏/)).findByText(/已标记误报/)).toBeInTheDocument()
+  await waitFor(()=>expect(screen.queryAllByRole('article')).toHaveLength(0))
+  expect(screen.getByText('当前筛选下没有告警。')).toBeInTheDocument()
 })
 it('confirms every loaded alarm after an on-page confirmation and reports partial success',async()=>{
   vi.mocked(alarmEventService.confirm).mockResolvedValueOnce({items:[{alarm_id:'a',outcome:'succeeded'},{alarm_id:'b',outcome:'version_conflict'}]})
@@ -87,6 +89,8 @@ it('confirms every loaded alarm after an on-page confirmation and reports partia
   fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
   expect(await screen.findByText('已确认 1 条；1 条记录已变化，请刷新后重试。')).toBeInTheDocument()
   expect(confirm).not.toHaveBeenCalled()
+  expect(screen.getAllByRole('article')).toHaveLength(1)
+  expect(screen.getAllByRole('article')[0]).toHaveTextContent('东围栏')
 })
 it('the detail sheet shows the stages, jumps to the recording and confirms with a note',async()=>{
   vi.mocked(alarmEventService.get).mockResolvedValue({...alarm('a'),logs:[{operation_id:'c',action:'created',actor:'alarm-service',at:'2026-10-20T02:02:05Z'}]})
@@ -123,7 +127,7 @@ it('an uncertain bulk confirmation is retried with the same operation key',async
   expect(await screen.findByText('已确认 2 条。')).toBeInTheDocument()
   const keys=vi.mocked(alarmEventService.confirm).mock.calls.map(c=>c[2]);expect(keys[0]).toBe(keys[1])
 })
-it('opening details never acknowledges; a failed refresh keeps the loaded cards',async()=>{
+it('opening details never acknowledges; a failed filter never displays stale cards',async()=>{
   vi.mocked(alarmEventService.get).mockResolvedValue(alarm('a'))
   await open()
   fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'详情与录像'}))
@@ -132,8 +136,8 @@ it('opening details never acknowledges; a failed refresh keeps the loaded cards'
   expect(alarmEventService.confirm).not.toHaveBeenCalled()
   vi.mocked(alarmEventService.list).mockRejectedValueOnce(Error('offline'))
   fireEvent.click(screen.getByRole('button',{name:'已人工审核'}))
-  expect(await screen.findByRole('alert')).toHaveTextContent('已加载的记录保留')
-  expect(screen.getAllByRole('article').length).toBe(2)
+  expect(await screen.findByRole('alert')).toHaveTextContent('请重试当前筛选')
+  expect(screen.queryAllByRole('article').length).toBe(0)
 })
 it('the sheet shows the evidence of the stage the user picks',async()=>{
   vi.mocked(alarmEventService.get).mockResolvedValue(alarm('a'))
@@ -253,4 +257,39 @@ it('AI confirmation and false positive are completed reviews with human correcti
  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('ai',undefined,expect.anything()))
  fireEvent.change(screen.getByRole('combobox',{name:'审核结论'}),{target:{value:'false_positive'}})
  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('ai',undefined,expect.objectContaining({disposition:'false_positive'})))
+})
+
+it('keeps a manually confirmed row in All with the human review source',async()=>{
+ await open();fireEvent.click(screen.getByRole('button',{name:'全部'}))
+ await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('all',undefined,expect.anything()))
+ await handleRow(/门前禁区/,'handled')
+ await waitFor(()=>expect(card(/门前禁区/)).toHaveTextContent('已人工审核 · 确认'))
+ expect(screen.getAllByRole('article')).toHaveLength(2)
+})
+
+it('uses the authoritative AI source for a replayed acknowledgement',async()=>{
+ vi.mocked(alarmEventService.confirm).mockResolvedValue({items:[{alarm_id:'a',outcome:'already_acknowledged'}]})
+ await open();fireEvent.click(screen.getByRole('button',{name:'全部'}))
+ await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('all',undefined,expect.anything()))
+ fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'确认'}))
+ const dialog=await screen.findByRole('dialog',{name:'确认告警'});await within(dialog).findByLabelText('处理备注')
+ vi.mocked(alarmEventService.get).mockResolvedValue(alarm('a',{handling:{state:'acknowledged',revision:1,reviewed_by_kind:'ai',disposition:'handled'}}))
+ fireEvent.click(within(dialog).getByRole('button',{name:'确认'}))
+ await waitFor(()=>expect(card(/门前禁区/)).toHaveTextContent('已 AI 审核 · 确认'))
+})
+
+it('clears a completed conclusion when switching to unreviewed',async()=>{
+ await open();fireEvent.click(screen.getByRole('button',{name:'已人工审核'}))
+ fireEvent.change(screen.getByLabelText('审核结论'),{target:{value:'handled'}})
+ await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('human',undefined,expect.objectContaining({disposition:'handled'})))
+ fireEvent.click(screen.getByRole('button',{name:'未审核'}))
+ await waitFor(()=>expect(screen.getByLabelText('审核结论')).toHaveValue(''))
+ expect(screen.getByLabelText('审核结论')).toBeDisabled()
+ expect(vi.mocked(alarmEventService.list).mock.lastCall![2]!.disposition).toBeUndefined()
+})
+it('reference scores stay unreviewed and explain the validation status',async()=>{
+ vi.mocked(alarmEventService.list).mockResolvedValue({items:[alarm('a',{review:{state:'skipped',reference:{state:'completed',score:.99}}})],next_cursor:null})
+ await open();expect(screen.getByRole('article')).toHaveTextContent('AI 参考分数 0.990 · 待验证，不是概率')
+ expect(screen.getByRole('article')).toHaveTextContent('未审核')
+ expect(within(screen.getByRole('article')).getByRole('button',{name:'确认'})).toBeEnabled()
 })

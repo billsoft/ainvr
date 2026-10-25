@@ -68,7 +68,7 @@ export class ObservationConsumer {
     for(const event of p.events){
       const behaviorId=await this.repository.behaviors.insert(event);
       await this.hook('behavior_inserted');
-      if(event.rule.snapshot.alarm_enabled!==false){
+      if(event.rule.snapshot.alarm_enabled!==false&&!await this.repository.isCleared?.(event)){
         await this.repository.insert({...event,behavior_event_ids:[behaviorId]});
         // Queue after the immutable fact/merged alarm; replay reuses the fact ID.
         await this.repository.evidenceVault?.enqueue(behaviorId,event);

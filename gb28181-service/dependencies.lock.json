@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "go": {
+    "version": "go1.27.3",
+    "platform": "linux-arm64",
+    "archive": "go1.27.3.linux-arm64.tar.gz",
+    "sha256": "a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49",
+    "source": "https://go.dev/dl/?mode=json"
+  },
+  "sipgo": {"version": "v1.5.0", "license": "BSD-2-Clause", "integrity": "go.sum"},
+  "ffmpeg": {
+    "version": "8.1.2",
+    "source": "https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
+    "sourceSha256": "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c",
+    "license": "LGPL-2.1-or-later (this build does not enable GPL/nonfree)",
+    "buildScript": "deploy-package/gb28181/build.sh",
+    "videoTranscoding": false,
+    "audioEncoding": ["AAC"],
+    "installedArm64BinarySha256": "6fd3bca3a9bdee4bd674a44939c78383aa3903d5afdc68d4a55bb0714a09a996"
+  },
+  "digest": {"version": "v1.2.0", "license": "MIT", "integrity": "go.sum"},
+  "zlmediakit": {
+    "repository": "https://github.com/ZLMediaKit/ZLMediaKit.git",
+    "commit": "bb83e697a60ad9dde679afcd7b85feeafdf7514b",
+    "license": "MIT; bundled dependency licenses require distribution inventory",
+    "submodules": {
+      "3rdpart/ZLToolKit": "d7d601200f65f3111dbf9d20ed7f14d2654bbd6e",
+      "3rdpart/jsoncpp": "ca98c98457b1163cca1f7d8db62827c115fec6d1",
+      "3rdpart/media-server": "21c4451ff2e4c4bb1c817e606c8b4e5deac1e719",
+      "3rdpart/pybind11": "ed5057ded698e305210269dafa57574ecf964483",
+      "www/webassist": "6689195ac89462d40accd88f13dfde58902da57b"
+    },
+    "cmake": ["-DCMAKE_BUILD_TYPE=Release", "-DENABLE_TESTS=OFF", "-DENABLE_WEBRTC=OFF", "-DENABLE_HLS=OFF", "-DENABLE_MP4=ON", "-DENABLE_FFMPEG=OFF"],
+    "recordingEnabled": false,
+    "arm64BinarySha256": "361be7856b846c073dc1d303bc567504f7bb0351441217aac4690bf1d7f277ae"
+  },
+  "referenceOnly": {
+    "path": "third_party/reference/wvp-GB28181-pro",
+    "repository": "https://github.com/648540858/wvp-GB28181-pro.git",
+    "commit": "2b656f4e55147f2377986a878da01a98ae564fe5",
+    "runtimeDependency": false
+  }
+}

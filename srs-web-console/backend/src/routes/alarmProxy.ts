@@ -1,4 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import {verifyPassword} from '../services/passwordHash.js';
+import {LoginAttempts} from '../services/consoleSessions.js';
+import {clientIdentity} from '../services/proxyIdentity.js';
 
 export interface AlarmConnection {
   baseUrl: string;
@@ -6,6 +9,7 @@ export interface AlarmConnection {
   timeoutMs: number;
 }
 export interface AlarmProxyOptions {
+  passwordHash?:()=>Promise<string>;
   /** Only the applied backend configuration, never an unpublished form draft. */
   connection: () => Promise<AlarmConnection | null>;
   /** Server-validated console principal. Never read the actor from client headers. */
@@ -41,6 +45,7 @@ export async function limitedJson(response: Response): Promise<unknown> {
 
 /** Named BFF API only. Producer input, health probes and credentials are never proxied. */
 export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxyOptions) {
+  const passwordAttempts=new LoginAttempts();
   const forward = (path: (req: FastifyRequest) => string, queryKeys: string[] = [], mutation = false) =>
     async (req: FastifyRequest, reply: FastifyReply) => {
       const actor = await options.principal(req);
@@ -89,6 +94,24 @@ export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxy
   app.get('/alarms/events/:id/logs', forward(idPath('/logs')));
   app.post('/alarms/events/:id/acknowledgements', forward(idPath('/acknowledgements'), [], true));
   app.post('/alarms/bulk-acknowledgements', forward(() => '/v1/bulk-acknowledgements', [], true));
+  app.post('/alarms/purge',async(req,reply)=>{
+    if(!await options.principal(req))return reply.code(401).send({error:{code:'unauthorized',message:'需要登录'}});
+    const body=req.body as {password?:unknown;scope?:unknown}|null;
+    if(!body||Object.keys(body).some(k=>!['password','scope'].includes(k))||body.scope!=='all'||typeof body.password!=='string'||!body.password.length||body.password.length>100)
+      return reply.code(400).send({error:{code:'invalid_request',message:'请输入系统密码，并确认清空所有告警'}});
+    let hash:string|undefined;
+    try{hash=await options.passwordHash?.()}catch{return reply.code(503).send({error:{code:'password_unavailable',message:'系统密码验证暂不可用'}})}
+    if(!hash)return reply.code(409).send({error:{code:'password_required',message:'请先在系统配置中设置系统密码，才能清空告警'}});
+    const ip=clientIdentity(req).ip;
+    if(!passwordAttempts.enter(ip))return reply.header('Retry-After','60').code(429).send({error:{code:'rate_limited',message:'密码验证过于频繁，请一分钟后重试'}});
+    let verified=false;
+    try{verified=await verifyPassword(body.password,hash)&&await options.passwordHash?.()===hash}catch{verified=false}
+    finally{passwordAttempts.leave(ip,verified)}
+    if(!verified)return reply.code(403).send({error:{code:'invalid_password',message:'系统密码不正确'}});
+    // Never forward, persist or audit the password. The service sees only the scope.
+    req.body={scope:'all'};
+    return forward(()=>'/v1/events/purge',[],true)(req,reply);
+  });
   app.get('/alarms/rules', forward(() => '/v1/rules', ['channel_id']));
   app.post('/alarms/rules', async (req, reply) => {
     if (!await options.principal(req)) return reply.code(401).send({error:{code:'unauthorized',message:'需要登录'}});

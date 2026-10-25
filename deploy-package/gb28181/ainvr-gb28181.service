@@ -1,0 +1,24 @@
+[Unit]
+Description=AINVR GB28181 signaling and media gateway
+After=network.target ainvr-gb-media.service
+Wants=ainvr-gb-media.service
+
+[Service]
+Type=simple
+User=ainvr-gb
+Group=ainvr-gb
+ExecStart=/opt/ainvr/gb28181/gateway --bootstrap /etc/ainvr/gb28181-bootstrap.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=384M
+TasksMax=128
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

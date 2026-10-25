@@ -32,7 +32,7 @@ export class ReviewWorker{
   const row=await this.rows.findOneAndUpdate({'handling.state':'unacknowledged','handling.disposition':{$ne:'false_positive'},
    'review.generation':{$exists:true},'review.context_state':'ready',$or:[{'review.state':'waiting_validation'},{'review.state':'queued','review.next_attempt_at':{$lte:now}}, {'review.state':'running','review.lease_until':{$lte:now}}]},
    {$set:{'review.state':'running','review.token':token,'review.lease_until':now+(this.policy.timeout_s*4+30)*1000},$inc:{'review.attempt':1}},
-   {sort:{occurred_at:1,alarm_id:1},returnDocument:'after'});
+   {sort:{occurred_at:-1,alarm_id:-1},returnDocument:'after'});
   if(!row)return false;
   const fence={alarm_id:row.alarm_id,'review.generation':row.review.generation,'review.token':token,'review.state':'running',
    'handling.state':'unacknowledged','handling.revision':row.handling.revision};

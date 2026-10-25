@@ -1,0 +1,64 @@
+import {it,expect} from 'vitest';
+import {Pool} from 'pg';
+import {randomUUID,randomBytes} from 'node:crypto';
+import {mkdtempSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {PgConfigStore} from '../store/pgStore.js';
+import {GB28181Store} from '../store/gb28181Store.js';
+import {defaultGBSettings} from '../store/gbSettings.js';
+
+it.skipIf(process.env.AINVR_GB_TEST_PG!=='1')('GB parameter database: concurrent writes, encrypted secrets, stable mappings and retained history',async()=>{
+ const connection={host:'127.0.0.1',port:25439,user:'alarm_test',database:'alarm_test'};
+ const schema='gb_'+randomUUID().replaceAll('-',''),admin=new Pool(connection),dir=mkdtempSync(join(tmpdir(),'ainvr-gb-'));
+ const key=join(dir,'key');writeFileSync(key,randomBytes(32),{mode:0o600});
+ await admin.query(`CREATE SCHEMA ${schema}`);
+ const pg=new PgConfigStore({poolConfig:{...connection,options:`-c search_path=${schema}`},masterKeyPath:key});
+ try{
+  for(const file of ['001_initial_schema.sql','012_gb28181.sql','013_gb_media_addresses.sql','014_gb_channel_config.sql'])await pg.pool.query(readFileSync(new URL('../store/migrations/'+file,import.meta.url),'utf8'));
+  const store=new GB28181Store(pg),device={id:'34020000001320000001',name:'设备',version:'auto',enabled:true,mediaIPs:['192.0.2.25'],password:'test-secret-password'};
+  expect((await store.readSettings()).settings.enabled).toBe(false);
+  const writes=await Promise.allSettled([store.saveDevice(device,1,'test'),store.saveSettings(defaultGBSettings,undefined,1,'test')]);
+  expect(writes.filter(v=>v.status==='fulfilled')).toHaveLength(1);
+  let current=await store.readSettings();
+  await store.saveDevice(device,current.revision,'test');
+  expect(await pg.getSecret(`gb28181/device/${device.id}`)).toBe(device.password);
+  const cipher=(await pg.pool.query('SELECT ciphertext FROM config_secrets')).rows[0].ciphertext as Buffer;
+  expect(cipher.includes(Buffer.from(device.password))).toBe(false);
+  expect(JSON.stringify(await store.devices())).not.toContain('password');
+  expect((await store.devices())[0].mediaIPs).toEqual(['192.0.2.25']);
+  const channel='34020000001320000002';
+  await pg.pool.query('INSERT INTO gb28181_catalog(device_id,channel_id,document) VALUES($1,$2,$3)',[device.id,channel,{name:'甲板'}]);
+  current=await store.readSettings();
+  const first=await store.bind(device.id,channel,'udp',true,current.revision,'test');
+  const second=await store.bind(device.id,channel,'tcp-passive',false,first.revision,'test');
+  expect(second.result.bindingId).toBe(first.result.bindingId);
+  expect((await store.catalog(device.id))).toHaveLength(1);
+  await expect(store.removeDevice(device.id,second.revision,'test')).rejects.toMatchObject({statusCode:409});
+  expect((await store.readSettings()).revision).toBe(second.revision);
+  expect((await pg.pool.query('SELECT count(*)::int AS n FROM config_audit_logs')).rows[0].n).toBe(4);
+  const more=['34020000001320000003','34020000001320000004','34020000001320000005','34020000001320000006'];
+  for(const id of more)await pg.pool.query('INSERT INTO gb28181_catalog(device_id,channel_id,document) VALUES($1,$2,$3)',[device.id,id,{name:id}]);
+  await expect(store.bindMany(device.id,[channel,...more],'udp',second.revision,'test')).rejects.toThrow('收流上限');
+  expect((await store.readSettings()).revision).toBe(second.revision);
+  expect((await store.catalog(device.id)).filter(i=>i.enabled)).toHaveLength(0);
+  const batch=await store.bindMany(device.id,[channel,...more.slice(0,2)],'tcp-passive',second.revision,'test');
+  expect(batch.result.count).toBe(3);
+  expect((await store.catalog(device.id)).find(i=>i.id===channel)?.binding_id).toBe(first.result.bindingId);
+  await expect(store.bindMany(device.id,[channel,channel],'udp',batch.revision,'test')).rejects.toThrow('参数无效');
+  const config={name:'自定义甲板',description:'保留备注',protocols:['hls','flv'],primary:'hls'};
+  const saved=await store.saveChannel({deviceId:device.id,channelId:channel,transport:'udp',enabled:true,config},batch.revision,'test');
+  const row=(await pg.pool.query('SELECT * FROM gb28181_bindings WHERE channel_id=$1',[channel])).rows[0];
+  expect(row.channel_config).toEqual(config);expect(row.transport).toBe('udp');expect(row.binding_id).toBe(first.result.bindingId);
+  await expect(store.saveChannel({deviceId:device.id,channelId:channel,transport:'tcp-active',enabled:false,config:{...config,name:'过期修改'}},batch.revision,'test')).rejects.toMatchObject({statusCode:409});
+  expect((await pg.pool.query('SELECT channel_config FROM gb28181_bindings WHERE channel_id=$1',[channel])).rows[0].channel_config).toEqual(config);
+  expect((await store.readSettings()).revision).toBe(saved.revision);
+  const inputs=more.slice(2).map(channelId=>({deviceId:device.id,channelId,transport:'udp',enabled:true,config}));
+  await expect(store.saveChannels(inputs,saved.revision,'test')).rejects.toThrow('收流上限');
+  expect((await pg.pool.query('SELECT count(*)::int AS n FROM gb28181_bindings WHERE channel_id=ANY($1)',[more.slice(2)])).rows[0].n).toBe(0);
+  expect((await store.readSettings()).revision).toBe(saved.revision);
+  const disabled=await store.saveChannels(inputs.map(i=>({...i,enabled:false})),saved.revision,'test');
+  expect(disabled.result.count).toBe(2);
+
+ }finally{await pg.pool.end();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();rmSync(dir,{recursive:true,force:true});}
+},15000);

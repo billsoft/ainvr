@@ -1,0 +1,20 @@
+[Unit]
+Description=AINVR bounded background reference analysis
+After=network-online.target ainvr-alarm.service ainvr-llm.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sunrise/ainvr
+ExecStart=/opt/ainvr/node-v24.20.0-linux-arm64/bin/node /home/sunrise/ainvr/deploy/s100p/reference-review/release-latest-20261025/src/reference-main.mjs /home/sunrise/ainvr/deploy/s100p/runtime/alarm-service-bootstrap.json /home/sunrise/ainvr/deploy/s100p/reference-review/release-latest-20261025/ainvr_llm_image_probe
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=150
+Nice=10
+CPUQuota=50%
+MemoryMax=768M
+TasksMax=128
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

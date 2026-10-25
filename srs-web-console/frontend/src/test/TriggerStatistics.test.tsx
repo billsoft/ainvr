@@ -8,7 +8,7 @@ vi.mock('@/api/alarmTriggerService',()=>({alarmTriggerService:{source:vi.fn(),li
 vi.mock('@/api/alarmZoneService',async original=>({...await original<typeof import('@/api/alarmZoneService')>(),alarmZoneService:{list:vi.fn().mockResolvedValue({items:[]})}}))
 vi.mock('@/api/aiChannelService',()=>({aiChannelService:{list:vi.fn().mockResolvedValue([{id:'c1',name:'大门'}])}}))
 vi.mock('@/api/behaviorStatisticsService',()=>({behaviorStatisticsService:{query:vi.fn().mockResolvedValue({items:[]})}}))
-vi.mock('@/api/alarmEventService',()=>({alarmEventService:{list:vi.fn(),get:vi.fn(),confirm:vi.fn()}}))
+vi.mock('@/api/alarmEventService',()=>({alarmEventService:{list:vi.fn(),get:vi.fn(),confirm:vi.fn(),summary:vi.fn().mockResolvedValue({pending:0})}}))
 beforeEach(()=>{
   vi.clearAllMocks()
   vi.mocked(alarmTriggerService.source).mockRejectedValue(Error('offline'))

@@ -5,6 +5,8 @@ Metric history and rotated, redacted log archives remain on the local disk, neve
 """
 from __future__ import annotations
 
+import configparser
+import ipaddress
 import collections
 import base64
 import heapq
@@ -20,7 +22,9 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, build_opener, Request, HTTPRedirectHandler
+from urllib.error import HTTPError, URLError
+import socket
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(__file__).resolve().parent / 'data' / 'observability'
@@ -32,7 +36,9 @@ def deployment_units():
     if os.environ.get('AINVR_DEPLOYMENT_MODE') == 'native':
         return {**UNITS, 'ai-service': 'ainvr-ai.service',
                 'frontend': 'ainvr-web.service', 'backend': 'ainvr-backend.service',
-                'alarm-service': 'ainvr-alarm.service', 'llm-service': 'ainvr-llm.service'}
+                'alarm-service': 'ainvr-alarm.service', 'llm-service': 'ainvr-llm.service',
+                **{name: unit for name, unit in {'gb28181': 'ainvr-gb28181.service', 'gb-media': 'ainvr-gb-media.service'}.items()
+                   if Path('/etc/systemd/system', unit).exists()}}
     return UNITS
 
 
@@ -40,7 +46,7 @@ def deployment_containers():
     if os.environ.get('AINVR_DEPLOYMENT_MODE') == 'native':
         return {k: v for k, v in CONTAINERS.items() if k not in ('frontend', 'backend')}
     return CONTAINERS
-SOURCES = ['host', 'frontend', 'backend', 'srs', 'postgres', 'mongodb', 'ai-service', 'recorder', 'alarm-service', 'llm-service', 'helper']
+SOURCES = ['host', 'frontend', 'backend', 'srs', 'postgres', 'mongodb', 'ai-service', 'recorder', 'alarm-service', 'llm-service', 'gb28181', 'gb-media', 'helper']
 DEFAULTS = {'fileMiB': 5, 'files': 3, 'historyHours': 72, 'level': 'INFO', 'repeatSeconds': 60}
 LEVELS = {'DEBUG': 10, 'INFO': 20, 'WARN': 30, 'ERROR': 40}
 
@@ -86,6 +92,80 @@ def http_json(url: str):
     with build_opener(ProxyHandler({})).open(url, timeout=1.5) as r:
         return json.loads(r.read(262144))
 
+
+
+class NoProbeRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError('health probe redirect rejected')
+
+
+def private_probe(url, token=None, body=None):
+    """Fixed local management endpoints; secrets stay in headers/body, never logs."""
+    request = Request(url, data=json.dumps(body).encode() if body is not None else None,
+                      headers=({'X-Service-Token': token} if token else {}) |
+                              ({'Content-Type': 'application/json'} if body is not None else {}))
+    with build_opener(ProxyHandler({}), NoProbeRedirect()).open(request, timeout=1.5) as response:
+        data = response.read(262145)
+        if len(data) > 262144: raise ValueError('probe response exceeds limit')
+        result = json.loads(data)
+        if not isinstance(result, dict): raise ValueError('invalid health response')
+        return result
+
+
+def gateway_health(path=Path('/etc/ainvr/gb28181-bootstrap.json')):
+    config = json.loads(path.read_text())
+    host, port = config['listen'].rsplit(':', 1)
+    if not ipaddress.ip_address(host.strip('[]')).is_loopback or not 1 <= int(port) <= 65535:
+        raise ValueError('management endpoint must be loopback')
+    state = private_probe('http://' + config['listen'] + '/v1/status', token=config['token'])
+    if state.get('error'):
+        return False, '国标配置应用失败，请检查国标接入配置'
+    if state.get('configured') is False and state.get('state') == 'waiting_configuration':
+        return True, '管理接口正常；等待配置国标服务'
+    if state.get('configured') is not True or not isinstance(state.get('enabled'), bool):
+        return False, '国标状态响应无效'
+    if not state['enabled']:
+        return True, '管理接口正常；国标接入已停用'
+    return state.get('ready') is True, ('国标信令已就绪；收流状态见接入管理' if state.get('ready') is True
+                                      else '国标服务尚未就绪，请检查接入配置')
+
+
+def gb_media_health(path=Path('/etc/ainvr/gb28181-media.ini')):
+    config = configparser.ConfigParser(interpolation=None)
+    with path.open() as file: config.read_file(file)
+    port = config.getint('http', 'port')
+    if not 1 <= port <= 65535: raise ValueError('invalid media port')
+    state = private_probe(f'http://127.0.0.1:{port}/index/api/getThreadsLoad', body={'secret': config.get('api', 'secret')})
+    rows = state.get('data')
+    healthy = state.get('code') == 0 and isinstance(rows, list) and len(rows) > 0
+    return healthy, ('媒体事件循环可响应；实际收流见接入管理' if healthy else '国标媒体接口未就绪，请检查日志')
+
+
+def srs_health():
+    result = http_json('http://127.0.0.1:1985/api/v1/versions')
+    return isinstance(result, dict) and result.get('code') == 0 and isinstance(result.get('data'), dict) and bool(result['data'].get('version'))
+
+
+def frontend_health(url='http://127.0.0.1:8088/'):
+    """Probe the served application shell, independently of the API upstream."""
+    with build_opener(ProxyHandler({})).open(url, timeout=1.5) as response:
+        html = response.read(262145)
+        if len(html) > 262144:
+            raise ValueError('frontend response exceeds limit')
+        return (response.status == 200 and b'<div id="root"' in html
+                and b'type="module"' in html and b'/assets/' in html)
+
+
+def probe_failure(error, phase):
+    # Do not expose URLs, response bodies, credentials or arbitrary exception text.
+    cause = error.reason if isinstance(error, URLError) else error
+    if isinstance(error, HTTPError): reason = f'HTTP {error.code}'
+    elif isinstance(cause, (TimeoutError, socket.timeout)): reason = '响应超时'
+    elif isinstance(cause, ConnectionRefusedError): reason = '连接被拒绝，服务可能正在启动或重启'
+    elif isinstance(error, (ValueError, json.JSONDecodeError)): reason = '响应格式无效'
+    elif isinstance(cause, OSError): reason = '连接或读取失败'
+    else: reason = '采集失败（' + type(error).__name__ + '）'
+    return phase + '：' + reason
 
 def alarm_health_url(pid: int, proc=Path('/proc')) -> str:
     """Discover this unit's one loopback HTTP listener; no credentials/config read.
@@ -457,6 +537,7 @@ class Observer:
         services=[]
         for source,unit in deployment_units().items():
             row={'id':source,'state':'unknown','cpuPercent':None,'memoryBytes':None,'connections':None}
+            phase = '进程状态采集'
             try:
                 props=dict(line.split('=',1) for line in run(['systemctl','show',unit,'--property=MainPID,ActiveState,NRestarts,Result']).splitlines() if '=' in line)
                 row.update(state=props.get('ActiveState','unknown'),restarts=int(props.get('NRestarts',0)),detail=props.get('Result',''))
@@ -478,6 +559,20 @@ class Observer:
                 if usage:
                     row['cpuPercent']=self.cpu(source,sum(x[1] for x in usage),now)
                     row['memoryBytes']=sum(x[2] for x in usage)
+                if source in ('gb28181', 'gb-media'):
+                    phase = '国标业务接口探测'
+                    if row['state'] == 'active' and pid > 0:
+                        row['healthy'], row['detail'] = gateway_health() if source == 'gb28181' else gb_media_health()
+                    else:
+                        row['healthy'], row['detail'] = False, '进程未运行，请检查日志'
+                    services.append(row)
+                    continue
+                phase = 'HTTP 服务探测'
+                if source == 'frontend':
+                    row['healthy'] = row['state'] == 'active' and frontend_health()
+                    row['detail'] = '页面可访问；接口服务单独检测' if row['healthy'] else '前端页面不可用或构建文件不完整'
+                    services.append(row)
+                    continue
                 url = alarm_health_url(pid) if source == 'alarm-service' else {'ai-service': 'http://127.0.0.1:8000/health',
                        'llm-service': 'http://127.0.0.1:8300/health',
                        'recorder': 'http://127.0.0.1:8100/v1/recorder/health',
@@ -496,9 +591,9 @@ class Observer:
                     row['detail'] = recorder_detail(health)
                 else:
                     row['healthy'] = row['state'] == 'active' and bool(health)
-            except Exception:
+            except Exception as error:
                 row['healthy']=False
-                row['detail']='服务探测不可用；详见日志'
+                row['detail']=probe_failure(error, phase)
             services.append(row)
         return host,services
 
@@ -531,6 +626,13 @@ class Observer:
                            restarts=d.get('RestartCount',0),oomKilled=state.get('OOMKilled',False),
                            detail='OOM 终止' if state.get('OOMKilled') else state.get('Error',''),
                            logPolicy=d.get('HostConfig',{}).get('LogConfig',{}).get('Config',{}))
+                if source == 'srs' and row['healthy']:
+                    try:
+                        row['healthy'] = srs_health()
+                        row['detail'] = 'SRS 管理接口可响应；视频源状态见接入管理' if row['healthy'] else 'SRS 管理接口响应无效'
+                    except Exception as error:
+                        row['healthy'] = False
+                        row['detail'] = probe_failure(error, 'SRS 接口探测')
             rows.append(row)
         return rows,chosen
 
@@ -611,7 +713,7 @@ class Observer:
                     self.db.execute('INSERT OR REPLACE INTO samples VALUES(?,?)',(stamp,json.dumps(snapshot,separators=(',',':'))))
                     self.db.commit()
                 for s in services:
-                    key='state:'+s['id'];state=(s['state'],s.get('healthy'),s.get('oomKilled'),s.get('restarts'))
+                    key='state:'+s['id'];state=(s['state'],s.get('healthy'),s.get('oomKilled'),s.get('restarts'),s.get('detail') if not s.get('healthy') else None)
                     if self.previous.get(key)!=state:
                         self.append(s['id'],'INFO' if s.get('healthy') else 'ERROR',f'服务状态 {s["state"]}；{s.get("detail","")}；重启次数 {s.get("restarts",0)}','health')
                         self.previous[key]=state

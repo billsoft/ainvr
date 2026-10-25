@@ -31,7 +31,30 @@ export class AlarmRepository {
     await this.captureJobs.createIndex({state:1,next_at:1,created_at:1});
     await this.captureJobs.createIndex({finished_at:1},{expireAfterSeconds:86400});
   }
+  async isCleared(event){
+    const state=await this.db.collection('alarm_history_clear').findOne({_id:'state'});
+    return !!state&&event.occurred_at<=state.cutoff;
+  }
+  async clearAll(actor,key){
+    identity(actor,'actor');identity(key,'operation key');
+    const operations=this.db.collection('alarm_history_clear_operations'),id=digest([actor,key]);
+    let op=await operations.findOne({_id:id});
+    if(!op){
+      const cutoff=this.clock();
+      const count=await this.events.countDocuments({ingested_at:{$lte:cutoff}});
+      await operations.updateOne({_id:id},{$setOnInsert:{actor,cutoff,matched_count:count,state:'prepared',created_at:cutoff}},{upsert:true});
+      op=await operations.findOne({_id:id});
+    }
+    if(op.state!=='completed'){
+      // Durable tombstone precedes deletion: crash replay cannot recreate cleared alarms.
+      await this.db.collection('alarm_history_clear').updateOne({_id:'state'},{$max:{cutoff:op.cutoff}},{upsert:true});
+      await this.events.deleteMany({ingested_at:{$lte:op.cutoff}});
+      await operations.updateOne({_id:id},{$set:{state:'completed',completed_at:this.clock()}});
+    }
+    return {cleared:true,cutoff:op.cutoff,deleted_count:op.matched_count};
+  }
   async insert(event) {
+    if(await this.isCleared(event))return false;
     if(event.episode_id)return this.mergeEpisode(event);
     const document={...structuredClone(event),review:reviewFor(event),ingested_at:this.clock(),operations:[],logs:[{
       operation_id:`created:${event.alarm_id}`,alarm_id:event.alarm_id,action:'created',actor:'alarm-service',at:this.clock()}]};
@@ -122,7 +145,11 @@ export class AlarmRepository {
   async pendingSummary(){
     const as_of=this.clock();
     const pending=await this.events.countDocuments({...pendingFilter(),ingested_at:{$lte:as_of}},{maxTimeMS:3000});
-    return {pending,as_of};
+    const [referenceCounts,runtime]=await Promise.all([
+      this.events.aggregate([{$match:pendingFilter()},{$group:{_id:{$ifNull:['$review.reference.state','waiting']},count:{$sum:1}}}],{maxTimeMS:3000}).toArray(),
+      this.db.collection('alarm_reference_runtime').findOne({_id:'reference'},{projection:{_id:0,expires_at:1}})
+    ]);
+    return {pending,as_of,reference:{active:(runtime?.expires_at??0)>Date.now(),counts:Object.fromEntries(referenceCounts.map(r=>[r._id,r.count]))}};
   }
   async list({status='pending',channel_id,review,disposition,from,to,zone_id,behavior,limit=50,cursor}={}) {
     if(!['pending','all','acknowledged','human','ai'].includes(status))fail('invalid_filter','status');

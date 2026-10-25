@@ -4,7 +4,7 @@ import {MongoClient} from 'mongodb';
 import {randomUUID} from 'node:crypto';
 import {ReviewWorker} from '../src/review-worker.mjs';
 const enabled=!!process.env.AINVR_REVIEW_TEST_MONGO_URI;
-test('durable review: FIFO, human race, stage race, uncertainty and automatic disposition isolation',{skip:!enabled},async()=>{
+test('durable review: newest first, human race, stage race, uncertainty and automatic disposition isolation',{skip:!enabled},async()=>{
  const client=new MongoClient(process.env.AINVR_REVIEW_TEST_MONGO_URI,{serverSelectionTimeoutMS:3000});await client.connect();
  const db=client.db('ainvr_review_test_'+randomUUID().replaceAll('-','')),events=db.collection('events');
  const policy={enabled:true,description:'person',reject_below:.05,approve_above:.95};
@@ -13,7 +13,7 @@ test('durable review: FIFO, human race, stage race, uncertainty and automatic di
  let effect=async()=>{},score=.99,validated=true;const seen=[];
  const worker=new ReviewWorker({events},{qualification:async()=>validated,context:{image:async(row)=>{seen.push(row.alarm_id);return {data:Buffer.from('jpeg')}}},invoke:async()=>{await effect();return {schema:'ainvr.alarm_review.v1',validated,model:{package_sha256:'a'.repeat(64)},real_score:score}}});
  try{
-  await worker.initialize();await events.insertMany([make('second','2026-10-22T02:00:00Z'),make('first','2026-10-22T01:00:00Z')]);
+  await worker.initialize();await events.insertMany([make('second','2026-10-22T02:00:00Z'),make('first','2026-10-22T03:00:00Z')]);
   await worker.step();assert.equal(seen[0],'first');assert.equal((await events.findOne({alarm_id:'first'})).review.state,'supported');
   effect=()=>events.updateOne({alarm_id:'second'},{$set:{'handling.state':'acknowledged','handling.disposition':'processed'},$inc:{'handling.revision':1}});
   await worker.step();const human=await events.findOne({alarm_id:'second'});assert.equal(human.handling.disposition,'processed');assert.equal(human.review.reason,'human_handled');

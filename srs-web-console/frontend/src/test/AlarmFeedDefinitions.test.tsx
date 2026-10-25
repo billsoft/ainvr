@@ -3,7 +3,7 @@ import {it,expect,vi} from 'vitest'
 import {MemoryRouter} from 'react-router-dom'
 import AlarmListPage from '@/pages/AlarmCenter/AlarmListPage'
 import {alarmEventService,type AlarmEvent} from '@/api/alarmEventService'
-vi.mock('@/api/alarmEventService',()=>({alarmEventService:{list:vi.fn(),get:vi.fn(),confirm:vi.fn()}}))
+vi.mock('@/api/alarmEventService',()=>({alarmEventService:{list:vi.fn(),get:vi.fn(),confirm:vi.fn(),summary:vi.fn().mockResolvedValue({pending:1,as_of:new Date().toISOString()})}}))
 vi.mock('@/api/alarmTriggerService',()=>({alarmTriggerService:{list:vi.fn().mockResolvedValue({items:[]}),source:vi.fn()}}))
 vi.mock('@/api/alarmDefinitionService',()=>({alarmDefinitionService:{list:vi.fn().mockResolvedValue({items:[
  {trigger_id:'d1',name:'门前侵入',behavior:'region_enter',labels:[{label_id:'0',name:'person'}],duration_ms:0,alarm_enabled:true,state:'enabled',schedule:{mode:'always'},version:1}]})}}))

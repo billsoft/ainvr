@@ -22,6 +22,7 @@ interface Options {
   srsUrl: string;
   srtEnabled: boolean;
   sessions?: WhipSessions;
+  gbStatus?: () => Record<string, unknown>;
 }
 
 // A session is bound to a channel, configuration generation and credential hash.
@@ -62,8 +63,13 @@ export async function ingestRoutes(app: FastifyInstance, opts: Options) {
   app.get('/api/ingest/capabilities', async () => {
     let status: any = null;
     try { status = await worker(); } catch {}
+    const gb = opts.gbStatus?.();
     return { code: 0, data: {
       rtmp: { enabled: true, codecs: ['H.264', 'H.265'], mode: 'push', security: '可信局域网接入' },
+      gb28181: { enabled: gb?.state === 'running', configured: !!gb?.configured,
+        mode: 'gateway', versions: ['2016', '2022'], codecs: ['H.264', 'H.265'],
+        audio: ['AAC', 'G.711 A-law', 'G.711 mu-law'], validation: 'development_unverified',
+        reason: gb?.state === 'running' ? '' : '请在系统配置中启用国标网关并检查状态' },
       srt: { enabled: opts.srtEnabled, codecs: ['H.264', 'H.265'], mode: 'push', port: 10080,
         reason: opts.srtEnabled ? '' : '接入端口尚未启用', security: '可信局域网接入，服务级加密由部署配置管理' },
       webrtc: { enabled: !!opts.secrets(), codecs: ['H.264', 'H.265'], mode: 'whip',

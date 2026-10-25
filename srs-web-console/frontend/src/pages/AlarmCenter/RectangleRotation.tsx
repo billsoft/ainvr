@@ -7,6 +7,9 @@ export function RectangleRotation({points,frame,width,height,disabled,onPreview,
  const [size,setSize]=useState({width,height})
  useEffect(()=>{const el=frame.current;if(!el)return;const update=()=>{const r=el.getBoundingClientRect();if(r.width&&r.height)setSize({width:r.width,height:r.height})};update();if(typeof ResizeObserver==='undefined')return;const observer=new ResizeObserver(update);observer.observe(el);return()=>observer.disconnect()},[frame,width,height])
  const gesture=useRef<{id:number;before:ZonePoint[];latest:ZonePoint[];angle:number;center:ZonePoint}|null>(null)
+ // Drawing drafts can have no corners yet; show rotation only after a full
+ // rectangle exists. Keep hooks above this guard across draft transitions.
+ if(points.length!==4||points.some(p=>!Number.isFinite(p[0])||!Number.isFinite(p[1]))||size.width<=0||size.height<=0)return null
  const center:ZonePoint=[(points[0]![0]+points[2]![0])/2,(points[0]![1]+points[2]![1])/2]
  const mid:ZonePoint=[(points[1]![0]+points[2]![0])/2,(points[1]![1]+points[2]![1])/2]
  const dx=(mid[0]-center[0])*size.width,dy=(mid[1]-center[1])*size.height,n=Math.hypot(dx,dy)||1

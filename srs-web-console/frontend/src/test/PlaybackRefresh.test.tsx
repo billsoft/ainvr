@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router-dom'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import PlaybackPage from '@/pages/Playback'
 import { recordingService } from '@/api/recordingService'
 import { DAY_MS, startOfDay } from '@/utils/recording'
@@ -17,10 +17,15 @@ vi.mock('@/pages/Playback/RecordingTimeline', () => ({
     }}>older recordings</button>
   ),
 }))
+// A midnight run may legitimately have no recordings under Today. Freeze the
+// fixture clock at midday; this test exercises refresh, not calendar rollover.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+  vi.setSystemTime(new Date('2026-10-24T12:00:00+08:00'))
+})
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 it('queries older-than-14-day recordings and refreshes opened days', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
   const queries = vi.spyOn(recordingService, 'listSegments')
   const router = createMemoryRouter([{ path: '/playback/:channelId', element: <PlaybackPage /> }],
     { initialEntries: ['/playback/demo-detect'] })
@@ -35,7 +40,6 @@ it('queries older-than-14-day recordings and refreshes opened days', async () =>
 })
 
 it('refreshes a cached day even after its tree row is collapsed', async () => {
-  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
   const queries = vi.spyOn(recordingService, 'listSegments')
   const router = createMemoryRouter([{ path: '/playback/:channelId', element: <PlaybackPage /> }],
     { initialEntries: ['/playback/demo-detect'] })

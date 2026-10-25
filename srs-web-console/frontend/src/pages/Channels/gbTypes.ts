@@ -1,0 +1,1 @@
+export interface GBBinding {revision?:number;input_id:string;device_id:string;channel_id:string;channel_config?:{name:string;description:string;protocols:import('@/types/channel').DownstreamProtocol[];primary:import('@/types/channel').DownstreamProtocol}}

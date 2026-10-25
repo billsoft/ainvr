@@ -1,6 +1,9 @@
 // Fastify 应用构建（可复用，测试用 fastify.inject 不启端口）
 import {alarmTriggerRoutes} from './routes/alarmTriggerRoutes.js';
 import {flowRoutes} from './routes/flowRoutes.js';
+import {gb28181Routes} from './routes/gb28181.js';
+import {GB28181Store} from './store/gb28181Store.js';
+import {GB28181Sync} from './services/gb28181Sync.js';
 import {alarmArmingRoutes} from './routes/alarmArmingRoutes.js';
 import {AlarmArmingStore} from './store/alarmArmingStore.js';
 import {prepareAlarmConfiguration} from './services/alarmConfigurationStartup.js';
@@ -152,6 +155,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     secrets: () => pgStore,
     stopPublisher: id => whipSessions.terminate(id),
     withPublisherLock: (id, action) => whipSessions.exclusive(id, action),
+    protectedIdentity: async id => !!pgStore && (await pgStore.pool.query('SELECT 1 FROM gb28181_bindings WHERE input_id=$1 LIMIT 1',[id])).rowCount !== 0,
   });
 
   // 最小可用鉴权（局域网口令）：密码未设置 = 完全放行；设置了 = 校验
@@ -334,7 +338,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     }
   }
 
+  let gbSync:GB28181Sync|null=null;
   await fastify.register(ingestRoutes, {
+    gbStatus:()=>gbSync?.status()??{},
     sessions: whipSessions,
     channels: channelStore, settings: settingsStore, secrets: () => pgStore,
     token: process.env.INGEST_SERVICE_TOKEN ?? '',
@@ -379,6 +385,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       connection: () => readAppliedLlmConnection(pgStore, process.env.LLM_SERVICE_HOST ?? 'host.docker.internal'),
     });
     await instance.register(alarmProxyRoutes, {
+      passwordHash:()=>passwordCache.get(),
       connection: alarmConnection,
       principal: alarmPrincipal,
     });
@@ -392,6 +399,16 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const triggerStore=pgStore&&alarmConfigurationReady?new AlarmTriggerStore(pgStore.pool):null;
     const armingStore=pgStore&&alarmConfigurationReady?new AlarmArmingStore(pgStore.pool):null;
     const ruleSync=triggerStore&&armingStore?new AlarmRuleSync(new AlarmCombinedSnapshot(triggerStore,armingStore),alarmConnection):null;
+    const gbStore=pgStore?new GB28181Store(pgStore):null;
+    gbSync=gbStore?new GB28181Sync(gbStore,channelService):null;
+    await instance.register(gb28181Routes,{store:gbStore,sync:gbSync,principal:alarmPrincipal});
+    if(gbSync){
+      let stopped=false;
+      let timer:ReturnType<typeof setTimeout>|undefined;
+      const poll=async()=>{await gbSync?.synchronize();if(!stopped){timer=setTimeout(poll,5000);timer.unref();}};
+      instance.addHook('onReady',async()=>{void poll();});
+      instance.addHook('onClose',async()=>{stopped=true;clearTimeout(timer);});
+    }
     await instance.register(flowRoutes,{
       store:armingStore,
       principal:alarmPrincipal,connection:alarmConnection,synchronization:ruleSync,

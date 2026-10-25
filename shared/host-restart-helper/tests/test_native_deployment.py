@@ -31,6 +31,7 @@ def test_native_infrastructure_is_discovered_without_duplicate_mongo(monkeypatch
             return json.dumps(details)
         return ''
     monkeypatch.setattr(ob, 'run', fake_run)
+    monkeypatch.setattr(ob, 'srs_health', lambda: True)
     rows, chosen = ob.Observer.containers(object())
     assert 'label=com.docker.compose.project=ainvr-infra' in calls[0]
     assert set(chosen) == {'srs', 'postgres', 'mongodb'}

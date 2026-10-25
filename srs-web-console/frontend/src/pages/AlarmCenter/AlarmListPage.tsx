@@ -14,6 +14,7 @@ import type {AlarmContext} from '@/features/alarmSentences'
 import {AlarmRow} from './AlarmRow'
 import {AlarmSheet,type PendingAcknowledgement} from './AlarmSheet'
 import {AlarmConfirmation} from './AlarmConfirmation'
+import {AlarmPurgeDialog} from './AlarmPurgeDialog'
 
 // One compact row per target activity (highest level), newest first.
 // Evidence and stage history open in one detail layer; controls keep 44 px targets.
@@ -34,18 +35,21 @@ export default function AlarmListPage(){
  useEffect(()=>{
   const params=new URLSearchParams(location.search)
   if(params.get('status')==='pending'&&params.get('range')==='all'){
-   setStatus('pending');setRange('all');setChannel('');setLevel('');rangeTouched.current=false
+   setStatus('pending');setRange('all');setChannel('');setLevel('');setReview('');rangeTouched.current=false
   }
  },[location.key,location.search])
- const pickStatus=(next:Status)=>{setStatus(next);if(!rangeTouched.current)setRange(next==='pending'?'all':'today')}
+ const pickStatus=(next:Status)=>{setStatus(next);if(next==='pending')setReview('');if(!rangeTouched.current)setRange(next==='pending'?'all':'today')}
  const [channels,setChannels]=useState<{id:string;name:string}[]>([]),[triggers,setTriggers]=useState<AlarmTrigger[]>([])
  const [definitions,setDefinitions]=useState<TriggerDefinition[]>([]),[armings,setArmings]=useState<Record<string,ArmingDocument|null>>({})
  const [rows,setRows]=useState<AlarmEvent[]>([]),[cursor,setCursor]=useState<string|null>(null),[loaded,setLoaded]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(false)
+ const [purge,setPurge]=useState(false)
  const [updated,setUpdated]=useState(0)
  const [fresh,setFresh]=useState(0),[detail,setDetail]=useState<{id:string;stageId?:string;intent?:AckDisposition}|null>(null)
  const [bulk,setBulk]=useState<{phase:'asking'|'working';items:AckItem[];key:string;scope:string;uncertain?:boolean}|null>(null),[bulkResult,setBulkResult]=useState('')
  const [singleAttempts,setSingleAttempts]=useState<Record<string,PendingAcknowledgement>>({})
  const loadRequest=useRef(0)
+ const [reference,setReference]=useState<{active:boolean;counts:Record<string,number>}|null>(null)
+ useEffect(()=>{let active=true;const poll=()=>{if(document.hidden)return;void alarmEventService.summary().then(r=>{if(active)setReference(r.reference??null)}).catch(()=>{if(active)setReference(null)})};poll();const timer=setInterval(poll,15000);return()=>{active=false;clearInterval(timer)}},[])
  const [today,setToday]=useState<Record<string,number>|null>(null)
  const filters=useMemo<AlarmFilters>(()=>({...(review?{disposition:review}:{}),...(channel?{channel_id:channel}:{}),...(level?{behavior:level}:{}),...(rangeFrom(range)?{from:rangeFrom(range)}:{})}),[channel,level,range,review])
  const live=useRef(true)
@@ -65,7 +69,7 @@ export default function AlarmListPage(){
    setRows(old=>more?[...new Map([...old,...page.items].map(r=>[r.alarm_id,r])).values()]:page.items);setCursor(page.next_cursor);setLoaded(true);if(!more){setFresh(0);setUpdated(0);setBulkResult('')}}
   catch{if(live.current&&requestId===loadRequest.current)setError(true)}finally{if(live.current&&requestId===loadRequest.current)setBusy(false)}
  },[status,filters,cursor])
- useEffect(()=>{void load()},[status,filters]) // eslint-disable-line react-hooks/exhaustive-deps
+ useEffect(()=>{setRows([]);setCursor(null);setLoaded(false);setFresh(0);setUpdated(0);void load()},[status,filters]) // eslint-disable-line react-hooks/exhaustive-deps
  // Newer alarms are announced, not pushed into the feed under the user's finger.
  useEffect(()=>{let active=true;const timer=setInterval(()=>{if(document.hidden)return
   void alarmEventService.list(status,undefined,filters).then(page=>{if(active&&live.current){const newest=Math.max(0,...rows.map(r=>Date.parse(r.occurred_at)));setFresh(page.items.filter(i=>!rows.some(r=>r.alarm_id===i.alarm_id)&&Date.parse(i.occurred_at)>=newest).length);setUpdated(page.items.filter(i=>rows.some(r=>r.alarm_id===i.alarm_id&&r.version!==i.version)).length)}}).catch(()=>undefined)},15000)
@@ -90,13 +94,37 @@ export default function AlarmListPage(){
    zone_snapshot:zone?{name:zone.name,points:zone.points}:null}]:[]}
  }
  const channelName=(id:string)=>channels.find(c=>c.id===id)?.name??'已删除的通道'
- const markDone=(ids:string[],disposition:AckDisposition)=>setRows(old=>old.map(r=>ids.includes(r.alarm_id)?{...r,handling:{...r.handling,state:'acknowledged',reviewed_by_kind:'human',disposition}}:r))
+ const activeFilter=useRef({status,review});activeFilter.current={status,review}
+ const markDone=(ids:string[],disposition:AckDisposition)=>{
+  // A list request started before acknowledgement must not restore stale pending rows.
+  ++loadRequest.current;setBusy(false)
+  const current=activeFilter.current
+  setRows(old=>old.flatMap(r=>{
+   if(!ids.includes(r.alarm_id))return [r]
+   if(current.status==='pending'||current.status==='ai'||(current.review&&current.review!==disposition))return []
+   return [{...r,handling:{...r.handling,state:'acknowledged',revision:r.handling.revision+1,reviewed_by_kind:'human' as const,disposition}}]
+  }))
+ }
+ // Replayed acknowledgements may have been completed by another reviewer.
+ const reconcile=async(items:{alarm_id:string;outcome:string}[],disposition:AckDisposition)=>{
+  markDone(items.filter(i=>i.outcome==='succeeded').map(i=>i.alarm_id),disposition)
+  for(const item of items.filter(i=>i.outcome==='already_acknowledged')){
+   try{const actual=await alarmEventService.get(item.alarm_id);if(!live.current)return
+    const current=activeFilter.current
+    setRows(old=>old.flatMap(r=>r.alarm_id!==item.alarm_id?[r]:
+     (current.status==='pending'&&actual.handling.state==='acknowledged')||
+     (current.status==='human'&&actual.handling.reviewed_by_kind!=='human')||
+     (current.status==='ai'&&actual.handling.reviewed_by_kind!=='ai')||
+     (current.review&&actual.handling.disposition!==current.review)?[]:[actual]))
+   }catch{setError(true)}
+  }
+ }
  const confirmOne=async(a:AlarmEvent,note:string,disposition:AckDisposition)=>{
   const attempt=singleAttempts[a.alarm_id]??{items:[{alarm_id:a.alarm_id,expected_handling_revision:a.handling.revision}],note,disposition,key:newAlarmOperationId()}
   setSingleAttempts(old=>({...old,[a.alarm_id]:attempt}))
   try{const result=await alarmEventService.confirm(attempt.items,attempt.note,attempt.key,attempt.disposition)
    setSingleAttempts(old=>{const next={...old};delete next[a.alarm_id];return next})
-   const ok=result.items.some(i=>i.alarm_id===a.alarm_id&&ackOk(i.outcome));if(ok)markDone([a.alarm_id],attempt.disposition);return ok}
+   const ok=result.items.some(i=>i.alarm_id===a.alarm_id&&ackOk(i.outcome));if(ok)await reconcile(result.items,attempt.disposition);return ok}
   catch{return false}
  }
  const groups=[...rows.reduce((map,a)=>{const zone=a.stages?.at(-1)?.zone_id??'frame';const key=JSON.stringify([a.channel_id,zone,Math.floor(Date.parse(a.occurred_at)/60000)]);map.set(key,[...(map.get(key)??[]),a]);return map},new Map<string,AlarmEvent[]>()).entries()]
@@ -107,7 +135,7 @@ export default function AlarmListPage(){
   const batch=bulk;setBulk({...batch,phase:'working'})
   try{const result=await alarmEventService.confirm(batch.items,'',batch.key,'handled')
    const ok=result.items.filter(i=>ackOk(i.outcome)),conflict=result.items.filter(i=>i.outcome==='version_conflict').length,other=batch.items.length-ok.length-conflict
-   markDone(ok.map(i=>i.alarm_id),'handled')
+   await reconcile(ok,'handled')
    setBulkResult(`已确认 ${ok.length} 条${conflict?`；${conflict} 条记录已变化，请刷新后重试`:''}${other?`；${other} 条未确认，请刷新核对`:''}。`);setBulk(null)}
   catch{setBulkResult('结果未确认；再次确认会沿用同一操作，不会重复处理。');setBulk({...batch,phase:'asking',uncertain:true})}
  }
@@ -133,10 +161,11 @@ export default function AlarmListPage(){
     <div className="flex flex-wrap items-center gap-3">
      <div role="group" aria-label="处理状态" className="flex gap-1 rounded-base border border-line bg-surface p-1">{([['pending','未审核'],['human','已人工审核'],['ai','已 AI 审核'],['all','全部']] as const).map(([id,label])=>
       <button key={id} type="button" aria-pressed={status===id} onClick={()=>pickStatus(id)} className={`!min-h-11 rounded-base px-3 py-1.5 text-sm ${status===id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle'}`}>{label}</button>)}</div>
-     <label className="flex items-center gap-2 text-sm text-ink-subtle">结论<select aria-label="审核结论" value={review} onChange={e=>setReview(e.target.value)} className="form-input !min-h-11 w-auto"><option value="">全部</option><option value="handled">确认</option><option value="false_positive">误报</option></select></label>
+     <label className="flex items-center gap-2 text-sm text-ink-subtle">结论<select aria-label="审核结论" disabled={status==='pending'} title={status==='pending'?'未审核告警尚无确认或误报结论':undefined} value={review} onChange={e=>setReview(e.target.value)} className="form-input !min-h-11 w-auto"><option value="">全部</option><option value="handled">确认</option><option value="false_positive">误报</option></select></label>
      <label className="flex items-center gap-2 text-sm text-ink-subtle">时间<select value={range} onChange={e=>{rangeTouched.current=true;setRange(e.target.value as Range)}} className="form-input !min-h-11 w-auto py-1.5"><option value="today">今天</option><option value="7d">近 7 天</option><option value="all">全部</option></select></label>
      {updated>0&&<button type="button" className="btn-secondary min-h-11" onClick={()=>void load()}>有 {updated} 条记录状态更新，点击刷新</button>}{fresh>0&&<button type="button" onClick={()=>void load()} className="btn-primary ml-auto">新告警 {fresh} 条 · 点击刷新</button>}
      {status!=='acknowledged'&&pending.length>0&&<button type="button" disabled={!!bulk} onClick={askBulk} className={`btn-secondary !min-h-11 ${fresh>0?'':'ml-auto'}`}>确认已加载（{Math.min(200,pending.length)}）</button>}
+     <button type="button" disabled={!!bulk||purge} onClick={()=>setPurge(true)} className="btn-secondary !min-h-11 text-danger-700">清空所有告警</button>
     </div>
     <div role="group" aria-label="级别" className="flex flex-wrap gap-2">{[{id:'',name:'全部级别'},...triggerBehaviors].map(b=><button key={b.id||'all'} type="button" aria-pressed={level===b.id} onClick={()=>setLevel(b.id)} className={pill}>
      <span aria-hidden="true" className="h-2.5 w-2.5 rounded-sm" style={{background:b.id?levelLook[b.id]!.color:'#cbd5e1'}}/>{b.name}</button>)}</div>
@@ -145,15 +174,21 @@ export default function AlarmListPage(){
      <button type="button" disabled={bulk.phase==='working'} onClick={()=>setBulk(null)} className="btn-secondary !min-h-11">{bulk.uncertain?'关闭并稍后核对':'取消'}</button>
      <button type="button" disabled={bulk.phase==='working'} onClick={()=>void confirmAll()} className="btn-primary !min-h-11">{bulk.phase==='working'?'处理中…':`确认这 ${bulk.items.length} 条`}</button></div></AlarmConfirmation>}
     {bulkResult&&!bulk&&<p role="status">{bulkResult}</p>}
+    {reference&&<p role="status" className="text-sm text-ink-subtle">AI 参考分析：{reference.active?'后台运行中':'后台未运行'} · 已分析 {reference.counts.completed??0} · 分析中 {reference.counts.running??0} · 待分析 {(reference.counts.waiting??0)+(reference.counts.queued??0)} · 无法分析 {reference.counts.failed??0}。优先分析最新未审核告警；模型待验证，参考分数不改变审核结论。</p>}
    </div>
    <div aria-busy={busy} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 md:px-6">
-    {error&&<p role="alert">告警读取失败，已加载的记录保留。<button className="btn-secondary ml-2" onClick={()=>void load()}>重试</button></p>}
-    {loaded&&!rows.length&&<p className="py-10 text-center text-ink-subtle">当前筛选下没有告警。</p>}
+    {error&&<p role="alert">告警读取失败，请重试当前筛选。<button className="btn-secondary ml-2" onClick={()=>void load()}>重试</button></p>}
+    {loaded&&!rows.length&&<p className="py-10 text-center text-ink-subtle">{cursor?'本批已处理完，可继续加载更早的未审核告警。':'当前筛选下没有告警。'}</p>}
     {!!rows.length&&<div aria-label="告警记录" className="shrink-0 overflow-hidden rounded-panel border border-line bg-surface">{groups.map(([key,items])=>{const content=items.map(a=><AlarmRow key={a.alarm_id} alarm={a} trigger={triggerOf(a)} channelName={channelName(a.channel_id)} onOpen={stageId=>setDetail({id:a.alarm_id,stageId})} onHandle={intent=>setDetail({id:a.alarm_id,intent})}/>);return items.length===1?<div key={key}>{content}</div>:<details key={key} open className="border-b border-line"><summary className="min-h-11 cursor-pointer bg-surface-subtle px-3 py-2 text-sm">{channelName(items[0]!.channel_id)} · 同一区域一分钟内 {items.length} 条告警（分别审核）</summary>{content}</details>})}</div>}
     {busy&&<p role="status" className="text-center text-sm text-ink-subtle">正在读取…</p>}
     {cursor&&!busy&&<button type="button" onClick={()=>void load(true)} className="btn-secondary mx-auto">加载更早的告警</button>}
    </div>
   </main>
+  {purge&&<AlarmPurgeDialog close={()=>setPurge(false)} cleared={count=>{
+   setPurge(false);setDetail(null);setSingleAttempts({});
+   window.dispatchEvent(new Event('ainvr:alarms-changed'))
+   void load().then(()=>{setBulkResult(`已清空 ${count} 条告警，录像和流量统计保留。`);void alarmEventService.summary().then(r=>setReference(r.reference??null)).catch(()=>undefined)})
+  }}/>}
   {open&&<AlarmSheet key={`${open.alarm_id}:${detail?.intent??'details'}`} id={open.alarm_id} pendingAttempt={singleAttempts[open.alarm_id]} intent={detail?.intent?singleAttempts[open.alarm_id]?.disposition??detail.intent:undefined} initialStageId={detail?.stageId} channelName={channelName(open.channel_id)} trigger={triggerOf(open)} close={()=>setDetail(null)} confirm={confirmOne}/>}
  </div>
 }

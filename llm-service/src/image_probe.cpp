@@ -10,6 +10,25 @@ int main(int argc,char** argv) {
     std::ifstream input(argv[2],std::ios::binary); if(!input)throw std::runtime_error("open input");
     std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(input),{}};
     int width=std::stoi(argv[3]),height=std::stoi(argv[4]);
+    // Historical crop audit: JPU returns MCU-aligned storage, while the JPEG
+    // header describes visible pixels. Crop that padding on GLES, then fit the
+    // complete original crop to the model canvas without CPU image conversion.
+    if(std::string(argv[1])=="retained") {
+      if(width<1||height<1||width>8192||height>4096)throw std::invalid_argument("invalid retained crop dimensions");
+      ainvr::VpuDecoder decoder(ainvr::Codec::Jpeg,(width+63)/64*64,(height+63)/64*64);
+      if(!decoder.Submit(bytes,1,1000))throw std::runtime_error("JPEG submit timeout");
+      auto frame=decoder.Receive(3000);
+      if(!frame||frame->width<width||frame->height<height)throw std::runtime_error("JPEG visible dimensions unavailable");
+      ainvr::GlesPreprocessor color;
+      ainvr::ImageTransform fit;fit.width=width;fit.height=height;fit.letterbox=false;fit.nearest=true;fit.yuv_full_range=true;
+      fit.source_region=std::array<float,4>{0,0,float(width),float(height)};
+      auto rgba=color.RunNv12Rgba(frame->pixels,frame->width,frame->height,fit);
+      ainvr::ImageTransform encode;encode.width=896;encode.height=448;encode.yuv_full_range=true;
+      auto nv12=color.RunRgbaJpegNv12(rgba,width,height,encode);
+      ainvr::JpegEncoder encoder(896,448,90);auto jpeg=encoder.EncodeFullRangeNv12(nv12);
+      std::ofstream output(argv[5],std::ios::binary);output.write(reinterpret_cast<const char*>(jpeg.data()),jpeg.size());
+      if(!output)throw std::runtime_error("output write error");return 0;
+    }
     ainvr::QwenReviewImagePipeline pipeline; std::vector<float> out;
     if(std::string(argv[1])=="rgba")out=pipeline.RunRgba(bytes,width,height);
     else if(std::string(argv[1])=="jpeg"||std::string(argv[1])=="target") {

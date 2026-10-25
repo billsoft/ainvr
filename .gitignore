@@ -71,3 +71,7 @@ deploy/s100p/rollback-ai-*/
 # Local review release backups (retain for rollback)
 /srs-web-console/backend/dist.review-*/
 /srs-web-console/frontend/dist.review-*/
+
+# Generated reference-review releases, binaries and dependency symlinks.
+# Source and reproducible install scripts live outside this runtime directory.
+/deploy/s100p/reference-review/

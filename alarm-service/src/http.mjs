@@ -89,6 +89,11 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
   });
   app.get('/v1/events',async req=>repository.list({...req.query,limit:req.query.limit===undefined?50:Number(req.query.limit)}));
   app.get('/v1/events/summary',async()=>repository.pendingSummary());
+  app.post('/v1/events/purge',async req=>{
+    if(!req.body||Object.keys(req.body).length!==1||req.body.scope!=='all')fail('invalid_request','Explicit all scope required');
+    const who=actor(req),key=identity(req.headers['idempotency-key'],'Idempotency-Key');
+    return observationBarrier(repository).configure(()=>observationBarrier(repository).drain(()=>repository.clearAll(who,key)));
+  });
   app.get('/v1/events/:id',async req=>repository.get(req.params.id));
   app.get('/v1/events/:id/logs',async req=>({items:(await repository.get(req.params.id)).logs}));
   app.post('/v1/events/:id/acknowledgements',async req=>repository.confirm(req.params.id,req.body,actor(req),identity(req.headers['idempotency-key'],'Idempotency-Key')));

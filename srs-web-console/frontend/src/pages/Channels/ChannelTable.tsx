@@ -10,6 +10,7 @@ import { parseStreamPath } from '@/utils/channelMatching'
 import { formatCodec, isH265 } from '@/utils/codec'
 
 interface Props {
+  gbInputIds?: string[]
   rows: ChannelWithStatus[]
   pipeline: Record<string, ChannelPipelineStatus>
   host: string
@@ -37,7 +38,7 @@ function PipelineBadge({ value }: { value: PipelineState }) {
 }
 
 /** 通道列表表格（DEV_PLAN 4.1 列设计） */
-export function ChannelTable({ rows, pipeline, onPreview, onCopyPush, onEdit, onDelete }: Props) {
+export function ChannelTable({ gbInputIds=[], rows, pipeline, onPreview, onCopyPush, onEdit, onDelete }: Props) {
   const { channels: aiChannels } = useAiChannelsStore()
 
   // 构建 AI 输出流的 app/stream → AI 通道 ID 映射
@@ -119,7 +120,7 @@ export function ChannelTable({ rows, pipeline, onPreview, onCopyPush, onEdit, on
                   </div>
                 </td>
                 <td className="px-4 py-3">
-                  <ProtocolTag label={UPSTREAM_LABEL[ch.upstream.protocol]} />
+                  <ProtocolTag label={gbInputIds.includes(ch.id)?'GB/T 28181':UPSTREAM_LABEL[ch.upstream.protocol]} />
                 </td>
                 <td className="px-4 py-3 font-mono text-xs" data-testid={`codec-${ch.id}`}>
                   {ch.status.online && ch.status.videoCodec ? (

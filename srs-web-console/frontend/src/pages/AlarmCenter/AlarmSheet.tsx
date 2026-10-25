@@ -1,5 +1,5 @@
 import {ReviewFrames} from './ReviewFrames'
-import {reviewLabel,reviewReason} from '@/features/alarmReview'
+import {reviewLabel,reviewReason,referenceLabel} from '@/features/alarmReview'
 import {useEffect,useRef,useState} from 'react'
 import {Link} from 'react-router-dom'
 import {Play,X} from 'lucide-react'
@@ -73,6 +73,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
     <aside className="flex min-w-0 flex-col gap-3 border-line bg-surface-page/50 p-4 sm:p-5 md:border-l">
      <section aria-label="AI 审核结果" className="space-y-1 rounded-base border border-line p-3 text-sm">
       <h3 className="font-medium">{reviewLabel(value)}</h3>
+      {value.review?.reference&&<div className="space-y-1 border-t border-line pt-2"><p>{referenceLabel(value.review.reference)}</p><p className="text-xs text-ink-subtle">参考分析仅核对目标类别，尚不改变审核结论。旧记录缺少完整行为关键帧，仍需人工核对录像。</p>{value.review.reference.completed_at&&<p className="text-xs text-ink-subtle">{new Date(value.review.reference.completed_at).toLocaleString()} · {value.review.reference.model?.package_id}</p>}</div>}
       {value.review?.score!==undefined&&<p>属实分数 {value.review.score.toFixed(3)}（不是概率）</p>}
       {value.review?.policy?.description&&<p className="text-ink-subtle">{value.review.policy.description}</p>}
       {value.review?.completed_at&&<p className="text-xs text-ink-subtle">{new Date(value.review.completed_at).toLocaleString()} · {value.review.model?.package_id}</p>}

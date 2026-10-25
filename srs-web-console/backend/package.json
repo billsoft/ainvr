@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc -b && cp -r src/store/migrations dist/store/migrations",
+    "build": "tsc -b && mkdir -p dist/store/migrations && cp -r src/store/migrations/. dist/store/migrations/",
     "start": "node dist/server.js",
     "test": "vitest",
     "test:run": "vitest run",

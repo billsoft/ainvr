@@ -9,7 +9,7 @@ export function AlarmPendingIndicator(){
  useEffect(()=>{
   let cancelled=false
   let timer:ReturnType<typeof setTimeout>
-  const poll=async()=>{
+  const refresh=async()=>{
    if(!document.hidden){
     try{
      const result=await alarmEventService.summary()
@@ -17,10 +17,12 @@ export function AlarmPendingIndicator(){
      if(!cancelled)setCount(valid?result.pending:null)
     }catch{if(!cancelled)setCount(null)}
    }else if(!cancelled)setCount(null)
-   if(!cancelled)timer=setTimeout(poll,10000)
   }
+  const poll=async()=>{await refresh();if(!cancelled)timer=setTimeout(poll,10000)}
+  const changed=()=>void refresh()
+  window.addEventListener('ainvr:alarms-changed',changed)
   void poll()
-  return()=>{cancelled=true;clearTimeout(timer)}
+  return()=>{cancelled=true;clearTimeout(timer);window.removeEventListener('ainvr:alarms-changed',changed)}
  },[])
  const label=count===null?'待确认告警数量未知':`待确认告警 ${count} 条`
  return <Link to="/alarms?status=pending&range=all" aria-label={label} title={label}

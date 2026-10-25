@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import type {GBBinding} from './gbTypes'
+import {request} from '@/api/httpClient'
 import { Plus, Search, Video } from 'lucide-react'
 import { CopyButton } from '@/components/common/CopyButton'
 import { EmptyState } from '@/components/common/EmptyState'
@@ -50,6 +52,14 @@ export default function ChannelsPage() {
     deleteChannel,
   } = useChannelsStore()
 
+  const wizardOpener=useRef<HTMLElement|null>(null)
+  const [editingGB,setEditingGB]=useState<GBBinding|undefined>()
+  const [gbRefresh,setGbRefresh]=useState(0)
+  const [gbBindings,setGbBindings]=useState<GBBinding[]>([])
+  const [gbError,setGbError]=useState('')
+  const refreshGB=useCallback(async()=>{try{const r=await request<{items:GBBinding[]}>('/gb28181/bindings');setGbBindings(r.items);setGbError('')}catch{setGbError('国标来源信息暂不可用，普通通道仍可编辑；国标通道请重试后编辑')}} ,[])
+  useEffect(()=>{void refreshGB()},[refreshGB])
+  useEffect(()=>{if(!gbRefresh)return;let runs=0;const timer=setInterval(()=>{void refreshGB();void fetchChannels();if(++runs>=10)clearInterval(timer)},2000);return()=>clearInterval(timer)},[gbRefresh,refreshGB,fetchChannels])
   const [page, setPage] = useState(1)
   const [wizardOpen, setWizardOpen] = useState(false)
   const [editing, setEditing] = useState<ChannelWithStatus | null>(null)
@@ -122,6 +132,7 @@ export default function ChannelsPage() {
   const closeWizard = useCallback(() => {
     setWizardOpen(false)
     setEditing(null)
+    requestAnimationFrame(()=>wizardOpener.current?.focus())
   }, [])
 
   function pushUrlOf(ch: ChannelWithStatus): string | null {
@@ -187,6 +198,8 @@ export default function ChannelsPage() {
         <button
           type="button"
           onClick={() => {
+            wizardOpener.current=document.activeElement as HTMLElement
+            setEditingGB(undefined)
             setEditing(null)
             setWizardOpen(true)
           }}
@@ -197,6 +210,7 @@ export default function ChannelsPage() {
         </button>
       </div>
 
+      {gbError&&<p role="alert" className="mt-3 text-sm text-danger">{gbError}<button className="ml-2 text-primary" onClick={()=>void refreshGB()}>重试</button></p>}
       <div className="relative mt-4 max-w-md">
         <Search
           size={15}
@@ -271,6 +285,7 @@ export default function ChannelsPage() {
           <>
             <ChannelTable
               rows={pageRows}
+              gbInputIds={gbBindings.map(b=>b.input_id)}
               pipeline={pipeline}
               host={host}
               onPreview={(ch) => navigate(`/channels/${ch.id}`)}
@@ -290,7 +305,16 @@ export default function ChannelsPage() {
                   toast.info(`推流地址：${url}`)
                 }
               }}
-              onEdit={(ch) => {
+              onEdit={async(ch) => {
+                wizardOpener.current=document.activeElement as HTMLElement
+                let binding=gbBindings.find(b=>b.input_id===ch.id)
+                try{
+                  const latest=await request<{items:GBBinding[]}>('/gb28181/bindings')
+                  setGbBindings(latest.items);setGbError('');binding=latest.items.find(b=>b.input_id===ch.id)
+                }catch{
+                  if(binding){toast.error('国标配置暂不可用，请恢复后重试编辑');return}
+                }
+                setEditingGB(binding)
                 setEditing(ch)
                 setWizardOpen(true)
               }}
@@ -327,6 +351,8 @@ export default function ChannelsPage() {
         open={wizardOpen}
         mode={editing ? 'edit' : 'create'}
         initial={editing}
+        gbBinding={editingGB}
+        onGBSaved={()=>{closeWizard();setGbRefresh(n=>n+1);void refreshGB();void fetchChannels();toast.success('国标接入配置已保存，视频通道将在网关应用后自动更新')}}
         onClose={closeWizard}
         onSubmit={handleSubmit}
       />

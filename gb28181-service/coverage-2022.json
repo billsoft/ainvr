@@ -1,0 +1,345 @@
+{
+  "standard": "GB/T 28181-2022",
+  "scope": "2016/2022 camera live ingest profile; not full platform conformance",
+  "granularity": "chapter/subclause/annex groups, not every normative sentence",
+  "officialSource": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=8BBC2475624A6C31DC34A28052B3923D",
+  "sourceSHA256": "748be3dc0ad1ebd0b7ae7af86c82d7294cfd03691818f8bea197399f208302cc",
+  "rows": [
+    {
+      "clause": "1-3",
+      "scope": "context",
+      "status": "reviewed",
+      "requirement": "产品是受限摄像头实时音视频接入网关，不是全功能国标平台；引用协议不能只靠项目名证明符合。",
+      "evidence": "STANDARD-2022-AUDIT-20261025.md"
+    },
+    {
+      "clause": "4.1-4.2",
+      "scope": "applicable",
+      "status": "reviewed",
+      "requirement": "独立 SIP 网关与非 SIP 的 SRS 媒体域隔离；单向摄像头接入，不承担上级级联。",
+      "evidence": "runtime.go; bridge.go"
+    },
+    {
+      "clause": "4.3.1-4.3.4",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "UDP/TCP SIP、SDP、MANSCDP 查询及通知；独立 socket 端验证。",
+      "evidence": "TestWireRegistrationAndHeartbeat; TestXMLBoundsAndCatalog"
+    },
+    {
+      "clause": "4.3.5",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "摄像头历史录像远程回放控制不在本期；本机录像回放不是 MANSRTSP。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "4.3.6;5.1-5.2",
+      "scope": "applicable",
+      "status": "pending",
+      "requirement": "RTP/PS、TCP 分帧、RTCP 与媒体同步由固定 ZLM 承担；正常矩阵有历史结果，最终构建异常媒体验证尚需完成。",
+      "evidence": "media.go; test/gb28181/matrix.py"
+    },
+    {
+      "clause": "5.3",
+      "scope": "applicable",
+      "status": "pending",
+      "requirement": "标准端到端延迟与产品点播首帧耗时是不同指标，不能用首帧小于 10 秒证明端到端要求。",
+      "evidence": "需要带时间标记样本和接收播放测量"
+    },
+    {
+      "clause": "5.4-5.5",
+      "scope": "conditional",
+      "status": "pending",
+      "requirement": "容量、带宽余量和受控网络质量需测量；模拟网络与真机网络验收分别记录。",
+      "evidence": "test/gb28181/soak.py"
+    },
+    {
+      "clause": "5.6",
+      "scope": "conditional",
+      "status": "pending",
+      "requirement": "25 FPS 相关要求属于相应监控点与录像传输能力；AI 推理 FPS 不能作为视频传输 FPS。",
+      "evidence": "需要 25 FPS 媒体统计证据"
+    },
+    {
+      "clause": "6.1",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "设备与通道使用 20 位编号，目录结构节点允许行政区代码；内部 UUID 与外部编号分离。",
+      "evidence": "TestMixedDirectoryNodesCompleteWithoutBecomingChannels; backend gbBindings tests"
+    },
+    {
+      "clause": "6.2",
+      "scope": "profile",
+      "status": "pending",
+      "requirement": "本期 H.264/H.265，AAC/G.711；不是全部列举编码器一致性认证。",
+      "evidence": "TestBridgeCopyAndAudioPolicy; test/gb28181/matrix.py"
+    },
+    {
+      "clause": "6.3",
+      "scope": "deviation",
+      "status": "gap",
+      "requirement": "标准 PS 存储要求与 AINVR 既有 MP4 存储不同。保留产品架构，明确此差异，不能写成全标准通过。",
+      "evidence": "bridge.go; recording-service"
+    },
+    {
+      "clause": "6.4",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "SDP PS 负载、地址信任、SSRC、角色、可选属性和歧义拒绝。",
+      "evidence": "TestSDPOptionalAttributesAndAmbiguity; TestAnswerCannotRedirectMedia; TestExplicitMediaPeer"
+    },
+    {
+      "clause": "6.5-6.9",
+      "scope": "profile",
+      "status": "reviewed",
+      "requirement": "实现国标到 SRS 的受控媒体桥接；不承诺双向控制/级联网关。",
+      "evidence": "bridge.go; 用户确认的实施范围"
+    },
+    {
+      "clause": "6.10",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "2022 GB18030、2016 GB2312 查询声明；查询目前仅 ASCII；入站兼容 GB 系列并设 XML 边界。",
+      "evidence": "TestQueryProfileEncoding; TestXMLBoundsAndCatalog"
+    },
+    {
+      "clause": "6.11",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "多路径级联排除。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "7.1;9.1",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "注册挑战、刷新、注销、有效期、版本及 TCP 断链；短有效期接受为兼容策略，不是设备合规背书。",
+      "evidence": "TestWireRegistrationAndHeartbeat; TestRegistrationExpirationPriority; TestDigestReplayAndBinding"
+    },
+    {
+      "clause": "7.2;9.2",
+      "scope": "applicable",
+      "status": "pending",
+      "requirement": "点播 ACK/BYE/取消竞态已有测试；最终构建端到端组合及断网恢复仍待完成。",
+      "evidence": "TestCancelledInviteAcknowledgesLateSuccess; test/gb28181/acceptance.sh"
+    },
+    {
+      "clause": "7.3;9.3",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "云台与设备远程配置/控制排除。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "7.4;9.4",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "摄像头国标 Alarm 通知分发不属于本期接入；本地 AI 告警不是该业务。",
+      "evidence": "server.go unsupported command handling"
+    },
+    {
+      "clause": "7.5;9.5",
+      "scope": "profile",
+      "status": "tested",
+      "requirement": "设备目录、基本信息和状态查询；预置位等其他查询未提供。",
+      "evidence": "TestWireRegistrationAndHeartbeat; TestDiscoverySlowPeerDoesNotBlockAndCancellation"
+    },
+    {
+      "clause": "7.6;9.6",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "Keepalive 及设备状态更新必须来自已鉴权的当前注册端点。",
+      "evidence": "TestWireRegistrationAndHeartbeat"
+    },
+    {
+      "clause": "7.7-7.9;9.7-9.9",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "摄像头历史检索、回放和下载排除。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "7.10;9.10",
+      "scope": "applicable",
+      "status": "reviewed",
+      "requirement": "REGISTER 成功携带北京时间 XML Date；系统 NTP 走现有系统配置，不新增时钟服务器。",
+      "evidence": "server.go register"
+    },
+    {
+      "clause": "7.11;9.11",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "订阅及目录通知增量业务排除，采用有界查询刷新。",
+      "evidence": "discovery.go"
+    },
+    {
+      "clause": "7.12;9.12",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "语音广播和双向对讲排除，不能与接收音频混淆。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "7.13;9.13",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "设备远程升级排除。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "7.14;9.14",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "摄像头远程抓拍命令排除，本地 AI 截图不是该协议业务。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "8.1",
+      "scope": "profile",
+      "status": "tested",
+      "requirement": "预配置设备独立口令、注册摘要鉴权与防重放；不支持证书认证。",
+      "evidence": "TestDigestReplayAndBinding; TestAuthenticationBound"
+    },
+    {
+      "clause": "8.2",
+      "scope": "conditional",
+      "status": "reviewed",
+      "requirement": "局域网/受保护专网；管理连接认证，外部 HTTPS；不宣称摄像头 SIP TLS/IPSec 已实现。",
+      "evidence": "manager.go; media.go"
+    },
+    {
+      "clause": "8.3",
+      "scope": "deviation",
+      "status": "gap",
+      "requirement": "现有 REGISTER Authorization 不等同于 Note 域全信令摘要认证；缺少独立互操作证据，不能标为符合。",
+      "evidence": "auth.go; server.go"
+    },
+    {
+      "clause": "8.4-8.5",
+      "scope": "profile",
+      "status": "reviewed",
+      "requirement": "复用后台鉴权、凭据加密、配置版本冲突保护；不提供国标数字水印或跨域用户身份。",
+      "evidence": "TestManagerRevisionAndAuthentication; backend parameter store tests"
+    },
+    {
+      "clause": "8.6",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "高安全 GB35114 明确排除。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "A.1-A.2",
+      "scope": "profile",
+      "status": "pending",
+      "requirement": "只实现 Catalog/DeviceInfo/DeviceStatus/Keepalive 子集；XML 字段逐项约束仍需完整数据字典核查，不能以能解析替代。",
+      "evidence": "protocol.go; catalog.go"
+    },
+    {
+      "clause": "A.3-A.4",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "前端设备控制及扩展应用排除。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "B",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "MANSRTSP 历史回放命令排除。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "C",
+      "scope": "applicable",
+      "status": "pending",
+      "requirement": "PS/RTP 由 ZLM 处理；视频复制；丢包、乱序、PS 截断、时间戳异常须补最终故障证据。",
+      "evidence": "third_party/reference/ZLMediaKit/src/Rtp; test/gb28181"
+    },
+    {
+      "clause": "D",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "TCP 主动/被动角色；同租约三次有界连接尝试，至少一秒间隔，取消立即停止。媒体故障长测另列。",
+      "evidence": "TestMediaSDPRoles; TestActiveMediaRetryKeepsLeaseAndBoundedSpacing"
+    },
+    {
+      "clause": "E",
+      "scope": "profile",
+      "status": "tested",
+      "requirement": "20 位身份、SSRC 域字段、结构目录分类；行政行业字典不在前端自动生成。",
+      "evidence": "TestMediaLeaseIsolation; TestMixedDirectoryNodesCompleteWithoutBecomingChannels"
+    },
+    {
+      "clause": "F",
+      "scope": "profile",
+      "status": "pending",
+      "requirement": "受限编解码组合矩阵；不开发视频编码器，不将直通称为编码器规范认证。",
+      "evidence": "TestBridgeCopyAndAudioPolicy; test/gb28181/matrix.py"
+    },
+    {
+      "clause": "G",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "PS 单路 SDP、SSRC 匹配、可信媒体 IP、TCP 角色及可选属性。",
+      "evidence": "TestMediaSDPRoles; TestSDPOptionalAttributesAndAmbiguity; TestAnswerCannotRedirectMedia"
+    },
+    {
+      "clause": "H",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "资料性多路径级联技术，不属本期。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "I",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "2016/2022 声明与显式配置分开；无声明采用未确认 2016；更早/未知版本不伪称支持。",
+      "evidence": "TestVersionProfiles; TestVersionDeclarationIsIndependentOfProfile"
+    },
+    {
+      "clause": "J",
+      "scope": "profile",
+      "status": "tested",
+      "requirement": "保留结构节点完成目录计数后过滤，视频候选稳定映射，目录缺项不删历史。",
+      "evidence": "TestMixedDirectoryNodesCompleteWithoutBecomingChannels; backend gbBindings tests"
+    },
+    {
+      "clause": "K",
+      "scope": "applicable",
+      "status": "pending",
+      "requirement": "官方正文标注规范性；媒体保活：流丢失触发清理及退避；实际故障恢复时间和无缓存增长待最终测量。",
+      "evidence": "runtime.go stream/worker"
+    },
+    {
+      "clause": "L",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "同一路默认实时视频来源序列稳定，接收序列区分会话；不支持同通道多质量源。",
+      "evidence": "TestLiveSubjectSourceStableAcrossReconnect"
+    },
+    {
+      "clause": "M",
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "同 SN 分批、重复和乱序合并、空目录、目录总数有界；单包 XML 有产品上限。",
+      "evidence": "TestDirectoryGenerationAndDuplicates; TestXMLBoundsAndCatalog"
+    },
+    {
+      "clause": "N",
+      "scope": "excluded",
+      "status": "excluded",
+      "requirement": "域间目录订阅排除。",
+      "evidence": "用户确认的实施范围"
+    },
+    {
+      "clause": "O",
+      "scope": "profile",
+      "status": "reviewed",
+      "requirement": "采集部位元数据不参与媒体身份和协议路由，当前不提供完整部位字典编辑。",
+      "evidence": "CatalogItem"
+    }
+  ]
+}

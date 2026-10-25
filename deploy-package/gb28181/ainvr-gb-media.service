@@ -1,0 +1,24 @@
+[Unit]
+Description=AINVR isolated GB28181 RTP media receiver
+After=network.target
+
+[Service]
+Type=simple
+User=ainvr-gb
+Group=ainvr-gb
+LogsDirectory=ainvr-gb-media
+ExecStart=/opt/ainvr/gb28181/MediaServer -c /etc/ainvr/gb28181-media.ini -t 2 --affinity 0 -l 2 --log-dir /var/log/ainvr-gb-media --log-size 2 --log-slice 3
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+TasksMax=128
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

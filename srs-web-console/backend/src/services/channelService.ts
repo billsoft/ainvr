@@ -57,6 +57,7 @@ export interface ChannelServiceOptions {
   secrets?: () => Pick<PgConfigStore, 'setSecret' | 'getSecret' | 'deleteSecret'> | null;
   stopPublisher?: (id: string) => Promise<void>;
   withPublisherLock?: <T>(id: string, action: () => Promise<T>) => Promise<T>;
+  protectedIdentity?: (id: string) => Promise<boolean>;
 }
 
 export class ChannelService {
@@ -67,6 +68,7 @@ export class ChannelService {
   private readonly secrets: ChannelServiceOptions['secrets'];
   private readonly stopPublisher: ChannelServiceOptions['stopPublisher'];
   private readonly withPublisherLock: ChannelServiceOptions['withPublisherLock'];
+  private readonly protectedIdentity: ChannelServiceOptions['protectedIdentity'];
   private readonly videoProgress = new Map<string, { frames: number; cid?: string; at: number }>();
 
   constructor(opts: ChannelServiceOptions) {
@@ -77,6 +79,7 @@ export class ChannelService {
     this.secrets = opts.secrets;
     this.stopPublisher = opts.stopPublisher;
     this.withPublisherLock = opts.withPublisherLock;
+    this.protectedIdentity = opts.protectedIdentity;
   }
 
   /** 请求值在协议列表里则用请求值；否则优先 flv，否则取第一个 */
@@ -189,6 +192,10 @@ export class ChannelService {
   private async updateChannelLocked(id: string, input: UpdateChannelInput): Promise<ChannelWithStatus> {
     const old = (await this.store.read()).channels.find(c => c.id === id);
     if (!old) throw Object.assign(new Error('通道不存在'), { code: 'NOT_FOUND' });
+    const identityChanged = (['upstreamProtocol','app','streamName'] as const)
+      .some(key => input[key] !== undefined && input[key] !== old[key]);
+    if (identityChanged && await this.protectedIdentity?.(id))
+      throw Object.assign(new Error('国标输入的发布身份由设备目录管理；可修改名称，启停请使用国标接入面板'), {code:'CONFLICT'});
     const protocol = input.upstreamProtocol ?? old.upstreamProtocol;
     const reconnect = ['upstreamProtocol', 'streamName', 'app', 'rtspUrl', 'rtspTransport', 'inputUsername', 'inputPassword', 'inputEnabled']
       .some(key => (input as any)[key] !== undefined && (input as any)[key] !== (old as any)[key]);
