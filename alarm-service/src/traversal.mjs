@@ -64,12 +64,18 @@ function result(rule,frame,entry,exit,t,extra={}){
 }
 function lineStep(rule,frame,point,state){
   const t=state.traversal??={previous:null,entry:null},edge=rule.passage.edges[0],a=rule.points[edge],b=rule.points[(edge+1)%rule.points.length];
+  if(t.line_confirmation_version!==2){t.previous=null;t.line_samples=0;delete t.line_pending;t.line_confirmation_version=2;}
   const area=rule.points.reduce((s,p,i)=>{const q=rule.points[(i+1)%rule.points.length];return s+p[0]*q[1]-q[0]*p[1];},0);
   const pixel=rule.hysteresis_px!==undefined;
   const scale=q=>pixel?[q[0]*frame.source.width,q[1]*frame.source.height]:q;
   const [sa,sb,sp]=[a,b,point].map(scale);
   const signed=((sb[0]-sa[0])*(sp[1]-sa[1])-(sb[1]-sa[1])*(sp[0]-sa[0]))*Math.sign(area)/Math.hypot(sb[0]-sa[0],sb[1]-sa[1]);
-  if(Math.abs(signed)<(rule.hysteresis_px??rule.hysteresis)){
+  const tolerance=rule.hysteresis_px??rule.hysteresis??0;
+  // Separate boundary classification from passage confirmation. A point just
+  // beyond the uncertainty band is not enough to prove meaningful displacement.
+  // Both sides need two real samples beyond 2x the configured tolerance.
+  const clearance=2*tolerance,clear=Math.abs(signed)+eps>=clearance;
+  if(Math.abs(signed)<tolerance){
     // Boundary uncertainty neither proves the destination nor flips the origin.
     if(t.line_pending){t.line_pending.samples=0;t.line_pending.since=null;}
     return null;
@@ -79,25 +85,27 @@ function lineStep(rule,frame,point,state){
   if(!prev||prev.side===current.side){
     // A one-frame jump and return is cancelled, not counted once each way.
     delete t.line_pending;
-    t.line_samples=prev?Math.min(2,(t.line_samples??1)+1):1;
+    t.line_samples=clear?Math.min(2,(t.line_samples??0)+1):(t.line_samples??0);
     t.previous=current;return null;
   }
   const pending=t.line_pending;
   if(pending){
     if(current.pts===pending.last_pts)return null;
-    pending.last_pts=current.pts;pending.since??=current.pts;pending.samples++;
+    pending.last_pts=current.pts;
+    if(!clear){pending.samples=0;pending.since=null;return null;}
+    pending.since??=current.pts;pending.samples++;
     const stableMs=Number(BigInt(current.pts)-BigInt(pending.since))/1e6;
     if(pending.samples<2||stableMs<120)return null;
     delete t.line_pending;t.previous=current;t.line_samples=2;
     const passage=result(rule,frame,pending.entry,pending.exit,t,{line_direction:current.side>0?'inward':'outward'});
-    return {...passage,confirmation:{policy:'line-observed-sides-v1',before_samples:2,after_samples:pending.samples,stable_ms:stableMs,confirmed_at:current.at,confirmed_frame_id:current.frame_id}};
+    return {...passage,confirmation:{policy:'line-observed-sides-v2',clearance:clearance,clearance_unit:pixel?'source_pixels':'normalized',before_samples:2,after_samples:pending.samples,stable_ms:stableMs,confirmed_at:current.at,confirmed_frame_id:current.frame_id}};
   }
   // One observation on either side is insufficient even for a confirmed track.
-  if((t.line_samples??1)<2){t.previous=current;t.line_samples=1;return null;}
+  if((t.line_samples??0)<2){t.previous=current;t.line_samples=clear?1:0;return null;}
   const h=hits([a,b],prev.point,point).find(h=>h.edge===0);
   // hits([a,b]) sees the reverse edge too. Finite edge endpoints are ambiguous.
-  if(!h||Math.hypot(h.point[0]-a[0],h.point[1]-a[1])<eps||Math.hypot(h.point[0]-b[0],h.point[1]-b[1])<eps){t.previous=current;t.line_samples=1;return null;}
-  t.line_pending={entry:{...prev,boundary:h.point,edge},exit:{...current,boundary:h.point,edge},samples:1,since:current.pts,last_pts:current.pts};
+  if(!h||Math.hypot(h.point[0]-a[0],h.point[1]-a[1])<eps||Math.hypot(h.point[0]-b[0],h.point[1]-b[1])<eps){t.previous=current;t.line_samples=clear?1:0;return null;}
+  t.line_pending={entry:{...prev,boundary:h.point,edge},exit:{...current,boundary:h.point,edge},samples:clear?1:0,since:clear?current.pts:null,last_pts:current.pts};
   return null;
 }
 export function traversalStep(rule,frame,point,state){

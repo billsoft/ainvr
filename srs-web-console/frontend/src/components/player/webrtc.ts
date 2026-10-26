@@ -118,12 +118,23 @@ function attachEncodedFrameTap(
  */
 export function installSeiTap(scope: Record<string, unknown>, uuid: number[]): void {
   const pattern = new Uint8Array(uuid)
+  // EBSP escapes 00 00 00/01/02/03. Match the on-wire UUID as well as RBSP.
+  // This function is serialized into a Worker; keep both patterns self-contained.
+  const escaped: number[] = []
+  let zeros = 0
+  for (const byte of uuid) {
+    if (zeros >= 2 && byte <= 3) { escaped.push(3); zeros = 0 }
+    escaped.push(byte)
+    zeros = byte === 0 ? zeros + 1 : 0
+  }
+  const wirePattern = new Uint8Array(escaped)
   const find = (d: Uint8Array): number => {
-    const n = pattern.length
-    for (let i = d.indexOf(pattern[0]!); i >= 0 && i <= d.length - n; i = d.indexOf(pattern[0]!, i + 1)) {
-      let j = 1
-      while (j < n && d[i + j] === pattern[j]) j++
-      if (j === n) return i
+    for (let i = d.indexOf(pattern[0]!); i >= 0; i = d.indexOf(pattern[0]!, i + 1)) {
+      for (const candidate of [pattern, wirePattern]) {
+        let j = 1
+        while (j < candidate.length && d[i + j] === candidate[j]) j++
+        if (j === candidate.length) return i
+      }
     }
     return -1
   }

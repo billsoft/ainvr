@@ -75,6 +75,43 @@ describe('VideoPlayer 叠框状态不被初始化覆盖', () => {
     await act(async () => { overlayProps.at(-1)!.onMode!('approx') })
     expect(screen.getByRole('status')).toHaveTextContent('识别框近似对齐')
   })
+  it('does not interrupt live video just because inference metadata is absent', async () => {
+    vi.mocked(attachWebRTC).mockImplementation(async () => handle(true))
+    vi.useFakeTimers()
+    render(<VideoPlayer {...props} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const video = screen.getByTestId('video-player').querySelector('video')!
+    await act(async () => {
+      video.dispatchEvent(new Event('playing'))
+    })
+    await act(async () => {
+      vi.mocked(attachWebRTC).mock.calls[0]![1].onEncodedVideoFrame!(9000, new Uint8Array(0), 0)
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(attachWebRTC).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('status')).toHaveTextContent('未收到逐帧识别数据')
+  })
+  it('keeps AI transport on a brief visibility switch; reconnects after a long pause', async () => {
+    vi.mocked(attachWebRTC).mockImplementation(async () => handle(true))
+    vi.useFakeTimers()
+    render(<VideoPlayer {...props} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    const video = screen.getByTestId('video-player').querySelector('video')!
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    await act(async () => { video.dispatchEvent(new Event('playing')) })
+    await act(async () => {
+      hidden.mockReturnValue(true); document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(500)
+      hidden.mockReturnValue(false); document.dispatchEvent(new Event('visibilitychange'))
+    })
+    expect(attachWebRTC).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      hidden.mockReturnValue(true); document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(60_000)
+      hidden.mockReturnValue(false); document.dispatchEvent(new Event('visibilitychange'))
+    })
+    expect(attachWebRTC).toHaveBeenCalledTimes(2)
+  })
   it.each(['exact', 'approx'] as const)('建连晚返回不能覆盖已成功的 %s 模式', async (mode) => {
     let resolve!: (value: ReturnType<typeof handle>) => void
     vi.mocked(attachWebRTC).mockImplementation(() => new Promise(r => { resolve = r }))

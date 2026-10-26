@@ -303,6 +303,7 @@ export function VideoPlayer({
       }
       return
     }
+    console.warn('[VideoPlayer] reconnect:', reason)
     recent.push(now)
     autoReconnectsRef.current = recent
     // 同一轮事件循环的重复回调也不能重复扣额度。
@@ -398,6 +399,9 @@ export function VideoPlayer({
     if (noSeiRetryRef.current >= MAX_NO_SEI_RETRIES) return
     const t = setTimeout(() => {
       if (!mountedRef.current) return
+      // Missing/alignment-delayed metadata is not a broken video transport.
+      // Only rebuild a silent encoded tap; late metadata can recover in place.
+      if (receiveStatsRef.current.encoded > 0) return
       noSeiRetryRef.current += 1
       scheduleWebRtcReconnect('识别框首次同步超时，重建接收连接')
     }, 15000)
@@ -408,10 +412,8 @@ export function VideoPlayer({
     noSeiRetryRef.current = 0
   }, [aiChannelId, stream.host, stream.app, stream.stream])
 
-  // 回到前台时决定是否重建 WebRTC：后台浏览器停止解码、直播点继续前进。
-  // 非播放中（连接中/失败）一律重建；AI 通道必须重建以恢复逐帧同步（新一代
-  // 播放器会清空精确 SEI 缓存）；普通通道只在隐藏足够久时重建，短暂切换标签页
-  // 画面仍在追直播，不必让所有画面黑一下、同时冲击流媒体服务。
+  // Brief tab switches preserve both ordinary and AI video connections.
+  // A long background pause may leave the decoder behind the live edge.
   useEffect(() => {
     if (!canConnect || !state.chain.includes('webrtc')) return
     let hiddenAt: number | null = document.hidden ? performance.now() : null
@@ -423,7 +425,7 @@ export function VideoPlayer({
       const hiddenFor = hiddenAt === null ? 0 : performance.now() - hiddenAt
       hiddenAt = null
       const ai = !!aiChannelIdRef.current
-      if (statusRef.current === 'playing' && !ai && hiddenFor < VISIBILITY_RECONNECT_AFTER_MS) return
+      if (statusRef.current === 'playing' && hiddenFor < VISIBILITY_RECONNECT_AFTER_MS) return
       autoReconnectsRef.current = []
       if (ai) setOverlaySync('syncing')
       dispatch({ type: 'retry' })
@@ -651,7 +653,7 @@ export function VideoPlayer({
                   console.info('[player-receive]', JSON.stringify({ stream: stream.stream, generation: state.generation,
                     encoded: receiveStatsRef.current.encoded, parsed: receiveStatsRef.current.parsed,
                     bytes: inbound?.bytesReceived, packets: inbound?.packetsReceived,
-                    lost: inbound?.packetsLost, framesReceived: inbound?.framesReceived,
+                    lost: inbound?.packetsLost, nackCount: inbound?.nackCount, pliCount: inbound?.pliCount, framesReceived: inbound?.framesReceived,
                     framesDecoded, keyFramesDecoded: inbound?.keyFramesDecoded,
                     decoder: inbound?.decoderImplementation, ready: video.readyState }))
                 }

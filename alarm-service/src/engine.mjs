@@ -187,7 +187,7 @@ export function evaluate(checkpoint,input,rules) {
       if(!s.fired)remember();else delete s.review_compact;
       continue;
     }
-    if(!evidence){if(r.behavior!=='region_traverse'||!holdPassage(r,f,s)){if(s.traversal?.entry)issues.push(`passage_observation_gap:${r.id}:${t.track_id}`);breakEvidence(s);}continue;}
+    if(!evidence){if(r.behavior!=='region_traverse'||!holdPassage(r,f,s)){if(s.traversal?.entry||s.traversal?.line_pending)issues.push(`passage_observation_gap:${r.id}:${t.track_id}`);breakEvidence(s);}continue;}
     const b=t.bbox;let p=anchor([(b.x+b.w/2)/W,(b.y+b.h*(r.anchor==='center'?0.5:1))/H]);
     // The centre-nearest copy is sufficient for membership, not for distance
     // to an asymmetric polygon. Compare adjacent copies for outside approach.
@@ -212,7 +212,13 @@ export function evaluate(checkpoint,input,rules) {
         if(s.traversal?.line_pending){s.traversal.line_pending.samples=0;s.traversal.line_pending.since=null;}
         capture(s.review_compact?.before);capture(s.review_compact?.start);
       }
-      if(!restorePassage(r,f,t,p,s)){const reason=s.passage_rejection??"passage_gap_rejected";breakEvidence(s);restorePassage(r,f,t,p,s);issues.push(`${reason}:${r.id}:${t.track_id}`);}
+      if(!restorePassage(r,f,t,p,s)){
+        const reason=s.passage_rejection??"passage_gap_rejected";
+        const activePassage=!!(s.traversal?.entry||s.traversal?.line_pending);
+        breakEvidence(s);restorePassage(r,f,t,p,s);
+        // A far-away track timing out is not evidence of a missed passage.
+        if(activePassage)issues.push(`${reason}:${r.id}:${t.track_id}`);
+      }
       const oldEntry=s.traversal?.entry;
       const tr=traversalStep(g,f,p,s);
       if(!oldEntry&&s.traversal?.entry)begin();

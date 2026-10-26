@@ -48,7 +48,9 @@ export function AiDetectionOverlay({
   const expiresRef = useRef(0)
   const lastPtsRef = useRef<number | null>(null)
   const startedRef = useRef(0)
+  const presentedAtRef = useRef(0)
   const [staleSeconds, setStaleSeconds] = useState(0)
+  const [videoStalled, setVideoStalled] = useState(false)
   const trailBuffer = useRef(new TrackTrailBuffer())
   const trails = useRef<TrackTrail[]>([])
   // Trails are history:drawn whether or not the current frame has its own result,
@@ -64,7 +66,9 @@ export function AiDetectionOverlay({
     expiresRef.current = 0
     lastPtsRef.current = null
     startedRef.current = performance.now()
+    presentedAtRef.current = startedRef.current
     setStaleSeconds(0)
+    setVideoStalled(false)
     trailBuffer.current.clear()
     trails.current = []
     lastResultRef.current = Number.NEGATIVE_INFINITY
@@ -72,12 +76,38 @@ export function AiDetectionOverlay({
 
   useEffect(() => {
     if (!enabled || !video || (!getSeiForFrame && !getSeiApprox)) return
+    let mediaTime = video.currentTime
+    let progressedAt = performance.now()
+    let stale = false
     const timer = window.setInterval(() => {
-      const age = performance.now() - (Number.isFinite(lastResultRef.current) ? lastResultRef.current : startedRef.current)
-      setStaleSeconds(age >= 3000 ? Math.floor(age / 1000) : 0)
+      const now = performance.now()
+      // Pausing or backgrounding is intentional, not a recognition outage.
+      if (document.hidden || video.paused || video.ended) {
+        progressedAt = now
+        presentedAtRef.current = now
+        mediaTime = video.currentTime
+        setStaleSeconds(0)
+        setVideoStalled(false)
+        return
+      }
+      if (video.currentTime !== mediaTime) { mediaTime = video.currentTime; progressedAt = now }
+      const age = now - (Number.isFinite(lastResultRef.current) ? lastResultRef.current : startedRef.current)
+      // currentTime may advance while a live decoder repeats its last image.
+      const hasFrameCallback = typeof video.requestVideoFrameCallback === 'function'
+      const stalled = now - (hasFrameCallback ? presentedAtRef.current : progressedAt) >= 3000
+      const seconds = age >= 3000 ? Math.floor(age / 1000) : 0
+      setVideoStalled(stalled)
+      setStaleSeconds(seconds)
+      if (seconds && !stale && channelId) {
+        console.warn('[sei-overlay] stale', JSON.stringify({ channelId, videoStalled: stalled, ageMs: Math.round(age), ...getReceiveStats?.() }))
+        reportOverlayDiag({ channelId, event: 'heartbeat', offsetS: 0, offsetJumpMs: 0,
+          nowS: Date.now() / 1000, matchGapMs: age, protocol,
+          matchType: modeSeenRef.current === 'exact' ? 'sei' : 'sei-approx' })
+      }
+      stale = seconds > 0
     }, 500)
     return () => window.clearInterval(timer)
-  }, [enabled, video, getSeiForFrame, getSeiApprox, resetKey])
+  }, [enabled, video, getSeiForFrame, getSeiApprox, getReceiveStats, channelId, protocol, resetKey])
 
   useEffect(() => {
     countersRef.current = { displayed: 0, matched: 0, held: 0, missing: 0, drawn: 0 }
@@ -151,6 +181,7 @@ export function AiDetectionOverlay({
     if (hasRvfc) {
       const onFrame = (now: number, metadata: Meta) => {
         if (cancelled) return
+        presentedAtRef.current = performance.now()
         if (typeof metadata.rtpTimestamp === 'number' && getSeiForFrame) {
           apply(getSeiForFrame(metadata.rtpTimestamp), 'exact')
         } else if (getSeiApprox) {
@@ -242,5 +273,5 @@ export function AiDetectionOverlay({
     return () => cancelAnimationFrame(animation)
   }, [enabled, video, drawFrame, showTrails, showDetections])
 
-  return enabled ? <><canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" data-testid="ai-detection-overlay" />{staleSeconds > 0 && <div role="status" className="pointer-events-none absolute bottom-12 left-2 z-20 max-w-[90%] rounded bg-black/75 px-2 py-1 text-xs text-amber-200">识别结果已 {staleSeconds} 秒未更新，旧框已隐藏</div>}</> : null
+  return enabled ? <><canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" data-testid="ai-detection-overlay" />{staleSeconds > 0 && <div role="status" className="pointer-events-none absolute bottom-12 left-2 z-20 max-w-[90%] rounded bg-black/75 px-2 py-1 text-xs text-amber-200">{videoStalled ? '播放画面暂时停滞，正在等待恢复' : `识别标注已 ${staleSeconds} 秒未与画面对齐，旧框已隐藏`}</div>}</> : null
 }

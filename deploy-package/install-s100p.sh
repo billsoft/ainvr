@@ -107,6 +107,8 @@ install -m 755 "$ROOT/srs-web-console/deploy/srs-observer.py" /opt/ainvr/srs-obs
 install -m 644 "$ROOT/srs-web-console/deploy/ainvr-srs-observer.service" /etc/systemd/system/ainvr-srs-observer.service
 install -m 644 "$ROOT/deploy-package/60-ainvr-writeback.conf" /etc/sysctl.d/60-ainvr-writeback.conf
 sysctl -p /etc/sysctl.d/60-ainvr-writeback.conf
+install -m 644 "$ROOT/deploy-package/61-ainvr-media-buffers.conf" /etc/sysctl.d/61-ainvr-media-buffers.conf
+sysctl -p /etc/sysctl.d/61-ainvr-media-buffers.conf
 # Native backend/helpers communicate over loopback; no console Docker subnets.
 python3 "$ROOT/deploy-package/configure-internal-network.py" --static-only
 systemctl daemon-reload

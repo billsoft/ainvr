@@ -42,6 +42,27 @@ describe('installSeiTap（Worker 内运行的 SEI 扫描）', () => {
     expect(posted[1]).toMatchObject({ ts: 93600, data: null }) // 没有 SEI 也要报，缓存据此记"本帧无框"
   })
 
+  it('recognizes escaped wire UUID without changing the encoded video', async () => {
+    const wire: number[] = []
+    let zeros = 0
+    for (const b of SEI_UUID) {
+      if (zeros >= 2 && b <= 3) { wire.push(3); zeros = 0 }
+      wire.push(b); zeros = b === 0 ? zeros + 1 : 0
+    }
+    const frame = { timestamp: 9000, data: new Uint8Array([0, 0, 1, 6, ...wire, ...new TextEncoder().encode('{"d":[]}')]).buffer }
+    const posted: Array<{ data: Uint8Array | null }> = []
+    const scope: Record<string, unknown> = { performance: { timeOrigin: 0, now: () => 1 }, postMessage: (m: never) => posted.push(m) }
+    installSeiTap(scope, Array.from(SEI_UUID))
+    const passed: unknown[] = []
+    ;(scope.onrtctransform as (e: unknown) => void)({ transformer: {
+      readable: new ReadableStream({ start(c) { c.enqueue(frame); c.close() } }),
+      writable: new WritableStream({ write: f => void passed.push(f) }),
+    } })
+    await vi.waitFor(() => expect(passed).toEqual([frame]))
+    expect(posted[0]?.data).not.toBeNull()
+    expect(Array.from(posted[0]!.data!.subarray(0, wire.length))).toEqual(wire)
+  })
+
   it('回调里出错也放行帧（叠框不能拖垮解码）', async () => {
     const scope: Record<string, unknown> = {
       performance: { timeOrigin: 0, now: () => 0 },

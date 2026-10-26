@@ -14,13 +14,28 @@
  * canvas 2D context 在 jsdom 下不可用，所以这里不校验像素，而是校验
  * "叠加层向 getSeiForFrame 要的是哪一帧的结果"——这正是本次改动的核心语义。
  */
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, act, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiDetectionOverlay } from '@/components/player/AiDetectionOverlay'
 
 afterEach(cleanup)
 
 describe('live overlay expiry', () => {
+  it('distinguishes a stalled video from missing overlays and ignores user pause', () => {
+    vi.useFakeTimers()
+    try {
+      const v = makeVideo()
+      Object.defineProperty(v.el, 'paused', { value: false, configurable: true })
+      render(<AiDetectionOverlay video={v.el} enabled getSeiForFrame={() => null} />)
+      act(() => { vi.advanceTimersByTime(3500) })
+      expect(screen.getByRole('status')).toHaveTextContent('播放画面暂时停滞')
+      act(() => { v.el.currentTime = 4; v.present(90000); vi.advanceTimersByTime(500) })
+      expect(screen.getByRole('status')).toHaveTextContent('未与画面对齐')
+      Object.defineProperty(v.el, 'paused', { value: true, configurable: true })
+      act(() => { vi.advanceTimersByTime(500) })
+      expect(screen.queryByRole('status')).toBeNull()
+    } finally { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() }
+  })
   it('hides every box consistently while preserving the independent trail path', () => {
     const callbacks = new Map<number, FrameRequestCallback>()
     let next = 0

@@ -419,7 +419,7 @@ describe('VideoPlayer · WebRTC 延迟/冻屏看门狗自动重连', () => {
     hidden.mockRestore()
   })
 
-  it('AI 通道：切回前台总是重连，以恢复识别框逐帧同步', async () => {
+  it('AI 通道：短暂切回前台保留连接和逐帧缓存', async () => {
     vi.useFakeTimers()
     mockAttachHealthy()
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
@@ -428,7 +428,7 @@ describe('VideoPlayer · WebRTC 延迟/冻屏看门狗自动重连', () => {
     await playingEvent()
     await act(async () => { visibility(hidden, true); await vi.advanceTimersByTimeAsync(2_000) })
     await act(async () => { visibility(hidden, false) })
-    expect(attachWebRTC).toHaveBeenCalledTimes(2)
+    expect(attachWebRTC).toHaveBeenCalledTimes(1)
     unmount()
     hidden.mockRestore()
   })

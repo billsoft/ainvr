@@ -47,3 +47,13 @@ test('checkpoint replay is deterministic and a completed passage cannot repeat',
  const run=replay([.2,.4,{x:.5,predicted:true},.6,.8,.9]);
  assert.equal(run.events.length,1);assert.equal(JSON.parse(JSON.stringify(run.cp)).states[JSON.stringify(['r',1,'t'])].traversal.entry,null);
 });
+
+test('continuity diagnostics require an active passage, not a distant waiting track',()=>{
+ const passage={kind:'line',edges:[3],max_gap_ms:1000};
+ const far=replay([.1,.1,{x:.1,predicted:true},{x:.1,ms:1400}],{passage});
+ assert.equal(far.events.length,0);
+ assert.equal(far.issues.some(x=>x.startsWith('passage_gap_')),false);
+ const active=replay([.1,.2,.4,{x:.4,predicted:true},{x:.5,ms:1400}],{passage});
+ assert.equal(active.events.length,0);
+ assert.ok(active.issues.some(x=>x.startsWith('passage_gap_timeout:')));
+});
