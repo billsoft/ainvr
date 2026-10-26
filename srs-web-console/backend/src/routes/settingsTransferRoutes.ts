@@ -106,6 +106,17 @@ export function registerSettingsTransferRoutes(fastify: FastifyInstance, opts: S
 
     const { mode, data } = parse.data;
     const channels = data.channels as Channel[];
+    if(channels.some(c=>c.onvif && c.upstreamProtocol!=='rtsp'))
+      return reply.code(400).send({error:'ONVIF 绑定仅用于 RTSP 输入'});
+    function validateManagedSources(items:Channel[]) {
+      const seen=new Set<string>();
+      for(const c of items) if(c.onvif) {
+        const b=c.onvif,key=JSON.stringify([b.deviceId,b.service,b.videoSource,b.profileToken]);
+        if(seen.has(key))throw new ImportValidationError('同一 ONVIF 设备码流不能重复导入为多个输入');
+        seen.add(key);
+      }
+    }
+
     // 所有字段先校验，不能修改了通道才发现设置无效。
     const settingsParse = data.settings ? SettingsUpdateSchema.partial().safeParse(data.settings) : null;
     if (settingsParse && !settingsParse.success) {
@@ -140,7 +151,7 @@ export function registerSettingsTransferRoutes(fastify: FastifyInstance, opts: S
     let previous: Channel[] = [];
     try {
       if (mode === 'overwrite') {
-        await channelStore.mutate(d => { previous = d.channels; d.channels = channels; });
+        await channelStore.mutate(d => { validateManagedSources(channels); previous = d.channels; d.channels = channels; });
         channelCount = channels.length;
       } else {
         // merge: 按 id 合并；streamName 冲突以导入为准
@@ -169,6 +180,7 @@ export function registerSettingsTransferRoutes(fastify: FastifyInstance, opts: S
             ownerOf.set(c.streamName, c.id);
           }
 
+          validateManagedSources(merged);
           d.channels = merged;
           channelCount = merged.length;
         });

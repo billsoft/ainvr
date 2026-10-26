@@ -20,7 +20,9 @@ export interface BffChannel {
   rtspTransport?: 'tcp' | 'udp'
   inputUsername?: string
   inputEnabled?: boolean
+  inputAudioMode?: 'off' | 'auto'
   inputGeneration?: string
+  onvif?: Channel['onvif']
   inputCredentialSet?: boolean
   createdAt: number
   updatedAt: number
@@ -38,6 +40,7 @@ export interface BffChannelStatus {
   srsOnline: boolean
   inputState?: string
   videoCodec?: string
+  audioCodec?: string
   videoLevel?: string
   videoWidth?: number
   videoHeight?: number
@@ -63,6 +66,7 @@ function mapUpstream(bff: BffChannel): Channel['upstream'] {
     rtspTransport: bff.rtspTransport,
     inputUsername: bff.inputUsername,
     inputEnabled: bff.inputEnabled,
+    inputAudioMode: bff.inputAudioMode,
     inputCredentialSet: bff.inputCredentialSet,
   }
 }
@@ -92,6 +96,7 @@ function mapStatus(bff: BffChannel): ChannelStatus {
     viewerCount: bff.status.clients,
     bitrateKbps: bff.status.bitrate,
     videoCodec: bff.status.videoCodec,
+    audioCodec: bff.status.audioCodec,
     videoLevel: bff.status.videoLevel,
     videoWidth: bff.status.videoWidth,
     videoHeight: bff.status.videoHeight,
@@ -103,6 +108,7 @@ function mapChannel(bff: BffChannel): ChannelWithStatus {
   return {
     id: bff.id,
     inputGeneration: bff.inputGeneration,
+    onvif: bff.onvif,
     name: bff.name,
     description: bff.remark,
     upstream: mapUpstream(bff),
@@ -131,6 +137,7 @@ function mapCreateInput(input: ChannelCreateInput): Record<string, unknown> {
     downstreamProtocols: input.downstream.protocols.filter(p => DOWNSTREAM_WHITELIST.includes(p)),
     rtspUrl: input.upstream.rtspUrl,
     rtspTransport: input.upstream.rtspTransport,
+    inputAudioMode: input.upstream.inputAudioMode,
     inputUsername: input.upstream.inputUsername,
     inputPassword: input.upstream.inputPassword,
     inputEnabled: input.upstream.inputEnabled,

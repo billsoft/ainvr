@@ -120,7 +120,7 @@ export function ChannelTable({ gbInputIds=[], rows, pipeline, onPreview, onCopyP
                   </div>
                 </td>
                 <td className="px-4 py-3">
-                  <ProtocolTag label={gbInputIds.includes(ch.id)?'GB/T 28181':UPSTREAM_LABEL[ch.upstream.protocol]} />
+                  <ProtocolTag label={ch.onvif?'ONVIF':gbInputIds.includes(ch.id)?'GB/T 28181':UPSTREAM_LABEL[ch.upstream.protocol]} />
                 </td>
                 <td className="px-4 py-3 font-mono text-xs" data-testid={`codec-${ch.id}`}>
                   {ch.status.online && ch.status.videoCodec ? (

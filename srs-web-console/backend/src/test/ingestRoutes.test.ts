@@ -91,3 +91,16 @@ describe('input publishing boundary', () => {
     } finally { fetchMock.mockRestore(); await app.close(); }
   });
 });
+
+
+it('runtime ONVIF sources require service authentication and the current input generation',async()=>{
+ const generation='33333333-3333-4333-8333-333333333333';const source=vi.fn(async()=>({source:'rtsp://operator:private@192.0.2.10/runtime',refreshAfterProbe:true,allowedCIDRs:['192.0.2.0/24']}));
+ const app=Fastify();await app.register(ingestRoutes,{channels:{read:async()=>({channels:[{id,inputGeneration:generation,onvif:{deviceId:id},inputEnabled:true}]})} as any,settings:{} as any,secrets:()=>null,token:'internal-secret',workerUrl:'http://worker',srsUrl:'http://srs',srtEnabled:false,onvifAllowed:()=>true,onvifSource:source});
+ try{
+  expect((await app.inject({method:'POST',url:'/internal/ingest/source',payload:{id,generation}})).statusCode).toBe(403);
+  expect((await app.inject({method:'POST',url:'/internal/ingest/source',headers:{'x-service-token':'internal-secret'},payload:{id,generation:'44444444-4444-4444-8444-444444444444'}})).statusCode).toBe(409);
+  expect(source).not.toHaveBeenCalled();
+  const result=await app.inject({method:'POST',url:'/internal/ingest/source',headers:{'x-service-token':'internal-secret'},payload:{id,generation}});
+  expect(result.statusCode).toBe(200);expect(result.headers['cache-control']).toBe('no-store');expect(result.json().generation).toBe(generation);
+ }finally{await app.close()}
+});

@@ -11,6 +11,7 @@ export interface WizardFormValue {
   inputUsername?: string
   inputPassword?: string
   inputEnabled?: boolean
+  inputAudioMode?: 'off' | 'auto'
   upstreamProtocol: UpstreamProtocol
   app: string
   stream: string
@@ -27,6 +28,7 @@ export const DEFAULT_WIZARD_VALUE: WizardFormValue = {
   inputUsername: '',
   inputPassword: '',
   inputEnabled: true,
+  inputAudioMode: 'off',
   upstreamProtocol: 'rtmp',
   app: 'live',
   stream: '',
@@ -97,6 +99,7 @@ export function toServiceInput(v: WizardFormValue) {
       stream: v.stream,
       rtspUrl: v.sourceType === 'rtsp' ? v.rtspUrl.trim() : undefined,
       rtspTransport: v.sourceType === 'rtsp' ? v.rtspTransport ?? 'tcp' : undefined,
+      inputAudioMode: v.sourceType === 'rtsp' ? v.inputAudioMode ?? 'off' : undefined,
       inputUsername: v.sourceType === 'rtsp' && v.inputUsername ? v.inputUsername : undefined,
       inputPassword: v.sourceType === 'rtsp' && v.inputPassword ? v.inputPassword : undefined,
       inputEnabled: v.inputEnabled ?? true,
@@ -109,7 +112,7 @@ export function toServiceInput(v: WizardFormValue) {
 export function fromChannel(ch: {
   name: string
   description?: string
-  upstream: { protocol: UpstreamProtocol; app: string; stream: string; rtspUrl?: string; rtspTransport?: 'tcp' | 'udp'; inputUsername?: string; inputEnabled?: boolean }
+  upstream: { protocol: UpstreamProtocol; app: string; stream: string; rtspUrl?: string; rtspTransport?: 'tcp' | 'udp'; inputUsername?: string; inputEnabled?: boolean; inputAudioMode?: 'off' | 'auto' }
   downstream: { protocols: DownstreamProtocol[]; primary: DownstreamProtocol }
 }): WizardFormValue {
   return {
@@ -121,6 +124,7 @@ export function fromChannel(ch: {
     inputUsername: ch.upstream.inputUsername ?? '',
     inputPassword: '',
     inputEnabled: ch.upstream.inputEnabled ?? true,
+    inputAudioMode: ch.upstream.inputAudioMode ?? 'off',
     upstreamProtocol: ch.upstream.protocol === 'rtsp' ? 'rtmp' : ch.upstream.protocol,
     app: ch.upstream.app,
     stream: ch.upstream.stream,

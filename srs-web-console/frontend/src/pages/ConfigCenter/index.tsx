@@ -2,6 +2,7 @@ import { configApplySummary, usesStartupConfig } from '@/features/configApplySum
 import {AlarmServiceConfigForm} from './AlarmServiceConfigForm'
 import {LlmServiceConfigForm} from './LlmServiceConfigForm'
 import {GBConfigForm} from './GBConfigForm'
+import {OnvifConfigForm} from './OnvifConfigForm'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { CheckCircle2, CircleAlert, Clock3, Loader2 } from 'lucide-react'
@@ -37,6 +38,7 @@ const categories: [string, string, string][] = [
   ['database', '数据库配置', '参数库、AI识别历史库'],
   ['streaming', '流媒体配置', '流媒体服务连接、WebRTC 候选地址'],
   ['gb28181', '国标接入配置', 'SIP 平台、媒体端口、接入容量'],
+  ['onvif', 'ONVIF 接入', '设备发现、访问网段、服务连接'],
   ['ai-service', 'AI微服务配置', '识别服务连接、鉴权'],
   ['recorder', '录像微服务配置', '存储、配额、分段'],
   ['alarm-service', '告警微服务配置', '独立服务连接、数据库、鉴权'],
@@ -144,7 +146,7 @@ export default function ConfigCenterPage() {
   const savePartial = (service: string, group: string, name: string, config: Record<string, unknown>, description?: string) =>
     saveBatch([{ service, group, name, config, description }])
   // 授权管理、远程协助不走配置发布，不显示配置应用状态
-  const standalone = category === 'gb28181' || category === 'license' || category === 'remote-assist' || category === 'time' || category === 'network'
+  const standalone = category === 'onvif' || category === 'gb28181' || category === 'license' || category === 'remote-assist' || category === 'time' || category === 'network'
   const doc = (service: string) => documents.find(d => d.service === service && d.group === 'system' && d.name === 'settings')
     ?? (service === 'backend' && runtimeSettings ? { service, group: 'system', name: 'settings', config: runtimeSettings } as ConfigDocument : undefined)
   return <div className="flex flex-col gap-4">
@@ -171,7 +173,7 @@ export default function ConfigCenterPage() {
         : category === 'remote-assist' ? <div className="min-w-0"><RemoteAssistForm /></div>
         // 日期和时间同样不依赖参数库：时间无效、业务暂停时必须能进来校准
         : category === 'time' ? <div className="min-w-0"><SystemTimeForm /></div>
-        : category === 'gb28181' ? <GBConfigForm /> : category === 'network' ? <NetworkConfigForm /> : loading ? <p>加载中…</p> : loadError ? null : <fieldset disabled={busy} className="min-w-0">
+        : category === 'onvif' ? <OnvifConfigForm /> : category === 'gb28181' ? <GBConfigForm /> : category === 'network' ? <NetworkConfigForm /> : loading ? <p>加载中…</p> : loadError ? null : <fieldset disabled={busy} className="min-w-0">
         {category === 'basic' && <BasicConfigForm backendDoc={doc('backend')} onSavePartial={savePartial}
           onBusyChange={setPasswordBusy} />}
         {category === 'alarm-service' && <AlarmServiceConfigForm document={doc('alarm-service')} onSaveBatch={saveBatch} />}

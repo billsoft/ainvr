@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { CopyButton } from '@/components/common/CopyButton'
@@ -13,12 +13,13 @@ import { useChannelsStore } from '@/store/channels'
 import { channelService } from '@/api/channelService'
 import { buildPlayUrl, buildPushUrl, formatBitrate, formatDuration } from '@/utils/format'
 import { isAiChannelOf, getAiModelLabel, getAiOutputShortName } from '@/utils/channelMatching'
-import { DOWNSTREAM_LABEL, UPSTREAM_LABEL, type ChannelWithStatus } from '@/types/channel'
+import { DOWNSTREAM_LABEL, UPSTREAM_LABEL, type ChannelWithStatus, type ChannelStatus } from '@/types/channel'
 import type { AiChannel } from '@/types/aiChannel'
 import { useAiServiceCapabilities } from '@/hooks/useAiServiceCapabilities'
 import { formatCodec, getCodecSupport, hevcLevelIdc, isH265, planLivePlayback } from '@/utils/codec'
 import { useServerRtcHevc } from '@/hooks/useServerRtcHevc'
 import { PublishCredential } from './PublishCredential'
+import { InputDiagnostics } from './InputDiagnostics'
 
 /** 通道详情页：基本信息 + 全协议推/拉流地址 + AI 处理链路图（T 型） */
 /** H.265 通道：本机能否播放、识别框模式、源流准入观察（设计 §8.4①） */
@@ -59,6 +60,7 @@ export default function ChannelDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [ch, setCh] = useState<ChannelWithStatus | null>(null)
   const [loading, setLoading] = useState(true)
+  const updateInputStatus=useCallback((status: ChannelStatus)=>setCh(current=>current?{...current,status}:current),[])
   const host = window.location.hostname
 
   // AI 处理（归属该通道的 AI 通道）
@@ -159,6 +161,7 @@ export default function ChannelDetailPage() {
         <StatusBadge online={ch.status.online} />
       </div>
 
+      {ch.upstream.protocol==='rtsp'&&<InputDiagnostics channel={ch} onStatus={updateInputStatus}/>}
       {/* T 型数据流图 */}
       {ch && !serviceUnreachable && (
         <ChannelPipelineDiagram
@@ -186,7 +189,7 @@ export default function ChannelDetailPage() {
 
       <dl className="mt-4 grid grid-cols-2 gap-3 rounded-panel border border-line bg-surface p-4 shadow-card sm:grid-cols-4">
         {[
-          ['上行协议', UPSTREAM_LABEL[ch.upstream.protocol]],
+          ['上行协议', ch.onvif ? 'ONVIF / RTSP' : UPSTREAM_LABEL[ch.upstream.protocol]],
           ['流名', `${ch.upstream.app}/${ch.upstream.stream}`],
           ['观看人数', ch.status.online ? String(ch.status.viewerCount) : '-'],
           ['码率', ch.status.online ? formatBitrate(ch.status.bitrateKbps) : '-'],
@@ -226,8 +229,8 @@ export default function ChannelDetailPage() {
             </div>
           ) : (
             <p className="text-sm text-ink-subtle">
-              RTSP 来源由系统自动拉流，无需手动推流。源地址：
-              <code className="font-mono text-xs">{ch.upstream.rtspUrl}</code>
+              {ch.onvif?'ONVIF 摄像头由系统自动接入。视频源／码流：':'RTSP 来源由系统自动拉流，无需手动推流。源地址：'}
+              <code className="font-mono text-xs">{ch.onvif?`${ch.onvif.videoSource} / ${ch.onvif.profileToken}`:ch.upstream.rtspUrl}</code>
             </p>
           )}
         </div>

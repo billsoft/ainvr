@@ -188,6 +188,7 @@ cp "$REPO_ROOT/shared/python/config_center_client.py" "$REPO_ROOT/shared/python/
 cp "$REPO_ROOT/shared/python/internal_network.py" "$PYDST/shared/python/"
 mkdir -p "$PYDST/ingest-service"
 cp "$REPO_ROOT/ingest-service/main.py" "$PYDST/ingest-service/"
+cp "$REPO_ROOT/ingest-service/media_policy.py" "$REPO_ROOT/ingest-service/async_launch.py" "$PYDST/ingest-service/"
 cp "$REPO_ROOT/ingest-service/deploy/ainvr-ingest.service.example" "$PYDST/ainvr-ingest.service"
 mkdir -p "$PYDST/shared/license-enforcer"
 cp "$REPO_ROOT/shared/license-enforcer/main.py" "$PYDST/shared/license-enforcer/"

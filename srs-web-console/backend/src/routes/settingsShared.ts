@@ -1,5 +1,6 @@
 // 系统状态 & 设置路由
 import { z } from 'zod';
+import { onvifBindingSchema } from '../services/onvifManager.js';
 import { SrsClient } from '../services/srsClient.js';
 import { JsonStore } from '../store/jsonStore.js';
 import { ChannelService, ChannelStoreData } from '../services/channelService.js';
@@ -46,8 +47,9 @@ export const AiServiceUpdateSchema = z.object({
 
 // 更新设置的 Schema（不含密码）
 export const IngestSettingsSchema = z.object({
-  maxPullChannels: z.number().int().min(1).max(8),
+  maxPullChannels: z.number().int().min(1).max(32),
   connectTimeoutSec: z.number().int().min(3).max(30),
+  maxAudioTranscodes: z.number().int().min(0).max(8).default(2),
 });
 export const SettingsUpdateSchema = z.object({
   srsApiHost: z.string().min(3).max(200).optional(),
@@ -112,6 +114,9 @@ export const ChannelSchema = z.object({
   primaryProtocol: DownstreamProtocolSchema.optional(),
   remark: z.string().max(500).optional(),
   rtspUrl: z.string().url().optional(),
+  rtspTransport: z.enum(['tcp','udp']).optional(),
+  inputAudioMode: z.enum(['off','auto']).optional(),
+  onvif: onvifBindingSchema.optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });

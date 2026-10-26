@@ -23,6 +23,7 @@ export interface ChannelUpstream {
   inputPassword?: string
   inputCredentialSet?: boolean
   inputEnabled?: boolean
+  inputAudioMode?: 'off' | 'auto'
 }
 
 /** 通道下行配置（1 对多：一个上行流可按多种协议拉流） */
@@ -35,6 +36,7 @@ export interface ChannelDownstream {
 
 /** 通道（元数据，持久化于 BFF） */
 export interface Channel {
+  onvif?: import('@/api/onvifService').OnvifBinding
   id: string
   /** Opaque source generation; cosmetic channel edits do not change it. */
   inputGeneration?: string

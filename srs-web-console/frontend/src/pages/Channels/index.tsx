@@ -351,6 +351,7 @@ export default function ChannelsPage() {
         open={wizardOpen}
         mode={editing ? 'edit' : 'create'}
         initial={editing}
+        onOnvifSaved={()=>{closeWizard();void fetchChannels();toast.success('ONVIF 通道配置已保存，将持续接入所选音视频码流')}}
         gbBinding={editingGB}
         onGBSaved={()=>{closeWizard();setGbRefresh(n=>n+1);void refreshGB();void fetchChannels();toast.success('国标接入配置已保存，视频通道将在网关应用后自动更新')}}
         onClose={closeWizard}

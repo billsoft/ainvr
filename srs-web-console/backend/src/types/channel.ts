@@ -2,6 +2,19 @@
 export type UpstreamProtocol = 'rtmp' | 'srt' | 'webrtc' | 'rtsp';
 export type DownstreamProtocol = 'flv' | 'hls' | 'webrtc' | 'rtmp' | 'srt';
 
+export interface OnvifBinding {
+  deviceId: string;
+  deviceVersion: number;
+  service: 'media1' | 'media2';
+  profileToken: string;
+  videoSource: string;
+}
+
+export function sameOnvifBinding(a:OnvifBinding|undefined,b:OnvifBinding|undefined):boolean {
+  if(!a||!b)return a===b;
+  return (['deviceId','deviceVersion','service','profileToken','videoSource'] as const).every(key=>a[key]===b[key]);
+}
+
 export interface Channel {
   id: string;
   name: string;
@@ -18,6 +31,8 @@ export interface Channel {
   inputUsername?: string;
   inputCredentialSet?: boolean;
   sourceRef?: string;       // encrypted configuration-store reference; never returned to browsers
+  onvif?: OnvifBinding;
+  inputAudioMode?: 'off' | 'auto';
   createdAt: number;
   updatedAt: number;
 }
@@ -29,7 +44,8 @@ export interface ChannelStatus {
   srsOnline: boolean;       // SRS 服务本身是否可达
   inputState?: string;
   connectionActive?: boolean;
-  videoCodec?: string;      // 来自 SRS video.codec：H.264 为 "H264"、H.265 为 "HEVC"；未在线/未知时不存在
+  videoCodec?: string;
+  audioCodec?: string;      // 来自 SRS video.codec：H.264 为 "H264"、H.265 为 "HEVC"；未在线/未知时不存在
   videoLevel?: string;      // SRS video.level（实测为字符串，如 "5.1"）——前端按它判定本机能否播放 H.265
   videoWidth?: number;
   videoHeight?: number;
@@ -72,7 +88,7 @@ export interface AppSettings {
   // rtcCandidateIp 不在这里：唯一归属是 srs/system/settings 文档
   // （store/srsAdapter.ts），这份文档的写入路径从不触达 writeCandidateIp。
   srsVersion: string;       // SRS 版本号展示用（默认基线版本）
-  ingest?: { maxPullChannels: number; connectTimeoutSec: number };
+  ingest?: { maxPullChannels: number; connectTimeoutSec: number; maxAudioTranscodes?: number };
   aiService: AiServiceSettings;
   /** 可选：磁盘上的旧 settings.json 没有此字段，时代码用 fallback 兜底 */
   recorderService?: RecorderServiceSettings;

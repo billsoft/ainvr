@@ -1,0 +1,24 @@
+{
+  "source": "https://github.com/onvif/specs",
+  "notes": "Unmodified official WSDL and schema snapshots; original copyright and terms retained. No runtime downloads from camera-provided WSDL.",
+  "commit": "e5790320408db7acb19a8f826411f1a94083bf96",
+  "retrievedAt": "2026-10-26",
+  "files": [
+    {
+      "sha256": "814014a52e4c284ce3933fdcb4afa5fbd02bc157c8c95c3cef51b01e3113e75b",
+      "file": "devicemgmt.wsdl"
+    },
+    {
+      "sha256": "09ee51ef000d58c4c52ed33f30eea6331a14e53355c0d7dcfb129deb7e40e63e",
+      "file": "media1.wsdl"
+    },
+    {
+      "sha256": "a4b92f3650cdd701ea4734c35f8329b6f7dacc4ad8c3eb3369dde3aea5e5c70d",
+      "file": "media2.wsdl"
+    },
+    {
+      "sha256": "3438bdb7bc203fa71420a993a4aed6112184d759e020f7b45b7555c824484904",
+      "file": "onvif.xsd"
+    }
+  ]
+}

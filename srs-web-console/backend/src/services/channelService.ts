@@ -2,6 +2,12 @@
 // 职责：通道 CRUD + SRS 状态聚合 + URL 生成 + streamName 唯一性校验
 
 import crypto from 'node:crypto';
+import {sameOnvifBinding} from '../types/channel.js';
+
+function publicSourceUrl(value:string|undefined,onvif:OnvifBinding|undefined){
+  if(!value||!onvif)return value;
+  const url=new URL(value);url.search='';return url.toString();
+}
 import { normalizeInput, hasVideo, safeChannel } from './ingestPolicy.js';
 import type { PgConfigStore } from '../store/pgStore.js';
 import { JsonStore } from '../store/jsonStore.js';
@@ -13,6 +19,7 @@ import {
   UpstreamProtocol,
   DownstreamProtocol,
   AppSettings,
+  OnvifBinding,
 } from '../types/channel.js';
 
 export interface ChannelStoreData {
@@ -20,6 +27,8 @@ export interface ChannelStoreData {
 }
 
 export interface CreateChannelInput {
+  onvif?: OnvifBinding;
+  inputAudioMode?: 'off' | 'auto';
   name: string;
   upstreamProtocol: UpstreamProtocol;
   streamName?: string;     // 不传则自动生成
@@ -35,6 +44,9 @@ export interface CreateChannelInput {
 }
 
 export interface UpdateChannelInput {
+  onvif?: OnvifBinding;
+  inputAudioMode?: 'off' | 'auto';
+  expectedGeneration?: string;
   name?: string;
   upstreamProtocol?: UpstreamProtocol;
   streamName?: string;
@@ -148,6 +160,8 @@ export class ChannelService {
       inputEnabled: input.inputEnabled ?? true,
       inputGeneration: crypto.randomUUID(),
       inputUsername: input.inputUsername,
+      onvif: input.onvif,
+      inputAudioMode: input.inputAudioMode,
       createdAt: now,
       updatedAt: now,
     };
@@ -158,7 +172,7 @@ export class ChannelService {
       if (!secrets) throw new Error('安全凭据存储尚未就绪');
       channel.sourceRef = `backend/ingest/${channel.id}/${channel.inputGeneration}`;
       await secrets.setSecret(channel.sourceRef, normalized.secret);
-      channel.rtspUrl = normalized.publicUrl;
+      channel.rtspUrl = publicSourceUrl(normalized.publicUrl,channel.onvif);
       channel.inputCredentialSet = !!new URL(normalized.secret).password;
     }
     let data: ChannelStoreData;
@@ -170,6 +184,8 @@ export class ChannelService {
         (err as any).code = 'STREAM_NAME_DUPLICATE';
         throw err;
       }
+      if (channel.onvif && d.channels.some(c => c.onvif && c.onvif.deviceId === channel.onvif!.deviceId && c.onvif.service === channel.onvif!.service && c.onvif.profileToken === channel.onvif!.profileToken && c.onvif.videoSource === channel.onvif!.videoSource))
+        throw Object.assign(new Error('该设备码流已经接入'), {code:'CONFLICT'});
       d.channels.push(channel);
     }); } catch (e) {
       if (channel.sourceRef) await this.secrets?.()?.deleteSecret(channel.sourceRef);
@@ -185,6 +201,18 @@ export class ChannelService {
 
   // ---- 更新 ----
 
+  /** Restored public backups have no encrypted media URI until revalidated. */
+  async hasInputSource(id:string,generation:string|undefined):Promise<boolean> {
+    const c=(await this.store.read()).channels.find(c=>c.id===id);
+    return !!c && c.inputGeneration===generation && !!c.sourceRef && !!(await this.secrets?.()?.getSecret(c.sourceRef));
+  }
+
+  /** Internal comparison only; encrypted source URLs never leave the service. */
+  async inputSourceMatches(id:string,generation:string|undefined,source:string):Promise<boolean> {
+    const c=(await this.store.read()).channels.find(c=>c.id===id);
+    return !!c && c.inputGeneration===generation && !!c.sourceRef && await this.secrets?.()?.getSecret(c.sourceRef)===source;
+  }
+
   async updateChannel(id: string, input: UpdateChannelInput): Promise<ChannelWithStatus> {
     return this.withPublisherLock ? this.withPublisherLock(id, () => this.updateChannelLocked(id, input)) : this.updateChannelLocked(id, input);
   }
@@ -192,12 +220,16 @@ export class ChannelService {
   private async updateChannelLocked(id: string, input: UpdateChannelInput): Promise<ChannelWithStatus> {
     const old = (await this.store.read()).channels.find(c => c.id === id);
     if (!old) throw Object.assign(new Error('通道不存在'), { code: 'NOT_FOUND' });
+    if (input.expectedGeneration !== undefined && old.inputGeneration !== input.expectedGeneration)
+      throw Object.assign(new Error('配置已变化，请刷新后重试'), {code:'CONFLICT'});
+    if (old.onvif && !input.onvif && ['upstreamProtocol','rtspUrl','inputUsername','inputPassword'].some(k => (input as any)[k] !== undefined))
+      throw Object.assign(new Error('请在 ONVIF 接入向导中修改设备和码流'), {code:'CONFLICT'});
     const identityChanged = (['upstreamProtocol','app','streamName'] as const)
       .some(key => input[key] !== undefined && input[key] !== old[key]);
     if (identityChanged && await this.protectedIdentity?.(id))
       throw Object.assign(new Error('国标输入的发布身份由设备目录管理；可修改名称，启停请使用国标接入面板'), {code:'CONFLICT'});
     const protocol = input.upstreamProtocol ?? old.upstreamProtocol;
-    const reconnect = ['upstreamProtocol', 'streamName', 'app', 'rtspUrl', 'rtspTransport', 'inputUsername', 'inputPassword', 'inputEnabled']
+    const reconnect = !sameOnvifBinding(input.onvif ?? old.onvif,old.onvif) || ['upstreamProtocol', 'streamName', 'app', 'rtspUrl', 'rtspTransport', 'inputUsername', 'inputPassword', 'inputEnabled','inputAudioMode']
       .some(key => (input as any)[key] !== undefined && (input as any)[key] !== (old as any)[key]);
     let normalized: ReturnType<typeof normalizeInput> = {};
     let sourceRef: string | undefined;
@@ -208,7 +240,7 @@ export class ChannelService {
       if (old.sourceRef) {
         const previous = await this.secrets?.()?.getSecret(old.sourceRef);
         if (!previous) throw new Error('原摄像头凭据无法读取，请恢复凭据存储后重试');
-        const target = new URL(url!);
+        const target = new URL(input.rtspUrl ?? previous);
         const credentials = new URL(previous);
         // 编辑时留空保留原值；地址中显式填写的新凭据优先。
         if (!target.username && !input.inputUsername) target.username = credentials.username;
@@ -233,6 +265,8 @@ export class ChannelService {
 
       const ch = d.channels[idx];
       if (ch.inputGeneration !== old.inputGeneration) throw Object.assign(new Error('配置已变化，请刷新后重试'), { code: 'CONFLICT' });
+      if (input.onvif && d.channels.some(c=>c.id!==id&&c.onvif&&c.onvif.deviceId===input.onvif!.deviceId&&c.onvif.service===input.onvif!.service&&c.onvif.profileToken===input.onvif!.profileToken&&c.onvif.videoSource===input.onvif!.videoSource))
+        throw Object.assign(new Error('该设备码流已经接入'),{code:'CONFLICT'});
 
       // 若改 streamName，校验唯一性（排除自己）
       if (input.streamName && input.streamName !== ch.streamName) {
@@ -261,10 +295,12 @@ export class ChannelService {
       if (input.rtspTransport !== undefined) ch.rtspTransport = input.rtspTransport;
       if (input.inputEnabled !== undefined) ch.inputEnabled = input.inputEnabled;
       if (input.inputUsername) ch.inputUsername = input.inputUsername;
+      if (input.onvif) ch.onvif = input.onvif;
+      if (input.inputAudioMode !== undefined) ch.inputAudioMode = input.inputAudioMode;
       ch.inputGeneration = generation;
       if (sourceRef) {
         ch.sourceRef = sourceRef;
-        ch.rtspUrl = normalized.publicUrl;
+        ch.rtspUrl = publicSourceUrl(normalized.publicUrl,ch.onvif);
         ch.inputCredentialSet = !!new URL(normalized.secret!).password;
       }
       if (protocol !== 'rtsp') {
@@ -429,6 +465,7 @@ export class ChannelService {
       connectionActive: !!stream?.publish?.active,
       inputState: online ? 'streaming' : stream?.publish?.active ? 'waiting-video' : 'waiting-source',
       videoCodec: stream?.video?.codec,
+      audioCodec: stream?.audio?.codec,
       videoLevel: stream?.video?.level === undefined ? undefined : String(stream.video.level),
       videoWidth: stream?.video?.width,
       videoHeight: stream?.video?.height,

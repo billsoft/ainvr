@@ -1,5 +1,8 @@
 // Fastify 应用构建（可复用，测试用 fastify.inject 不启端口）
 import { storageRoutes } from './routes/storage.js';
+import {onvifRoutes} from './routes/onvif.js';
+import {OnvifStore} from './store/onvifStore.js';
+import {OnvifManager} from './services/onvifManager.js';
 import {alarmTriggerRoutes} from './routes/alarmTriggerRoutes.js';
 import {flowRoutes} from './routes/flowRoutes.js';
 import {gb28181Routes} from './routes/gb28181.js';
@@ -343,7 +346,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   }
 
   let gbSync:GB28181Sync|null=null;
+  let onvifManager:OnvifManager|null=null;
   await fastify.register(ingestRoutes, {
+    onvifAllowed:c=>onvifManager?.inputAllowed(c)??false,
+    onvifSource:async c=>{if(!onvifManager)throw new Error('ONVIF unavailable');return onvifManager.connectSource(c)},
+    onvifStatus:()=>onvifManager?.status()??{},
     gbStatus:()=>gbSync?.status()??{},
     sessions: whipSessions,
     channels: channelStore, settings: settingsStore, secrets: () => pgStore,
@@ -407,6 +414,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const gbStore=pgStore?new GB28181Store(pgStore):null;
     gbSync=gbStore?new GB28181Sync(gbStore,channelService):null;
     await instance.register(gb28181Routes,{store:gbStore,sync:gbSync,principal:alarmPrincipal});
+    const onvifStore=pgStore?new OnvifStore(pgStore):null;
+    onvifManager=onvifStore?new OnvifManager(onvifStore,channelService):null;
+    await instance.register(onvifRoutes,{store:onvifStore,manager:onvifManager,principal:alarmPrincipal});
+    if(onvifManager){let stopped=false;let timer:ReturnType<typeof setTimeout>|undefined;
+      const poll=async()=>{await onvifManager?.synchronize();if(!stopped){timer=setTimeout(poll,5000);timer.unref()}};
+      instance.addHook('onReady',async()=>{void poll()});instance.addHook('onClose',async()=>{stopped=true;clearTimeout(timer)});
+    }
     if(gbSync){
       let stopped=false;
       let timer:ReturnType<typeof setTimeout>|undefined;

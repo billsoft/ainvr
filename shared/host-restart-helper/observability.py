@@ -37,7 +37,7 @@ def deployment_units():
         return {**UNITS, 'ai-service': 'ainvr-ai.service',
                 'frontend': 'ainvr-web.service', 'backend': 'ainvr-backend.service',
                 'alarm-service': 'ainvr-alarm.service', 'llm-service': 'ainvr-llm.service',
-                **{name: unit for name, unit in {'gb28181': 'ainvr-gb28181.service', 'gb-media': 'ainvr-gb-media.service'}.items()
+                **{name: unit for name, unit in {'onvif': 'ainvr-onvif.service', 'gb28181': 'ainvr-gb28181.service', 'gb-media': 'ainvr-gb-media.service'}.items()
                    if Path('/etc/systemd/system', unit).exists()}}
     return UNITS
 
@@ -46,7 +46,7 @@ def deployment_containers():
     if os.environ.get('AINVR_DEPLOYMENT_MODE') == 'native':
         return {k: v for k, v in CONTAINERS.items() if k not in ('frontend', 'backend')}
     return CONTAINERS
-SOURCES = ['host', 'frontend', 'backend', 'srs', 'postgres', 'mongodb', 'ai-service', 'recorder', 'alarm-service', 'llm-service', 'gb28181', 'gb-media', 'helper']
+SOURCES = ['host', 'frontend', 'backend', 'srs', 'postgres', 'mongodb', 'ai-service', 'recorder', 'alarm-service', 'llm-service', 'onvif', 'gb28181', 'gb-media', 'helper']
 DEFAULTS = {'fileMiB': 5, 'files': 3, 'historyHours': 72, 'level': 'INFO', 'repeatSeconds': 60}
 LEVELS = {'DEBUG': 10, 'INFO': 20, 'WARN': 30, 'ERROR': 40}
 
@@ -110,6 +110,16 @@ def private_probe(url, token=None, body=None):
         result = json.loads(data)
         if not isinstance(result, dict): raise ValueError('invalid health response')
         return result
+
+
+def onvif_health(path=Path('/etc/ainvr/onvif-bootstrap.json')):
+    config = json.loads(path.read_text())
+    host, port = config['listen'].rsplit(':', 1)
+    if not ipaddress.ip_address(host.strip('[]')).is_loopback or not 1 <= int(port) <= 65535:
+        raise ValueError('management endpoint must be loopback')
+    state = private_probe('http://' + config['listen'] + '/health', token=config['token'])
+    ready = state.get('ready') is True
+    return ready, ('控制接口正常；ONVIF 接入已启用' if state.get('enabled') else '控制接口正常；ONVIF 接入已停用') if ready else 'ONVIF 控制服务尚未就绪'
 
 
 def gateway_health(path=Path('/etc/ainvr/gb28181-bootstrap.json')):
@@ -559,10 +569,10 @@ class Observer:
                 if usage:
                     row['cpuPercent']=self.cpu(source,sum(x[1] for x in usage),now)
                     row['memoryBytes']=sum(x[2] for x in usage)
-                if source in ('gb28181', 'gb-media'):
-                    phase = '国标业务接口探测'
+                if source in ('onvif', 'gb28181', 'gb-media'):
+                    phase = 'ONVIF 业务接口探测' if source == 'onvif' else '国标业务接口探测'
                     if row['state'] == 'active' and pid > 0:
-                        row['healthy'], row['detail'] = gateway_health() if source == 'gb28181' else gb_media_health()
+                        row['healthy'], row['detail'] = onvif_health() if source == 'onvif' else gateway_health() if source == 'gb28181' else gb_media_health()
                     else:
                         row['healthy'], row['detail'] = False, '进程未运行，请检查日志'
                     services.append(row)

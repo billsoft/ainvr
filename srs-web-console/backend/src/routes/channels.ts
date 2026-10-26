@@ -25,6 +25,7 @@ const CreateChannelSchema = z.object({
   inputUsername: z.string().max(128).optional(),
   inputPassword: z.string().max(256).optional(),
   inputEnabled: z.boolean().optional(),
+  inputAudioMode: z.enum(['off', 'auto']).optional(),
 });
 
 const UpdateChannelSchema = z.object({
@@ -40,6 +41,7 @@ const UpdateChannelSchema = z.object({
   inputUsername: z.string().max(128).optional(),
   inputPassword: z.string().max(256).optional(),
   inputEnabled: z.boolean().optional(),
+  inputAudioMode: z.enum(['off', 'auto']).optional(),
 });
 
 const IdParamSchema = z.object({

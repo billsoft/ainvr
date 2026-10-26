@@ -15,7 +15,7 @@ def validate(package, license_only, recorder_python):
                 'shared/license-enforcer/main.pyc']
     if not license_only:
         required += ['recording-service/src/recorder/__init__.pyc',
-                     'ingest-service/main.pyc',
+                     'ingest-service/main.pyc', 'ingest-service/media_policy.pyc', 'ingest-service/async_launch.pyc',
                       'recording-service/src/recorder/main.pyc', 'recording-service/src/recorder/internal_network.pyc', 'shared/ainvr_logging.pyc',
                      'shared/os-helper/main.pyc', 'shared/os-helper/nm.pyc',
                      'shared/os-helper/remote_assist.pyc', 'shared/os-helper/systime.pyc', 'shared/os-helper/storage.pyc',

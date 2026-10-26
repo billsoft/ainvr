@@ -1,0 +1,23 @@
+[Unit]
+Description=AINVR ONVIF camera control service
+After=network.target
+
+[Service]
+Type=simple
+User=ainvr-onvif
+Group=ainvr-onvif
+ExecStart=/opt/ainvr/onvif/ainvr_onvif /etc/ainvr/onvif-bootstrap.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=192M
+TasksMax=64
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

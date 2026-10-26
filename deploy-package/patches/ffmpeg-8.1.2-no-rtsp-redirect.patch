@@ -1,0 +1,24 @@
+--- a/libavformat/rtsp.c
++++ b/libavformat/rtsp.c
+@@ -2181,16 +2181,11 @@
+     ff_rtsp_close_streams(s);
+     ff_rtsp_close_connections(s);
+     if (reply->status_code >=300 && reply->status_code < 400 && s->iformat) {
+-        int ret = ff_format_check_set_url(s, reply->location);
+-        if (ret < 0) {
+-            err = ret;
+-            goto fail2;
+-        }
+-        rt->session_id[0] = '\0';
+-        av_log(s, AV_LOG_INFO, "Status %d: Redirecting to %s\n",
+-               reply->status_code,
+-               s->url);
+-        goto redirect;
++        /* AINVR validates and pins the initial camera address. Following an
++         * unvalidated Location could bypass that policy or leak credentials. */
++        av_log(s, AV_LOG_ERROR, "AINVR RTSP redirect denied\n");
++        err = AVERROR(EACCES);
++        goto fail2;
+     }
+  fail2:
+     ff_network_close();

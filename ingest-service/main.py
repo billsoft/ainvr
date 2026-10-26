@@ -16,15 +16,19 @@ import sys
 import threading
 import time
 import urllib.request
+import urllib.error
 from urllib.parse import urlsplit, urlunsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'shared/python'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from media_policy import AUDIO_BUDGET, MediaError, audio_policy, error_code, probe
+from async_launch import AsyncLauncher, ConnectionCapacity
 LOG = logging.getLogger('ingest')
 IDENTIFIER = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
 
 
-def validate_source(value, resolve=False):
+def validate_source(value, resolve=False, allowed_cidrs=None):
     if not isinstance(value, str) or len(value) > 2048 or any(ord(c) < 32 for c in value):
         raise ValueError('invalid video source')
     p = urlsplit(value)
@@ -47,6 +51,8 @@ def validate_source(value, resolve=False):
                 raise ValueError('video host not found')
     for addr in addresses:
         effective = addr.ipv4_mapped if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped else addr
+        if allowed_cidrs is not None and not any(effective in ipaddress.ip_network(cidr,strict=False) for cidr in allowed_cidrs):
+            raise MediaError('address_not_allowed')
         if effective.is_loopback or effective.is_link_local or effective.is_unspecified or effective.is_multicast:
             raise ValueError('invalid video host')
     if resolve and addresses:
@@ -91,23 +97,80 @@ def private_input(c, fd):
     return args, manifest.encode()
 
 
+def resolve_source(config, deadline):
+    """Fetch a generation-bound runtime URI; never expose it in argv or logs."""
+    root=urlsplit(os.environ.get('INGEST_CONFIG_URL','http://127.0.0.1:3001/internal/ingest/config'))
+    url=urlunsplit((root.scheme,root.netloc,'/internal/ingest/source','',''))
+    body=json.dumps({'id':config['id'],'generation':config['generation']}).encode()
+    request=urllib.request.Request(url,data=body,headers={'X-Service-Token':os.environ.get('INGEST_SERVICE_TOKEN',''),'Content-Type':'application/json'})
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request,timeout=max(1,min(48,deadline-time.monotonic()))) as response:
+            data=response.read(8193)
+        if len(data)>8192:raise MediaError('invalid_source_response')
+        lease=json.loads(data)
+        if lease.get('generation')!=config['generation'] or not isinstance(lease.get('source'),str) or type(lease.get('refreshAfterProbe')) is not bool or not isinstance(lease.get('allowedCIDRs'),list) or not 0<len(lease['allowedCIDRs'])<=32:raise MediaError('invalid_source_response')
+        for cidr in lease['allowedCIDRs']:ipaddress.ip_network(cidr,strict=False)
+        return lease
+    except urllib.error.HTTPError as error:
+        try:code=json.loads(error.read(8192)).get('error','control_service_unavailable')
+        except Exception:code='control_service_unavailable'
+        raise MediaError(code if isinstance(code,str) and re.fullmatch('[a-z_]{1,80}',code) else 'control_service_unavailable') from None
+    except (OSError,ValueError,TypeError):raise MediaError('control_service_unavailable') from None
+
+
 class CopyProcess:
-    def __init__(self, c):
-        c = {**c, 'source': validate_source(c['source'], resolve=True)}
+    def __init__(self, c, resolver=resolve_source):
+        original=c
+        deadline=time.monotonic()+60
+        lease=resolver(c,deadline) if c.get('onvif') else None
+        c = {**c, 'source': validate_source(lease['source'] if lease else c['source'], resolve=True,allowed_cidrs=lease['allowedCIDRs'] if lease else None)}
         self.started = time.monotonic()
         self.last_video = self.started
         self.frames = 0
         # Error text may contain camera passwords. Read it continuously, never publish it.
         self.errors = 0
+        self.error_code = None
+        self.audio_warning = 'audio_processing_failed' if c.get('audioFallback') else None
+        self.audio_codec = None
+        self._audio_acquired = False
+        self._closed = False
         # Credentials live only in an inherited anonymous memory file.
         fd = os.memfd_create('camera-source', os.MFD_CLOEXEC)
         try:
             args, manifest = private_input(c, fd)
             os.write(fd, manifest)
             os.lseek(fd, 0, os.SEEK_SET)
+            if c.get('audioMode', 'off') == 'auto':
+                _video, self.audio_codec = probe(args, fd,timeout=max(1,min(15,deadline-time.monotonic())))
+                if lease and lease['refreshAfterProbe']:
+                    # One-use/expiring URIs must be renewed after ffprobe,
+                    # which opens and closes its own RTSP session.
+                    fresh=resolver(original,deadline)
+                    c['source']=validate_source(fresh['source'],resolve=True,allowed_cidrs=fresh['allowedCIDRs'])
+                    _,manifest=private_input(c,fd)
+                    os.ftruncate(fd,0);os.lseek(fd,0,os.SEEK_SET);os.write(fd,manifest);os.lseek(fd,0,os.SEEK_SET)
+                audio_args, self.audio_warning, needs_slot = audio_policy(self.audio_codec)
+                if needs_slot:
+                    self._audio_acquired = AUDIO_BUDGET.acquire()
+                    if not self._audio_acquired:
+                        audio_args, self.audio_warning = ['-an'], 'audio_capacity_exceeded'
+                index = args.index('-an')
+                args[index:index+1] = audio_args
+                os.lseek(fd, 0, os.SEEK_SET)
             self.proc = subprocess.Popen(args, stdin=subprocess.DEVNULL,
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                          pass_fds=(fd,), start_new_session=True, text=True, bufsize=1)
+            # Audio probing and ONVIF URI renewal have their own deadline.
+            # Start media-idle accounting when the publisher actually launches,
+            # otherwise a slow successful probe immediately kills a fresh stream.
+            self.started = time.monotonic()
+            self.last_video = self.started
+        except BaseException:
+            if self._audio_acquired:
+                AUDIO_BUDGET.release()
+                self._audio_acquired = False
+            raise
         finally:
             os.close(fd)
         self.readers = [threading.Thread(target=self._progress, daemon=True),
@@ -127,13 +190,23 @@ class CopyProcess:
                     pass
 
     def _errors(self):
-        for _line in self.proc.stderr:
+        tail = ''
+        while True:
+            chunk = self.proc.stderr.read(1024)
+            if not chunk:
+                break
             self.errors += 1
+            tail = (tail + chunk)[-4096:]
+            code = error_code(tail)
+            if code != 'source_unavailable':
+                self.error_code = code
 
     def poll(self):
         return self.proc.poll()
 
     def stop(self):
+        if self._closed:
+            return
         if self.proc.poll() is None:
             try:
                 os.killpg(self.proc.pid, signal.SIGTERM)
@@ -148,6 +221,10 @@ class CopyProcess:
             t.join(timeout=.2)
         self.proc.stdout.close()
         self.proc.stderr.close()
+        if self._audio_acquired:
+            AUDIO_BUDGET.release()
+            self._audio_acquired = False
+        self._closed = True
 
 
 class Supervisor:
@@ -174,14 +251,27 @@ class Supervisor:
                 if p.poll() is not None or now - p.last_video > timeout:
                     code = p.poll()
                     p.stop()
+                    reason = getattr(p, 'error_code', None)
                     job['process'] = None
+                    if reason == 'audio_processing_failed' and c.get('audioMode') == 'auto' and not job.get('audio_fallback'):
+                        job['audio_fallback'] = True
+                        job['audio_warning'] = reason
+                        job['next_retry'] = now
+                        job['state'] = 'reconnecting'
+                        job['error'] = None
+                        continue
                     job['failures'] += 1
                     job['next_retry'] = now + min(60, 2 ** min(job['failures'], 6)) + random.random()
-                    job['state'] = 'reconnecting'
-                    job['error'] = '视频源未持续提供数据，请检查相机、地址和网络'
+                    blocked = reason in ('authentication_failed', 'unsupported_video_codec','profile_not_found','address_not_allowed','media_host_changed','service_host_changed','redirect_not_allowed')
+                    job['state'] = 'blocked' if blocked else 'reconnecting'
+                    job['error'] = reason or 'source_unavailable'
+                    if blocked:
+                        job['next_retry'] = float('inf')
                     LOG.warning('input_retry channel=%s failures=%s exit=%s', cid, job['failures'], code)
                 else:
                     job['state'] = 'streaming' if p.frames else 'connecting'
+                    job['audio_warning'] = getattr(p, 'audio_warning', None)
+                    job['audio_codec'] = getattr(p, 'audio_codec', None)
                     if p.frames and now - p.started > 60:
                         job['failures'] = 0
                     continue
@@ -192,10 +282,16 @@ class Supervisor:
                 job['error'] = '已达到接入并发上限'
                 continue
             try:
-                job['process'] = self.launch(c)
+                job['process'] = self.launch({**c, 'audioMode': 'off', 'audioFallback': True} if job.get('audio_fallback') else c)
                 job['state'] = 'connecting'
                 job['error'] = None
                 LOG.info('input_start channel=%s generation=%s', cid, c['generation'])
+            except ConnectionCapacity:
+                # No camera connection was attempted. A busy bounded connector
+                # must not create fake failures and exponential retry penalties.
+                job['state'] = 'waiting'
+                job['error'] = None
+                job['next_retry'] = now + .2
             except Exception as e:
                 job['failures'] += 1
                 job['next_retry'] = now + min(60, 2 ** min(job['failures'], 6))
@@ -206,6 +302,7 @@ class Supervisor:
     def status(self):
         return {cid: {'generation': j['config']['generation'], 'state': j['state'],
                       'error': j['error'], 'retries': j['failures'],
+                      'audioWarning': j.get('audio_warning'), 'audioCodec': j.get('audio_codec'),
                       'frames': j['process'].frames if j['process'] else 0}
                 for cid, j in self.jobs.items()}
 
@@ -221,7 +318,8 @@ def main():
     license_client = client_from_env('recorder')
     license_client.start()
     stopped = threading.Event()
-    sup = Supervisor()
+    launcher = AsyncLauncher(CopyProcess)
+    sup = Supervisor(launch=launcher.launch)
     config = []
     settings = {}
     state = {'channels': {}, 'config_connected': False}
@@ -239,6 +337,7 @@ def main():
                     raise ValueError('config size')
                 data = json.loads(raw)
                 config, settings = data['channels'], data.get('settings', {})
+                AUDIO_BUDGET.configure(settings.get('maxAudioTranscodes', 2))
                 state['config_connected'] = True
             except Exception:
                 state['config_connected'] = False
@@ -280,6 +379,7 @@ def main():
     finally:
         stopped.set()
         thread.join(timeout=40)
+        launcher.close()
         server.server_close()
         license_client.stop()
 

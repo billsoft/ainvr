@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import type {GBBinding} from './gbTypes'
 import {GBSourceFields,type GBSourceDraft} from './GBSourceFields'
+import {OnvifSourceFields} from './OnvifSourceFields'
+import {onvifService,type OnvifBinding} from '@/api/onvifService'
 import {request} from '@/api/httpClient'
 import { ingestService, type IngestCapabilities } from '@/api/ingestService'
 import { Check, RefreshCw, X } from 'lucide-react'
@@ -31,6 +33,7 @@ const inputCls =
 interface Props {
   gbBinding?: GBBinding
   onGBSaved?: () => void
+  onOnvifSaved?: () => void
   open: boolean
   mode: 'create' | 'edit'
   initial?: ChannelWithStatus | null
@@ -57,7 +60,12 @@ export function ChannelWizard({
   onSubmit,
   gbBinding,
   onGBSaved,
+  onOnvifSaved,
 }: Props) {
+  const [onvifMode,setOnvifMode]=useState(false)
+  const [onvifDraft,setOnvifDraft]=useState<OnvifBinding|null>(null)
+  const [onvifDirty,setOnvifDirty]=useState(false)
+  const [onvifBusy,setOnvifBusy]=useState(false)
   const [saving,setSaving]=useState(false)
   const [gbDraft,setGbDraft]=useState<GBSourceDraft|null>(null)
   const [gbMode,setGbMode]=useState(false)
@@ -83,6 +91,10 @@ export function ChannelWizard({
       setGbDraft(null)
       setGbBusy(false)
       setGbMode(!!gbBinding)
+      setOnvifMode(!!initial?.onvif)
+      setOnvifDraft(initial?.onvif??null)
+      setOnvifDirty(false)
+      setOnvifBusy(false)
       setGbDirty(false)
       setStep(0)
       setErrors({})
@@ -92,8 +104,8 @@ export function ChannelWizard({
   }, [open, mode, initial, gbBinding])
 
   const baseline=mode==='edit'&&initial?{...fromChannel(initial),...(gbBinding?.channel_config?{name:gbBinding.channel_config.name,description:gbBinding.channel_config.description,protocols:gbBinding.channel_config.protocols,primary:gbBinding.channel_config.primary}:{})}:DEFAULT_WIZARD_VALUE
-  const dirty=gbMode!==!!gbBinding||gbDirty||JSON.stringify(value)!==JSON.stringify(baseline)
-  function close(){if(submitting||gbBusy||saving)return;if(dirty&&!window.confirm('放弃尚未保存的通道修改？已保存的设备注册信息会保留。'))return;onClose()}
+  const dirty=onvifMode!==!!initial?.onvif||onvifDirty||gbMode!==!!gbBinding||gbDirty||JSON.stringify(value)!==JSON.stringify(baseline)
+  function close(){if(submitting||gbBusy||onvifBusy||saving)return;if(dirty&&!window.confirm('放弃尚未保存的通道修改？已保存的设备信息会保留。'))return;onClose()}
   useEffect(()=>{if(!open)return;const previous=document.activeElement as HTMLElement|null;return()=>previous?.focus()},[open])
   if (!open) return null
 
@@ -102,14 +114,15 @@ export function ChannelWizard({
 
   function handleNext() {
     if (step === 0) {
-      const e = validateStep1(gbMode?{...value,sourceType:'push'}:value)
+      const e = validateStep1(gbMode||onvifMode?{...value,sourceType:'push'}:value)
       setErrors(e)
       if (Object.keys(e).length > 0) return
     }
     if (step === 1 && gbMode) {
       const error=validateGB();setStep3Error(error);if(error)return
     }
-    if (step === 1 && !gbMode) {
+    if (step === 1 && onvifMode && !onvifDraft) {setStep3Error('请读取设备并选择画面和码流');return}
+    if (step === 1 && !gbMode && !onvifMode) {
       const e = validateStep2(value)
       setErrors(e)
       if (Object.keys(e).length > 0) return
@@ -125,7 +138,13 @@ export function ChannelWizard({
     return null
   }
   async function handleSubmit() {
-    if(saving||gbBusy)return
+    if(saving||gbBusy||onvifBusy)return
+    if(onvifMode){
+      const error=(!onvifDraft?'请读取设备并选择画面和码流':null)||validateStep3(value)||validateStep1({...value,sourceType:'push'}).name
+      setStep3Error(error??null);if(error||!onvifDraft)return
+      setSaving(true);try{await onvifService.saveChannel({binding:onvifDraft,...(mode==='edit'&&initial?{inputId:initial.id,expectedGeneration:initial.inputGeneration}:{}),config:{name:value.name.trim(),remark:value.description.trim(),downstreamProtocols:value.protocols,primaryProtocol:value.primary,inputEnabled:value.inputEnabled??true}});onOnvifSaved?.()}catch(e){setStep3Error((e as Error).message)}finally{setSaving(false)}
+      return
+    }
     if(gbMode){
       const error=validateGB()||validateStep3(value)||validateStep1({...value,sourceType:'push'}).name
       setStep3Error(error??null);if(error||!gbDraft)return
@@ -184,7 +203,7 @@ export function ChannelWizard({
             </h3>
             <button
               type="button"
-              disabled={submitting||gbBusy||saving}
+              disabled={submitting||gbBusy||onvifBusy||saving}
               onClick={close}
               className="flex min-h-11 min-w-11 items-center justify-center rounded-base text-ink-faint hover:bg-surface-page hover:text-ink"
               aria-label="关闭"
@@ -262,13 +281,13 @@ export function ChannelWizard({
                   ).map(([v, label]) => (
                     <button
                       key={v}
-                      aria-pressed={!gbMode&&value.sourceType===v}
+                      aria-pressed={!gbMode&&!onvifMode&&value.sourceType===v}
                       type="button"
-                      disabled={!!gbBinding || (v === 'rtsp' && !capabilities?.rtsp.enabled)}
-                      onClick={() => {if(gbDirty&&!window.confirm('放弃国标接入参数草稿并更换协议？'))return;setGbMode(false);setGbDirty(false);setGbDraft(null);set('sourceType', v)}}
+                      disabled={!!gbBinding || !!initial?.onvif || (v === 'rtsp' && !capabilities?.rtsp.enabled)}
+                      onClick={() => {if((gbDirty||onvifDirty)&&!window.confirm('放弃设备接入参数草稿并更换协议？'))return;setOnvifMode(false);setOnvifDirty(false);setOnvifDraft(null);setGbMode(false);setGbDirty(false);setGbDraft(null);set('sourceType', v)}}
                       className={[
                         'flex-1 rounded-base border px-3 py-2.5 text-sm transition-colors',
-                        !gbMode && value.sourceType === v
+                        !gbMode && !onvifMode && value.sourceType === v
                           ? 'border-primary bg-primary-100 font-medium text-primary-600'
                           : 'border-line text-ink-subtle hover:border-primary-200',
                       ].join(' ')}
@@ -276,12 +295,13 @@ export function ChannelWizard({
                       {label}
                     </button>
                   ))}
-                  <button type="button" disabled={mode==='edit'&&!gbBinding} onClick={()=>setGbMode(true)} aria-pressed={gbMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${gbMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>GB/T 28181 摄像头 / NVR</button>
+                  <button type="button" disabled={mode==='edit'&&!initial?.onvif} onClick={()=>{if(gbDirty&&!window.confirm('放弃国标参数草稿？'))return;setOnvifMode(true);setGbMode(false);setGbDirty(false)}} aria-pressed={onvifMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${onvifMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>ONVIF 摄像头 / NVR</button>
+                  <button type="button" disabled={mode==='edit'&&!gbBinding} onClick={()=>{if(onvifDirty&&!window.confirm('放弃 ONVIF 参数草稿？'))return;setOnvifMode(false);setOnvifDirty(false);setGbMode(true)}} aria-pressed={gbMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${gbMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>GB/T 28181 摄像头 / NVR</button>
                 </div>
                 {mode==='edit'&&!gbBinding&&<p className="mt-1 text-xs text-ink-faint">国标设备请通过新建通道接入，现有视频源的录像和 AI 关联会保留。</p>}
                 {gbBinding&&<p className="mt-1 text-sm text-primary">来源：GB/T 28181；内部发布地址由网关管理。</p>}
               </div>
-              {value.sourceType === 'rtsp' && !gbMode && (
+              {value.sourceType === 'rtsp' && !gbMode && !onvifMode && (
                 <div>
                   <label className="text-sm font-medium text-ink">
                     RTSP 源地址 <span className="text-danger">*</span>
@@ -307,10 +327,12 @@ export function ChannelWizard({
                   <select className={inputCls} value={value.rtspTransport ?? 'tcp'} onChange={e => set('rtspTransport', e.target.value as 'tcp' | 'udp')}>
                     <option value="tcp">TCP（推荐）</option><option value="udp">UDP</option>
                   </select>
+                  <label className="mt-3 block text-sm">音频<select className={inputCls} value={value.inputAudioMode ?? 'off'} onChange={e => set('inputAudioMode', e.target.value as 'off' | 'auto')}><option value="off">仅视频</option><option value="auto">自动接入音频</option></select></label>
+                  <p className="mt-1 text-xs text-ink-subtle">AAC 保持原音频；G.711／G.726 在配额内转换。不支持音频时继续接入视频并提示原因。</p>
                   <label className="mt-3 flex gap-2 text-sm"><input type="checkbox" checked={value.inputEnabled ?? true} onChange={e => set('inputEnabled', e.target.checked)} />启用输入（关闭后录像和识别等待源）</label>
                 </div>
               )}
-              {value.sourceType === 'push' && !gbMode && !gbBinding && (
+              {value.sourceType === 'push' && !gbMode && !onvifMode && !gbBinding && (
                 <div>
                   <label className="text-sm font-medium text-ink">上行协议</label>
                   <select
@@ -326,7 +348,7 @@ export function ChannelWizard({
                   </select>
                 </div>
               )}
-              {!gbMode && capabilities && <p className="text-xs text-ink-faint">{value.sourceType === 'rtsp' ? capabilities.rtsp.reason : capabilities[value.upstreamProtocol].reason}
+              {!gbMode && !onvifMode && capabilities && <p className="text-xs text-ink-faint">{value.sourceType === 'rtsp' ? capabilities.rtsp.reason : capabilities[value.upstreamProtocol].reason}
                 {value.upstreamProtocol === 'webrtc' && value.sourceType === 'push' ? '使用 WHIP 发送端；创建后在通道详情生成专用发布凭据。浏览器编码能力因设备而异。' : ''}</p>}
               <div className="rounded-base border border-line bg-surface-page px-3 py-3 text-xs leading-6 text-ink-subtle">
                 <p className="font-medium text-ink">编码自动识别</p>
@@ -337,7 +359,8 @@ export function ChannelWizard({
           )}
 
           {gbMode&&<div hidden={step!==1}><GBSourceFields binding={gbBinding} onDraft={setGbDraft} onDirty={setGbDirty} onBusy={setGbBusy}/>{step===1&&step3Error&&<p role="alert" className="mt-2 text-sm text-danger">{step3Error}</p>}</div>}
-          {step === 1 && !gbMode && (
+          {onvifMode&&<div hidden={step!==1}><OnvifSourceFields initial={initial?.onvif} onDraft={setOnvifDraft} onDirty={setOnvifDirty} onBusy={setOnvifBusy}/><label className="mt-4 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={value.inputEnabled??true} onChange={e=>set('inputEnabled',e.target.checked)}/>启用此输入通道</label>{step===1&&step3Error&&<p role="alert" className="mt-2 text-sm text-danger">{step3Error}</p>}</div>}
+          {step === 1 && !gbMode && !onvifMode && (
             <div className="flex flex-col gap-4">
               <div>
                 <label className="text-sm font-medium text-ink">应用名</label>
@@ -458,7 +481,7 @@ export function ChannelWizard({
         <div className="flex shrink-0 items-center justify-between border-t border-line px-4 py-4 sm:px-6">
           <button
             type="button"
-            disabled={submitting||gbBusy||saving}
+            disabled={submitting||gbBusy||onvifBusy||saving}
             onClick={step === 0 ? close : () => setStep((s) => s - 1)}
             className="rounded-base border border-line px-4 py-2 text-sm text-ink-subtle hover:bg-surface-page"
           >

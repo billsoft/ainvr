@@ -40,6 +40,9 @@ export function hasVideo(s: any): boolean {
 
 export function safeChannel<T extends Channel>(ch: T): T {
   const { sourceRef: _ref, ...rest } = ch;
+  // ONVIF GetStreamUri may contain opaque access tokens in its query string.
+  // Browsers need only the stable device/profile binding, never this URI.
+  if (ch.onvif) delete rest.rtspUrl;
   if (rest.rtspUrl) {
     try { const u = new URL(rest.rtspUrl); u.username = ''; u.password = ''; rest.rtspUrl = u.toString(); }
     catch { delete rest.rtspUrl; }

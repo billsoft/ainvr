@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { z } from 'zod';
 import type { ChannelStoreData } from '../services/channelService.js';
 import type { JsonStore } from '../store/jsonStore.js';
-import type { AppSettings } from '../types/channel.js';
+import type { AppSettings,Channel } from '../types/channel.js';
 import type { PgConfigStore } from '../store/pgStore.js';
 import { WhipSessions } from '../services/whipSessions.js';
 
@@ -23,6 +23,9 @@ interface Options {
   srtEnabled: boolean;
   sessions?: WhipSessions;
   gbStatus?: () => Record<string, unknown>;
+  onvifAllowed?: (channel:Channel)=>boolean;
+  onvifSource?: (channel:Channel)=>Promise<{source:string;refreshAfterProbe:boolean;allowedCIDRs:string[]}>;
+  onvifStatus?: ()=>Record<string,unknown>;
 }
 
 // A session is bound to a channel, configuration generation and credential hash.
@@ -45,6 +48,15 @@ export async function ingestRoutes(app: FastifyInstance, opts: Options) {
     if (!token || !sameToken(`Bearer ${token}`, authorization)) return null;
     return { c, token };
   };
+  app.post('/internal/ingest/source', async (req,reply)=>{
+    if(!sameToken(opts.token,req.headers['x-service-token']))return reply.code(403).send();
+    const parsed=z.object({id:z.string().uuid(),generation:z.string().uuid()}).strict().safeParse(req.body);
+    if(!parsed.success)return reply.code(400).send({error:'invalid_source_request'});
+    const current=await channel(parsed.data.id);
+    if(!current?.onvif||current.inputEnabled===false||current.inputGeneration!==parsed.data.generation||!opts.onvifAllowed?.(current)||!opts.onvifSource)return reply.code(409).send({error:'source_configuration_changed'});
+    try{const source=await opts.onvifSource(current);reply.header('Cache-Control','no-store');return {...source,generation:current.inputGeneration}}
+    catch(e){const code=(e as any).code;return reply.code(422).send({error:typeof code==='string'&&/^[a-z_]{1,80}$/.test(code)?code:'control_service_unavailable'})}
+  });
   app.get('/internal/ingest/config', async (req, reply) => {
     if (!sameToken(opts.token, req.headers['x-service-token'])) return reply.code(403).send();
     const settings = (await opts.settings.read()).ingest ?? { maxPullChannels: 4, connectTimeoutSec: 10 };
@@ -54,8 +66,8 @@ export async function ingestRoutes(app: FastifyInstance, opts: Options) {
       const prefix = `backend/ingest/${c.id}/`;
       const source = c.sourceRef?.startsWith(prefix) ? await opts.secrets()?.getSecret(c.sourceRef) : null;
       if (!source) continue;
-      config.push({ id: c.id, generation: c.inputGeneration, enabled: c.inputEnabled !== false,
-        source, app: c.app || 'live', stream: c.streamName, transport: c.rtspTransport || 'tcp', timeout: settings.connectTimeoutSec });
+      config.push({ id: c.id, generation: c.inputGeneration, enabled: c.inputEnabled !== false && (!c.onvif||opts.onvifAllowed?.(c)===true),
+        source, onvif:!!c.onvif, app: c.app || 'live', stream: c.streamName, transport: c.rtspTransport || 'tcp', timeout: settings.connectTimeoutSec, audioMode:c.inputAudioMode??'off' });
     }
     reply.header('Cache-Control', 'no-store');
     return { channels: config, settings };
@@ -66,6 +78,7 @@ export async function ingestRoutes(app: FastifyInstance, opts: Options) {
     const gb = opts.gbStatus?.();
     return { code: 0, data: {
       rtmp: { enabled: true, codecs: ['H.264', 'H.265'], mode: 'push', security: '可信局域网接入' },
+      onvif: {enabled:opts.onvifStatus?.().state==='running',mode:'onvif-rtsp',codecs:['H.264','H.265'],reason:opts.onvifStatus?.().state==='running'?'':'请在系统配置中启用 ONVIF 接入并配置摄像头网段'},
       gb28181: { enabled: gb?.state === 'running', configured: !!gb?.configured,
         mode: 'gateway', versions: ['2016', '2022'], codecs: ['H.264', 'H.265'],
         audio: ['AAC', 'G.711 A-law', 'G.711 mu-law'], validation: 'development_unverified',
@@ -76,7 +89,7 @@ export async function ingestRoutes(app: FastifyInstance, opts: Options) {
         reason: opts.secrets() ? '' : '发布凭据存储尚未就绪' },
       rtsp: { enabled: !!status?.ready && !!opts.secrets(), codecs: ['H.264', 'H.265'], mode: 'pull',
         reason: status?.ready ? '' : '拉流服务尚未就绪', status },
-      notes: ['视频转封装，不重新编码；拉流首期不接入音频', '浏览器能否使用 H.265 取决于浏览器和设备',
+      notes: ['视频保持原编码；AAC 直通，G.711 按配额转 AAC，其他音频明确提示', '浏览器能否使用 H.265 取决于浏览器和设备',
         'WebRTC 输入需要 WHIP 发送端；不支持粘贴任意网页地址拉流'],
     } };
   });
