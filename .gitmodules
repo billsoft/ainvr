@@ -4,3 +4,6 @@
 [submodule "third_party/reference/ZLMediaKit"]
 	path = third_party/reference/ZLMediaKit
 	url = https://github.com/ZLMediaKit/ZLMediaKit.git
+[submodule "third_party/reference/onvif_simple_server"]
+	path = third_party/reference/onvif_simple_server
+	url = https://github.com/roleoroleo/onvif_simple_server.git
