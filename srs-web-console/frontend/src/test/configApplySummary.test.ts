@@ -22,3 +22,15 @@ describe('current configuration confirmation', () => {
     expect(configApplySummary([good],{...job,status:'timeout'},['backend']).text).toBe(job.stage)
   })
 })
+
+it('unpublished startup settings are not an application failure', () => {
+  const initial = {serviceName:'srs',status:'unknown',desiredVersion:undefined,appliedVersion:undefined,restartRequired:false} as ServiceState
+  expect(configApplySummary([good,initial],null,['backend','srs']).tone).toBe('success')
+  expect(configApplySummary([good,{...initial,desiredVersion:3}],null,['backend','srs']).tone).toBe('warning')
+  expect(configApplySummary([good,{...initial,status:'failed'}],null,['backend','srs']).tone).toBe('warning')
+})
+
+it('pull services without an acknowledgement must remain unconfirmed', () => {
+  const initial = {serviceName:'ai-service',status:'unknown',desiredVersion:undefined,appliedVersion:undefined,restartRequired:false} as ServiceState
+  expect(configApplySummary([initial],null,['ai-service']).tone).toBe('warning')
+})

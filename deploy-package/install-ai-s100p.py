@@ -7,7 +7,6 @@ import argparse,hashlib,json,os,re,shutil,signal,subprocess,time,urllib.request
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 SYSTEM_UNIT=Path('/etc/systemd/system/ainvr-ai.service')
-SSD_ROOT=Path('/mnt/ainvr-ssd')
 PROC_ROOT=Path('/proc')
 HEALTH_WAIT_SECONDS=30
 def run(*args):
@@ -134,9 +133,7 @@ def main():
     if len(parts)!=2 or not parts[0].startswith('ExecStart='+str(ROOT)+'/'):
         raise SystemExit('Service executable is outside the AINVR root')
     newunit=text.replace(command,'ExecStart='+str(target)+' '+parts[1]).encode()
-    if not SSD_ROOT.is_mount():
-        raise SystemExit('Mount the AINVR SSD before creating deployment backups')
-    backup=SSD_ROOT/'migration-backups'/('ai-install-'+time.strftime('%Y%m%d-%H%M%S')+'-'+str(os.getpid()))
+    backup=ROOT/'.Codex-trash'/('ai-install-'+time.strftime('%Y%m%d-%H%M%S')+'-'+str(os.getpid()))
     backup.parent.mkdir(parents=True,exist_ok=True)
     backup.mkdir(mode=0o700)
     (backup/'ainvr-ai.service').write_bytes(oldunit)

@@ -53,7 +53,7 @@ services:
       POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
     volumes:
       - type: bind
-        source: /mnt/ainvr-ssd/databases/postgres
+        source: ./data/postgres
         target: /var/lib/postgresql/data
         bind:
           create_host_path: false

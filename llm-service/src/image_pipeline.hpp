@@ -19,7 +19,7 @@
 namespace ainvr {
 class QwenReviewImagePipeline final {
  public:
-  explicit QwenReviewImagePipeline(const std::string& lut_path="/mnt/ainvr-ssd/llm-packages/qwen3vl-4b-review-v3/normalize.f32") {
+  explicit QwenReviewImagePipeline(const std::string& lut_path="/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-4b-review-v3/normalize.f32") {
     Binding saved;
     try {
       if(hw_gl_open(&context_))throw std::runtime_error("Qwen review Mali context unavailable");

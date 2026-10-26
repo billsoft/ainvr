@@ -16,7 +16,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ainvr-llm-test-') as tmp:
         config=Path(tmp)/'config.json'
         config.write_text(json.dumps(dict(inference_key=key,admin_key=admin,
-             package_root='/mnt/ainvr-ssd/llm-packages/qwen3vl-4b-review-v3')))
+             package_root='/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-4b-review-v3')))
         config.chmod(0o600)
         with open(result/'http-control.log','w') as log:
             process=subprocess.Popen(['/mnt/ainvr-ssd/llm-build/ainvr/ainvr_llm_service',str(config)],stdout=log,stderr=subprocess.STDOUT)

@@ -13,7 +13,7 @@ import time
 from tokenizers import Tokenizer
 
 ROOT = Path(__file__).resolve().parents[2]
-PACKAGE = Path('/mnt/ainvr-ssd/llm-packages/qwen3vl-4b-review-v3')
+PACKAGE = Path('/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-4b-review-v3')
 PROBE = Path('/mnt/ainvr-ssd/llm-build/ainvr/ainvr_llm_probe')
 
 

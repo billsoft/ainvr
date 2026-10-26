@@ -1,4 +1,5 @@
 // Fastify 应用构建（可复用，测试用 fastify.inject 不启端口）
+import { storageRoutes } from './routes/storage.js';
 import {alarmTriggerRoutes} from './routes/alarmTriggerRoutes.js';
 import {flowRoutes} from './routes/flowRoutes.js';
 import {gb28181Routes} from './routes/gb28181.js';
@@ -50,7 +51,8 @@ import { configRoutes } from './routes/config.js';
 import { PublishOrchestrator } from './store/publishOrchestrator.js';
 import { BackendConfigAdapter } from './store/backendAdapter.js';
 import { PullModeAdapter } from './store/adapter.js';
-import { SrsConfigAdapter, reapplyPublishedSrsSettings } from './store/srsAdapter.js';
+import { SrsConfigAdapter } from './store/srsAdapter.js';
+import { restoreLocalConfig } from './store/restoreLocalConfig.js';
 import { observabilityRoutes } from './routes/observability.js';
 import { networkRoutes } from './routes/network.js';
 import { systemTimeRoutes } from './routes/systemTime.js';
@@ -200,7 +202,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const boundService = resolveServiceByToken(serviceTokens, req.headers['x-service-token']);
     if (boundService === 'recorder' && req.method === 'GET' &&
         ['/api/channels', '/api/ai/channels'].includes(pathname)) return;
-    if(boundService==='alarm-service'&&req.method==='POST'&&pathname==='/api/internal/alarm-review')return;
+    if(boundService==='alarm-service'&&req.method==='POST'&&['/api/internal/alarm-review','/api/internal/alarm-recording-evidence'].includes(pathname))return;
     if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/alarm-evidence\/[a-f0-9]{64}(?:\/image)?$/.test(pathname))return;
     if (boundService && url.startsWith('/api/v1/config/')) {
       (req as any).boundService = boundService;
@@ -314,8 +316,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         // backend/srs：真适配器（BFF 内直接应用）；ai-service/recorder：拉模式
         // （服务自己轮询 desired_version 拉快照应用后自报状态，见 store/adapter.ts）
         const srsAdapter = new SrsConfigAdapter();
+        const backendAdapter = new BackendConfigAdapter(settingsStore, srsClient);
         orchestrator = new PublishOrchestrator(pgStore, [
-          new BackendConfigAdapter(settingsStore, srsClient),
+          backendAdapter,
           srsAdapter,
           new PullModeAdapter('ai-service'),
           new PullModeAdapter('recorder'),
@@ -323,7 +326,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           new LlmConfigAdapter(),
         ]);
         // 升级会用离线包默认配置覆盖 srs.conf：按配置中心重新下发（失败不阻断启动）
-        await reapplyPublishedSrsSettings(pgStore, srsAdapter);
+        await restoreLocalConfig(pgStore, backendAdapter);
+        await restoreLocalConfig(pgStore, srsAdapter);
 
         console.info('[app] 统一配置中心已启用 (PG)');
       } catch (e) {
@@ -379,6 +383,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const alarmConnection = () => readAppliedAlarmConnection(pgStore, process.env.ALARM_SERVICE_HOST ?? 'host.docker.internal');
     await instance.register(llmProxyRoutes, {
       alarmConnection,
+      recordingConnection:async()=>({baseUrl:(await settingsStore.read()).recorderService?.baseUrl||recorderServiceBaseUrl,token:[...serviceTokens].find(([,service])=>service==='recorder')?.[0]??''}),
       internalPrincipal:async req=>resolveServiceByToken(serviceTokens,req.headers['x-service-token'])==='alarm-service',
       reviewConnection:()=>readAppliedLlmConnection(pgStore,process.env.LLM_SERVICE_HOST??'host.docker.internal','alarm-review'),
       principal: alarmPrincipal,
@@ -455,6 +460,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     await instance.register(diagOverlayRoutes);
     await instance.register(observabilityRoutes, { pgStore });
     await instance.register(networkRoutes);
+    await instance.register(storageRoutes);
     await instance.register(systemTimeRoutes);
     await instance.register(licenseRoutes, { client: licenseClient, gate: licenseGate });
     await instance.register(brandingRoutes, {

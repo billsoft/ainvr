@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """AINVR install validated dynamic YOLOE components; does not restart services.
 
-HBM files and tokenizer assets stay on SSD. Deployment model entries are links,
-not PT/ONNX or compiler output directories. Requires the tested tokenizer venv.
+HBM files and tokenizer assets are installed on board storage.
+No PT/ONNX or compiler output directories. Requires the tested local tokenizer venv.
 """
 import argparse
 import hashlib
@@ -22,6 +22,7 @@ def digest(path):
 
 def install_file(source, destination, expected):
     assert digest(source) == expected, str(source)
+    assert not destination.is_symlink(), str(destination)
     if destination.exists():
         assert destination.is_file() and digest(destination) == expected, str(destination)
         return
@@ -31,16 +32,6 @@ def install_file(source, destination, expected):
     shutil.copyfile(source, temporary)
     assert digest(temporary) == expected
     os.chmod(temporary, 0o644)
-    os.replace(temporary, destination)
-
-
-def install_link(destination, target, expected):
-    if destination.exists():
-        assert digest(destination) == expected, str(destination)
-        return
-    assert not destination.is_symlink(), str(destination)
-    temporary = destination.with_name('.' + destination.name + '.' + uuid.uuid4().hex)
-    temporary.symlink_to(target)
     os.replace(temporary, destination)
 
 
@@ -55,6 +46,7 @@ def main():
     assert research.is_relative_to(Path('/mnt/ainvr-ssd/model-compile-candidates'))
     # Preserve the virtual-environment executable entry point, not its symlink target.
     python = args.tokenizer_python.absolute()
+    assert python.stat().st_dev==repo.stat().st_dev, 'Tokenizer environment must be on board storage'
     subprocess.run([str(python), '-c', 'import ftfy,regex; assert ftfy.__version__ == "6.3.1"; assert regex.__version__ == "2026.9.29"'],
                    check=True, timeout=15)
     detector = research / 'detector-approved-o2-v3/detector.hbm'
@@ -69,11 +61,10 @@ def main():
     # First-frame GPU/driver initialization is preserved separately in the report.
     warm = [frame['total_adapter_ms'] for group in live['groups'] for frame in group['frames'][1:]]
     assert len(warm) >= 10 and 1000 / (sum(warm) / len(warm)) > 5
-    root = Path('/mnt/ainvr-ssd/ainvr-models/yoloe-26x-20261013')
-    assert root.resolve().is_relative_to(Path('/mnt/ainvr-ssd').resolve())
+    root = repo / 'ai-service/models/derived/s100p'
+    assert root.resolve().is_relative_to((repo/'ai-service/models').resolve())
     root.mkdir(parents=True, exist_ok=True)
-    model_dir = repo / 'ai-service/models/derived/s100p'
-    model_dir.mkdir(parents=True, exist_ok=True)
+    assert root.stat().st_dev==repo.stat().st_dev, 'Runtime models must be on board storage'
     sources = {'yoloe-26x.hbm': detector,
                'yoloe-26x-text.hbm': research/'text-float-softmax-tail-v18/mobileclip2-text.hbm',
                'yoloe-26x-reprta.hbm': research/'reprta-ec-headroom-v5/reprta.hbm'}
@@ -111,12 +102,9 @@ def main():
     else:
         temporary = manifest.with_name('.'+manifest.name+'.'+uuid.uuid4().hex)
         temporary.write_bytes(data); os.chmod(temporary,0o644); os.replace(temporary,manifest)
-    for name in sources:
-        install_link(model_dir/name, root/name, expected[name])
-    install_link(model_dir/manifest.name, manifest, digest(manifest))
     installed_contract = json.loads(manifest.read_text())
-    report = {'installed_model': str(model_dir/'yoloe-26x.hbm'),
-              'ssd_model_root': str(root),'model_sha256':expected,
+    report = {'installed_model': str(root/'yoloe-26x.hbm'),
+              'runtime_model_root': str(root), 'storage': 'board','model_sha256':expected,
               'manifest_sha256':digest(manifest),'services_restarted':False,
               'this_install_run_verifies_service_or_web_ui':False,
               'existing_service_integration_verified':installed_contract['validation'].get('service_integration_verified',False),

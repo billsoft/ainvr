@@ -50,6 +50,7 @@ export class AlarmRepository {
       // Durable tombstone precedes deletion: crash replay cannot recreate cleared alarms.
       await this.db.collection('alarm_history_clear').updateOne({_id:'state'},{$max:{cutoff:op.cutoff}},{upsert:true});
       await this.events.deleteMany({ingested_at:{$lte:op.cutoff}});
+      await this.db.collection('alarm_evidence_images').deleteMany({occurred_at:{$lte:op.cutoff}});
       await operations.updateOne({_id:id},{$set:{state:'completed',completed_at:this.clock()}});
     }
     return {cleared:true,cutoff:op.cutoff,deleted_count:op.matched_count};

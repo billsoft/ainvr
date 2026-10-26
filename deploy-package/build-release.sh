@@ -193,7 +193,7 @@ mkdir -p "$PYDST/shared/license-enforcer"
 cp "$REPO_ROOT/shared/license-enforcer/main.py" "$PYDST/shared/license-enforcer/"
 cp "$REPO_ROOT/shared/ainvr_logging.py" "$PYDST/shared/"
 cp "$REPO_ROOT/shared/os-helper/main.py" "$REPO_ROOT/shared/os-helper/nm.py" \
-   "$REPO_ROOT/shared/os-helper/remote_assist.py" "$REPO_ROOT/shared/os-helper/systime.py" \
+   "$REPO_ROOT/shared/os-helper/remote_assist.py" "$REPO_ROOT/shared/os-helper/systime.py" "$REPO_ROOT/shared/os-helper/storage.py" \
    "$PYDST/shared/os-helper/"
 # 远程协助隧道客户端（arm64）：人工放入 vendor/remote-assist/client 并附 client.sha256，
 # 校验通过才随包；缺失时照常出包，设备页面显示"组件未安装"。

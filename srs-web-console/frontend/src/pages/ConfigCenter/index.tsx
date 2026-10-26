@@ -1,4 +1,4 @@
-import { configApplySummary } from '@/features/configApplySummary'
+import { configApplySummary, usesStartupConfig } from '@/features/configApplySummary'
 import {AlarmServiceConfigForm} from './AlarmServiceConfigForm'
 import {LlmServiceConfigForm} from './LlmServiceConfigForm'
 import {GBConfigForm} from './GBConfigForm'
@@ -76,11 +76,12 @@ function ConfigStatus({ states, operation, error }: { states: ServiceState[]; op
       <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         {SERVICES.map(service => {
           const state = states.find(s => s.serviceName === service.key)
-          const view = stateView[state?.status ?? 'unknown']
+          const startup = usesStartupConfig(state)
+          const view = startup ? {label: '使用现有配置', tone: 'bg-surface-page text-ink-subtle'} : stateView[state?.status ?? 'unknown']
           const version = state?.desiredVersion ?? state?.appliedVersion
           return <div key={service.key} className="rounded-base border border-line bg-surface-page/60 px-3 py-2.5">
             <div className="flex items-center justify-between gap-2"><span className="text-xs font-medium text-ink">{service.label}</span><span className={`rounded-full px-2 py-0.5 text-[11px] ${view.tone}`}>{view.label}</span></div>
-            <div className="mt-1.5 flex items-center gap-1 text-[11px] text-ink-subtle"><Clock3 size={12} aria-hidden />{version ? `配置版本 v${version}` : '尚未上报版本'}</div>
+            <div className="mt-1.5 flex items-center gap-1 text-[11px] text-ink-subtle"><Clock3 size={12} aria-hidden />{version ? `配置版本 v${version}` : startup ? '尚未发布配置；保存后自动应用' : '尚未上报版本'}</div>
             {state?.errorMessage && <p className="mt-1 line-clamp-2 text-[11px] text-danger-700" title={state.errorMessage}>{state.errorMessage}</p>}
           </div>
         })}

@@ -1,4 +1,4 @@
-// AINVR. Ordered, private SSD journal of unified observations; no alarm logic.
+// AINVR. Ordered, bounded board-local journal of unified observations; no alarm logic.
 #pragma once
 #include "../output/result.hpp"
 #include <openssl/rand.h>
@@ -22,8 +22,8 @@ class ObservationJournal {
     unsigned char bytes[SHA256_DIGEST_LENGTH];SHA256(reinterpret_cast<const unsigned char*>(value.data()),value.size(),bytes);
     std::ostringstream out;for(auto b:bytes)out<<std::hex<<std::setw(2)<<std::setfill('0')<<int(b);return out.str();
   }
-  ObservationJournal(const std::string& root,const std::string& channel,size_t max_bytes=64*1024*1024,size_t max_records=10000)
-    :path_(std::filesystem::path(root)/Hash(channel)),channel_(channel),max_bytes_(max_bytes),max_records_(max_records) {
+  ObservationJournal(const std::string& root,const std::string& channel,size_t max_bytes=64*1024*1024,size_t max_records=10000,uintmax_t min_free_bytes=uintmax_t(2)*1024*1024*1024)
+    :path_(std::filesystem::path(root)/Hash(channel)),channel_(channel),max_bytes_(max_bytes),max_records_(max_records),min_free_bytes_(min_free_bytes) {
     if(!std::filesystem::path(root).is_absolute()||channel.empty()||channel.size()>256)throw std::invalid_argument("Invalid observation journal location");
     std::filesystem::create_directories(path_);
     if(std::filesystem::is_symlink(path_)||!std::filesystem::is_directory(path_))throw std::runtime_error("Invalid observation journal directory");
@@ -83,6 +83,13 @@ class ObservationJournal {
         ++full_rejections_;throw std::runtime_error("Observation journal full");
       }
     }
+    // Per-channel caps alone cannot protect eMMC when many channels are enabled.
+    // Fail closed before reserving an offset or writing, keeping OS/parameter headroom.
+    std::error_code space_error;
+    const auto space=std::filesystem::space(path_,space_error);
+    if(space_error || space.available<min_free_bytes_ || data.size()>space.available-min_free_bytes_){
+      ++full_rejections_;throw std::runtime_error("Observation journal storage reserve reached");
+    }
     ++next_;SaveState(); // Only accepted records reserve an offset durably.
     std::ostringstream name;name<<std::setw(20)<<std::setfill('0')<<offset<<".json";
     // Count before writing: even a rename followed by a failed directory fsync
@@ -115,7 +122,7 @@ class ObservationJournal {
     std::filesystem::rename(temp,target);SyncDirectory();
   }
   void SaveState(){AtomicWrite(path_/"producer.json",nlohmann::json({{"schema_version","1.0"},{"channel_id",channel_},{"producer_id",producer_},{"next_offset",std::to_string(next_)}}).dump());}
-  std::filesystem::path path_;std::string channel_,producer_;size_t max_bytes_,max_records_;
+  std::filesystem::path path_;std::string channel_,producer_;size_t max_bytes_,max_records_;uintmax_t min_free_bytes_;
   size_t usage_bytes_=0,usage_records_=0;uint64_t full_rejections_=0;
   std::chrono::steady_clock::time_point usage_checked_;
   uint64_t next_=0,staged_=0;int lock_=-1;mutable std::mutex mutex_;

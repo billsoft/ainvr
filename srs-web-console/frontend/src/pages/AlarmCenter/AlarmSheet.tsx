@@ -1,5 +1,5 @@
 import {ReviewFrames} from './ReviewFrames'
-import {reviewLabel,reviewReason,referenceLabel} from '@/features/alarmReview'
+import {reviewLabel,reviewReason,referenceLabel,recoveryLabel,reviewStatusClass} from '@/features/alarmReview'
 import {useEffect,useRef,useState} from 'react'
 import {Link} from 'react-router-dom'
 import {Play,X} from 'lucide-react'
@@ -72,7 +72,8 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
     </div>
     <aside className="flex min-w-0 flex-col gap-3 border-line bg-surface-page/50 p-4 sm:p-5 md:border-l">
      <section aria-label="AI 审核结果" className="space-y-1 rounded-base border border-line p-3 text-sm">
-      <h3 className="font-medium">{reviewLabel(value)}</h3>
+      <h3 className={`inline-flex rounded border px-2 py-0.5 font-medium ${reviewStatusClass(value)}`}>{reviewLabel(value)}{value.handling.state==='acknowledged'?` · ${value.handling.disposition==='false_positive'?'误报':'确认'}`:''}</h3>
+      {recoveryLabel(value.review)&&<p className="mt-1 text-xs text-ink-subtle">{recoveryLabel(value.review)}</p>}
       {value.review?.reference&&<div className="space-y-1 border-t border-line pt-2"><p>{referenceLabel(value.review.reference)}</p><p className="text-xs text-ink-subtle">{value.review.reference.reason==='unvalidated_profile'?'已按行为关键时刻核对目标类别；模型尚未验证，分数不改变审核结论。':'此参考分析仅核对保留截图的目标类别，不能替代完整行为证据，请结合录像人工审核。'}</p>{value.review.reference.completed_at&&<p className="text-xs text-ink-subtle">{new Date(value.review.reference.completed_at).toLocaleString()} · {value.review.reference.model?.package_id}</p>}</div>}
       {value.review?.score!==undefined&&!value.review.reference&&<p>目标类别匹配分数 {value.review.score.toFixed(3)}（不是概率）</p>}
       {value.review?.policy?.description&&<p className="text-ink-subtle">{value.review.policy.description}</p>}

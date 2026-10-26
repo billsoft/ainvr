@@ -8,7 +8,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { SrsConfigAdapter, reapplyPublishedSrsSettings } from '../store/srsAdapter.js';
+import { SrsConfigAdapter } from '../store/srsAdapter.js';
+import { restoreLocalConfig } from '../store/restoreLocalConfig.js';
 import type { ConfigDocument } from '../store/pgStore.js';
 
 const CONF_WITH_CANDIDATE = `rtc_server {
@@ -143,7 +144,7 @@ describe('SrsConfigAdapter', () => {
   });
 });
 
-describe('reapplyPublishedSrsSettings（启动时按配置中心重新下发）', () => {
+describe('restoreLocalConfig（启动时按配置中心重新下发）', () => {
   let confDir: string;
   let confFile: string;
   let original: string | undefined;
@@ -165,6 +166,8 @@ describe('reapplyPublishedSrsSettings（启动时按配置中心重新下发）'
     const calls: unknown[] = [];
     return {
       calls,
+      getServiceState: async () => null,
+      updateServiceState: async () => ({} as never),
       getLatestVersion: async (status?: string) => { calls.push(['latest', status]); return version === null ? null : { version } as never; },
       getVersionSnapshotForService: async (v: number, service: string) => {
         calls.push(['snapshot', v, service]);
@@ -176,18 +179,18 @@ describe('reapplyPublishedSrsSettings（启动时按配置中心重新下发）'
 
   it('把已发布的手动地址写回（升级覆盖了配置文件也不会丢）', async () => {
     const s = store(39, [doc({ rtcCandidateIp: '192.168.100.183' })]);
-    expect(await reapplyPublishedSrsSettings(s, new SrsConfigAdapter())).toBe(true);
+    expect(await restoreLocalConfig(s, new SrsConfigAdapter())).toBe(true);
     expect(fs.readFileSync(confFile, 'utf8')).toContain('candidate       192.168.100.183;');
     expect(s.calls).toEqual([['latest', 'published'], ['snapshot', 39, 'srs']]);
   });
 
   it('没有已发布版本时什么都不改', async () => {
-    expect(await reapplyPublishedSrsSettings(store(null, []), new SrsConfigAdapter())).toBe(true);
+    expect(await restoreLocalConfig(store(null, []), new SrsConfigAdapter())).toBe(true);
     expect(fs.readFileSync(confFile, 'utf8')).toContain('candidate       *;');
   });
 
   it('读取失败只返回 false，不抛出、不阻断启动', async () => {
-    expect(await reapplyPublishedSrsSettings(store(39, new Error('db down')), new SrsConfigAdapter())).toBe(false);
+    expect(await restoreLocalConfig(store(39, new Error('db down')), new SrsConfigAdapter())).toBe(false);
     expect(fs.readFileSync(confFile, 'utf8')).toContain('candidate       *;');
   });
 });

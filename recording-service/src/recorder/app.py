@@ -524,6 +524,39 @@ def create_app(store: ConfigStore, data_dir: str, guard_factory=build_guard) -> 
         """存储写入不足时按完整 GOP 丢弃的区间（时间轴琥珀色块）。"""
         return (await index.run(index.drop_events, channel, start, to))
 
+    from .evidence_recovery import EvidenceRecovery, validate_request
+    recovery = EvidenceRecovery()
+
+    @app.post("/v1/recordings/recover-evidence")
+    async def recover_evidence(body: dict, _: None = Depends(require_console_token)):
+        if not license_guard.licensed()[0]:
+            raise HTTPException(403, 'LICENSE_REQUIRED')
+        try:
+            at = validate_request(body)
+        except (ValueError, TypeError, OverflowError):
+            raise HTTPException(422, 'invalid_evidence_request') from None
+        # Only current storage and completed segments; the SEI identity selects the AI output.
+        output_id = channels.recording_channel_for_processor(body['channel_id'])
+        candidates = await index.run(lambda: [dict(r) for r in index.conn.execute(
+            "SELECT id,channel_id,width,height FROM active_segments WHERE complete=1 AND COALESCE(sei_reason,'') <> 'source' AND (? IS NULL OR channel_id=?) AND width=? AND height=? AND start_ts < ? AND end_ts > ? ORDER BY start_ts DESC LIMIT 9",
+            (output_id, output_id, body['width'], body['height'], at + 120000, at - 120000)).fetchall()])
+        if len(candidates) > 8:
+            raise HTTPException(503, 'recovery_search_capacity')
+        from contextlib import ExitStack
+        generation = storage_mgr.io.generation
+        with ExitStack() as readers:
+            segments = []
+            for candidate in candidates:
+                if channels.confirmed_kind(candidate['channel_id']) == 'source':
+                    continue
+                readers.enter_context(playback_protection.reader(candidate['id']))
+                seg, path = await resolve_segment_file(candidate['id'], index, storage_mgr, playback_protection)
+                segments.append({**candidate, 'path': path})
+            result = await recovery.recover(body, segments)
+            if generation != storage_mgr.io.generation:
+                raise HTTPException(409, 'storage_changed')
+            return result
+
     @app.get("/v1/recordings/segments")
     async def list_segments(
         response: Response,

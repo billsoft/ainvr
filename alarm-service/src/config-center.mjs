@@ -32,7 +32,7 @@ export function createConfigTransport(bootstrap){
 }
 
 export class ConfigCenterController {
-  constructor({request,start=startService,evidenceSource,reviewInvoke}){this.request=request;this.start=start;this.evidenceSource=evidenceSource;this.reviewInvoke=reviewInvoke;this.active=null;this.config=null;this.inFlight=null;this.stopping=false;this.timer=null;}
+  constructor({request,start=startService,evidenceSource,reviewInvoke,recoverEvidence}){this.request=request;this.start=start;this.evidenceSource=evidenceSource;this.reviewInvoke=reviewInvoke;this.recoverEvidence=recoverEvidence;this.active=null;this.config=null;this.inFlight=null;this.stopping=false;this.timer=null;}
   tick(){
     if(this.stopping)return Promise.resolve();
     if(this.inFlight)return this.inFlight;
@@ -57,10 +57,10 @@ export class ConfigCenterController {
       if(this.stopping)return;
       const previous=this.config;
       if(this.active){await this.active.close();this.active=null;}
-      try{this.active=await this.start(next,{evidenceSource:this.evidenceSource,reviewInvoke:this.reviewInvoke});this.config=next;}
+      try{this.active=await this.start(next,{evidenceSource:this.evidenceSource,reviewInvoke:this.reviewInvoke,recoverEvidence:this.recoverEvidence});this.config=next;}
       catch{
         // Roll back only this service, not the recorder, AI or media services.
-        if(previous&&!this.stopping){try{this.active=await this.start(previous,{evidenceSource:this.evidenceSource,reviewInvoke:this.reviewInvoke});this.config=previous;}catch{this.active=null;}}
+        if(previous&&!this.stopping){try{this.active=await this.start(previous,{evidenceSource:this.evidenceSource,reviewInvoke:this.reviewInvoke,recoverEvidence:this.recoverEvidence});this.config=previous;}catch{this.active=null;}}
         throw Error('New configuration could not start');
       }
       if(!this.stopping)await this.report('applied');

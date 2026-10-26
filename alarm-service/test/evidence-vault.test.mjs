@@ -100,7 +100,7 @@ test('SIGKILL after file fsync releases kernel ownership and next process recove
  const fact=await db.collection('behavior_events').findOne({event_id:${JSON.stringify(fact.event_id)}});
  const vault=new EvidenceVault(db,{root:${JSON.stringify(root)},policy:{enabled:true,retention_days:1,max_bytes:1024},source:{metadata:async()=>(${JSON.stringify(metadata(fact))}),image:async()=>Buffer.from([255,216,255,217])}});
  await vault.initialize();const original=vault.rows.updateOne.bind(vault.rows);vault.rows.updateOne=async(...args)=>{if(args[1].$set?.state==='stored'){process.stdout.write('before_publish\\n');await new Promise(()=>{});}return original(...args);};await vault.tick();`;
- const child=spawn(process.execPath,['--input-type=module','-e',code],{stdio:['ignore','pipe','pipe']});
+ const child=spawn(process.execPath,['--input-type=module','-e',code],{cwd:new URL('../',import.meta.url),stdio:['ignore','pipe','pipe']});
  let timer;
  try{
   const ready=await Promise.race([once(child.stdout,'data').then(([data])=>data.toString()),once(child,'exit').then(()=>{throw Error('Child exited early');}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Child readiness timeout')),5000);})]);

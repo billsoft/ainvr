@@ -1,5 +1,10 @@
 import type { ApplyOperation, ServiceState } from '@/api/configService'
 
+export function usesStartupConfig(state: ServiceState | undefined): boolean {
+  return (state?.serviceName === 'backend' || state?.serviceName === 'srs') && state.status === 'unknown' && state.desiredVersion == null &&
+    state.appliedVersion == null && !state.restartRequired && !state.errorMessage
+}
+
 /** A past successful operation must not hide today's pending/failed service. */
 export function configApplySummary(states: ServiceState[], operation: ApplyOperation | null,
   services: string[], error = ''): { text: string; tone: 'success' | 'running' | 'warning' } {
@@ -13,8 +18,9 @@ export function configApplySummary(states: ServiceState[], operation: ApplyOpera
   }
   if (services.every(name => {
     const s = states.find(v => v.serviceName === name)
+    if (usesStartupConfig(s)) return true
     return s?.status === 'applied' && !s.restartRequired && s.appliedVersion != null &&
       s.appliedVersion === s.desiredVersion
-  })) return { text: '当前配置已应用', tone: 'success' }
+  })) return { text: states.some(usesStartupConfig) ? '已发布配置已应用；其余服务使用现有配置' : '当前配置已应用', tone: 'success' }
   return { text: '部分服务尚未确认生效，请检查下方状态', tone: 'warning' }
 }

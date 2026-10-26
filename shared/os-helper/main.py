@@ -33,6 +33,7 @@ from urllib.parse import urlsplit, parse_qs
 import nm  # 同目录下的 nm.py
 import remote_assist
 import systime
+import storage
 
 REMOTE_ASSIST = remote_assist.RemoteAssist()
 # 系统日期时间（离线现场手动校时 / 局域网对时服务器）
@@ -124,6 +125,14 @@ class OSHelperHandler(http.server.BaseHTTPRequestHandler):
             # === 健康检查 ===
             if path == "/health":
                 self._send_json(200, {"ok": True, "service": "os-helper"})
+
+            elif path == "/storage/volumes":
+                self._send_json(200, storage.inventory())
+            elif path == "/storage/directories":
+                try:
+                    self._send_json(200, storage.browse(get("volume"), get("path")))
+                except (ValueError, OSError):
+                    self._send_json(400, {"error": "磁盘或目录不可读取"})
 
             # === 网卡列表 ===
             elif path == "/network/interfaces":

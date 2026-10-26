@@ -103,6 +103,30 @@ def mounted_source(mountpoint: str) -> str | None:
     return None
 
 
+def external_local_mount(root: str) -> tuple[str, str] | None:
+    """Fail closed for removable-media paths before creating any directories.
+
+    Read only kernel mount metadata; do not stat potentially wedged USB disks.
+    Legacy system paths remain readable, but UI offers only external volumes.
+    """
+    root = os.path.normpath(root)
+    if not root.startswith(("/mnt/", "/media/", "/run/media/")):
+        return None
+    candidates = []
+    with open("/proc/mounts", encoding="utf-8") as stream:
+        for line in stream:
+            fields = line.split()
+            if len(fields) < 4:
+                continue
+            mount = fields[1].replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")
+            if mount != "/" and (root == mount or root.startswith(mount.rstrip("/") + "/")):
+                if fields[0].startswith("/dev/") and "rw" in fields[3].split(","):
+                    candidates.append((mount, fields[0]))
+    if not candidates:
+        raise StorageError("外置录像磁盘未挂载或只读；已暂停录像，不会回落写入系统盘")
+    return max(candidates, key=lambda pair: len(pair[0]))
+
+
 def mounted_options(mountpoint: str) -> str:
     """从 /proc/mounts 读挂载选项串（验证 nolease 等是否真正生效）。"""
     try:
@@ -163,6 +187,7 @@ class StorageManager:
 
     def __init__(self) -> None:
         self.status = StorageStatus()
+        self._local_mount: tuple[str, str] | None = None
         # 数据面存储调用的唯一入口（隔离线程 + 熔断 + 换代）
         self.io = IsolatedIO(on_trip=self._on_io_trip)
         self._maintenance_io = MaintenanceIO()
@@ -503,12 +528,16 @@ class StorageManager:
         async with self._mgmt_lock:
             if storage.kind == "local":
                 root = storage.localPath or DEFAULT_LOCAL_PATH
+                expected_mount = external_local_mount(root)
                 try:
                     # 本机路径也可能卡（劣质 USB/盘故障）：同样走验证车道
                     total, avail, _ = await self._verify_root(
                         root, _local_probe_sync, (root,), 20)
                 except StorageError as e:
                     raise StorageError(f"本机目录 {root} 验证失败：{e}") from e
+                if external_local_mount(root) != expected_mount:
+                    raise StorageError("外置磁盘在验证期间发生变化，请重新选择")
+                self._local_mount = expected_mount
                 if is_mountpoint(DEFAULT_MOUNT_POINT):
                     await asyncio.wait_for(
                         self._management(self._umount), timeout=40)
@@ -553,6 +582,8 @@ class StorageManager:
         目录丢失由写入失败与周期探活暴露。
         """
         st = self.status
+        if st.kind == "local" and external_local_mount(st.root) != self._local_mount:
+            raise StorageError("外置录像磁盘已更换，暂停写入，请重新应用存储配置")
         if st.quota_stopped:
             raise StorageError(st.message or "已达到存储配额上限（策略：停止录制）")
         if st.space_low:

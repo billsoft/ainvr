@@ -38,10 +38,10 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (argc != 5) throw std::runtime_error("usage: ainvr_ai_service CONFIG OVERLAY MODEL_ROOT LICENSE_ENV");
-    ai_service::log::EnableWarningFileLog("/mnt/ainvr-ssd/ainvr-ai-diagnostics");
+    ai_service::log::EnableWarningFileLog((std::filesystem::path(argv[2]).parent_path()/"diagnostics").string());
     auto store = std::make_shared<cfg::ConfigStore>(argv[1], argv[2]);
     auto config = store->Load();
-    // The reused archive writes relative data/snapshot-pending; keep it on SSD.
+    // Configuration and bounded retry state stay local; history is stored in MongoDB.
     std::filesystem::current_path(std::filesystem::path(argv[2]).parent_path());
     ai_service::output::RegisterFaceEnhancerBpu(argv[3]);
     ai_service::api::SetLocateAnythingModelRoot(argv[3]);

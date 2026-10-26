@@ -41,7 +41,7 @@ try:
          '/mnt/ainvr-ssd/qwen3vl/run-v1/manifest-o2-v3.json',
          '/mnt/ainvr-ssd/llm-eval/service-dev-20/reference-items.jsonl',str(OUT/'python-dev20.jsonl'),'20'])
     run('cpp-reference',['/mnt/ainvr-ssd/llm-build/ainvr/ainvr_llm_probe',
-         '/mnt/ainvr-ssd/llm-packages/qwen3vl-4b-review-v3','infer',
+         '/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-4b-review-v3','infer',
          '/mnt/ainvr-ssd/llm-eval/service-dev-20/fixtures.jsonl',str(OUT/'cpp-dev20.jsonl')])
     run('numerical-compare',['python3','llm-service/tests/verify_reference.py','logits'],60)
     report['passed']=True

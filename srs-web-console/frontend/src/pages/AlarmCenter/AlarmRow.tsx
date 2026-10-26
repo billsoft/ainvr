@@ -1,4 +1,4 @@
-import {reviewLabel,referenceLabel} from '@/features/alarmReview'
+import {reviewLabel,referenceLabel,recoveryLabel,reviewStatusClass} from '@/features/alarmReview'
 import {Check,ChevronRight,Flag,ImageOff} from 'lucide-react'
 import type {AlarmEvent,AckDisposition} from '@/api/alarmEventService'
 import {behaviorNames,levelLook} from '@/features/alarmTriggers'
@@ -29,8 +29,9 @@ export function AlarmRow({alarm,trigger,channelName,onHandle,onOpen}:Props){
     <span className="shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium" style={{background:look.soft,color:look.ink,borderColor:look.color}}>{behaviorNames[alarm.behavior]??alarm.behavior}</span>
     {live&&<span className="shrink-0 text-xs text-success-700">进行中</span>}
    </header>
-   <p className="mt-1 text-xs text-ink-subtle">{reviewLabel(alarm)}{alarm.handling.state==='acknowledged'?` · ${alarm.handling.disposition==='false_positive'?'误报':'确认'}`:''}</p>
-   {alarm.review?.reference&&<p className="mt-1 text-xs text-ink-subtle">{referenceLabel(alarm.review.reference)}</p>}
+   <p className={`mt-1 inline-flex rounded border px-2 py-0.5 text-xs font-medium ${reviewStatusClass(alarm)}`}>{reviewLabel(alarm)}{alarm.handling.state==='acknowledged'?` · ${alarm.handling.disposition==='false_positive'?'误报':'确认'}`:''}</p>
+   {recoveryLabel(alarm.review)&&<p className="mt-1 text-xs text-ink-subtle">{recoveryLabel(alarm.review)}</p>}
+      {alarm.review?.reference&&<p className="mt-1 text-xs text-ink-subtle">{referenceLabel(alarm.review.reference)}</p>}
    <p className="mt-1 truncate text-sm text-ink" title={described.sentence}>{described.sentence}</p>
    <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-ink-subtle">
     <time dateTime={alarm.occurred_at} title={time.toLocaleString('zh-CN')} className="shrink-0 tabular-nums">{time.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}</time>

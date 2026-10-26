@@ -1,3 +1,4 @@
+import {createRecordingEvidence} from './recording-evidence.mjs';
 import {createReviewTransport} from './review-transport.mjs';
 import {createEvidenceSource} from './evidence-source.mjs';
 import {loadConfig,startService} from './runtime.mjs';
@@ -7,7 +8,7 @@ let service;
 try{
   if(process.argv.length===4&&process.argv[2]==='--config-center'){
     const bootstrap=await loadBootstrap(process.argv[3]);
-    service=new ConfigCenterController({request:createConfigTransport(bootstrap),evidenceSource:createEvidenceSource(bootstrap),reviewInvoke:createReviewTransport(bootstrap)});
+    service=new ConfigCenterController({request:createConfigTransport(bootstrap),evidenceSource:createEvidenceSource(bootstrap),reviewInvoke:createReviewTransport(bootstrap),recoverEvidence:createRecordingEvidence(bootstrap)});
     service.run(bootstrap.poll_ms);
     process.stdout.write(JSON.stringify({event:'configuration_client_started',service:'alarm-service'})+'\n');
   }else{

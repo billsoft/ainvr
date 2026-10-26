@@ -1,3 +1,4 @@
+import {EvidenceImages} from './evidence-images.mjs';
 import {compactProof} from './compact-evidence.mjs';
 import {readFile,mkdir,writeFile,rename,stat,unlink,readdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
@@ -63,16 +64,19 @@ export function jpegDimensions(data){
  throw Error('unsupported_image');
 }
 export class ReviewContext {
- constructor(repository,root){this.repository=repository;this.root=resolve(root);if(!this.root.startsWith('/mnt/ainvr-ssd/'))throw Error('SSD context required');this.lastPolicy=0;this.lastMaintenance=0;this.closing=false;this.inFlight=null;}
- async initialize(){for(const dir of ['pinned','candidates'])await mkdir(join(this.root,dir),{recursive:true,mode:0o700});}
+ constructor(repository,root){this.repository=repository;this.images=repository.db?new EvidenceImages(repository.db):null;this.root=resolve(root);if(!this.root.startsWith('/mnt/ainvr-ssd/'))throw Error('SSD context required');this.lastPolicy=0;this.lastMaintenance=0;this.closing=false;this.inFlight=null;}
+ async initialize(){await this.images?.initialize();for(const dir of ['pinned','candidates'])await mkdir(join(this.root,dir),{recursive:true,mode:0o700});}
  async publish(){
-  if(Date.now()-this.lastPolicy<5000)return;this.lastPolicy=Date.now();
+  if(Date.now()-this.lastPolicy<1000)return;this.lastPolicy=Date.now();
   const snapshot=await this.repository.ruleSnapshots.current();
   const channels=[...new Set((snapshot?.rules??[]).filter(r=>r.review?.enabled&&r.alarm_enabled!==false).map(r=>r.channel_id))];
-  const path=join(this.root,'enabled.json');await writeFile(path+'.tmp',JSON.stringify({channels,expires_at:Math.floor(Date.now()/1000)+20}),{mode:0o600});await rename(path+'.tmp',path);
+  const jobs=this.repository.captureJobs?await this.repository.captureJobs.find({state:'queued',created_at:{$gt:Date.now()-30000}}).sort({created_at:1}).limit(128).toArray():[];
+  const retained_keys=jobs.map(job=>contextKey(job,job.sample));
+  const path=join(this.root,'enabled.json');await writeFile(path+'.tmp',JSON.stringify({channels,retained_keys,expires_at:Math.floor(Date.now()/1000)+20}),{mode:0o600});await rename(path+'.tmp',path);
  }
  async maintain(){
   if(Date.now()-this.lastMaintenance<60000)return;this.lastMaintenance=Date.now();
+  if(this.images){await this.images.prune('candidate',this.policy?.candidate_max_bytes??128*1024**2,24*3600000);await this.images.prune('context',this.policy?.max_bytes??1024**3,(this.policy?.retention_days??7)*86400000);return;}
   await this.prunePool('candidates',this.policy?.candidate_max_bytes??128*1024**2,24*3600000);
   await this.prunePool('pinned',this.policy?.max_bytes??1024**3,(this.policy?.retention_days??7)*86400000);
  }
@@ -86,8 +90,7 @@ export class ReviewContext {
   const jobs=this.repository.captureJobs;if(!jobs)return;
   const rows=await jobs.find({state:'queued',next_at:{$lte:Date.now()}}).sort({created_at:1}).limit(64).toArray();
   for(const job of rows){try{
-   const dest=join(this.root,'candidates',contextKey(job,job.sample)+'.jpg');
-   try{await stat(dest);}catch{await this.image({...job,analysis_evidence:{source:job.source}},job.sample,true);}
+   await this.image({...job,analysis_evidence:{source:job.source}},job.sample,true);
    await jobs.updateOne({_id:job._id},{$set:{state:'done',finished_at:new Date()}});
   }catch{
    const expired=Date.now()-job.created_at>30000;
@@ -103,7 +106,7 @@ export class ReviewContext {
    const started=row.review.context_started_at??Date.now();
    if(row.review.context_started_at==null)await this.repository.events.updateOne(fence,{$set:{'review.context_started_at':started}});
    try{
-    const frames=[];for(const s of proof.samples){const {key,data}=await this.image(row,s);frames.push({...s,key,content_sha256:hash(data)});}
+    const frames=[];for(const s of proof.samples){const {key,data}=await this.image(row,s);frames.push({...s,key,content_sha256:hash(data),...(this.images?{storage:'mongodb'}:{})});}
     await this.repository.events.updateOne(fence,{$set:{'review.context_state':'ready','review.frames':frames}});
    }catch{
     if(Date.now()-started>30000)await this.repository.events.updateOne(fence,{$set:{'review.state':'uncertain','review.reason':'missing_context','review.context_state':'incomplete'}});
@@ -113,8 +116,31 @@ export class ReviewContext {
   await this.maintain();
  }
  tick(){if(this.inFlight)return this.inFlight;if(this.closing)return Promise.resolve();this.inFlight=this.step().finally(()=>{this.inFlight=null});return this.inFlight;}
- run(){const work=async()=>{try{await this.tick()}catch{}if(!this.closing)this.timer=setTimeout(work,1000)};void work();}
- async close(){this.closing=true;clearTimeout(this.timer);await this.inFlight;}
+ async recoverOne(){
+  if(!this.recoverEvidence||!this.images)return;
+  const now=Date.now();
+  const row=await this.repository.events.findOneAndUpdate({'handling.state':'unacknowledged','review.policy.enabled':true,'review.reason':'missing_context','review.context_state':'incomplete',occurred_at:{$gte:new Date(now-86400000).toISOString()},'review.recovery.attempt':{$not:{$gte:6}},$or:[{'review.recovery.next_at':{$exists:false}},{'review.recovery.next_at':{$lte:now}}]},{$set:{'review.recovery.state':'running','review.recovery.next_at':now+300000},$inc:{'review.recovery.attempt':1}},{sort:{occurred_at:-1},returnDocument:'after'});
+  if(!row)return;
+  const fence={alarm_id:row.alarm_id,'review.generation':row.review.generation,'handling.revision':row.handling.revision,'handling.state':'unacknowledged','review.context_state':'incomplete'};
+  try{
+   const proof=reviewSamples(row);if(!proof.ok)throw Error('incomplete_trajectory');
+   const frames=[];
+   for(const sample of proof.samples){
+    if(!await this.repository.events.findOne(fence,{projection:{alarm_id:1}}))return;
+    let image,provenance=(row.review.recovery?.frames??[]).find(f=>f.key===contextKey(row,sample))?.provenance;
+    try{image=await this.image(row,sample);}catch{
+     const recovered=await this.recoverEvidence(row,sample);this.validateRetained(recovered.data,[]);
+     const key=contextKey(row,sample);await this.images.put('context',key,recovered.data,this.imagePolicy(row));
+     image={key,data:recovered.data};provenance=recovered.provenance;
+     await this.repository.events.updateOne(fence,{$push:{'review.recovery.frames':{key,provenance}}});
+    }
+    frames.push({...sample,key:image.key,content_sha256:hash(image.data),storage:'mongodb',...(provenance?{provenance}:{})});
+   }
+   await this.repository.events.updateOne(fence,{$set:{'review.frames':frames,'review.context_state':'ready','review.state':'queued','review.reason':null,'review.attempt':0,'review.next_attempt_at':0,'review.recovery.state':'completed','review.recovery.completed_at':new Date().toISOString()},$inc:{version:1}});
+  }catch(error){await this.repository.events.updateOne(fence,{$set:{'review.recovery.state':row.review.recovery.attempt>=6?'unavailable':'queued','review.recovery.reason':error.message==='incomplete_trajectory'?'incomplete_trajectory':'recording_evidence_unavailable','review.recovery.next_at':Date.now()+Math.min(300000,30000*2**row.review.recovery.attempt)},$inc:{version:1}});}
+ }
+ run(){const recovery=async()=>{if(this.closing)return;this.recoveryFlight=this.recoverOne().catch(()=>{});await this.recoveryFlight;if(!this.closing)this.recoveryTimer=setTimeout(recovery,10000);};void recovery();const work=async()=>{try{await this.tick()}catch{}if(!this.closing)this.timer=setTimeout(work,1000)};void work();}
+ async close(){this.closing=true;clearTimeout(this.timer);clearTimeout(this.recoveryTimer);await Promise.allSettled([this.inFlight,this.recoveryFlight]);}
  async status(){
   let cache=null;try{cache=JSON.parse(await readFile(join(this.root,'cache-status.json'),'utf8'));}catch{}
   const rows=this.repository.captureJobs?await this.repository.captureJobs.aggregate([{$group:{_id:'$state',count:{$sum:1}}}],{maxTimeMS:2000}).toArray():[];
@@ -124,8 +150,9 @@ export class ReviewContext {
   if(!['target-crop-v1','context-marked-v1'].includes(image.layout)||typeof image.jpeg_base64!=='string'||image.jpeg_base64.length>2*1024*1024)throw Error('invalid_model_result');
   const data=Buffer.from(image.jpeg_base64,'base64');jpegDimensions(data);
   const key=hash(data),path=join(this.root,'pinned',key+'.jpg');
-  await writeFile(path+'.tmp',data,{mode:0o600});await rename(path+'.tmp',path);
-  const meta={frame_id:sample.frame_id,key,layout:image.layout,target:image.target,width:image.width,height:image.height,...(image.layout==='target-crop-v1'?{expansion:image.expansion}:{region:image.region,approach_width_fraction:image.approach_width_fraction,fit:image.fit})};
+  if(this.images)await this.images.put('context',key,data,this.imagePolicy(row));
+  else {await writeFile(path+'.tmp',data,{mode:0o600});await rename(path+'.tmp',path);}
+  const meta={frame_id:sample.frame_id,key,...(this.images?{storage:'mongodb',content_sha256:key}:{}),layout:image.layout,target:image.target,width:image.width,height:image.height,...(image.layout==='target-crop-v1'?{expansion:image.expansion}:{region:image.region,approach_width_fraction:image.approach_width_fraction,fit:image.fit})};
   const field=image.layout==='context-marked-v1'?'review.context_frames':'review.prepared_frames';
   await this.repository.events.updateOne({alarm_id:row.alarm_id,'review.generation':row.review.generation},{$addToSet:{[field]:meta}});
   return meta;
@@ -133,11 +160,48 @@ export class ReviewContext {
  async retained(alarmId,key){
   if(!/^[a-f0-9]{64}$/.test(key))throw Error('missing_context');
   const row=await this.repository.events.findOne({alarm_id:alarmId,$or:[{'review.frames.key':key},{'review.prepared_frames.key':key},{'review.context_frames.key':key}]});if(!row)throw Error('missing_context');
-  const data=await readFile(join(this.root,'pinned',key+'.jpg'));if(data.length>8*1024*1024)throw Error('missing_context');return data;
+  let data=this.images?await this.images.get('context',key):null;
+  const refs=['frames','prepared_frames','context_frames'].flatMap(field=>row.review?.[field]??[]).filter(f=>f.key===key);
+  if(!data){
+   if(refs.some(f=>f.storage==='mongodb'))throw Error('missing_context');
+   data=await readFile(join(this.root,'pinned',key+'.jpg'));
+   if(this.images){this.validateRetained(data,refs);await this.images.put('context',key,data,this.imagePolicy(row));await this.markMongo(row,key);}
+  }
+  this.validateRetained(data,refs);return data;
  }
  // Candidate captures never consume the retention quota of actual alarms.
  // A frame is copied into pinned only when an alarm references it.
+ imagePolicy(row,candidate=false){return {maxBytes:candidate?(this.policy?.candidate_max_bytes??128*1024**2):(this.policy?.max_bytes??1024**3),retentionMs:candidate?86400000:(this.policy?.retention_days??7)*86400000,occurredAt:row.occurred_at??row.sample?.captured_at};}
+ validateRetained(data,refs){if(data.length>8*1024**2||refs.some(f=>(f.content_sha256??(f.layout?f.key:null))&&(f.content_sha256??f.key)!==hash(data)))throw Error('evidence_integrity_mismatch');jpegDimensions(data);}
+ async markMongo(row,key){
+  for(const field of ['frames','prepared_frames','context_frames'])if(row.review?.[field]?.some(f=>f.key===key))
+   await this.repository.events.updateOne({alarm_id:row.alarm_id,'review.generation':row.review.generation},{$set:{[`review.${field}.$[frame].storage`]:'mongodb'}},{arrayFilters:[{'frame.key':key}]});
+ }
+ async mongoImage(row,sample,candidate){
+  const key=contextKey(row,sample),pool=candidate?'candidate':'context';
+  let data=await this.images.get(pool,key);
+  if(!data){
+   const known=row.review?.frames?.find(f=>f.key===key);
+   if(known?.storage==='mongodb')throw Error('missing_context');
+   if(!candidate)data=await this.images.get('candidate',key);
+   // Read-only legacy compatibility. No new retained image files are written.
+   for(const dir of candidate?['candidates']:['pinned','candidates'])if(!data){try{data=await readFile(join(this.root,dir,key+'.jpg'));}catch(e){if(e.code!=='ENOENT')throw e;}}
+   if(!data){
+    const raw='/dev/shm/ainvr-review-frames';
+    if(Date.now()-(await stat(join(raw,key+'.jpg'))).mtimeMs>60000)throw Error('missing_context');
+    const meta=JSON.parse(await readFile(join(raw,key+'.json'),'utf8'));
+    for(const [k,v] of Object.entries({channel_id:row.channel_id,stream_session_id:row.stream_session_id,source_pts_ns:sample.source_pts_ns,source_frame_index:sample.source_frame_index,frame_width:row.analysis_evidence.source.width,frame_height:row.analysis_evidence.source.height}))if(meta[k]!==v)throw Error('missing_context');
+    data=await readFile(join(raw,key+'.jpg'));
+   }
+   this.validateRetained(data,known?[known]:[]);
+   await this.images.put(pool,key,data,this.imagePolicy(row,candidate));
+   if(!candidate)await this.markMongo(row,key);
+  }
+  this.validateRetained(data,(row.review?.frames??[]).filter(f=>f.key===key));
+  return {key,data,...jpegDimensions(data)};
+ }
  async image(row,sample,candidate=false){
+  if(this.images)return this.mongoImage(row,sample,candidate);
   const key=contextKey(row,sample),dest=join(this.root,candidate?'candidates':'pinned',key+'.jpg');
   let data;
   try{data=await readFile(dest);}catch{
@@ -145,7 +209,7 @@ export class ReviewContext {
    if(!data){
    // Read-only compatibility for frames captured before the v2 rolling cache upgrade.
    let raw='/dev/shm/ainvr-review-frames';try{await stat(join(raw,key+'.json'));}catch{raw=this.root;}
-   if(raw.startsWith('/dev/shm/')&&Date.now()-(await stat(join(raw,key+'.jpg'))).mtimeMs>10000)throw Error('missing_context');
+   if(raw.startsWith('/dev/shm/')&&Date.now()-(await stat(join(raw,key+'.jpg'))).mtimeMs>60000)throw Error('missing_context');
    const meta=JSON.parse(await readFile(join(raw,key+'.json'),'utf8'));
    for(const [k,v] of Object.entries({channel_id:row.channel_id,stream_session_id:row.stream_session_id,source_pts_ns:sample.source_pts_ns,source_frame_index:sample.source_frame_index,frame_width:row.analysis_evidence.source.width,frame_height:row.analysis_evidence.source.height}))if(meta[k]!==v)throw Error('missing_context');
    data=await readFile(join(raw,key+'.jpg'));if(data.length>8*1024*1024)throw Error('missing_context');

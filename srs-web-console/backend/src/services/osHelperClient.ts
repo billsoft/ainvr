@@ -341,3 +341,7 @@ export async function wifiDisconnect(
     fetchImpl,
   )
 }
+
+export async function storageRequest(config: OsHelperConfig, path: string) {
+  return request(config, path, {}, 12000)
+}

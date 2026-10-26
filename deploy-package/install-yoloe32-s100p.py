@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install a separately accepted 32-slot detector; preserve every 8-slot artifact."""
+"""Install a separately accepted 32-slot detector; share the canonical model directory with accepted 8-slot components."""
 import argparse, hashlib, importlib.util, json, os, subprocess, uuid
 from pathlib import Path
 p=argparse.ArgumentParser(description=__doc__)
@@ -25,7 +25,15 @@ warm=[f['total_adapter_ms'] for g in live['groups'] for f in g['frames'][1:]]
 assert len(warm)==10 and 1000/(sum(warm)/len(warm))>5
 spec=importlib.util.spec_from_file_location('ainvr_yoloe_install',repo/'deploy-package/install-yoloe-s100p.py')
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-root=Path('/mnt/ainvr-ssd/ainvr-models')/('yoloe-26x-32-'+h[:12]);root.mkdir(exist_ok=True)
+root=repo/'ai-service/models/derived/s100p'
+assert root.resolve().is_relative_to((repo/'ai-service/models').resolve())
+root.mkdir(parents=True,exist_ok=True)
+assert root.stat().st_dev==repo.stat().st_dev, 'Runtime models must be on board storage'
+shared=read(root/'yoloe-26x.hbm.ainvr.json')['dynamic_text']
+for field in ('text_hbm_sha256','reprta_hbm_sha256'):
+    assert shared[field]==contract['dynamic_text'][field], 'Shared encoder mismatch'
+for field in ('text_hbm','reprta_hbm','tokenizer_assets','tokenizer_python'):
+    contract['dynamic_text'][field]=shared[field]
 model=root/'yoloe-26x-32.hbm';module.install_file(a.model,model,h)
 contract['lifecycle']='32-slot hardware and adapter accepted; actual Web UI acceptance pending'
 quality.update(native_channel_adapter_report=str(a.adapter_report.resolve()),
@@ -42,7 +50,4 @@ config.write_text(json.dumps({'id':'yoloe32-install-check','stream':{'url':'rtmp
  'model':{'name':'yoloe-26x-32','adapter':'yoloe_bpu','provider':'bpu','path':str(model),
  'prompts':[{'description':'person','label_id':'person','label_name':'Person'}]}}))
 subprocess.run([str(a.probe),'--validate',str(config)],check=True,timeout=30)
-entries=repo/'ai-service/models/derived/s100p'
-module.install_link(entries/model.name,model,h)
-module.install_link(entries/manifest.name,manifest,sha(manifest))
 print(json.dumps({'installed':str(model),'hbm_sha256':h,'old_8_slot_preserved':True,'ui_enabled':False}))

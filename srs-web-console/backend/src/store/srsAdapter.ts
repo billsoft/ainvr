@@ -12,11 +12,11 @@
  * - 写前把 srs.conf 备份为 .bak（单份滚动备份，够回滚本次误写）
  * - writeCandidateIp 内部自带文件锁 + tmp/rename 原子写 + 值未变不落盘
  *
- * 启动时 reapplyPublishedSrsSettings 按最新已发布版本重新下发：srs.conf 在
+ * 启动时 restoreLocalConfig 按最新已发布版本重新下发：srs.conf 在
  * 升级时会被离线包里的默认配置（自动）覆盖，配置中心才是唯一真值。
  */
 import fs from 'node:fs';
-import type { ConfigDocument, PgConfigStore } from './pgStore.js';
+import type { ConfigDocument } from './pgStore.js';
 import type { ServiceConfigAdapter, ApplyResult, ValidateResult } from './adapter.js';
 import { writeCandidateIp } from '../services/srsConfWriter.js';
 
@@ -106,26 +106,5 @@ export class SrsConfigAdapter implements ServiceConfigAdapter {
     } catch (e) {
       console.warn('[srs-adapter] srs.conf 备份失败（继续写入）:', e instanceof Error ? e.message : e);
     }
-  }
-}
-
-/**
- * 启动时把最新已发布版本里的流媒体设置重新写进 srs.conf（值没变不落盘，幂等）。
- * 不新建版本、不写审计；失败只返回 false 并记日志，绝不阻断控制台启动。
- */
-export async function reapplyPublishedSrsSettings(
-  store: Pick<PgConfigStore, 'getLatestVersion' | 'getVersionSnapshotForService'>,
-  adapter: SrsConfigAdapter,
-): Promise<boolean> {
-  try {
-    const latest = await store.getLatestVersion('published');
-    if (!latest) return true;
-    const docs = await store.getVersionSnapshotForService(latest.version, 'srs');
-    const r = await adapter.apply(docs, latest.version);
-    if (!r.ok) console.error('[srs-adapter] 启动时重新下发流媒体设置失败:', r.error);
-    return r.ok;
-  } catch (e) {
-    console.error('[srs-adapter] 启动时读取已发布的流媒体设置失败:', e instanceof Error ? e.message : e);
-    return false;
   }
 }

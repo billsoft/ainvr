@@ -1,3 +1,4 @@
+import { CONFIG_HISTORY_RETENTION_SQL } from './configRetention.js';
 /**
  * PostgreSQL 配置仓库：统一配置中心的唯一存储入口
  * - 管理配置文档的 CRUD、版本、发布、回滚
@@ -498,6 +499,7 @@ export class PgConfigStore {
         entry.ipAddress ?? null,
       ],
     );
+    await client.query(CONFIG_HISTORY_RETENTION_SQL);
   }
 
   async listAuditLogs(limit = 100): Promise<AuditLogEntry[]> {

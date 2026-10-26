@@ -1,3 +1,4 @@
+import { StorageVolumes } from '@/components/StorageVolumes'
 import { useEffect, useState } from 'react'
 import { toast } from '@/store/toast'
 import { configService, type ConfigDocument, type PgInfo } from '@/api/configService'
@@ -45,6 +46,8 @@ export function DatabaseConfigForm({ aiServiceDoc, onSavePartial }: Props) {
     finally { setSaving(false) }
   }
   return <div className="space-y-5" data-unsaved={dirty} onChange={() => setDirty(true)}>
+    <StorageVolumes />
+    <p className="text-sm text-ink-subtle">参数库存放在系统盘。历史库的连接配置与物理存储位置不同；更换历史磁盘需要停写、复制校验和恢复，不能只修改数据库连接。</p>
     <Section title="参数库" hint="配置中心自身数据库。连接参数通过部署环境修改，不在本页修改；修改后需要重启 Web 后端，重启前应确认新参数库包含现有配置。">
       {pgError ? <p role="alert">{pgError}</p> : !pgInfo ? <p>加载中…</p> : <dl className="grid grid-cols-2 gap-3 text-sm">
         <dt>地址</dt><dd>{pgInfo.host}</dd><dt>端口</dt><dd>{pgInfo.port}</dd>

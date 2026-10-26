@@ -48,11 +48,18 @@ class ChannelManager:
         # None = AI 目录还没成功读到过：此时通道类型是"未知"，不能当"普通源"。
         # 否则 AI 输出的录像会被误判为不带识别信息（见 confirmed_kind）。
         self._ai_outputs: set[tuple[str, str]] | None = None
+        self._processor_outputs: dict[str, tuple[str, str]] = {}
         self._ai_refresh_at = 0.0
         self._video_progress: dict[tuple[str, str], VideoProgress] = {}
 
     def get(self, channel_id: str) -> dict | None:
         return next((c for c in self.channels if c["id"] == channel_id), None)
+
+    def recording_channel_for_processor(self, processor_id: str) -> str | None:
+        target = self._processor_outputs.get(processor_id)
+        matches = [c['id'] for c in self.channels if
+                   (c.get('app', 'live'), c.get('streamName')) == target]
+        return matches[0] if len(matches) == 1 else None
 
     def reader_watchdog_source(self, channel: dict) -> dict | None:
         """看门狗只用近期、同会话帧数增长的证据，不采用页面的在线缓存。"""
@@ -117,6 +124,7 @@ class ChannelManager:
         if not isinstance(rows, list):
             raise ValueError("AI 通道目录响应格式无效")
         outputs = set()
+        processor_outputs = {}
         for channel in rows:
             publish = (channel.get("config") or {}).get("publish") or {}
             target = publish.get("effective_target_url") or publish.get("target_url")
@@ -125,6 +133,9 @@ class ChannelManager:
             parts = unquote(urlsplit(target).path).strip("/").rsplit("/", 1)
             if len(parts) == 2:
                 outputs.add(tuple(parts))
+                if isinstance(channel.get("id"), str):
+                    processor_outputs[channel["id"]] = tuple(parts)
+        self._processor_outputs = processor_outputs
         return outputs
 
     def _fetch_srs_streams(self) -> dict[str, dict]:

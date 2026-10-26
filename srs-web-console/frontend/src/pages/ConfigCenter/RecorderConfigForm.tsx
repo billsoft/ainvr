@@ -14,6 +14,7 @@
  * 自带保存按钮，直接调 onSavePartial——录像相关字段只有这一个页面在管，
  * 不存在跟别的分类页抢同一份文档的问题，整份覆盖安全。
  */
+import { StorageDirectoryPicker } from '@/components/StorageDirectoryPicker'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { CalendarClock, ChevronRight } from 'lucide-react'
@@ -208,8 +209,7 @@ export function RecorderConfigForm({ recorderDoc, onSavePartial }: Props) {
         {kind === 'local' ? (
           <div>
             <label className={label}>录像目录</label>
-            <input value={localPath} onChange={(e) => setLocalPath(e.target.value)}
-              placeholder="如 /home/sunrise/ainvr/data/recordings" className={`${input} flex-1`} />
+            <StorageDirectoryPicker value={localPath} onChange={path => { setLocalPath(path); setDirty(true) }} />
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

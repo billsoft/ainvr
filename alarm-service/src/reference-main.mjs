@@ -1,3 +1,4 @@
+import {EvidenceImages} from './evidence-images.mjs';
 // Production reference executor, independent of the core alarm consumer.
 import {loadBootstrap,createConfigTransport} from './config-center.mjs';
 import {validateConfig} from './runtime.mjs';
@@ -6,7 +7,7 @@ import {EvidenceVault} from './evidence-vault.mjs';
 import {ReviewContext} from './review-context.mjs';
 import {ReferenceReviewWorker} from './reference-review.mjs';
 import {MongoClient} from 'mongodb';
-import {mkdir,writeFile,readFile,unlink,rename} from 'node:fs/promises';
+import {mkdir,writeFile,readFile,unlink} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -14,7 +15,7 @@ const exec=promisify(execFile),sha=b=>createHash('sha256').update(b).digest('hex
 if(process.argv.length!==4)throw Error('Bootstrap and hardware preparation executable required');
 const bootstrap=await loadBootstrap(process.argv[2]),request=createConfigTransport(bootstrap),invoke=createReviewTransport(bootstrap);
 let prunedAt=0;
-const context=new ReviewContext({},'/mnt/ainvr-ssd/ainvr-review-frames');
+let context;
 const tool=process.argv[3],root='/mnt/ainvr-ssd/ainvr-review-frames/reference';
 await mkdir(root,{recursive:true,mode:0o700});let stop=false,client,currentVersion,worker,runtime;
 process.on('SIGTERM',()=>{stop=true});process.on('SIGINT',()=>{stop=true});
@@ -25,7 +26,8 @@ try{while(!stop){
    const docs=await request(`versions/${state.appliedVersion}/snapshot?service=alarm-service`);
    const config=validateConfig({...docs[0].config,schema_version:'1.0',version:state.appliedVersion,operation_id:`reference-${state.appliedVersion}`});
    if(client)await client.close();client=new MongoClient(config.mongo_uri,{serverSelectionTimeoutMS:5000,maxPoolSize:2});await client.connect();
-   const db=client.db(config.database);runtime=db.collection('alarm_reference_runtime');const rows=db.collection('alarms'),vault=new EvidenceVault(db,{root:'/mnt/ainvr-ssd/ainvr-alarm-evidence/'+config.database,policy:config.evidence});
+   const db=client.db(config.database);runtime=db.collection('alarm_reference_runtime');const rows=db.collection('alarms'),vault=new EvidenceVault(db,{root:'/mnt/ainvr-ssd/ainvr-alarm-evidence/'+config.database,policy:config.evidence,images:new EvidenceImages(db)});
+   context=new ReviewContext({db,events:rows},'/mnt/ainvr-ssd/ainvr-review-frames');context.policy=config.review;await context.images.initialize();
    await rows.createIndex({'handling.state':1,'review.reference.state':1,occurred_at:1});
    worker=new ReferenceReviewWorker({rows,invoke,image:async row=>{
     const id=row.behavior_event_ids?.[0];if(!/^[a-f0-9]{64}$/.test(id??''))throw Error('missing_evidence');
@@ -41,12 +43,12 @@ try{while(!stop){
     return {data,width:e.image_width,height:e.image_height,label,sha256:sha(data)};
    },prepare:async(row,original)=>{
     if(!/^[a-f0-9]{64}$/.test(row.alarm_id))throw Error('invalid_request');
-    if(Date.now()-prunedAt>60000){await context.prunePool('reference',128*1024**2,7*86400000);prunedAt=Date.now()}
+    if(Date.now()-prunedAt>60000){await context.images.prune('reference',128*1024**2,7*86400000);prunedAt=Date.now()}
     const input=root+'/'+row.alarm_id+'.source.tmp',output=root+'/'+row.alarm_id+'.prepared.tmp';
     try{
      await writeFile(input,original.data,{mode:0o600});
      await exec(tool,['retained',input,String(original.width),String(original.height),output],{timeout:15000,maxBuffer:65536});
-     const data=await readFile(output),key=sha(data);await rename(output,root+'/'+key+'.jpg');return {data,key,sha256:key};
+     const data=await readFile(output),key=sha(data);await context.images.put('reference',key,data,{maxBytes:128*1024**2,retentionMs:7*86400000,occurredAt:row.occurred_at});return {data,key,sha256:key};
     }finally{await unlink(input).catch(()=>{});await unlink(output).catch(()=>{})}
    }});currentVersion=state.appliedVersion;
   }

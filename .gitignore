@@ -75,3 +75,6 @@ deploy/s100p/rollback-ai-*/
 # Generated reference-review releases, binaries and dependency symlinks.
 # Source and reproducible install scripts live outside this runtime directory.
 /deploy/s100p/reference-review/
+
+# Generated hardware recording evidence helper
+/deploy/s100p/bin/ainvr_recording_frame

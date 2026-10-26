@@ -1,3 +1,4 @@
+import {EvidenceImages} from './evidence-images.mjs';
 // Copyright AINVR. Independent service lifecycle; never starts or stops the AI service.
 import {ReviewContext} from './review-context.mjs';
 import {ReviewWorker} from './review-worker.mjs';
@@ -34,7 +35,7 @@ export async function loadConfig(path) {
   catch{throw Error('Invalid service configuration');} // Never echo credentials or parsed input.
 }
 
-export async function startService(input,{evidenceSource,reviewInvoke}={}) {
+export async function startService(input,{evidenceSource,reviewInvoke,recoverEvidence}={}) {
   const config=validateConfig(input),instanceId=randomUUID(),startedAt=new Date().toISOString();
   const client=new MongoClient(config.mongo_uri,{serverSelectionTimeoutMS:3000,connectTimeoutMS:3000,socketTimeoutMS:10000,maxPoolSize:8});
   let app,heartbeat,pump,vault,review,context,closing=false,healthy=false,checkedAt=null;
@@ -49,10 +50,10 @@ export async function startService(input,{evidenceSource,reviewInvoke}={}) {
       if(config.evidence.enabled&&!evidenceSource)throw Error('Evidence source transport required');
       const base=process.env.AINVR_ALARM_EVIDENCE_ROOT??'/mnt/ainvr-ssd/ainvr-alarm-evidence';
       if(!base.startsWith('/mnt/ainvr-ssd/')||resolve(base)!==base)throw Error('SSD evidence root required');
-      vault=new EvidenceVault(db,{root:resolve(base,config.database),policy:config.evidence,source:evidenceSource});
+      vault=new EvidenceVault(db,{root:resolve(base,config.database),policy:config.evidence,source:evidenceSource,images:new EvidenceImages(db)});
       await vault.initialize();repository.evidenceVault=vault;
     }
-    if(reviewInvoke){context=new ReviewContext(repository,process.env.AINVR_REVIEW_FRAME_ROOT??'/mnt/ainvr-ssd/ainvr-review-frames');context.policy=config.review;await context.initialize();repository.reviewContext=context;review=new ReviewWorker(repository,{invoke:reviewInvoke,context,policy:config.review});await review.initialize();}
+    if(reviewInvoke){context=new ReviewContext(repository,process.env.AINVR_REVIEW_FRAME_ROOT??'/mnt/ainvr-ssd/ainvr-review-frames');context.policy=config.review;context.recoverEvidence=recoverEvidence;await context.initialize();repository.reviewContext=context;review=new ReviewWorker(repository,{invoke:reviewInvoke,context,policy:config.review});await review.initialize();}
     const health=db.collection('alarm_service_health');
     await health.createIndex({expires_at:1},{expireAfterSeconds:0});
     const probe=async()=>{

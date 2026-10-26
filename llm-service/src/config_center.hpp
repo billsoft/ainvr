@@ -31,7 +31,7 @@ inline nlohmann::json NormalizeSettings(const nlohmann::json& s,int version) {
   if(!std::isfinite(temperature)||temperature<.05||temperature>10||s.at("tasks").at("alarm-review-zh-v1").at("aspect_policy")!="reject")throw std::invalid_argument("invalid task settings");
   if(schedule.at("prefill_profile")!="s256"||s.at("model").at("load_policy")!="resident")throw std::invalid_argument("unsupported profile or loading policy");
   return {{"config_version",version},{"enabled",s.at("enabled").get<bool>()},
-    {"package_root","/mnt/ainvr-ssd/llm-packages/qwen3vl-4b-review-v3"},{"reservation_root","/run/ainvr"},
+    {"package_root","/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-4b-review-v3"},{"reservation_root","/run/ainvr"},
     {"api_keys",callers},{"admin_key",admin},{"calibration_temperature",temperature},
     {"queue_size",integer("queue_size",1,32)},{"queue_timeout_s",integer("queue_timeout_s",1,300)},
     {"exec_timeout_s",integer("exec_timeout_s",1,120)},

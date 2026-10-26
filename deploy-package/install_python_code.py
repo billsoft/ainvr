@@ -18,7 +18,7 @@ def validate(package, license_only, recorder_python):
                      'ingest-service/main.pyc',
                       'recording-service/src/recorder/main.pyc', 'recording-service/src/recorder/internal_network.pyc', 'shared/ainvr_logging.pyc',
                      'shared/os-helper/main.pyc', 'shared/os-helper/nm.pyc',
-                     'shared/os-helper/remote_assist.pyc', 'shared/os-helper/systime.pyc',
+                     'shared/os-helper/remote_assist.pyc', 'shared/os-helper/systime.pyc', 'shared/os-helper/storage.pyc',
                      'shared/host-restart-helper/restart_helper.pyc',
                      'shared/host-restart-helper/observability.pyc']
     for relative in required:

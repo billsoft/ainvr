@@ -1,3 +1,4 @@
+import { StorageVolumes } from '@/components/StorageVolumes'
 import { useEffect, useState } from 'react'
 import { useSettingsStore } from '@/store/settings'
 import { useSearchParams } from 'react-router-dom'
@@ -255,6 +256,7 @@ export default function DashboardPage(){
       </tbody></table></div>
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
+          <StorageVolumes />
           <div><h2 className="font-medium">资源历史</h2><p className="mt-1 text-xs text-slate-500">持续展示 CPU、内存、BPU、磁盘和网络趋势，避免只依赖瞬时值判断系统状态。</p></div>
           <div className="flex flex-wrap items-center gap-2"><select aria-label="资源服务" className={input} value={metricService} onChange={e=>setMetricService(e.target.value)}><option value="host">设备主机</option>{services.map(s=><option key={s.id} value={s.id}>{names[s.id]}</option>)}</select><select aria-label="历史周期" className={input} value={hours} onChange={e=>setHours(Number(e.target.value))}>{[1,6,24,72,168].map(v=><option key={v} value={v}>最近 {v} 小时</option>)}</select></div>
         </div>

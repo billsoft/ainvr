@@ -31,11 +31,12 @@ function exactEvidence(raw,fact){
  return Object.fromEntries(['kind','image_id','channel_id','track_id','stream_session_id','source_pts_ns','source_frame_index','frame_width','frame_height','image_width','image_height','label_id','variants'].map(k=>[k,e[k]??null]));
 }
 export class EvidenceVault{
- constructor(db,{root,policy,source,clock=()=>Date.now()}){
+ constructor(db,{root,policy,source,clock=()=>Date.now(),images=null}){
   this.db=db;this.rows=db.collection('alarm_evidence');this.facts=db.collection('behavior_events');this.root=resolve(root);this.policy=policy;this.source=source;this.clock=clock;
-  this.used=0;this.timer=null;this.inFlight=null;this.closing=false;this.lock=null;this.lastError=null;this.needsRecovery=false;
+  this.images=images;this.used=0;this.timer=null;this.inFlight=null;this.closing=false;this.lock=null;this.lastError=null;this.needsRecovery=false;
  }
  async initialize(){
+  await this.images?.initialize();
   if(process.platform!=='linux')throw Error('Evidence vault requires Linux storage ownership');
   await mkdir(this.root,{recursive:true,mode:0o700});
   const info=await lstat(this.root);
@@ -77,12 +78,13 @@ export class EvidenceVault{
  }
  filePath(name){if(typeof name!=='string'||!filePattern.test(name))throw Error('Invalid managed evidence path');return join(this.root,name);}
  async reconcileFiles(){
-  this.used=0;
+  this.used=this.images?await this.images.bytes('crop'):0;
   for(const name of await readdir(this.root)){
    if(!filePattern.test(name)){if(name!=='.ainvr-evidence-v1')throw Error('Unexpected file in private evidence root');continue;}
    const path=this.filePath(name),st=await lstat(path);
    if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1)throw Error('Unexpected evidence file ownership');
-   const owner=await this.rows.findOne({_id:name.slice(0,64),state:'stored','files.name':name},{projection:{_id:1}});
+   const owner=await this.rows.findOne({_id:name.slice(0,64),state:'stored','files.name':name},{projection:{_id:1,files:1}});
+   if(owner?.files?.some(f=>f.name===name&&f.storage==='mongodb'))continue; // Preserve migrated legacy files for rollback.
    if(owner)this.used+=st.size;else await unlink(path);
   }
   await syncDirectory(this.root);
@@ -94,6 +96,7 @@ export class EvidenceVault{
  async retire(row,reason){
   await this.rows.updateOne({_id:row._id},{$set:{state:'deleting',reason}});
   for(const f of row.files??[]){
+   if(f.storage==='mongodb'){await this.images.remove('crop',f.name);this.used=Math.max(0,this.used-f.bytes);continue;}
    try{const path=this.validateFile(f,row._id),st=await lstat(path);if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1)throw Error('Unexpected evidence file');await unlink(path);this.used=Math.max(0,this.used-st.size);}
    catch(e){if(e.code!=='ENOENT')throw e;}
   }
@@ -129,12 +132,14 @@ export class EvidenceVault{
    for(const variant of evidence.variants)images.push({variant,data:imageBuffer(await this.source.image(row.event_id,variant))});
    const size=images.reduce((sum,i)=>sum+i.data.length,0);
    if(!await this.maintain(size))throw Error('Evidence capacity unavailable');
-   const disk=await statfs(this.root);if(disk.bavail*disk.bsize<size+128*1024*1024)throw Error('SSD headroom insufficient');
+   if(!this.images){const disk=await statfs(this.root);if(disk.bavail*disk.bsize<size+128*1024*1024)throw Error('SSD headroom insufficient');}
    for(const {variant,data} of images){
     const name=`${row.event_id}-${variant}-${randomUUID()}.jpg`;
     // Register before writing: partial writes are removed on ordinary failure.
-    written.push({name,variant,bytes:data.length,sha256:sha(data)});
-    await writePrivate(this.filePath(name),data);this.used+=data.length;
+    written.push({name,variant,bytes:data.length,sha256:sha(data),...(this.images?{storage:'mongodb'}:{})});
+    if(this.images)await this.images.put('crop',name,data,{maxBytes:this.policy.max_bytes,retentionMs:this.policy.retention_days*day,occurredAt:row.occurred_at});
+    else await writePrivate(this.filePath(name),data);
+    this.used+=data.length;
    }
    await syncDirectory(this.root);
    await this.rows.updateOne({_id:row._id,state:'capturing',capture_token:token},{$set:{state:'stored',files:written,evidence,saved_at:new Date(this.clock()).toISOString(),reason:null}});
@@ -146,7 +151,7 @@ export class EvidenceVault{
    try{
     const fenced=await this.rows.findOneAndUpdate({_id:row._id,state:'capturing',capture_token:token},{$set:{state:exhausted?'unavailable':'pending',reason:exhausted?'capture_timeout':'capture_retry',next_attempt_at:this.clock()+Math.min(60000,5000*2**Math.min(row.attempts-1,4))}},{returnDocument:'after'});
     if(!fenced){const current=await this.rows.findOne({_id:row._id});if(current?.state==='stored'){this.lastError=null;return true;}throw Error('Uncertain evidence ownership');}
-    for(const f of written)await unlink(this.filePath(f.name)).catch(e=>{if(e.code!=='ENOENT')throw e;});
+    for(const f of written){if(f.storage==='mongodb')await this.images.remove('crop',f.name);else await unlink(this.filePath(f.name)).catch(e=>{if(e.code!=='ENOENT')throw e;});}
     await syncDirectory(this.root);await this.reconcileFiles();
     this.lastError=exhausted?'capture_timeout':'capture_retry';
    }catch{this.needsRecovery=true;throw Error('Evidence storage recovery required');}
@@ -157,7 +162,7 @@ export class EvidenceVault{
   id(eventId);const row=await this.rows.findOne({_id:eventId});
   if(!row)return {state:'not_queued'};
   if(row.state==='stored'&&this.expires(row)>this.clock()){
-   for(const f of row.files){try{const st=await lstat(this.validateFile(f,row._id));if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1||st.size!==f.bytes)throw Error();}catch{return {state:'unavailable',reason:'stored_file_missing'};}}
+   for(const f of row.files){try{if(f.storage==='mongodb'){const meta=await this.images.metadata('crop',f.name);if(!meta||meta.bytes!==f.bytes||meta.sha256!==f.sha256)throw Error();continue;}const st=await lstat(this.validateFile(f,row._id));if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1||st.size!==f.bytes)throw Error();}catch{return {state:'unavailable',reason:'stored_file_missing'};}}
    return {state:'available',evidence:{...row.evidence,pinned:true,retention:'alarm',saved_at:row.saved_at,expires_at:new Date(this.expires(row)).toISOString()}};
   }
   return {state:['pending','capturing'].includes(row.state)?'pending':'unavailable',reason:this.expires(row)<=this.clock()?'retention':['pending','capturing'].includes(row.state)&&!this.policy.enabled?'capture_disabled':row.reason??'capture_retry'};
@@ -166,16 +171,24 @@ export class EvidenceVault{
   id(eventId);if(!['original','processed'].includes(variant))fail('invalid_variant','Invalid image variant');
   const row=await this.rows.findOne({_id:eventId,state:'stored'}),f=row?.files.find(f=>f.variant===variant);
   if(!row||!f||this.expires(row)<=this.clock())fail('evidence_unavailable','Retained evidence is unavailable',404);
+  if(f.storage==='mongodb'){
+   const data=await this.images?.get('crop',f.name);
+   if(!data||data.length!==f.bytes||sha(data)!==f.sha256)fail('evidence_unavailable','Retained evidence failed integrity validation',404);
+   return data;
+  }
   let handle;
   try{
    handle=await open(this.validateFile(f,eventId),constants.O_RDONLY|constants.O_NOFOLLOW);
    const st=await handle.stat();if(!st.isFile()||st.nlink!==1||st.size!==f.bytes||st.size>maximumImage)throw Error();
-   const data=imageBuffer(await handle.readFile());if(sha(data)!==f.sha256)throw Error();return data;
+   const data=imageBuffer(await handle.readFile());if(sha(data)!==f.sha256)throw Error();
+   if(this.images){await this.images.put('crop',f.name,data,{maxBytes:this.policy.max_bytes,retentionMs:this.policy.retention_days*day,occurredAt:row.occurred_at});
+    await this.rows.updateOne({_id:eventId,state:'stored'},{$set:{'files.$[file].storage':'mongodb'}},{arrayFilters:[{'file.name':f.name,'file.sha256':f.sha256}]});this.needsRecovery=true;}
+   return data;
   }catch{fail('evidence_unavailable','Retained evidence failed integrity validation',404);}finally{await handle?.close();}
  }
  async status(){
   const counts=await this.rows.aggregate([{$group:{_id:'$state',count:{$sum:1}}}],{maxTimeMS:2000}).toArray();
-  return {enabled:this.policy.enabled,retention_days:this.policy.retention_days,max_bytes:this.policy.max_bytes,used_bytes:this.used,counts:{pending:0,capturing:0,stored:0,expired:0,unavailable:0,...Object.fromEntries(counts.map(v=>[v._id,v.count]))},last_error:this.lastError};
+  return {storage:this.images?'mongodb':'legacy-files',enabled:this.policy.enabled,retention_days:this.policy.retention_days,max_bytes:this.policy.max_bytes,used_bytes:this.used,counts:{pending:0,capturing:0,stored:0,expired:0,unavailable:0,...Object.fromEntries(counts.map(v=>[v._id,v.count]))},last_error:this.lastError};
  }
  run(){const work=async()=>{let busy=false;try{busy=await this.tick();}catch{this.lastError='storage_unavailable';}if(!this.closing)this.timer=setTimeout(work,busy?100:5000);};void work();}
  async close(){this.closing=true;clearTimeout(this.timer);await this.inFlight;if(this.lock){await new Promise((yes,no)=>this.lock.close(e=>e?no(e):yes()));this.lock=null;}}
