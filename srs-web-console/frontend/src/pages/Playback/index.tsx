@@ -147,6 +147,17 @@ export default function PlaybackPage() {
     if (target) void playSegment(channelId, target.segment, target.offsetMs)
     else setPlayNotice('所选时间范围内没有可播放录像。')
   }
+  const linkedPlayback = useRef<string | null>(null)
+  useEffect(() => {
+    if(searchParams.get('autoplay')!=='1'||!rangeFromQuery(searchParams)||!channelId||catalogue.loading||catalogue.error)return
+    if(linkedPlayback.current===scope)return
+    linkedPlayback.current=scope
+    const target=resolvePlayback(rangeSegments,range.from,range)
+    if(target)void playSegment(channelId,target.segment,target.offsetMs)
+    else setPlayNotice('该告警时间段内没有可播放的 AI 输出录像，请检查该输出通道的录像配置。')
+    // Only initialize a linked replay once; refresh must not interrupt manual seeking.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[scope,channelId,catalogue.loading,catalogue.error,rangeSegments,searchParams])
   function jump(dir: 1 | -1) {
     if (!currentSegment || !channelId) return
     const index = rangeSegments.findIndex(segment => segment.id === currentSegment.id)
@@ -484,6 +495,7 @@ export default function PlaybackPage() {
             <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
               <div className="flex h-full max-h-full w-full max-w-full items-center justify-center">
                 <RecordingPlayer
+                  initiallyMuted={searchParams.get('autoplay')==='1'}
                   channelName={selectedChannel.name}
                   channelMeta={{
                     kind: selectedChannel.kind,

@@ -55,3 +55,27 @@ it('detection-only allows zero-dwell presence and approach; crossings and dwell 
    expect(()=>compileAssignment(d,1,assignment('zone'),s,zone,1)).toThrow();
  expect(()=>compileAssignment(definition('region_approach'),1,{...assignment('zone'),entry_edges:['a']},s,zone,1)).toThrow();
 });
+
+
+it('model-scoped targets reject same labels from another model, compile multiple classes without changing engine schema',()=>{
+ const model={name:'yolo26x',adapter:'yolo26_bpu',mode:'fixed' as const};
+ const labels=[{label_id:'class:2',name:'car'},{label_id:'class:7',name:'truck'},{label_id:'class:5',name:'bus'}];
+ const d=parseTriggerDefinition({...definition(),target_model:model,labels});
+ const s={...source,target_model:model,labels};
+ expect(compileAssignment(d,1,assignment(),s,null,1)).toMatchObject({labels,label_ids:labels.map(l=>l.label_id)});
+ expect(()=>compileAssignment(d,1,assignment(),{...s,target_model:{...model,name:'other'}},null,1)).toThrow('相同模型');
+ expect(()=>compileAssignment(d,1,assignment(),{...source,labels},null,1)).toThrow('相同模型');
+ expect(()=>compileAssignment(d,1,assignment(),{...s,labels:labels.slice(1)},null,1)).toThrow('所选目标');
+});
+it('open vocabulary requires matching prompt as well as ID and name; metadata never leaks into engine labels',()=>{
+ const model={name:'yoloe-26x',adapter:'yoloe_bpu',mode:'open' as const};
+ const labels=[{label_id:'truck',name:'卡车',description:'a red truck'}];
+ const d=parseTriggerDefinition({...definition(),target_model:model,labels});
+ const s={...source,target_model:model,labels};
+ expect(compileAssignment(d,1,assignment(),s,null,1).labels).toEqual([{label_id:'truck',name:'卡车'}]);
+ expect(()=>compileAssignment(d,1,assignment(),{...s,labels:[{...labels[0]!,description:'a toy truck'}]},null,1)).toThrow('所选目标');
+ expect(()=>parseTriggerDefinition({...d,labels:[{label_id:'truck',name:'卡车'}]})).toThrow();
+ expect(()=>parseTriggerDefinition({...d,labels:[...labels,...labels]})).toThrow();
+ expect(()=>parseTriggerDefinition({...d,target_model:{...model,mode:'fixed'}})).toThrow();
+ expect(()=>parseTriggerDefinition({...d,labels:Array.from({length:9},(_,i)=>({...labels[0],label_id:`label${i}`}))})).toThrow();
+});

@@ -141,6 +141,7 @@ http {
   client_body_temp_path ''' + str(nginx / 'client') + ''';
   proxy_temp_path ''' + str(nginx / 'proxy') + ''';
   server {
+    listen 80;
     listen 8088;
     root ''' + str(ROOT / 'srs-web-console/frontend/dist') + ''';
     proxy_set_header Host $http_host;

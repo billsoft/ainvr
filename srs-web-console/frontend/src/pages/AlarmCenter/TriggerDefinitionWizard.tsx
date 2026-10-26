@@ -1,26 +1,29 @@
+import {DEFAULT_REVIEW_DESCRIPTION,defaultTriggerReview} from '@/features/triggerDefaults'
+import {TriggerTargetPicker} from './TriggerTargetPicker'
+import {targetModel,targetError} from '@/features/triggerTargets'
+import type {AlarmSource} from '@/api/alarmTriggerService'
 import {ChevronLeft,ChevronRight,Save,X} from 'lucide-react'
 import {useEffect,useId,useRef,useState} from 'react'
 import {createPortal} from 'react-dom'
 import {ScheduleEditor} from './ScheduleEditor'
 import {scheduleError,scheduleSummary} from '@/features/alarmSchedule'
-import {triggerBehaviors,behaviorNames,sameLabel,type TriggerLabel} from '@/features/alarmTriggers'
-import {labelDisplay,isCommonTarget,commonTargets} from '@/features/labelNames'
+import {triggerBehaviors,behaviorNames,type TriggerLabel} from '@/features/alarmTriggers'
+import {labelDisplay} from '@/features/labelNames'
 import type {TriggerDefinition,TriggerDefinitionInput} from '@/features/alarmDefinitions'
 
 interface Props {
- initialStep?:number;usageNames?:Record<string,string>;
+ sources?:AlarmSource[];initialStep?:number;usageNames?:Record<string,string>;
  id:string;initial?:TriggerDefinition;labels:TriggerLabel[]
  onSave:(input:TriggerDefinitionInput)=>Promise<void>;onCancel:()=>void
 }
 const field='form-input'
-const choice='btn-secondary aria-pressed:border-primary aria-pressed:bg-primary-50 aria-pressed:text-primary'
-const steps=['基本信息','检测目标','判定条件','时段与用途']
-export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initialStep=0,usageNames={}}:Props){
+const steps=['基本信息','检测目标','判定条件','布防与审核']
+export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initialStep=0,usageNames={},sources=[]}:Props){
  const [value,setValue]=useState<TriggerDefinitionInput>(()=>initial?{
-  trigger_id:initial.trigger_id,name:initial.name,behavior:initial.behavior,labels:structuredClone(initial.labels),
+  target_model:initial.target_model,trigger_id:initial.trigger_id,name:initial.name,behavior:initial.behavior,labels:structuredClone(initial.labels),
   duration_ms:initial.duration_ms,...(initial.approach_width_percent!==undefined?{approach_width_percent:initial.approach_width_percent}:{}),
   review:initial.review?structuredClone(initial.review):undefined,alarm_enabled:initial.alarm_enabled,state:initial.state,schedule:structuredClone(initial.schedule),
- }:{trigger_id:id,name:'',behavior:'appearance',labels:[],duration_ms:3000,alarm_enabled:true,state:'enabled',schedule:{mode:'always'}})
+ }:{target_model:targetModel('yolo26x'),trigger_id:id,name:'',behavior:'appearance',labels:[],duration_ms:3000,review:defaultTriggerReview(),alarm_enabled:true,state:'enabled',schedule:{mode:'always'}})
  const [seconds,setSeconds]=useState(String((initial?.duration_ms??3000)/1000))
  const [percent,setPercent]=useState(String(initial?.approach_width_percent??''))
  const [step,setStep]=useState(initialStep),[error,setError]=useState(''),[saving,setSaving]=useState(false)
@@ -39,12 +42,9 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
  useEffect(()=>{if(discard)discardPanel.current?.focus();else if(dialog.current&&!dialog.current.contains(document.activeElement))heading.current?.focus()},[discard])
  const close=()=>{if(locked)return;if(JSON.stringify({value,seconds,percent})!==original.current)setDiscard(true);else onCancel()}
  const patch=(change:Partial<TriggerDefinitionInput>)=>{setValue(v=>({...v,...change}));setError('')}
- const merged=[...new Map([...value.labels,...labels].map(l=>[JSON.stringify([l.label_id,l.name]),l])).values()]
- const common=(l:TriggerLabel)=>isCommonTarget(l.name)||commonTargets.includes(l.label_id)
- const renderTargets=(items:TriggerLabel[])=>items.map(l=>{const selected=value.labels.some(x=>sameLabel(x,l));return <button key={JSON.stringify(l)} type="button" aria-pressed={selected} className={choice} onClick={()=>patch({labels:selected?value.labels.filter(x=>!sameLabel(x,l)):[...value.labels,l]})}>{labelDisplay(l.name)}</button>})
  const validation=(n:number)=>{
   if(n===0&&(!value.name.trim()||value.name.trim().length>128))return '请填写名称，最多128个字符'
-  if(n===1&&!value.labels.length)return '至少选择一个检测目标'
+  if(n===1)return targetError(value)
   if(n===2&&value.behavior==='appearance'&&(!seconds.trim()||!Number.isFinite(Number(seconds))||Number(seconds)<0||Number(seconds)>3600))return '持续时间须为0至3600秒'
   if(n===2&&value.behavior==='region_approach'&&(!percent.trim()||!Number.isFinite(Number(percent))||Number(percent)<=0||Number(percent)>100))return '接近距离须大于0且不超过画面宽度的100%'
   if(n===3&&value.review?.enabled&&(!value.review.description.trim()||value.review.description.length>500||value.review.description.includes('<|')))return '请填写审核说明，不使用保留标记'
@@ -98,18 +98,7 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
      </button>)}</div>
      <p className="text-sm text-ink-subtle">先定义检测什么，再到实时监看中选用到整个画面或热区。</p>
     </>}
-    {step===1&&<>
-     <section aria-label="已选目标" className="rounded-panel border border-primary-200 bg-primary-50 p-3">
-      <h4 className="text-sm font-medium text-ink">已选目标 · {value.labels.length}</h4>
-      <div className="mt-2 flex flex-wrap gap-2">{value.labels.length?value.labels.map(l=><button type="button" key={JSON.stringify(l)} aria-label={`移除目标 ${labelDisplay(l.name)}`} className="btn-secondary border-primary py-1.5 text-primary" onClick={()=>patch({labels:value.labels.filter(x=>!sameLabel(x,l))})}>{labelDisplay(l.name)}<span aria-hidden="true" className="ml-2">×</span></button>):<span className="text-sm text-ink-subtle">尚未选择</span>}</div>
-     </section>
-     <div className="space-y-3">
-      {!!merged.filter(common).length&&<><h4 className="text-sm font-medium text-ink">常用目标</h4><div role="group" aria-label="常用目标" className="flex flex-wrap gap-2">{renderTargets(merged.filter(common))}</div></>}
-      {!!merged.filter(l=>!common(l)).length&&<details open={!merged.some(common)} className="rounded-panel border border-line"><summary className="cursor-pointer px-3 py-2.5 text-sm font-medium text-ink">更多类别（{merged.filter(l=>!common(l)).length}）</summary><div role="group" aria-label="更多类别" className="flex flex-wrap gap-2 border-t border-line p-3">{renderTargets(merged.filter(l=>!common(l)))}</div></details>}
-     </div>
-     {!merged.length&&<p role="status">尚未读到模型目标目录，请先检查 AI 处理器。已有草稿不会丢失。</p>}
-     <p className="text-sm text-ink-subtle">可选多个；未选择的目标不监控。选用时会再次检查模型是否支持。</p>
-    </>}
+    {step===1&&<TriggerTargetPicker value={value} legacyLabels={labels} sources={sources} onChange={patch}/>}
     {step===2&&<>
      {value.behavior==='appearance'?<>
       <label className="block text-sm font-medium text-ink">连续出现（秒）<input type="number" min="0" max="3600" step="0.1" inputMode="decimal" value={seconds}
@@ -119,28 +108,32 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
       <label className="block text-sm font-medium text-ink">接近距离（画面宽度 %）<input type="number" min="0.001" max="100" step="any" inputMode="decimal" value={percent}
        onChange={e=>{setPercent(e.target.value);setError('')}} className={`${field} mt-1.5 sm:w-64`}/></label>
       <p className="text-sm text-ink-subtle">判断热区外侧的距离，按来源画面宽度换算。选用到热区时可以单独调整。</p>
-     </>:<p className="text-sm text-ink-subtle">{value.behavior==='region_enter'?'目标须从热区外进入区内；首次出现在区内不算侵入。':'目标须从热区外进入，再从不同边离开；轨迹证据不完整时不计数。'}</p>}
+     </>:<p className="text-sm text-ink-subtle">{value.behavior==='region_enter'?'目标须从热区外进入区内；首次出现在区内不算侵入。':'目标须从热区外进入，再从不同边离开；轨迹证据不完整时不触发。'}</p>}
      <p className="rounded-base bg-surface-page p-3 text-xs text-ink-subtle">位置按识别框底边中点判断。{value.behavior==='appearance'?'可选用到整个画面或指定热区。':'具体热区及允许方向，在实时监看的布防弹窗中设置。'}</p>
     </>}
     {step===3&&<>
-     <ScheduleEditor value={value.schedule} onChange={schedule=>patch({schedule})}/>
-     <div><p className="text-sm font-medium text-ink">用途</p><div role="group" aria-label="用途" className="mt-1.5 flex gap-2">{([[false,'仅统计'],[true,'统计并告警']] as const).map(([v,n])=><button key={String(v)} type="button" aria-pressed={value.alarm_enabled===v} className={choice} onClick={()=>patch({alarm_enabled:v,...(!v?{review:undefined}:{})})}>{n}</button>)}</div></div>
+     <details open={value.schedule.mode!=='always'} className="rounded-panel border border-line"><summary className="cursor-pointer p-3 text-sm font-medium">布防时段 · {scheduleSummary(value.schedule)}</summary><div className="border-t border-line p-3"><ScheduleEditor value={value.schedule} onChange={schedule=>patch({schedule})}/></div></details>
+     {!value.alarm_enabled&&<p role="status" className="rounded-base border border-warning bg-amber-50 p-3 text-sm">这是旧版行为记录配置，保存后仍不生成告警。需要告警时请新建告警触发器；原有配置和历史保留。</p>}
      {value.alarm_enabled&&<section aria-label="AI 审核设置" className="space-y-3 rounded-panel border border-line p-3">
-      <label className="flex min-h-11 items-center gap-2 text-sm font-medium"><input type="checkbox" checked={value.review?.enabled??false} onChange={e=>patch({review:e.target.checked?{enabled:true,description:value.review?.description||'确认截图中的目标与检测类别相符',reject_below:0.05,approve_above:0.95}:undefined})}/>告警入库后使用 AI 审核</label>
-      <p className="text-xs leading-5 text-ink-subtle">后台按时间顺序审核，不阻塞新增告警。人工已处理的会跳过。自动读取本触发器的目标和条件，结合关键帧、热区及真实轨迹审核；证据不足仍交人工处理。</p>
-      {value.review?.enabled&&<>
-       <label className="block text-sm">审核说明<textarea className={`${field} mt-1 min-h-20`} maxLength={500} value={value.review.description} onChange={e=>patch({review:{...value.review!,description:e.target.value}})} placeholder="例如：确认截图中确实存在火焰，而不是灯光或反射"/></label>
-       <div className="grid grid-cols-2 gap-3"><label className="text-sm">误报分数上限<input className={`${field} mt-1`} type="number" min="0" max="0.1" step="0.01" value={value.review.reject_below} onChange={e=>patch({review:{...value.review!,reject_below:Number(e.target.value)}})}/></label><label className="text-sm">通过分数下限<input className={`${field} mt-1`} type="number" min="0.9" max="1" step="0.01" value={value.review.approve_above} onChange={e=>patch({review:{...value.review!,approve_above:Number(e.target.value)}})}/></label></div>
-       <p className="text-xs text-warning-700">分数不是概率；无法明确判断时保持未审核。AI 与人工均可作出确认或误报结论，人工可以纠正 AI。须在大模型配置中启用模型和告警审核调用权限；缺图或服务故障会保留告警。</p>
-      </>}
+      <h4 className="text-sm font-medium">{value.review?.enabled?'AI 辅助审核':'人工审核'}</h4>
+      <p className="text-xs leading-5 text-ink-subtle">{value.review?.enabled?'告警先入库，后台优先审核最新的未审核告警。系统自动提供目标类别、告警行为和关键帧说明，通常无需填写提示词。':'此触发器保留人工审核设置，可在高级设置中启用 AI 审核。'}</p>
+      <p className="text-xs leading-5 text-ink-subtle">规则引擎判定持续时间、方向和越界，AI 核对关键帧中的指定目标。证据不足、判断不一致或服务不可用时保留未审核；人工决定优先。执行由系统配置中的审核开关和验证条件控制。</p>
+      {value.review?.enabled&&<p role="note" className="rounded-base bg-warning-50 p-3 text-sm text-warning-700">勾选后由后台按系统审核策略处理。已授权自动确认时，证据完整且关键帧判断一致的告警会移入“已 AI 审核”；疑难保留人工。未启用自动策略时仅提供参考分析；自动判误报仍须通过模型验证。</p>}
+      <details className="rounded-base border border-line"><summary className="cursor-pointer px-3 py-2.5 text-sm text-ink-subtle">高级审核设置（可选）</summary><div className="space-y-3 border-t border-line p-3">
+       <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={value.review?.enabled??false} onChange={e=>patch({review:e.target.checked?{...defaultTriggerReview(),...value.review,enabled:true}:value.review?{...value.review,enabled:false}:undefined})}/>此触发器使用 AI 审核</label>
+       {value.review?.enabled&&<>
+        <label className="block text-sm">补充审核要求（可选）<textarea className={`${field} mt-1 min-h-20`} maxLength={500} value={value.review.description===DEFAULT_REVIEW_DESCRIPTION?'':value.review.description} onChange={e=>patch({review:{...value.review!,description:e.target.value.trim()?e.target.value:DEFAULT_REVIEW_DESCRIPTION}})} placeholder="留空使用系统模板；仅在有额外业务要求时补充"/></label>
+        <p className="text-xs leading-5 text-ink-subtle">这是系统提示词末尾的补充要求，不是完整提示词。目标类别和触发条件会自动加入，无需重复填写。</p>
+        <div className="grid grid-cols-2 gap-3"><label className="text-sm">误报分数上限<input className={`${field} mt-1`} type="number" min="0" max="0.1" step="0.01" value={value.review.reject_below} onChange={e=>patch({review:{...value.review!,reject_below:Number(e.target.value)}})}/></label><label className="text-sm">确认分数下限<input className={`${field} mt-1`} type="number" min="0.9" max="1" step="0.01" value={value.review.approve_above} onChange={e=>patch({review:{...value.review!,approve_above:Number(e.target.value)}})}/></label></div>
+        <p className="text-xs text-warning-700">分数不是概率，也不保证正确。调整补充要求或分数参数需要样本验证；中间分数保留未审核。</p>
+       </>}
+      </div></details>
      </section>}
-     <label className="block text-sm font-medium text-ink">保存后状态<select className={`${field} mt-1.5`} value={value.state} onChange={e=>patch({state:e.target.value as TriggerDefinitionInput['state']})}>
-      <option value="enabled">已启用</option><option value="paused">已暂停</option><option value="draft">草稿</option>{initial&&<option value="archived">归档</option>}</select></label>
-     <p className="rounded-base bg-surface-page p-3 text-sm text-ink">将会：{value.labels.length?value.labels.map(l=>labelDisplay(l.name)).join('、'):'（未选目标）'} {value.behavior==='appearance'?`连续出现满 ${seconds||0} 秒`:value.behavior==='region_approach'?`接近热区（画面宽度 ${percent||'?'}% 以内）`:`${behaviorNames[value.behavior]}热区`}时，{value.alarm_enabled?'记录并告警':'只记录统计'}；{scheduleSummary(value.schedule)}。</p>
-     {value.state==='archived'&&<p className="rounded-base border border-warning p-3 text-sm">保存后归档此触发器，解除全部选用。历史告警与统计保留；归档后不能直接恢复。</p>}
+     <p className="rounded-base bg-surface-page p-3 text-sm text-ink">将会：{value.labels.length?value.labels.map(l=>labelDisplay(l.name)).join('、'):'（未选目标）'} {value.behavior==='appearance'?`连续出现满 ${seconds||0} 秒`:value.behavior==='region_approach'?`接近热区（画面宽度 ${percent||'?'}% 以内）`:`${behaviorNames[value.behavior]}热区`}时，{value.alarm_enabled?'生成告警':'保留旧版行为记录'}；{scheduleSummary(value.schedule)}。</p>
+     <p className="text-xs text-ink-subtle">{!initial?'新建后默认启用；关联到 AI 输出画面或热区并保存布防后才开始告警。':value.state==='enabled'?'当前已启用。启用和暂停可在触发器列表的“更多操作”中管理。':`当前${value.state==='draft'?'为草稿':value.state==='archived'?'已归档':'已暂停'}；保存修改不会自动启用。可在列表的“更多操作”中启用。`}</p>
      {initial?.usages?.length?<section aria-label="修改影响范围" className="rounded-base border border-warning bg-amber-50 p-3 text-sm"><h4 className="font-medium">保存将更新 {initial.usages.length} 处选用</h4>
       <ul>{initial.usages.map(u=><li key={u.assignment_id}>{usageNames[u.source_id]??'来源暂不可用'} · {u.zone_name??'整个画面'} · {usageNames[u.processor_id]??'处理器暂不可用'}</li>)}</ul><p className="mt-2 text-sm">历史记录保留当时版本；本次修改应用后重新累计判定证据。</p></section>
-      :<p className="text-sm text-ink-subtle">尚未选用。保存后，到实时监看中布防才能开始统计或告警。</p>}
+      :null}
     </>}
     </fieldset>
     

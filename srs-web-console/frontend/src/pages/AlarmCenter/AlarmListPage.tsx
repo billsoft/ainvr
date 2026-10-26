@@ -1,5 +1,5 @@
 import {useLocation} from 'react-router-dom'
-import {useCallback,useEffect,useMemo,useRef,useState} from 'react'
+import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react'
 import {alarmEventService,type AlarmEvent,type AckDisposition,type AlarmFilters,type AckItem} from '@/api/alarmEventService'
 import {aiChannelService} from '@/api/aiChannelService'
 import {alarmTriggerService} from '@/api/alarmTriggerService'
@@ -43,13 +43,13 @@ export default function AlarmListPage(){
  const [definitions,setDefinitions]=useState<TriggerDefinition[]>([]),[armings,setArmings]=useState<Record<string,ArmingDocument|null>>({})
  const [rows,setRows]=useState<AlarmEvent[]>([]),[cursor,setCursor]=useState<string|null>(null),[loaded,setLoaded]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(false)
  const [purge,setPurge]=useState(false)
- const [updated,setUpdated]=useState(0)
- const [fresh,setFresh]=useState(0),[detail,setDetail]=useState<{id:string;stageId?:string;intent?:AckDisposition}|null>(null)
+ const [detail,setDetail]=useState<{id:string;stageId?:string;intent?:AckDisposition}|null>(null)
  const [bulk,setBulk]=useState<{phase:'asking'|'working';items:AckItem[];key:string;scope:string;uncertain?:boolean}|null>(null),[bulkResult,setBulkResult]=useState('')
  const [singleAttempts,setSingleAttempts]=useState<Record<string,PendingAcknowledgement>>({})
  const loadRequest=useRef(0)
+ const [automaticReview,setAutomaticReview]=useState(false)
  const [reference,setReference]=useState<{active:boolean;counts:Record<string,number>}|null>(null)
- useEffect(()=>{let active=true;const poll=()=>{if(document.hidden)return;void alarmEventService.summary().then(r=>{if(active)setReference(r.reference??null)}).catch(()=>{if(active)setReference(null)})};poll();const timer=setInterval(poll,15000);return()=>{active=false;clearInterval(timer)}},[])
+ useEffect(()=>{let active=true;const poll=()=>{if(document.hidden)return;void alarmEventService.summary().then(r=>{if(active){setReference(r.reference??null);setAutomaticReview(r.automatic_review?.mode==='confirm_only')}}).catch(()=>{if(active){setReference(null);setAutomaticReview(false)}})};poll();const timer=setInterval(poll,15000);return()=>{active=false;clearInterval(timer)}},[])
  const [today,setToday]=useState<Record<string,number>|null>(null)
  const filters=useMemo<AlarmFilters>(()=>({...(review?{disposition:review}:{}),...(channel?{channel_id:channel}:{}),...(level?{behavior:level}:{}),...(rangeFrom(range)?{from:rangeFrom(range)}:{})}),[channel,level,range,review])
  const live=useRef(true)
@@ -66,14 +66,62 @@ export default function AlarmListPage(){
   setBusy(true);setError(false)
   try{const page=await alarmEventService.list(status,more?cursor??undefined:undefined,filters)
    if(!live.current||requestId!==loadRequest.current)return
-   setRows(old=>more?[...new Map([...old,...page.items].map(r=>[r.alarm_id,r])).values()]:page.items);setCursor(page.next_cursor);setLoaded(true);if(!more){setFresh(0);setUpdated(0);setBulkResult('')}}
+   setRows(old=>more?[...new Map([...old,...page.items].map(r=>[r.alarm_id,r])).values()]:page.items);setCursor(page.next_cursor);setLoaded(true);if(!more){setBulkResult('')}}
   catch{if(live.current&&requestId===loadRequest.current)setError(true)}finally{if(live.current&&requestId===loadRequest.current)setBusy(false)}
  },[status,filters,cursor])
- useEffect(()=>{setRows([]);setCursor(null);setLoaded(false);setFresh(0);setUpdated(0);void load()},[status,filters]) // eslint-disable-line react-hooks/exhaustive-deps
- // Newer alarms are announced, not pushed into the feed under the user's finger.
- useEffect(()=>{let active=true;const timer=setInterval(()=>{if(document.hidden)return
-  void alarmEventService.list(status,undefined,filters).then(page=>{if(active&&live.current){const newest=Math.max(0,...rows.map(r=>Date.parse(r.occurred_at)));setFresh(page.items.filter(i=>!rows.some(r=>r.alarm_id===i.alarm_id)&&Date.parse(i.occurred_at)>=newest).length);setUpdated(page.items.filter(i=>rows.some(r=>r.alarm_id===i.alarm_id&&r.version!==i.version)).length)}}).catch(()=>undefined)},15000)
-  return()=>{active=false;clearInterval(timer)}},[status,filters,rows])
+ useEffect(()=>{setRows([]);setCursor(null);setLoaded(false);void load()},[status,filters]) // eslint-disable-line react-hooks/exhaustive-deps
+ // Refresh only list data. Dialogs and uncertain writes retain their snapshot.
+ const scroll=useRef<HTMLDivElement>(null)
+ const anchor=useRef<{id:string;top:number}|null>(null)
+ const rowsRef=useRef(rows);rowsRef.current=rows
+ const interaction=useRef(0)
+ useLayoutEffect(()=>{
+  const a=anchor.current;anchor.current=null
+  if(!a||!scroll.current)return
+  const node=Array.from(scroll.current.querySelectorAll<HTMLElement>('[data-alarm-id]')).find(n=>n.dataset.alarmId===a.id)
+  if(node)scroll.current.scrollTop+=node.getBoundingClientRect().top-a.top
+ },[rows])
+ useEffect(()=>{
+  let active=true,running=false
+  const poll=async()=>{
+   if(running||document.hidden||busy||detail||bulk||purge||Object.keys(singleAttempts).length||Date.now()-interaction.current<1500)return
+   running=true;const revision=loadRequest.current
+   try{
+    const previous=rowsRef.current
+    const page=await alarmEventService.list(status,undefined,filters)
+    // Reconcile loaded history too: absence from the first page does not mean deletion.
+    const retained:AlarmEvent[]=[]
+    for(let offset=0;offset<previous.length;offset+=5){
+     if(!active||revision!==loadRequest.current)return
+     const batch=previous.slice(offset,offset+5).filter(r=>!page.items.some(n=>n.alarm_id===r.alarm_id))
+     const refreshed=await Promise.all(batch.map(async r=>{
+      try{return await alarmEventService.get(r.alarm_id)}
+      catch(error){if((error as {status?:number}).status===404)return null;throw error}
+     }))
+     retained.push(...refreshed.filter((r):r is AlarmEvent=>r!==null))
+    }
+    if(!active||revision!==loadRequest.current||Date.now()-interaction.current<1500)return
+    const matches=(r:AlarmEvent)=>
+     (status!=='pending'||r.handling.state!=='acknowledged')&&
+     (status!=='human'||r.handling.reviewed_by_kind==='human')&&
+     (status!=='ai'||r.handling.reviewed_by_kind==='ai')&&
+     (status!=='acknowledged'||r.handling.state==='acknowledged')&&
+     (!review||r.handling.disposition===review)&&(!channel||r.channel_id===channel)&&(!level||r.behavior===level)&&
+     (!filters.from||Date.parse(r.occurred_at)>=Date.parse(filters.from))
+    const container=scroll.current
+    if(container&&container.scrollTop>0){
+     const node=Array.from(container.querySelectorAll<HTMLElement>('[data-alarm-id]')).find(n=>n.getBoundingClientRect().bottom>container.getBoundingClientRect().top)
+     if(node)anchor.current={id:node.dataset.alarmId!,top:node.getBoundingClientRect().top}
+    }
+    setRows([...new Map([...retained,...page.items].filter(matches).map(r=>[r.alarm_id,r])).values()].sort((a,b)=>Date.parse(b.occurred_at)-Date.parse(a.occurred_at)||b.alarm_id.localeCompare(a.alarm_id)))
+    if(previous.length===0||!retained.length)setCursor(page.next_cursor)
+    setError(false)
+    window.dispatchEvent(new Event('ainvr:alarms-changed'))
+   }catch{/* Keep the last usable view; ordinary refresh can recover. */}finally{running=false}
+  }
+  const timer=setInterval(()=>void poll(),3000)
+  return()=>{active=false;clearInterval(timer)}
+ },[status,filters,review,channel,level,busy,detail,bulk,purge,singleAttempts])
  // Zone names come from the source's arming; read each source once while its alarms are shown.
  useEffect(()=>{
   for(const id of new Set(rows.flatMap(r=>r.input_stream_id&&!(r.input_stream_id in armings)?[r.input_stream_id]:[]))){
@@ -139,16 +187,16 @@ export default function AlarmListPage(){
    setBulkResult(`已确认 ${ok.length} 条${conflict?`；${conflict} 条记录已变化，请刷新后重试`:''}${other?`；${other} 条未确认，请刷新核对`:''}。`);setBulk(null)}
   catch{setBulkResult('结果未确认；再次确认会沿用同一操作，不会重复处理。');setBulk({...batch,phase:'asking',uncertain:true})}
  }
- const counts=new Map<string,number>();for(const r of pending)counts.set(r.channel_id,(counts.get(r.channel_id)??0)+1)
+ const counts=new Map<string,number>();for(const r of rows)counts.set(r.channel_id,(counts.get(r.channel_id)??0)+1)
  const open=rows.find(r=>r.alarm_id===detail?.id)
  const maxToday=Math.max(1,...triggerBehaviors.map(b=>today?.[b.id]??0))
  return <div className="flex h-full min-h-0 flex-col gap-0 bg-surface-page md:flex-row">
   <nav aria-label="告警通道" className="flex shrink-0 flex-col border-line bg-surface md:w-56 md:border-r">
    <div className="px-5 pb-2 pt-5"><h1 className="page-title">告警列表</h1>
-    <p className="mt-1.5 text-sm text-ink-subtle"><span className="text-base font-semibold text-danger-700">{pending.length}{cursor?'+':''}</span> 条待处理（已加载）</p></div>
+    <p className="mt-1.5 text-sm text-ink-subtle"><span className={`text-base font-semibold ${status==='pending'?'text-danger-700':'text-primary-600'}`}>{rows.length}{cursor?'+':''}</span> 条{status==='pending'?'未审核':status==='ai'?'已 AI 审核':status==='human'?'已人工审核':'告警'}（已加载）</p></div>
    <div className="flex gap-1 overflow-x-auto p-3 md:flex-col">{[{id:'',name:'全部通道'},...channels].map(c=><button key={c.id||'all'} type="button" aria-pressed={channel===c.id} onClick={()=>setChannel(c.id)}
     className={`flex !min-h-11 shrink-0 items-center justify-between gap-2 rounded-base px-3 py-2 text-left text-sm ${channel===c.id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle hover:bg-surface-hover'}`}>
-    <span className="truncate">{c.name}</span><span className="text-sm text-ink-subtle">{c.id?counts.get(c.id)??'':pending.length||''}</span></button>)}</div>
+    <span className="truncate">{c.name}</span><span className="text-sm text-ink-subtle">{c.id?counts.get(c.id)??'':rows.length||''}</span></button>)}</div>
    <aside aria-label="今日概况" className="mx-3 mb-3 mt-auto hidden rounded-panel border border-line p-3 md:block"><h2 className="mb-2 text-sm font-semibold">今天行为记录</h2>
     <div className="space-y-2">{[...triggerBehaviors].reverse().map(b=><div key={b.id}><div className="flex justify-between text-sm"><span>{b.name}</span><span className="tabular-nums">{today?.[b.id]??0}</span></div>
      <div className="mt-1 h-1.5 rounded bg-slate-100"><div className="h-1.5 rounded" style={{width:`${Math.round((today?.[b.id]??0)/maxToday*100)}%`,background:levelLook[b.id]!.color}}/></div></div>)}</div>
@@ -163,8 +211,7 @@ export default function AlarmListPage(){
       <button key={id} type="button" aria-pressed={status===id} onClick={()=>pickStatus(id)} className={`!min-h-11 rounded-base px-3 py-1.5 text-sm ${status===id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle'}`}>{label}</button>)}</div>
      <label className="flex items-center gap-2 text-sm text-ink-subtle">结论<select aria-label="审核结论" disabled={status==='pending'} title={status==='pending'?'未审核告警尚无确认或误报结论':undefined} value={review} onChange={e=>setReview(e.target.value)} className="form-input !min-h-11 w-auto"><option value="">全部</option><option value="handled">确认</option><option value="false_positive">误报</option></select></label>
      <label className="flex items-center gap-2 text-sm text-ink-subtle">时间<select value={range} onChange={e=>{rangeTouched.current=true;setRange(e.target.value as Range)}} className="form-input !min-h-11 w-auto py-1.5"><option value="today">今天</option><option value="7d">近 7 天</option><option value="all">全部</option></select></label>
-     {updated>0&&<button type="button" className="btn-secondary min-h-11" onClick={()=>void load()}>有 {updated} 条记录状态更新，点击刷新</button>}{fresh>0&&<button type="button" onClick={()=>void load()} className="btn-primary ml-auto">新告警 {fresh} 条 · 点击刷新</button>}
-     {status!=='acknowledged'&&pending.length>0&&<button type="button" disabled={!!bulk} onClick={askBulk} className={`btn-secondary !min-h-11 ${fresh>0?'':'ml-auto'}`}>确认已加载（{Math.min(200,pending.length)}）</button>}
+     {status!=='acknowledged'&&pending.length>0&&<button type="button" disabled={!!bulk} onClick={askBulk} className={`btn-secondary !min-h-11 ml-auto`}>确认已加载（{Math.min(200,pending.length)}）</button>}
      <button type="button" disabled={!!bulk||purge} onClick={()=>setPurge(true)} className="btn-secondary !min-h-11 text-danger-700">清空所有告警</button>
     </div>
     <div role="group" aria-label="级别" className="flex flex-wrap gap-2">{[{id:'',name:'全部级别'},...triggerBehaviors].map(b=><button key={b.id||'all'} type="button" aria-pressed={level===b.id} onClick={()=>setLevel(b.id)} className={pill}>
@@ -174,12 +221,13 @@ export default function AlarmListPage(){
      <button type="button" disabled={bulk.phase==='working'} onClick={()=>setBulk(null)} className="btn-secondary !min-h-11">{bulk.uncertain?'关闭并稍后核对':'取消'}</button>
      <button type="button" disabled={bulk.phase==='working'} onClick={()=>void confirmAll()} className="btn-primary !min-h-11">{bulk.phase==='working'?'处理中…':`确认这 ${bulk.items.length} 条`}</button></div></AlarmConfirmation>}
     {bulkResult&&!bulk&&<p role="status">{bulkResult}</p>}
-    {reference&&<p role="status" className="text-sm text-ink-subtle">AI 参考分析：{reference.active?'后台运行中':'后台未运行'} · 已分析 {reference.counts.completed??0} · 分析中 {reference.counts.running??0} · 待分析 {(reference.counts.waiting??0)+(reference.counts.queued??0)} · 无法分析 {reference.counts.failed??0}。优先分析最新未审核告警；模型待验证，参考分数不改变审核结论。</p>}
+    {automaticReview&&<p role="status" className="text-sm text-ink-subtle">AI 自动审核已启用：优先处理最新告警，关键帧判断一致时自动确认并移入“已 AI 审核”。疑似误报、证据不足或判断冲突保留人工审核；模型准确率尚未全面验证，可人工改判。</p>}
+    {!automaticReview&&reference&&<p role="status" className="text-sm text-ink-subtle">AI 参考分析：{reference.active?'后台运行中':'后台未运行'} · 已分析 {reference.counts.completed??0} · 分析中 {reference.counts.running??0} · 待分析 {(reference.counts.waiting??0)+(reference.counts.queued??0)} · 无法分析 {reference.counts.failed??0}。优先分析最新未审核告警；模型待验证，参考分数不改变审核结论。</p>}
    </div>
-   <div aria-busy={busy} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 md:px-6">
+   <div ref={scroll} onPointerDownCapture={()=>{interaction.current=Date.now()}} onKeyDownCapture={()=>{interaction.current=Date.now()}} aria-busy={busy} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 md:px-6">
     {error&&<p role="alert">告警读取失败，请重试当前筛选。<button className="btn-secondary ml-2" onClick={()=>void load()}>重试</button></p>}
     {loaded&&!rows.length&&<p className="py-10 text-center text-ink-subtle">{cursor?'本批已处理完，可继续加载更早的未审核告警。':'当前筛选下没有告警。'}</p>}
-    {!!rows.length&&<div aria-label="告警记录" className="shrink-0 overflow-hidden rounded-panel border border-line bg-surface">{groups.map(([key,items])=>{const content=items.map(a=><AlarmRow key={a.alarm_id} alarm={a} trigger={triggerOf(a)} channelName={channelName(a.channel_id)} onOpen={stageId=>setDetail({id:a.alarm_id,stageId})} onHandle={intent=>setDetail({id:a.alarm_id,intent})}/>);return items.length===1?<div key={key}>{content}</div>:<details key={key} open className="border-b border-line"><summary className="min-h-11 cursor-pointer bg-surface-subtle px-3 py-2 text-sm">{channelName(items[0]!.channel_id)} · 同一区域一分钟内 {items.length} 条告警（分别审核）</summary>{content}</details>})}</div>}
+    {!!rows.length&&<div aria-label="告警记录" className="shrink-0 overflow-hidden rounded-panel border border-line bg-surface">{groups.map(([key,items])=>{const content=items.map(a=><div key={a.alarm_id} data-alarm-id={a.alarm_id}><AlarmRow alarm={a} trigger={triggerOf(a)} channelName={channelName(a.channel_id)} onOpen={stageId=>setDetail({id:a.alarm_id,stageId})} onHandle={intent=>setDetail({id:a.alarm_id,intent})}/></div>);return items.length===1?<div key={key}>{content}</div>:<details key={key} open className="border-b border-line"><summary className="min-h-11 cursor-pointer bg-surface-subtle px-3 py-2 text-sm">{channelName(items[0]!.channel_id)} · 同一区域一分钟内 {items.length} 条告警（分别审核）</summary>{content}</details>})}</div>}
     {busy&&<p role="status" className="text-center text-sm text-ink-subtle">正在读取…</p>}
     {cursor&&!busy&&<button type="button" onClick={()=>void load(true)} className="btn-secondary mx-auto">加载更早的告警</button>}
    </div>

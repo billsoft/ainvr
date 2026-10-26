@@ -16,7 +16,7 @@ const square:[number,number][]=[[.3,.2],[.7,.2],[.7,.8],[.3,.8]]  // edges 上 �
 const fact=(n:number)=>String(n).repeat(64)
 const trigger=(id:string,behavior:AlarmTrigger['behavior'],extra:Partial<AlarmTrigger>={}):AlarmTrigger=>({trigger_id:id,name:id==='pass'?'门前禁区':'围栏接近',behavior,labels:[{label_id:'class:0',name:'人员'}],duration_ms:3000,alarm_enabled:true,state:'enabled',schedule:{mode:'always'},version:1,
   bindings:[{channel_id:'gate',label_map_version:'l',geometry_revision:'source-frame-v2:in-gate:g:1920x1080',zone_id:'z',zone_version:1,direction:{entry_edges:[],exit_edges:[]},approach_px:60,input_stream_id:'in-gate',zone_snapshot:{name:'禁区',points:square,version:1}}],...extra})
-const alarm=(id:string,extra:Partial<AlarmEvent>={}):AlarmEvent=>({alarm_id:id,occurred_at:'2026-10-20T02:02:05Z',last_seen_at:'2026-10-20T02:02:16Z',channel_id:'gate',input_stream_id:'in-gate',trigger_id:'pass',behavior:'region_traverse',
+const alarm=(id:string,extra:Partial<AlarmEvent>={}):AlarmEvent=>({alarm_id:id,occurred_at:'2026-10-20T02:02:05Z',last_seen_at:'2026-10-20T02:02:16Z',channel_id:'gate',input_stream_id:'in-gate',playback_stream_id:'out-gate',trigger_id:'pass',behavior:'region_traverse',
   rule:{id:'pass@gate',name:'门前禁区'},severity:'warning',lifecycle:{state:'ended'},handling:{state:'unacknowledged',revision:0},
   stages:[{event_id:'s1',behavior:'appearance',trigger_id:'pass',at:'2026-10-20T02:02:05Z',direction:null,behavior_event_ids:[fact(1)]},
     {event_id:'s2',behavior:'region_enter',trigger_id:'pass',at:'2026-10-20T02:02:11Z',direction:{entry_edge:2},behavior_event_ids:[fact(2)]},
@@ -99,8 +99,8 @@ it('the detail sheet shows the stages, jumps to the recording and confirms with 
   const sheet=await screen.findByRole('dialog',{name:'告警详情'})
   for(const text of ['首次触发','出现','碰撞侵入','穿过','从下边进入'])expect(sheet).toHaveTextContent(text)
   const link=within(sheet).getByRole('link',{name:/查看录像/})
-  const from=Date.parse('2026-10-20T02:02:05Z')-15000,to=Date.parse('2026-10-20T02:02:16Z')+15000
-  expect(link).toHaveAttribute('href',`/playback/in-gate?from=${from}&to=${to}`)
+  const from=Date.parse('2026-10-20T02:02:05Z')-2000,to=Date.parse('2026-10-20T02:02:16Z')+15000
+  expect(link).toHaveAttribute('href',`/playback/out-gate?from=${from}&to=${to}&autoplay=1`)
   fireEvent.change(within(sheet).getByLabelText('处理备注'),{target:{value:'已核实'}})
   fireEvent.click(within(sheet).getByRole('button',{name:'确认'}))
   await waitFor(()=>expect(alarmEventService.confirm).toHaveBeenCalledWith([{alarm_id:'a',expected_handling_revision:0}],'已核实',expect.any(String),'handled'))
@@ -292,4 +292,42 @@ it('reference scores stay unreviewed and explain the validation status',async()=
  await open();expect(screen.getByRole('article')).toHaveTextContent('AI 参考分数 0.990 · 待验证，不是概率')
  expect(screen.getByRole('article')).toHaveTextContent('未审核')
  expect(within(screen.getByRole('article')).getByRole('button',{name:'确认'})).toBeEnabled()
+})
+
+it('refreshes new alarms automatically and preserves an open confirmation draft',async()=>{
+ vi.useFakeTimers()
+ try{
+  await act(async()=>{render(<MemoryRouter><AlarmListPage/></MemoryRouter>)})
+  vi.mocked(alarmEventService.list).mockResolvedValue({items:[alarm('new',{occurred_at:'2026-10-20T03:00:00Z'}),alarm('a'),alarm('b')],next_cursor:null})
+  await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+  expect(screen.getAllByRole('article')).toHaveLength(3)
+  expect(screen.queryByText(/点击刷新/)).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button',{name:'确认已加载（3）'}))
+  const calls=vi.mocked(alarmEventService.list).mock.calls.length
+  await act(async()=>{await vi.advanceTimersByTimeAsync(6000)})
+  expect(vi.mocked(alarmEventService.list).mock.calls.length).toBe(calls)
+  expect(screen.getByRole('button',{name:'确认这 3 条'})).toBeInTheDocument()
+ }finally{vi.useRealTimers()}
+})
+
+it('shows an authorized automatic confirmation policy without claiming model validation',async()=>{
+ vi.mocked(alarmEventService.summary).mockResolvedValueOnce({pending:2,as_of:new Date().toISOString(),automatic_review:{mode:'confirm_only',accuracy_validated:false,approve_above:.99,labels:['person']}})
+ await open()
+ expect(await screen.findByText(/AI 自动审核已启用/)).toHaveTextContent('疑似误报、证据不足或判断冲突保留人工审核')
+ expect(screen.getByText(/AI 自动审核已启用/)).toHaveTextContent('模型准确率尚未全面验证')
+ fireEvent.click(screen.getByRole('button',{name:'已 AI 审核'}))
+ await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('ai',undefined,expect.anything()))
+})
+
+it('a deleted historical row does not block new alarms during automatic refresh',async()=>{
+ vi.useFakeTimers()
+ try{
+  await act(async()=>{render(<MemoryRouter><AlarmListPage/></MemoryRouter>)})
+  vi.mocked(alarmEventService.list).mockResolvedValue({items:[alarm('new',{occurred_at:'2026-10-20T03:00:00Z'})],next_cursor:null})
+  vi.mocked(alarmEventService.get).mockRejectedValue(Object.assign(new Error('gone'),{status:404}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+  expect(screen.getAllByRole('article')).toHaveLength(1)
+  expect(alarmEventService.get).toHaveBeenCalledWith('a')
+  expect(alarmEventService.get).toHaveBeenCalledWith('b')
+ }finally{vi.useRealTimers()}
 })

@@ -11,7 +11,7 @@ const catalogSchema=z.object({schema_version:z.literal('1.0'),adapter:z.string()
 const modelSchema=z.object({name:z.string(),adapter:z.string(),class_names:z.array(z.string()).nullable().optional(),description:z.string().optional(),label_id:z.string().optional(),label_name:z.string().optional(),prompts:z.array(z.object({description:z.string(),label_id:z.string(),label_name:z.string()})).nullable().optional()}).passthrough();
 const channelSchema=z.object({id,state:z.string(),config:z.object({model:modelSchema,stream:z.object({url:z.string()}),inference_fps:z.number().nonnegative(),analytics:z.object({enabled:z.boolean()}).passthrough().optional()}).passthrough()}).passthrough();
 const frameSchema=z.object({channel_id:id,stream_url:z.string(),timestamp:z.number().finite(),frame_width:z.number().int().positive().max(32768),frame_height:z.number().int().positive().max(32768),model:z.object({name:z.string()}),model_extra:z.object({label_catalog:catalogSchema,analytics:z.object({status:z.string(),stream_session_id:z.string()}).passthrough().optional()})}).passthrough();
-export interface AlarmSourceCatalog extends TriggerSourceCatalog {channel_name:string;input_name:string;labels:z.infer<typeof label>[];width:number;height:number;observed_at:string;stream_fingerprint:string}
+export interface AlarmSourceCatalog extends TriggerSourceCatalog {target_model:{name:string;adapter:string;mode:'fixed'|'open'};channel_name:string;input_name:string;labels:z.infer<typeof label>[];width:number;height:number;observed_at:string;stream_fingerprint:string}
 export function buildAlarmSourceCatalog(rawChannel:unknown,rawFrame:unknown,inputs:Channel[],now=Date.now()):AlarmSourceCatalog|null {
  const parsedChannel=channelSchema.safeParse(rawChannel),parsedFrame=frameSchema.safeParse(rawFrame);
  if(!parsedChannel.success||!parsedFrame.success)return null;
@@ -37,6 +37,7 @@ export function buildAlarmSourceCatalog(rawChannel:unknown,rawFrame:unknown,inpu
  }else if(m.class_names&&JSON.stringify(m.class_names)!==JSON.stringify(labels.map(l=>l.name)))return null;
  const version='labels-'+createHash('sha256').update(JSON.stringify([cat.adapter,labels])).digest('hex');
  return {channel_id:c.id,channel_name:typeof c.name==='string'?c.name:c.id,input_stream_id:input.id,input_name:input.name,
+  target_model:{name:m.name,adapter:m.adapter,mode:prompted?'open':'fixed'},
   label_map_version:version,label_ids:labels.map(l=>l.label_id),labels,
   geometry_revision:`source-frame-v2:${input.id}:${input.inputGeneration||new Date(input.createdAt).toISOString()}:${f.frame_width}x${f.frame_height}`,
   tracking_available:c.config.analytics?.enabled===true&&m.adapter!=='locateanything_bpu'&&(c.config.inference_fps===0||c.config.inference_fps>=3)&&f.model_extra.analytics?.status==='active',

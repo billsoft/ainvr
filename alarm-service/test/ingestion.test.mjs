@@ -9,7 +9,7 @@ const frame=(seq,x)=>({schema_version:'1.0',channel_id:'c',input_stream_id:'in',
 const envelope=(seq,x)=>({schema_version:'1.0',producer_id:'producer-durable-id',offset:String(seq),frame:frame(seq,x)});
 // The target enters a zone right of x=0.7 (same path the former line-crossing case used).
 const rule={id:'r',version:1,name:'Cross',channel_id:'c',state:'enabled',label_ids:['person'],geometry_revision:'g',label_map_version:'l',behavior:'region_enter',points:[[.7,0],[1,0],[1,1],[.7,1]]};
-async function isolated(fn){const client=new MongoClient('mongodb://127.0.0.1:27028',{serverSelectionTimeoutMS:3000});await client.connect();const db=client.db('ainvr_alarm_test_'+randomUUID().replaceAll('-',''));try{const repo=new AlarmRepository(db);await repo.initialize();await repo.saveRule(rule,0,'test');await fn(repo,db);}finally{await db.dropDatabase();await client.close();}}
+async function isolated(fn){const client=new MongoClient(process.env.AINVR_ALARM_TEST_MONGO_URI??'mongodb://127.0.0.1:27028',{serverSelectionTimeoutMS:3000});await client.connect();const db=client.db('ainvr_alarm_test_'+randomUUID().replaceAll('-',''));try{const repo=new AlarmRepository(db);await repo.initialize();await repo.saveRule(rule,0,'test');await fn(repo,db);}finally{await db.dropDatabase();await client.close();}}
 for(const crashPoint of ['prepared','event_inserted','before_checkpoint']) {
   test(`recover prepared result after failure at ${crashPoint}; rules edits cannot alter replay`,{skip:!enabled},async()=>isolated(async(repo,db)=>{
     const normal=new ObservationConsumer(repo);await normal.consume(envelope(1,.5));

@@ -114,4 +114,4 @@ if ((START)); then
   python3 "$ROOT/deploy-package/configure-internal-network.py" --static-only --install-monitor
   systemctl enable --now ainvr-license ainvr-license-enforcer ainvr-backend ainvr-recorder ainvr-ingest ainvr-os-helper ainvr-restart-helper ainvr-web ainvr-srs-observer
 fi
-echo 'AINVR management UI: http://<board-ip>:8088. Production business requires AINVR licensing.'
+echo 'AINVR management UI: http://<board-ip>/ (also http://<board-ip>:8088). Production business requires AINVR licensing.'

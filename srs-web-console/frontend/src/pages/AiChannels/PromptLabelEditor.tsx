@@ -2,13 +2,14 @@ import { useRef, useState } from 'react'
 import type { AiPromptLabel } from '@/types/aiChannel'
 
 interface Props {
+  context?: 'channel' | 'trigger'
   rows: AiPromptLabel[]
   limit: number
   error?: string
   onChange: (rows: AiPromptLabel[]) => void
 }
 
-export function PromptLabelEditor({ rows, limit, error, onChange }: Props) {
+export function PromptLabelEditor({ rows, limit, error, onChange, context = 'channel' }: Props) {
   const [removed, setRemoved] = useState<{row: AiPromptLabel; index: number} | null>(null)
   const [search, setSearch] = useState('')
   const query=search.trim().toLocaleLowerCase()
@@ -27,7 +28,7 @@ export function PromptLabelEditor({ rows, limit, error, onChange }: Props) {
           requestAnimationFrame(() => inputs.current[rows.length]?.focus())
         }}>＋ 添加标签</button>
     </div>
-    <p className="text-xs text-ink-faint">每行一个识别类别，可同时检测多个目标。描述建议英文；标签名称用于显示，标签 ID 用于历史检索，修改名称不会改变 ID。</p>
+    <p className="text-xs text-ink-faint">{context==='trigger'?'每行一个监控目标，任一目标命中均可触发。识别描述、标签 ID 和名称须与 AI 通道一致。':'每行一个识别类别，可同时检测多个目标。描述建议英文；标签名称用于显示，标签 ID 用于历史检索，修改名称不会改变 ID。'}</p>
     <label className="block text-sm">查找标签
       <input type="search" aria-label="查找标签" placeholder="描述、标签 ID 或名称" value={search}
         onChange={event=>setSearch(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-base border border-line bg-surface px-3" />
@@ -57,6 +58,6 @@ export function PromptLabelEditor({ rows, limit, error, onChange }: Props) {
         onClick={()=>{const next=[...rows];next.splice(Math.min(removed.index,next.length),0,removed.row);onChange(next);setRemoved(null)}}>撤销删除</button>
     </div>}
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-    <p className="text-xs text-ink-faint">更改在“保存修改”后生效，会重新载入通道；无需重编模型。删除标签不会删除已有识别记录。切换到较小模型时不会自动丢弃标签。</p>
+    <p className="text-xs text-ink-faint">{context==='trigger'?'这里只定义告警监控目标，不会修改 AI 通道的识别配置。请先在对应 AI 通道配置相同标签，再关联触发器。':'更改在“保存修改”后生效，会重新载入通道；无需重编模型。删除标签不会删除已有识别记录。切换到较小模型时不会自动丢弃标签。'}</p>
   </section>
 }

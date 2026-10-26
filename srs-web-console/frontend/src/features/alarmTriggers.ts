@@ -22,9 +22,9 @@ export interface TriggerBinding {
 }
 /** A target is its number and its name: models number their classes, so the same
  * number in another model can be a different target (class 0 may be a person or fire). */
-export interface TriggerLabel {label_id:string;name:string}
+export interface TriggerLabel {label_id:string;name:string;description?:string}
 export const labelName=(l:{label_id:string;name?:string;description?:string})=>l.name||l.description||l.label_id
-export const sameLabel=(a:TriggerLabel,b:{label_id:string;name?:string;description?:string})=>a.label_id===b.label_id&&a.name===labelName(b)
+export const sameLabel=(a:TriggerLabel,b:{label_id:string;name?:string;description?:string})=>a.label_id===b.label_id&&a.name===labelName(b)&&(a.description===undefined||a.description===b.description)
 export interface TriggerInput {
  trigger_id:string;name:string;behavior:TriggerBehavior;labels:TriggerLabel[];duration_ms:number
  alarm_enabled:boolean;state:'draft'|'enabled'|'paused'|'archived';schedule:AlarmSchedule;bindings:TriggerBinding[]

@@ -68,3 +68,15 @@ it('removes a confirmed missing file without starting the video', async () => {
   await waitFor(() => expect(screen.queryByTestId(testId)).not.toBeInTheDocument())
   expect(document.querySelector('video')).toBeNull()
 })
+
+it('opens an alarm-linked recording automatically and does not restart on catalogue refresh', async()=>{
+ const from=Date.now()-3600000,to=Date.now()-3000000
+ const prepare=vi.spyOn(recordingService,'preparePlayback').mockResolvedValue(undefined)
+ vi.spyOn(recordingService,'listSegments').mockResolvedValue([{id:'linked-segment',channelId:'demo-detect',startTs:from-1000,endTs:to+1000,playable:true,sizeBytes:1000,durationMs:to-from+2000} as import('@/types/recording').RecordingSegment])
+ const router=createMemoryRouter([{path:'/playback/:channelId',element:<PlaybackPage/>}],
+  {initialEntries:[`/playback/demo-detect?from=${from}&to=${to}&autoplay=1`]})
+ render(<RouterProvider router={router}/> )
+ await waitFor(()=>expect(prepare).toHaveBeenCalledTimes(1))
+ await act(async()=>{vi.advanceTimersByTime(5000)})
+ expect(prepare).toHaveBeenCalledTimes(1)
+})

@@ -239,3 +239,18 @@ it.skipIf(!enabled)('PG removing a scoped association preserves all legacy share
  await store.saveArming({...uiDraft,processor_id:'ai2'},rev,'operator','shared-ui-save',both,async()=>'g');
  expect((await store.readArming('camera','ai')).zones).toHaveLength(1);
 }));
+
+
+it.skipIf(!enabled)('PG model and open-vocabulary identity survives save, read and compilation',async()=>isolated(async(store,pool)=>{
+ const model={name:'yoloe-26x',adapter:'yoloe_bpu',mode:'open' as const};
+ const labels=[{label_id:'red-truck',name:'红色卡车',description:'a red truck'},{label_id:'bus',name:'公交车',description:'a bus'}];
+ const d={...definition,target_model:model,labels};
+ const s={...source,target_model:model,labels};
+ await store.saveDefinition(d,0,'operator','model-d1',async()=>s);
+ const read=await store.listDefinitions();
+ expect(read.find((x:any)=>x.trigger_id===d.trigger_id)).toMatchObject({target_model:model,labels});
+ await store.saveArming(arming(),0,'operator','model-a1',async()=>s,async()=>'g');
+ expect((await store.snapshot()).rules[0]).toMatchObject({label_ids:['red-truck','bus'],labels:[{label_id:'red-truck',name:'红色卡车'},{label_id:'bus',name:'公交车'}]});
+ await expect(store.saveDefinition({...d,labels:[{...labels[0],description:'a toy truck'},labels[1]]},1,'operator','model-d2',async()=>s)).rejects.toMatchObject({code:'labels_unavailable'});
+ expect((await store.listDefinitions()).find((x:any)=>x.trigger_id===d.trigger_id)).toMatchObject({version:1,labels});
+}));

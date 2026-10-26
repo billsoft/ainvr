@@ -5,9 +5,10 @@ import {AlarmConfigError} from './alarmZones.js';
 const id=z.string().min(1).max(128).regex(/^[a-zA-Z0-9_.:-]+$/);
 const percent=z.number().finite().gt(0).max(100);
 const definitionSchema=z.object({
+  target_model:z.object({name:id,adapter:id,mode:z.enum(['fixed','open'])}).strict().optional(),
   trigger_id:id,name:z.string().trim().min(1).max(128),
   behavior:z.enum(['appearance','region_approach','region_enter','region_traverse']),
-  labels:z.array(z.object({label_id:id,name:z.string().trim().min(1).max(256)}).strict()).min(1).max(128),
+  labels:z.array(z.object({label_id:id,name:z.string().trim().min(1).max(256),description:z.string().trim().min(1).max(160).optional()}).strict()).min(1).max(128),
   duration_ms:z.number().int().min(0).max(3600000),
   approach_width_percent:percent.optional(),
   alarm_enabled:z.boolean(),state:z.enum(['draft','enabled','paused','archived']),
@@ -25,6 +26,7 @@ const assignmentSchema=z.object({
 }).strict();
 export type TriggerAssignment=z.infer<typeof assignmentSchema>;
 export interface AssignmentSource {
+  target_model?:TriggerDefinition['target_model'];
   channel_id:string;input_stream_id:string;geometry_revision:string;label_map_version:string;
   tracking_available:boolean;detection_available?:boolean;labels:{label_id:string;name?:string;description?:string}[];
   width:number;height:number;
@@ -40,6 +42,11 @@ export function parseTriggerDefinition(input:unknown):TriggerDefinition {
   if(!parsed.success)return fail('invalid_trigger','触发器定义无效');
   const d=parsed.data;
   if(new Set(d.labels.map(l=>l.label_id)).size!==d.labels.length)return fail('invalid_trigger','目标不能重复');
+  if(d.target_model){
+    const open=['yoloe_bpu','locateanything_bpu'].includes(d.target_model.adapter);
+    if(open!==(d.target_model.mode==='open')||d.labels.some(l=>open?!l.description:l.description!==undefined))return fail('invalid_trigger','模型类型与识别标签不匹配');
+    if(open&&(d.labels.length>(d.target_model.name==='yoloe-26x-32'?32:8)||d.labels.some(l=>l.description!.includes('<|'))))return fail('invalid_trigger','开放词汇标签数量或描述无效');
+  }
   if(d.behavior!=='appearance'&&d.duration_ms!==0)return fail('invalid_trigger','只有出现使用持续时间');
   if((d.behavior==='region_approach')!==(d.approach_width_percent!==undefined))return fail('invalid_trigger','只有接近使用距离且必须设置');
   if(d.review?.enabled&&!d.alarm_enabled)return fail('invalid_review','仅统计不能启用 AI 审核');
@@ -81,7 +88,8 @@ export function compileAssignment(
   if(!source.tracking_available&&!(source.detection_available&&d.alarm_enabled&&['appearance','region_approach'].includes(d.behavior)&&d.duration_ms===0&&!a.entry_edges.length&&!a.exit_edges.length&&!zone?.erp_wrap))
     return fail('tracking_required','此规则需要可靠跟踪；无跟踪仅支持无持续时间的出现、区内检出及接近带检出。');
   if(!Number.isSafeInteger(source.width)||source.width<=0||!Number.isSafeInteger(source.height)||source.height<=0)return fail('source_unavailable','原图尺寸尚未确认');
-  if(d.labels.some(l=>!source.labels.some(s=>s.label_id===l.label_id&&(s.name||s.description||s.label_id)===l.name)))return fail('labels_unavailable','模型不支持所选目标，请确认目标映射');
+  if(d.target_model&&(!source.target_model||d.target_model.name!==source.target_model.name||d.target_model.adapter!==source.target_model.adapter||d.target_model.mode!==source.target_model.mode))return fail('model_unavailable','请选用相同模型的 AI 通道');
+  if(d.labels.some(l=>!source.labels.some(s=>s.label_id===l.label_id&&(s.name||s.description||s.label_id)===l.name&&(l.description===undefined||l.description===s.description))))return fail('labels_unavailable','模型不支持所选目标，请确认目标映射');
   if(d.behavior!=='appearance'&&a.zone_id===null)return fail('zone_required','此行为需要热区');
   if(d.behavior!=='region_approach'&&a.approach_width_percent!==undefined)return fail('invalid_assignment','此行为不使用接近距离');
   if(d.behavior==='appearance'&&(a.entry_edges.length||a.exit_edges.length))return fail('invalid_direction','出现不使用方向');
@@ -97,7 +105,7 @@ export function compileAssignment(
     id:a.assignment_id,assignment_id:a.assignment_id,trigger_id:d.trigger_id,trigger_version:definitionVersion,
     version:executionVersion,name:d.name,state:'enabled',
     channel_id:a.processor_id,input_stream_id:a.input_stream_id,
-    labels:d.labels,label_ids:d.labels.map(l=>l.label_id),label_map_version:a.label_map_version,geometry_revision:a.geometry_revision,
+    labels:d.labels.map(({label_id,name})=>({label_id,name})),label_ids:d.labels.map(l=>l.label_id),label_map_version:a.label_map_version,geometry_revision:a.geometry_revision,
     zone_id:a.zone_id,zone_version:a.zone_version,points:zone?.points.map(p=>[...p]),...(zone?.erp_wrap?{erp_wrap:true}:{}),
     behavior:d.behavior,anchor:'bottom_center',duration_ms:d.duration_ms,
     entry_edges:a.entry_edges.map(e=>zone!.edge_ids.indexOf(e)),exit_edges:a.exit_edges.map(e=>zone!.edge_ids.indexOf(e)),

@@ -6,7 +6,8 @@ import type {AlarmSource} from '@/api/alarmTriggerService'
 import {newAlarmOperationId} from '@/api/alarmZoneService'
 import type {DraftZone,DraftAssignment} from '@/features/armingDraft'
 import type {TriggerDefinition} from '@/features/alarmDefinitions'
-import {edgeNames,sameLabel,sourceSize} from '@/features/alarmTriggers'
+import {triggerTargetsMatch} from '@/features/triggerTargets'
+import {edgeNames,sourceSize} from '@/features/alarmTriggers'
 interface Props {
  sourceId:string;geometryRevision:string;zone:DraftZone|null;
  workspace:WorkspaceDraftRef;
@@ -31,7 +32,7 @@ export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sou
  const [directionConfirmed,setDirectionConfirmed]=useState(!initial?.needsDirectionConfirmation)
  const available=definitions.filter(d=>d.state!=='archived'&&(!d.migration_review?.required||d.trigger_id===initial?.triggerId)&&(zone||d.behavior==='appearance'))
  const trigger=available.find(d=>d.trigger_id===triggerId)
- const compatible=sources.filter(s=>s.input_stream_id===sourceId&&s.geometry_revision===geometryRevision&&trigger&&(s.tracking_available||(s.detection_available&&trigger.alarm_enabled&&['appearance','region_approach'].includes(trigger.behavior)&&trigger.duration_ms===0&&!zone?.erpWrap))&&trigger.labels.every(l=>s.labels.some(v=>sameLabel(l,v))))
+ const compatible=sources.filter(s=>s.input_stream_id===sourceId&&s.geometry_revision===geometryRevision&&trigger&&(s.tracking_available||(s.detection_available&&trigger.alarm_enabled&&['appearance','region_approach'].includes(trigger.behavior)&&trigger.duration_ms===0&&!zone?.erpWrap))&&triggerTargetsMatch(trigger,s))
  const effective=compatible.find(s=>s.channel_id===processorId)??(!processorId&&compatible.length===1?compatible[0]:undefined)
  const size=sourceSize(geometryRevision),names=zone?edgeNames(zone.erpWrap?unwrapErp(zone.points):zone.points,size?.width,size?.height):[]
  const directional=trigger?.behavior==='region_enter'||trigger?.behavior==='region_traverse'
@@ -59,7 +60,7 @@ export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sou
    <option value="">请选择触发器</option>{available.map(t=><option key={t.trigger_id} value={t.trigger_id}>{t.name}</option>)}
   </select></label>
   {!zone&&<p className="text-sm text-ink-subtle">整个画面可选用“出现”；其他行为请先选择热区。</p>}
-  {trigger&&<><p className="text-sm">监控目标：{trigger.labels.map(l=>l.name).join('、')} · {trigger.alarm_enabled?'统计并告警':'仅统计'}{trigger.state!=='enabled'?' · 触发器未启用，保存选用后也不会执行':''}</p>
+  {trigger&&<><p className="text-sm">监控目标：{trigger.labels.map(l=>l.name).join('、')} · {trigger.alarm_enabled?'生成告警':'旧版行为记录（不告警）'}{trigger.state!=='enabled'?' · 触发器未启用，保存选用后也不会执行':''}</p>
    <label className="block">AI 处理器<select className={field} value={effective?.channel_id??''} onChange={e=>setProcessorId(e.target.value)}>
     <option value="">请选择 AI 处理器</option>{compatible.map(s=><option key={s.channel_id} value={s.channel_id}>{s.channel_name}</option>)}
    </select></label>

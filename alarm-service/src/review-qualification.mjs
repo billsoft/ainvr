@@ -1,5 +1,5 @@
-// Automatic decisions require a signed, deployment-owned validation artifact.
-// No configuration-center checkbox can qualify a model or change these files.
+// Signed accuracy qualification authorizes confirmation and false-positive decisions.
+// Operator-authorized confirmation is separate (review-authorization.mjs); it never qualifies a model.
 import {readFile,lstat} from 'node:fs/promises';
 import {REVIEW_PROMPT_VERSION} from './review-prompt.mjs';
 import {verify} from 'node:crypto';

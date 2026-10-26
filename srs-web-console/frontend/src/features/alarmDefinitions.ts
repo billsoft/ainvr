@@ -1,6 +1,8 @@
 import type {AlarmSchedule} from './alarmSchedule'
 import type {TriggerBehavior,TriggerLabel} from './alarmTriggers'
+export interface TriggerTargetModel {name:string;adapter:string;mode:'fixed'|'open'}
 export interface TriggerDefinitionInput {
+ target_model?:TriggerTargetModel;
  trigger_id:string;name:string;behavior:TriggerBehavior;labels:TriggerLabel[];
  duration_ms:number;approach_width_percent?:number;alarm_enabled:boolean;
  review?:{enabled:boolean;description:string;reject_below:number;approve_above:number};

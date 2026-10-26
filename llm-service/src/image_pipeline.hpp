@@ -105,6 +105,7 @@ class QwenReviewImagePipeline final {
     w=std::max(w,2*h);h=w/2;
     ImageTransform crop;crop.width=896;crop.height=448;crop.letterbox=false;crop.yuv_bt709=false;crop.yuv_full_range=true;
     crop.source_region=std::array<float,4>{cx-w/2,cy-h/2,w,h};
+    crop.source_region_padding=true; // Never fabricate stretched image-edge content.
     auto rgba=color_->RunNv12Rgba(nv12,width,height,crop);
     ImageTransform jpeg;jpeg.width=896;jpeg.height=448;jpeg.letterbox=false;
     auto encoded=color_->RunRgbaJpegNv12(rgba,896,448,jpeg);

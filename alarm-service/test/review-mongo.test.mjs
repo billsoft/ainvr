@@ -31,6 +31,14 @@ test('durable review: newest first, human race, stage race, uncertainty and auto
   await events.insertOne(make('waiting','2026-10-22T09:00:00Z'));await worker.step();
   assert.equal((await events.findOne({alarm_id:'waiting'})).review.state,'waiting_validation');
   assert.equal((await events.findOne({alarm_id:'waiting'})).review.attempt,0);
+  assert.equal((await events.findOne({alarm_id:'waiting'})).review.reference.state,'completed');
+  assert.equal((await events.findOne({alarm_id:'waiting'})).handling.state,'unacknowledged');
+  await events.deleteOne({alarm_id:'unvalidated'});
+  assert.equal(await worker.step(),false);
+  // A new evidence generation must be analyzed again; stale reference cannot authorize it.
+  await events.updateOne({alarm_id:'waiting'},{$set:{'review.generation':'next-generation'}});
+  await worker.step();
+  assert.equal((await events.findOne({alarm_id:'waiting'})).review.reference.generation,'next-generation');
   // Isolate the new pending row from older failed-profile rows recovered by preflight.
   await events.deleteOne({alarm_id:'unvalidated'});worker.readiness=async()=>true;await worker.step();
   assert.equal((await events.findOne({alarm_id:'waiting'})).handling.reviewed_by_kind,'ai');

@@ -22,6 +22,7 @@ uniform ivec2 output_size;
 uniform vec4 rectangle;
 uniform vec4 source_region;
 uniform int crop_region;
+uniform int crop_padding;
 uniform vec3 mean_value, divisor, padding;
 uniform int reverse_channels, perspective;
 uniform int input_nv12;
@@ -113,7 +114,8 @@ vec3 render_rgb(ivec2 p) {
     rgb=sample_filtered(uv);
   }else if(all(greaterThanEqual(uv,vec2(0)))&&all(lessThan(uv,vec2(1)))){
     if(crop_region!=0)uv=source_region.xy+uv*source_region.zw;
-    rgb=interpolation==2?sample_area(p):sample_filtered(uv);
+    if(crop_padding==0||(all(greaterThanEqual(uv,vec2(0)))&&all(lessThan(uv,vec2(1)))))
+      rgb=interpolation==2?sample_area(p):sample_filtered(uv);
   }
   return rgb;
 }
@@ -287,6 +289,7 @@ std::vector<float> GlesPreprocessor::RunImpl(const std::vector<uint8_t>& rgba,in
   glUniform3f(uniform("yuv_blue"),1,t.yuv_bt709?1.8556f:1.772f,0);
   glUniform2i(uniform("output_size"),t.width,t.height);
   glUniform1i(uniform("crop_region"),t.source_region.has_value());
+  glUniform1i(uniform("crop_padding"),t.source_region_padding);
   if(t.source_region){const auto& r=*t.source_region;
     glUniform4f(uniform("source_region"),r[0]/w,r[1]/h,r[2]/w,r[3]/h);}
   int nw=t.width,nh=t.height;

@@ -90,23 +90,27 @@ export class ReviewContext {
    try{await stat(dest);}catch{await this.image({...job,analysis_evidence:{source:job.source}},job.sample,true);}
    await jobs.updateOne({_id:job._id},{$set:{state:'done',finished_at:new Date()}});
   }catch{
-   const expired=Date.now()-job.created_at>10000;
-   await jobs.updateOne({_id:job._id},{$set:{state:expired?'missing':'queued',next_at:Date.now()+500,...(expired?{finished_at:new Date()}: {})}});
+   const expired=Date.now()-job.created_at>30000;
+   await jobs.updateOne({_id:job._id},{$set:{state:expired?'missing':'queued',last_error:'exact_frame_unavailable',last_attempt_at:new Date(),next_at:Date.now()+500,...(expired?{finished_at:new Date()}: {})}});
   }}
  }
  async step(){
-  await this.publish();await this.maintain();await this.processCaptureJobs();
+  await this.publish();await this.processCaptureJobs();
   const rows=await this.repository.events.find({'handling.state':'unacknowledged','review.state':'queued','review.context_state':{$exists:false}}).sort({occurred_at:1}).limit(100).toArray();
   for(const row of rows){
    const proof=reviewSamples(row),fence={alarm_id:row.alarm_id,'review.generation':row.review.generation,'review.context_state':{$exists:false}};
    if(!proof.ok){await this.repository.events.updateOne(fence,{$set:{'review.state':'uncertain','review.reason':proof.reason,'review.context_state':'incomplete'}});continue;}
+   const started=row.review.context_started_at??Date.now();
+   if(row.review.context_started_at==null)await this.repository.events.updateOne(fence,{$set:{'review.context_started_at':started}});
    try{
     const frames=[];for(const s of proof.samples){const {key,data}=await this.image(row,s);frames.push({...s,key,content_sha256:hash(data)});}
     await this.repository.events.updateOne(fence,{$set:{'review.context_state':'ready','review.frames':frames}});
    }catch{
-    if(Date.now()-Date.parse(row.last_seen_at)>30000)await this.repository.events.updateOne(fence,{$set:{'review.state':'uncertain','review.reason':'missing_context','review.context_state':'incomplete'}});
+    if(Date.now()-started>30000)await this.repository.events.updateOne(fence,{$set:{'review.state':'uncertain','review.reason':'missing_context','review.context_state':'incomplete'}});
    }
   }
+  // Preserve expiring source frames before scanning and pruning SSD pools.
+  await this.maintain();
  }
  tick(){if(this.inFlight)return this.inFlight;if(this.closing)return Promise.resolve();this.inFlight=this.step().finally(()=>{this.inFlight=null});return this.inFlight;}
  run(){const work=async()=>{try{await this.tick()}catch{}if(!this.closing)this.timer=setTimeout(work,1000)};void work();}
@@ -150,6 +154,8 @@ export class ReviewContext {
    if(candidate){const limit=this.policy?.candidate_max_bytes??128*1024**2;if(data.length>limit)throw Error('missing_context');await this.prunePool('candidates',limit-data.length,24*3600000);}
    await writeFile(dest+'.tmp',data,{mode:0o600});await rename(dest+'.tmp',dest);
   }
+  const expected=row.review?.frames?.find(f=>f.key===key)?.content_sha256;
+  if(expected&&hash(data)!==expected)throw Error('evidence_integrity_mismatch');
   if(data.length<4||data.length>8*1024*1024||data[0]!==255||data[1]!==216)throw Error('missing_context');return {key,data,...jpegDimensions(data)};
  }
 }

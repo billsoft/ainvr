@@ -47,6 +47,7 @@ std::vector<float> CpuPreprocess(const Nv12Frame& input,const ImageTransform& t)
     std::array<float,3> rgb=t.padding;
     if(t.erp_perspective||(u>=0&&u<1&&v>=0&&v<1)){
       if(t.source_region){const auto& r=*t.source_region;u=(r[0]+u*r[2])/w;v=(r[1]+v*r[3])/h;}
+      if(!t.source_region_padding||(u>=0&&u<1&&v>=0&&v<1)){
       float yy=Sample(input.pixels.data(),w,h,1,0,u,v,t.nearest,t.erp_perspective);
       float uu=Sample(chroma,w/2,h/2,2,0,u,v,t.nearest,t.erp_perspective)-128;
       float vv=Sample(chroma,w/2,h/2,2,1,u,v,t.nearest,t.erp_perspective)-128;
@@ -55,6 +56,7 @@ std::vector<float> CpuPreprocess(const Nv12Frame& input,const ImageTransform& t)
            yy-(t.yuv_bt709?.187324f:.344136f)*uu-(t.yuv_bt709?.468124f:.714136f)*vv,
            yy+(t.yuv_bt709?1.8556f:1.772f)*uu};
       for(float& c:rgb)c=std::clamp(c,0.f,255.f);
+      }
     }
     if(t.bgr)std::swap(rgb[0],rgb[2]);
     for(int c=0;c<3;++c)result[size_t(c)*area+size_t(y)*t.width+x]=(rgb[c]-t.mean[c])/t.divisor[c];

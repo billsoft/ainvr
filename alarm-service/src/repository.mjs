@@ -1,3 +1,4 @@
+import {reviewAuthorization} from './review-authorization.mjs';
 // Copyright AINVR. Mongo single-document atomic operations (no replica-set assumption).
 import {reviewFor} from './review-worker.mjs';
 import {randomUUID} from 'node:crypto';
@@ -146,10 +147,11 @@ export class AlarmRepository {
     const as_of=this.clock();
     const pending=await this.events.countDocuments({...pendingFilter(),ingested_at:{$lte:as_of}},{maxTimeMS:3000});
     const [referenceCounts,runtime]=await Promise.all([
-      this.events.aggregate([{$match:pendingFilter()},{$group:{_id:{$ifNull:['$review.reference.state','waiting']},count:{$sum:1}}}],{maxTimeMS:3000}).toArray(),
+      this.events.aggregate([{$match:pendingFilter()},{$group:{_id:{$cond:[{$eq:['$review.state','running']},'running',{$ifNull:['$review.reference.state','waiting']}]},count:{$sum:1}}}],{maxTimeMS:3000}).toArray(),
       this.db.collection('alarm_reference_runtime').findOne({_id:'reference'},{projection:{_id:0,expires_at:1}})
     ]);
-    return {pending,as_of,reference:{active:(runtime?.expires_at??0)>Date.now(),counts:Object.fromEntries(referenceCounts.map(r=>[r._id,r.count]))}};
+    const authorization=await reviewAuthorization();
+    return {pending,as_of,automatic_review:authorization?{mode:authorization.mode,accuracy_validated:false,approve_above:authorization.approve_above,labels:authorization.labels}:null,reference:{active:(runtime?.expires_at??0)>Date.now(),counts:Object.fromEntries(referenceCounts.map(r=>[r._id,r.count]))}};
   }
   async list({status='pending',channel_id,review,disposition,from,to,zone_id,behavior,limit=50,cursor}={}) {
     if(!['pending','all','acknowledged','human','ai'].includes(status))fail('invalid_filter','status');

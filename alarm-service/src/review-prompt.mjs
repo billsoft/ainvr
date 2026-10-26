@@ -1,4 +1,4 @@
-export const REVIEW_PROMPT_VERSION='target-context-zh-v2';
+export const REVIEW_PROMPT_VERSION='target-context-zh-v3-border';
 const names={appearance:'出现',region_approach:'接近',region_enter:'碰撞侵入',region_traverse:'穿过'};
 const roles=new Set(['开始前','首次有效检出','触发前','达到持续条件','进入接近带前','进入接近带后','进入前','进入后','离开前','离开后']);
 export function reviewDescription(row,sample){

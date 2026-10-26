@@ -26,6 +26,7 @@ export interface PlayerChannelMeta {
 }
 
 interface Props {
+  initiallyMuted?: boolean
   channelName: string
   /** 顶部透明标题层的通道元信息（编解码/分辨率/录制状态等） */
   channelMeta?: PlayerChannelMeta
@@ -60,7 +61,7 @@ interface Props {
  *  - 跨段衔接由页面控制（换 src），这里只管单段
  */
 export function RecordingPlayer({
-  channelName, channelMeta, segment, offsetMs, playUrl, downloadUrl,
+  channelName, channelMeta, segment, offsetMs, playUrl, downloadUrl, initiallyMuted = false,
   isToday, onJumpNow, onTimeUpdate, onNext, onSeek, seekVersion, onError, onRetry, playbackRange, checking = false,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -87,7 +88,7 @@ export function RecordingPlayer({
   const [currentTime, setCurrentTime] = useState(0)
   const [buffered, setBuffered] = useState(0)
   const [volume, setVolume] = useState(1)
-  const [muted, setMuted] = useState(false)
+  const [muted, setMuted] = useState(initiallyMuted)
   const [dragging, setDragging] = useState(false)
   const [hoverTime, setHoverTime] = useState<number | null>(null)
   /**
@@ -486,6 +487,7 @@ export function RecordingPlayer({
             key={`video:${playUrl}`}
             src={playUrl}
             className="h-full w-full object-contain"
+            muted={muted}
             autoPlay
             playsInline
             preload="metadata"

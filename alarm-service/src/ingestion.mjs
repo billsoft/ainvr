@@ -5,6 +5,22 @@ import {digest,fail,identity,integerText,validateFrame} from './domain.mjs';
 import {evaluate} from './engine.mjs';
 import {behaviorEvent} from './behavior-events.mjs';
 
+// Include every sealed proof frame, especially the trigger/exit frame. Candidate
+// intents alone only retain the start of a behavior and can miss its conclusion.
+export function evidenceCaptureIntents(pending) {
+  const intents=new Map();
+  for(const intent of pending.capture_intents??[])intents.set(digest([intent.channel_id,intent.stream_session_id,intent.sample.frame_id]),intent);
+  for(const event of pending.events??[]){
+    if(event.rule.snapshot.alarm_enabled===false)continue;
+    for(const sample of event.analysis_evidence?.review_context?.samples??[]){
+      if(!sample.event_eligible||sample.observation!=='detected')continue;
+      const intent={channel_id:event.channel_id,stream_session_id:event.stream_session_id,source:event.analysis_evidence.source,sample};
+      intents.set(digest([intent.channel_id,intent.stream_session_id,sample.frame_id]),intent);
+    }
+  }
+  return [...intents.values()];
+}
+
 export class ObservationConsumer {
   constructor(repository,{now=()=>Date.now(),leaseMs=30000,hook=async()=>{}}={}) {
     this.repository=repository;this.collection=repository.checkpoints;
@@ -61,7 +77,7 @@ export class ObservationConsumer {
   }
   async finish(doc,fence) {
     const p=doc.pending;
-    if(this.repository.captureJobs)for(const intent of p.capture_intents??[]){
+    if(this.repository.captureJobs)for(const intent of evidenceCaptureIntents(p)){
       const id=digest([intent.channel_id,intent.stream_session_id,intent.sample.frame_id]);
       await this.repository.captureJobs.updateOne({_id:id},{$setOnInsert:{...intent,state:'queued',next_at:0,created_at:Date.now()}},{upsert:true});
     }
