@@ -1,5 +1,7 @@
 import { PROTO_LABEL } from './protocolLabels'
 import { LivePlayerToolbar } from './LivePlayerToolbar'
+import {PtzPanel} from './PtzPanel'
+import './PtzPanel.css'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import flvjs from 'flv.js'
 import Hls from 'hls.js'
@@ -62,6 +64,7 @@ const FAILED_RETRY_MS = 5_000
 const VISIBILITY_RECONNECT_AFTER_MS = 10_000
 
 export interface VideoPlayerProps {
+  ptz?: {channelId:string;open:boolean;onToggle:()=>void}
   onArming?: (video: HTMLVideoElement) => void
   compactZones?: boolean
   savedZoneSource?: ZonePreviewSource
@@ -147,6 +150,7 @@ export function VideoPlayer({
   aiChannelId,
   savedZoneSource,
   onArming,
+  ptz,
   compactZones = false,
   diagLabel,
   videoInfo,
@@ -789,11 +793,12 @@ export function VideoPlayer({
     <div
       ref={containerRef}
       className={[
-        'group relative flex min-h-0 flex-col overflow-hidden rounded-base bg-black',
+        'group relative flex min-h-0 flex-col overflow-hidden rounded-base bg-black ptz-player-container',
         className ?? '',
       ].join(' ')}
       data-testid="video-player"
     >
+      <div className="ptz-player-layout"><div className="ptz-player-main">
       <div className="relative min-h-0 flex-1 overflow-hidden">
       {fullscreenError && <div role="status" className="pointer-events-none absolute bottom-14 left-2 z-30 rounded bg-black/75 px-2 py-1 text-xs text-white">{fullscreenError}</div>}
       <video
@@ -931,6 +936,8 @@ export function VideoPlayer({
           togglePlay={togglePlay}
           toggleMute={toggleMute}
           onArming={onArming}
+          onPtz={ptz?.onToggle}
+          ptzOpen={ptz?.open}
           chain={chain}
           selectedProtocol={proto ?? state.chain[state.index] ?? ''}
           onProtocol={(protocol) => dispatch({ type: 'switch', protocol })}
@@ -940,6 +947,9 @@ export function VideoPlayer({
           canConnect={canConnect}
         />
       )}
+      </div>
+      {ptz?.open&&<PtzPanel key={ptz.channelId} channelId={ptz.channelId} onClose={ptz.onToggle}/>}
+      </div>
     </div>
   )
 }

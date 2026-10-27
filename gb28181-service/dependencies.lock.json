@@ -16,7 +16,8 @@
     "buildScript": "deploy-package/gb28181/build.sh",
     "videoTranscoding": false,
     "audioEncoding": ["AAC"],
-    "installedArm64BinarySha256": "6fd3bca3a9bdee4bd674a44939c78383aa3903d5afdc68d4a55bb0714a09a996"
+    "installedArm64BinarySha256": "6fd3bca3a9bdee4bd674a44939c78383aa3903d5afdc68d4a55bb0714a09a996",
+    "installedArm64ProbeSha256": "ae583a4291e3020c18abdcdc5a8b310c1ae924455478abe4dd65810294e85537"
   },
   "digest": {"version": "v1.2.0", "license": "MIT", "integrity": "go.sum"},
   "zlmediakit": {

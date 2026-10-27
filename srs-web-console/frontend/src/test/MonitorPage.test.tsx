@@ -9,7 +9,7 @@ import MonitorPage from '@/pages/Monitor'
 vi.mock('@/components/player/VideoPlayer', () => ({ VideoPlayer: (props:{onArming?:(video:HTMLVideoElement)=>void;savedZoneSource?:{id:string;createdAt?:string;inputGeneration?:string}}) => <div data-testid="vp" data-zone-source={JSON.stringify(props.savedZoneSource)}>{props.onArming&&<button onClick={()=>props.onArming!(document.createElement('video'))}>布防</button>}</div> }))
 vi.mock('@/pages/AlarmCenter/ArmingLauncher',()=>({ArmingLauncher:({onClose}:{onClose:()=>void})=><div role="dialog" aria-label="布防"><button onClick={onClose}>取消布防</button></div>}))
 vi.mock('@/pages/Monitor/useMonitorCatalog', () => ({ useMonitorCatalog: () => ({
-  allChannels: mockChannels, outputIds: new Map([[`${mockChannels[1]!.upstream.app}/${mockChannels[1]!.upstream.stream}`,"processor-one"]]), variants: new Map([[mockChannels[0]!.id,[mockChannels[1]!]]]), ready: true, error: '',
+  allChannels: mockChannels, outputIds: new Map([[`${mockChannels[1]!.upstream.app}/${mockChannels[1]!.upstream.stream}`,"processor-one"]]), variants: new Map([[mockChannels[0]!.id,[mockChannels[1]!]]]), gbBindings: [], ready: true, error: '',
 }) }))
 const settings = { monitorHardLimit: 2, monitorSoftLimit: 2 }
 const fetchSettings = vi.fn()
@@ -20,6 +20,23 @@ beforeEach(() => {
   useMonitorStore.setState({ layout: '2x2', mode: 'auto', page: 0, slots: [null, null, null, null], selectedOutputs: {}, initialized: false, focusedChannelId: null })
 })
 const renderPage = () => render(<MemoryRouter><MonitorPage /></MemoryRouter>)
+
+it('shows the original camera and ingest protocol for an AI output in grid and focus', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  const label = `原始输入：${mockChannels[0]!.name}；接入协议：RTMP；视频流：live/cam_main_door`
+  await waitFor(() => expect(screen.getAllByLabelText(label)).toHaveLength(2))
+  await user.click(screen.getByTestId('slot-focus-1'))
+  expect(screen.getByLabelText(label)).toHaveTextContent(`来源：${mockChannels[0]!.name}`)
+  expect(screen.getByLabelText(label)).toHaveTextContent('RTMP')
+})
+
+it('updates the source label when the selected playback switches to AI output', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.selectOptions(screen.getByLabelText(`播放来源 ${mockChannels[0]!.name}`), mockChannels[1]!.id)
+  expect(screen.getAllByText(`来源：${mockChannels[0]!.name}`)).toHaveLength(2)
+})
 
 describe('MonitorPage stable layout', () => {
   it('retains the source selector when a saved AI output is unavailable', async () => {

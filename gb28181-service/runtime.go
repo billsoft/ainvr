@@ -181,6 +181,9 @@ func (r *Runtime) worker(ctx context.Context, b Binding) {
 		}
 	}
 }
+
+var errUnsupportedVideoCodec = errors.New("unsupported video codec")
+
 func (m *MediaReceiver) tracks(ctx context.Context, l MediaLease) (string, string, error) {
 	result, e := m.call(ctx, "getMediaInfo", url.Values{"schema": {"rtsp"}, "vhost": {"__defaultVhost__"}, "app": {"rtp"}, "stream": {l.Stream}})
 	if e != nil {
@@ -210,7 +213,7 @@ func (m *MediaReceiver) tracks(ctx context.Context, l MediaLease) (string, strin
 		return "", "", errors.New("waiting for video track")
 	}
 	if video != "h264" && video != "h265" {
-		return "", "", errors.New("unsupported video codec")
+		return "", "", errUnsupportedVideoCodec
 	}
 	return video, audio, nil
 }
@@ -293,7 +296,16 @@ func (r *Runtime) stream(ctx context.Context, b Binding) string {
 	audio := ""
 	for {
 		_, a, e := r.receiver.tracks(ctx, l)
+		if errors.Is(e, errUnsupportedVideoCodec) {
+			return "unsupported_video_codec"
+		}
 		if e == nil {
+			if err := r.receiver.VerifyPeer(ctx, l, session.Answer.IP); err != nil {
+				if errors.Is(err, errMediaPeerMismatch) {
+					return "media_peer_mismatch"
+				}
+				return "media_receiver_unavailable"
+			}
 			audio = a
 			break
 		}
@@ -339,6 +351,12 @@ func (r *Runtime) stream(ctx context.Context, b Binding) string {
 				return "srs_publish_timeout"
 			}
 			if everPublished {
+				if err := r.receiver.VerifyPeer(ctx, l, session.Answer.IP); err != nil {
+					if errors.Is(err, errMediaPeerMismatch) {
+						return "media_peer_mismatch"
+					}
+					return "media_receiver_unavailable"
+				}
 				_, current, e := r.receiver.tracks(ctx, l)
 				if e != nil {
 					return "media_lost"

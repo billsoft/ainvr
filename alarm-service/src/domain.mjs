@@ -23,6 +23,8 @@ function range(v,min,max,field) { if(!Number.isFinite(v)||v<min||v>max) fail('in
 export const TRIGGER_BEHAVIORS=['appearance','region_approach','region_enter','region_traverse'];
 export function validateRule(input) {
   const r=structuredClone(input);
+  if(r.view_not_before!==undefined&&(typeof r.view_not_before!=='string'||!Number.isFinite(Date.parse(r.view_not_before))))fail('invalid_view_not_before','view_not_before');
+  if(r.view_epoch!==undefined&&(typeof r.view_epoch!=='string'||!/^[a-f0-9]{64}$/.test(r.view_epoch)))fail('invalid_view_epoch','view_epoch');
   r.alarm_enabled??=true;
   if(typeof r.alarm_enabled!=='boolean')fail('invalid_alarm_policy','alarm_enabled');
   if(r.input_stream_id!==undefined)identity(r.input_stream_id,'input_stream_id');

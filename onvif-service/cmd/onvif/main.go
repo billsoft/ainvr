@@ -37,6 +37,7 @@ func main() {
 	if e != nil {
 		log.Fatal("invalid service credential")
 	}
+	defer handler.Close()
 	srv := &http.Server{Addr: c.Listen, Handler: handler, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 50 * time.Second, IdleTimeout: 20 * time.Second, MaxHeaderBytes: 8192}
 	stop, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()

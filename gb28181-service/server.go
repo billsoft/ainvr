@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"ainvr/ptzcontrol"
 	"context"
 	"errors"
 	"fmt"
@@ -91,24 +92,44 @@ type DeviceState struct {
 	LastError       string        `json:"lastError,omitempty"`
 	Info            *DeviceInfo   `json:"info,omitempty"`
 	DeviceOnline    string        `json:"deviceOnline,omitempty"`
+	DeviceHealth    string        `json:"deviceHealth,omitempty"`
 	pending         map[string]pendingQuery
 	source          string
 	transport       string
 	connection      sip.Connection
 	query           *Catalog
+	catalogBytes    int
+	heartbeatFault  bool
 }
+
+// Registration, heartbeat delivery and device self-check are different facts.
+// One healthy observation cannot clear a fault reported by the other source.
+func (st *DeviceState) reconcileDeviceFault() {
+	if st.heartbeatFault || st.DeviceHealth == "ERROR" {
+		if st.LastError == "" || st.LastError == "device_reported_error" {
+			st.LastError = "device_reported_error"
+		}
+	} else if st.LastError == "device_reported_error" {
+		st.LastError = ""
+	}
+}
+
 type Server struct {
-	config   Config
-	ua       *sipgo.UserAgent
-	sip      *sipgo.Server
-	client   *sipgo.Client
-	auth     *Authenticator
-	mu       sync.Mutex
-	devices  map[string]DeviceConfig
-	states   map[string]*DeviceState
-	sequence atomic.Uint32
-	queries  chan struct{}
-	dialogs  map[string]*sipgo.DialogClientCache
+	ptz           *ptzcontrol.Controller
+	ptzSlots      chan struct{}
+	ptzStopSlots  chan struct{}
+	presetQueries map[string]*presetQuery
+	config        Config
+	ua            *sipgo.UserAgent
+	sip           *sipgo.Server
+	client        *sipgo.Client
+	auth          *Authenticator
+	mu            sync.Mutex
+	devices       map[string]DeviceConfig
+	states        map[string]*DeviceState
+	sequence      atomic.Uint32
+	queries       chan struct{}
+	dialogs       map[string]*sipgo.DialogClientCache
 }
 type DeviceInfo struct {
 	Name         string `json:"name"`
@@ -128,7 +149,12 @@ func NewServer(config Config) (*Server, error) {
 	// SIP library diagnostics can contain raw packets; do not expose those in
 	// ordinary logs. Structured operation errors are returned by this service.
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// Match the documented XML body limit on TCP as well as in MANSCDP.
+	// sipgo defaults to 65535 bytes, which silently rejects a valid NVR batch
+	// before the bounded XML parser sees it. Keep headers separately budgeted.
+	parser := sip.NewParser(func(p *sip.Parser) { p.MaxMessageLength = MaxXMLBytes + 16*1024 })
 	ua, e := sipgo.NewUA(sipgo.WithUserAgent("AINVR-GB28181"),
+		sipgo.WithUserAgentParser(parser),
 		sipgo.WithUserAgentTransportLayerOptions(sip.WithTransportLayerLogger(quiet)),
 		sipgo.WithUserAgentTransactionLayerOptions(sip.WithTransactionLayerLogger(quiet)))
 	if e != nil {
@@ -147,6 +173,9 @@ func NewServer(config Config) (*Server, error) {
 		return nil, e
 	}
 	s := &Server{config: config, ua: ua, sip: srv, client: client, auth: NewAuthenticator(config.Realm, config.MaxDevices*4), devices: map[string]DeviceConfig{}, states: map[string]*DeviceState{}, queries: make(chan struct{}, 8)}
+	s.ptz = ptzcontrol.New()
+	s.ptzSlots = make(chan struct{}, 8)
+	s.ptzStopSlots = make(chan struct{}, 2)
 	s.dialogs = make(map[string]*sipgo.DialogClientCache)
 	for _, transport := range []string{"UDP", "TCP"} {
 		s.dialogs[transport] = sipgo.NewDialogClientCache(client, sip.ContactHeader{Address: sip.Uri{Scheme: "sip", User: config.ServerID, Host: config.AdvertiseIP, Port: p, UriParams: sip.HeaderParams{{K: "transport", V: strings.ToLower(transport)}}}})
@@ -173,7 +202,12 @@ func NewServer(config Config) (*Server, error) {
 	srv.OnNoRoute(func(req *sip.Request, tx sip.ServerTransaction) { s.respond(req, tx, 405, "Method Not Allowed") })
 	return s, nil
 }
-func (s *Server) Close() { s.ua.Close() }
+func (s *Server) Close() {
+	if s.ptz != nil {
+		s.ptz.Close()
+	}
+	s.ua.Close()
+}
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -241,8 +275,8 @@ func (s *Server) register(req *sip.Request, tx sip.ServerTransaction) {
 		s.respond(req, tx, 400, "Bad Expires")
 		return
 	}
-	if expires > 0 && expires < 60 {
-		s.respond(req, tx, 423, "Interval Too Brief", sip.NewHeader("Min-Expires", "60"))
+	if expires > 0 && expires < 3600 {
+		s.respond(req, tx, 423, "Interval Too Brief", sip.NewHeader("Min-Expires", "3600"))
 		return
 	}
 	now := time.Now()
@@ -296,6 +330,8 @@ func (s *Server) register(req *sip.Request, tx sip.ServerTransaction) {
 		st.pending = nil
 		st.Info = nil
 		st.DeviceOnline = ""
+		st.DeviceHealth = ""
+		st.heartbeatFault = false
 	}
 	st.Registered = expires > 0
 	st.ExpiresAt = now.Add(time.Duration(expires) * time.Second)
@@ -312,6 +348,7 @@ func (s *Server) register(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	st.Version = version
 	st.LastError = ""
+	st.reconcileDeviceFault()
 	s.mu.Unlock()
 	// GB registration clock synchronization uses Beijing time and XML date
 	// syntax (2016 section 9.10.3), rather than RFC 1123's SIP default.
@@ -337,7 +374,7 @@ func (s *Server) message(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 	m, e := ParseBusinessMessage(req.Body(), s.config.MaxCatalogItems)
-	if e != nil || m.DeviceID != id {
+	if e != nil || (m.DeviceID != id && m.Command != "PresetQuery") {
 		s.respond(req, tx, 400, "Bad Request")
 		return
 	}
@@ -349,6 +386,11 @@ func (s *Server) message(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 	switch m.Command {
+	case "PresetQuery":
+		if s.acceptPresets(id, st, m) != nil {
+			s.respond(req, tx, 400, "Invalid Preset Response")
+			return
+		}
 	case "DeviceInfo", "DeviceStatus":
 		pending, found := st.pending[m.Command]
 		if m.XMLName.Local != "Response" || !found || pending.sn != m.SN || now.After(pending.expires) {
@@ -368,11 +410,18 @@ func (s *Server) message(req *sip.Request, tx sip.ServerTransaction) {
 			}
 			st.Info = &DeviceInfo{m.DeviceName, m.Manufacturer, m.Model, m.Firmware}
 		} else {
-			if m.Online != "ONLINE" && m.Online != "OFFLINE" {
+			if (m.Online != "ONLINE" && m.Online != "OFFLINE") || (m.Status != "OK" && m.Status != "ERROR") {
 				s.respond(req, tx, 400, "Invalid Device Status")
 				return
 			}
 			st.DeviceOnline = m.Online
+			st.DeviceHealth = m.Status
+		}
+		if m.Result == "OK" {
+			if st.LastError == "device_query_failed" {
+				st.LastError = ""
+			}
+			st.reconcileDeviceFault()
 		}
 	case "Keepalive":
 		if m.XMLName.Local != "Notify" || (m.Status != "OK" && m.Status != "ERROR") {
@@ -381,24 +430,23 @@ func (s *Server) message(req *sip.Request, tx sip.ServerTransaction) {
 		}
 		st.LastSeen = now
 		// ERROR reports a live but unhealthy device; it is not a broken heartbeat.
-		if m.Status == "ERROR" {
-			st.LastError = "device_reported_error"
-		} else if st.LastError == "device_reported_error" {
-			st.LastError = ""
-		}
+		st.heartbeatFault = m.Status == "ERROR"
+		st.reconcileDeviceFault()
 	case "Catalog":
 		if m.XMLName.Local != "Response" || st.query == nil {
 			s.respond(req, tx, 400, "Unsolicited Catalog")
 			return
 		}
-		done, e := st.query.Add(m, now)
+		_, e := s.applyCatalog(st, m, now)
 		if e != nil {
+			if errors.Is(e, errCatalogCapacity) {
+				st.LastError = "catalog_capacity_exceeded"
+				st.query = nil // Release partial work, retaining the previous directory.
+				s.respond(req, tx, 503, "Catalog Capacity Exhausted")
+				return
+			}
 			s.respond(req, tx, 400, "Invalid Catalog Generation")
 			return
-		}
-		if done {
-			st.Catalog = selectableCatalog(st.query.Snapshot())
-			st.CatalogComplete = true
 		}
 	default:
 		s.respond(req, tx, 501, "Not Implemented")
@@ -406,6 +454,47 @@ func (s *Server) message(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	s.respond(req, tx, 200, "OK")
 }
+
+// Caller holds s.mu. Admission is global across provisioned devices, with a
+// separate refresh reserve. A rejected update cannot evict an existing camera.
+func (s *Server) applyCatalog(st *DeviceState, m BusinessMessage, now time.Time) (bool, error) {
+	completed, pending := 0, 0
+	for _, peer := range s.states {
+		if peer != st {
+			completed += peer.catalogBytes
+		}
+		if peer != st && peer.query != nil {
+			bytes, done := peer.query.memory()
+			if !done {
+				pending += bytes
+			}
+		}
+	}
+	// Both the assembled map and its selectable snapshot remain resident.
+	budget := (catalogCacheBudget - completed) / 2
+	if remaining := catalogRefreshBudget - pending; remaining < budget {
+		budget = remaining
+	}
+	if budget < 0 {
+		return false, errCatalogCapacity
+	}
+	done, err := st.query.addWithinBudget(m, now, budget)
+	if err != nil {
+		return false, err
+	}
+	if done {
+		st.Catalog = selectableCatalog(st.query.Snapshot())
+		st.CatalogComplete = true
+		bytes, _ := st.query.memory()
+		st.catalogBytes = bytes + catalogSliceBytes(st.Catalog)
+		if st.LastError == "catalog_capacity_exceeded" {
+			st.LastError = ""
+		}
+		st.reconcileDeviceFault()
+	}
+	return done, nil
+}
+
 func (s *Server) RefreshCatalog(ctx context.Context, id string) error {
 	return s.RefreshQuery(ctx, id, "Catalog")
 }
@@ -489,7 +578,7 @@ func registrationExpires(req *sip.Request) (int, error) {
 		}
 	}
 	if !present {
-		return 3600, nil
+		return 86400, nil
 	}
 	n, err := strconv.Atoi(value)
 	if err != nil || n < 0 || n > 86400 {

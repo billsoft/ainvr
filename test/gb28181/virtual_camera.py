@@ -76,9 +76,14 @@ def load_records(path):
     return records
 
 class Camera(Device):
-    def __init__(self,*args,**kwargs):
+    def __init__(self,*args,timestamp_offset_ticks=0,**kwargs):
+        if type(timestamp_offset_ticks) is not int or not 0 <= timestamp_offset_ticks <= MASK:
+            raise ValueError('timestamp offset must be a 33-bit nonnegative integer')
         super().__init__(*args,**kwargs)
         self.media_error=None; self.packets=0; self.bytes_sent=0
+        self.timestamp_offset_ticks=timestamp_offset_ticks
+        self.rtp_timestamp_wraps=0; self.ps_timestamp_wraps=0
+        self.timestamp_wrap_events=[]
     def send_media(self):
         try:
             port,ssrc=self.media
@@ -92,16 +97,30 @@ class Camera(Device):
             if self.mode=='tcp-active':
                 sock.close();sock,_=self.media_listener.accept();sock.settimeout(3)
             elif self.mode=='tcp-passive': sock.connect((self.media_host,port))
-            cycle=0;seq=0;start=time.monotonic()
+            cycle=0;seq=0;start=time.monotonic();highest_timestamp=None
             with sock:
                 while not self.stop.is_set() and not self.media_stop.is_set():
                     for pts,payload in self.records:
                         elapsed=pts-values[0]+cycle*span
                         if self.media_stop.wait(max(0,elapsed/90000-(time.monotonic()-start))) or self.stop.is_set(): return
-                        payload=shift_ps(payload,cycle*span)
+                        # Shift wire clocks, never the wall-clock pacing. This
+                        # allows bounded tests of 13h RTP / 26h PS wrap without
+                        # sorting wrapped timestamps into a spurious long gap.
+                        timestamp=pts+cycle*span+self.timestamp_offset_ticks
+                        if highest_timestamp is not None and timestamp>highest_timestamp:
+                            rtp_wraps=(timestamp>>32)-(highest_timestamp>>32)
+                            ps_wraps=(timestamp>>33)-(highest_timestamp>>33)
+                            self.rtp_timestamp_wraps += rtp_wraps
+                            self.ps_timestamp_wraps += ps_wraps
+                            if (rtp_wraps or ps_wraps) and len(self.timestamp_wrap_events)<16:
+                                self.timestamp_wrap_events.append({'monotonic':time.monotonic(),'rtp':rtp_wraps,'ps':ps_wraps})
+                        # Interleaved audio/video PTS can revisit the boundary;
+                        # count a clock epoch once, not once per media track.
+                        highest_timestamp=timestamp if highest_timestamp is None else max(highest_timestamp,timestamp)
+                        payload=shift_ps(payload,cycle*span+self.timestamp_offset_ticks)
                         for offset in range(0,len(payload),1200):
                             chunk=payload[offset:offset+1200]
-                            packet=struct.pack('!BBHII',0x80,96|(128 if offset+1200>=len(payload) else 0),seq&65535,(pts+cycle*span)&0xffffffff,ssrc)+chunk
+                            packet=struct.pack('!BBHII',0x80,96|(128 if offset+1200>=len(payload) else 0),seq&65535,timestamp&0xffffffff,ssrc)+chunk
                             if self.mode=='udp': sock.sendto(packet,(self.media_host,port))
                             else: sock.sendall(struct.pack('!H',len(packet))+packet)
                             seq+=1;self.packets+=1;self.bytes_sent+=len(packet)
@@ -125,14 +144,17 @@ def main():
     parser.add_argument('--seconds',type=int,default=300)
     parser.add_argument('--report',type=Path)
     parser.add_argument('--isolated-test',action='store_true',help='use public fixture credential ONLY with isolated test gateway')
+    parser.add_argument('--timestamp-offset-ticks',type=int,default=0,help='isolated tests only: add 90kHz ticks to RTP/PS clocks without changing pacing')
     args=parser.parse_args()
     if not 1<=args.port<=65535 or not 10<=args.seconds<=86400: parser.error('invalid port or duration (10..86400 seconds)')
     for value in (args.server_id,args.device_id,args.channel_id):
         if len(value)!=20 or not value.isascii() or not value.isdigit(): parser.error('IDs must contain exactly 20 digits')
     if not args.realm.isascii() or not args.realm.isdigit(): parser.error('realm must be numeric')
+    if not 0<=args.timestamp_offset_ticks<=MASK or (args.timestamp_offset_ticks and not args.isolated_test):
+        parser.error('timestamp offset must be 0..2^33-1 and requires --isolated-test when nonzero')
     records=load_records(args.sample)
     password='independent-test-device' if args.isolated_test else getpass.getpass('Device password: ')
-    camera=Camera(args.port,records,'2.0' if args.version=='2016' else '3.0',args.signaling,args.media,server_host=str(args.server),local_ip=str(args.local_ip))
+    camera=Camera(args.port,records,'2.0' if args.version=='2016' else '3.0',args.signaling,args.media,server_host=str(args.server),local_ip=str(args.local_ip),timestamp_offset_ticks=args.timestamp_offset_ticks)
     camera.server=args.server_id;camera.id=args.device_id;camera.channel=args.channel_id;camera.realm=args.realm;camera.password=password
     began=time.monotonic();camera.start();report={}
     try:
@@ -148,7 +170,7 @@ def main():
     except Exception as error:
         report['passed']=False;report['reason']=str(error)
     finally:
-        camera.close();report.update(registered=camera.registered.is_set(),packets=camera.packets,bytes=camera.bytes_sent,seconds=round(time.monotonic()-began,2),receiverVerified=False)
+        camera.close();report.update(registered=camera.registered.is_set(),packets=camera.packets,bytes=camera.bytes_sent,seconds=round(time.monotonic()-began,2),receiverVerified=False,timestampOffsetTicks=camera.timestamp_offset_ticks,rtpTimestampWraps=camera.rtp_timestamp_wraps,psTimestampWraps=camera.ps_timestamp_wraps,timestampWrapEvents=camera.timestamp_wrap_events)
         if args.report: args.report.write_text(json.dumps(report,indent=2),encoding='utf-8')
         print(json.dumps(report),flush=True)
     return 0 if report.get('passed') else 1

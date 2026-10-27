@@ -1,0 +1,26 @@
+import {render,screen,waitFor,cleanup} from '@testing-library/react';
+import {it,expect,vi,afterEach} from 'vitest';
+import {VideoPlayer} from '@/components/player/VideoPlayer';
+import {attachWebRTC} from '@/components/player/webrtc';
+vi.mock('@/components/player/webrtc',async original=>({...await original<typeof import('@/components/player/webrtc')>(),attachWebRTC:vi.fn()}));
+vi.mock('@/hooks/useServerRtcHevc',()=>({useServerRtcHevc:()=>null}));
+vi.mock('@/components/player/PtzPanel',()=>({PtzPanel:()=> <aside aria-label="PTZ fixture"/>}));
+afterEach(()=>{cleanup();vi.restoreAllMocks()});
+it('opening, closing and resizing the PTZ layout preserve the current media element and WebRTC connection',async()=>{
+ vi.spyOn(HTMLMediaElement.prototype,'play').mockResolvedValue();
+ vi.spyOn(HTMLMediaElement.prototype,'pause').mockImplementation(()=>{});
+ const close=vi.fn();
+ vi.mocked(attachWebRTC).mockResolvedValue({close,encodedFramesSupported:false,getStats:async()=>new Map()} as never);
+ const props={title:'Camera',protocols:['webrtc'] as ['webrtc'],primary:'webrtc' as const,stream:{host:'fixture',app:'live',stream:'camera'}};
+ const toggle=()=>{};
+ const view=render(<VideoPlayer {...props} ptz={{channelId:'camera',open:false,onToggle:toggle}}/>);
+ await waitFor(()=>expect(attachWebRTC).toHaveBeenCalledTimes(1));
+ const video=screen.getByTestId('video-player').querySelector('video');
+ view.rerender(<VideoPlayer {...props} className="w-full" ptz={{channelId:'camera',open:true,onToggle:toggle}}/>);
+ expect(screen.getByRole('complementary',{name:'PTZ fixture'})).toBeInTheDocument();
+ expect(screen.getByTestId('video-player').querySelector('video')).toBe(video);
+ view.rerender(<VideoPlayer {...props} ptz={{channelId:'camera',open:false,onToggle:toggle}}/>);
+ expect(screen.getByTestId('video-player').querySelector('video')).toBe(video);
+ expect(attachWebRTC).toHaveBeenCalledTimes(1);expect(close).not.toHaveBeenCalled();
+ view.unmount();expect(close).toHaveBeenCalledTimes(1);
+});

@@ -36,9 +36,9 @@
     {
       "clause": "4.3.6;5.1-5.2",
       "scope": "applicable",
-      "status": "pending",
-      "requirement": "RTP/PS、TCP 分帧、RTCP 与媒体同步由固定 ZLM 承担；正常矩阵有历史结果，最终构建异常媒体验证尚需完成。",
-      "evidence": "media.go; test/gb28181/matrix.py"
+      "status": "tested",
+      "requirement": "RTP/PS、TCP 分帧、RTCP 与媒体同步由固定 ZLM 承担；R12 正常96组合、两版三角色六组故障及九组线路异常全部通过。最终构建四路混合及四路高清高码率两小时均通过，各36段内容已复核；高清AAC测试源循环间隔单独记录，双路24小时按用户要求在20607.89秒中止，不计24小时通过、不再作为本期完成关口。",
+      "evidence": "media.go; test/gb28181/matrix.py; test/gb28181/fault_acceptance.py; RELEASE-AUDIT-20261027.md"
     },
     {
       "clause": "5.3",
@@ -51,15 +51,15 @@
       "clause": "5.4-5.5",
       "scope": "conditional",
       "status": "pending",
-      "requirement": "容量、带宽余量和受控网络质量需测量；模拟网络与真机网络验收分别记录。",
-      "evidence": "test/gb28181/soak.py"
+      "requirement": "容量、带宽余量和受控网络质量分别验收；R12四路1080p/标称30FPS/每路约20Mbps两小时、1428个收流点及36段录像复核通过。AAC发送源自身循环帧间隔不伪称链路无间断30FPS。分组件稳定阶段采样与Docker SRS分开；完整生产资源余量、物理设备和现场网络仍待验收。 两版受控弱网络补测设置0.001丢包率、150ms单向延迟及±25ms抖动，各实际注入一次丢包，六段录像内容与23秒级恢复通过；它不是物理网络或端到端显示延迟认证。",
+      "evidence": "test/gb28181/soak.py; test/gb28181/external_acceptance.py; RELEASE-AUDIT-20261027.md"
     },
     {
       "clause": "5.6",
       "scope": "conditional",
-      "status": "pending",
-      "requirement": "25 FPS 相关要求属于相应监控点与录像传输能力；AI 推理 FPS 不能作为视频传输 FPS。",
-      "evidence": "需要 25 FPS 媒体统计证据"
+      "status": "tested",
+      "requirement": "硬件生成 25 FPS 的 H.264/H.265 样本，经接入及实际录像链路，六组声音组合保持真实视频节奏；不以 AI 推理 FPS 替代，也不外推到所有分辨率/真机。",
+      "evidence": "test/gb28181/sync_acceptance.py; RELEASE-AUDIT-20261027.md"
     },
     {
       "clause": "6.1",
@@ -71,9 +71,9 @@
     {
       "clause": "6.2",
       "scope": "profile",
-      "status": "pending",
-      "requirement": "本期 H.264/H.265，AAC/G.711；不是全部列举编码器一致性认证。",
-      "evidence": "TestBridgeCopyAndAudioPolicy; test/gb28181/matrix.py"
+      "status": "tested",
+      "requirement": "本期 H.264/H.265，AAC/G.711 与无音轨；R12 正常96组合、六组音频内容/录像同步及四组 Opus 降级通过。另增加高清高码率 B 帧来源补测，不把低分辨率结果外推到全部设备。",
+      "evidence": "TestBridgeCopyAndAudioPolicy; test/gb28181/matrix.py; test/gb28181/sync_acceptance.py"
     },
     {
       "clause": "6.3",
@@ -114,15 +114,15 @@
       "clause": "7.1;9.1",
       "scope": "applicable",
       "status": "tested",
-      "requirement": "注册挑战、刷新、注销、有效期、版本及 TCP 断链；短有效期接受为兼容策略，不是设备合规背书。",
-      "evidence": "TestWireRegistrationAndHeartbeat; TestRegistrationExpirationPriority; TestDigestReplayAndBinding"
+      "requirement": "注册挑战、刷新、注销、有效期、版本及 TCP 断链；正有效期至少 3600 秒，未提供时默认 86400 秒，Contact expires 优先。",
+      "evidence": "TestWireRegistrationAndHeartbeat; TestRegistrationExpirationPriority; TestDigestReplayAndBinding; STANDARD-2022-AUDIT-20261025.md 2026-10-27 更正"
     },
     {
       "clause": "7.2;9.2",
       "scope": "applicable",
-      "status": "pending",
-      "requirement": "点播 ACK/BYE/取消竞态已有测试；最终构建端到端组合及断网恢复仍待完成。",
-      "evidence": "TestCancelledInviteAcknowledgesLateSuccess; test/gb28181/acceptance.sh"
+      "status": "tested",
+      "requirement": "点播 ACK/BYE/取消竞态已有测试；R12 正常96组合、两版三角色六组恢复及九组线路异常通过；逐项点播至实际 SRS 发布最大7.711秒，不能代替标准全端显示延迟。最终长测另列。",
+      "evidence": "TestCancelledInviteAcknowledgesLateSuccess; test/gb28181/matrix.py; test/gb28181/fault_acceptance.py"
     },
     {
       "clause": "7.3;9.3",
@@ -142,15 +142,15 @@
       "clause": "7.5;9.5",
       "scope": "profile",
       "status": "tested",
-      "requirement": "设备目录、基本信息和状态查询；预置位等其他查询未提供。",
-      "evidence": "TestWireRegistrationAndHeartbeat; TestDiscoverySlowPeerDoesNotBlockAndCancellation"
+      "requirement": "设备目录、基本信息和状态查询；R12 区分查询结果、Online、自检 Status 和独立心跳故障，两版 UDP/TCP 实际报文回归通过；预置位等其他查询未提供。",
+      "evidence": "TestWireRegistrationAndHeartbeat; device_health_test.go; INGEST-CONTRACT-2016-2022.md"
     },
     {
       "clause": "7.6;9.6",
       "scope": "applicable",
       "status": "tested",
-      "requirement": "Keepalive 及设备状态更新必须来自已鉴权的当前注册端点。",
-      "evidence": "TestWireRegistrationAndHeartbeat"
+      "requirement": "Keepalive 及设备状态更新必须来自已鉴权的当前注册端点；R12 健康心跳不清除独立自检故障，自检恢复不清除心跳故障。",
+      "evidence": "TestWireRegistrationAndHeartbeat; device_health_test.go; INGEST-CONTRACT-2016-2022.md"
     },
     {
       "clause": "7.7-7.9;9.7-9.9",
@@ -205,8 +205,8 @@
       "clause": "8.2",
       "scope": "conditional",
       "status": "reviewed",
-      "requirement": "局域网/受保护专网；管理连接认证，外部 HTTPS；不宣称摄像头 SIP TLS/IPSec 已实现。",
-      "evidence": "manager.go; media.go"
+      "requirement": "局域网/受保护专网；管理连接认证及受信HTTPS，两版独立网络空间经受限SSH传输媒体/API验证。错误令牌、真实证书拒绝、禁止shell及未授权转发均验证；不是物理外置主机或摄像头SIP TLS/IPSec实现证明。",
+      "evidence": "manager.go; media.go; test/gb28181/external_acceptance.py; EXTERNAL-GATEWAY.md; RELEASE-AUDIT-20261027.md"
     },
     {
       "clause": "8.3",
@@ -233,8 +233,8 @@
       "clause": "A.1-A.2",
       "scope": "profile",
       "status": "pending",
-      "requirement": "只实现 Catalog/DeviceInfo/DeviceStatus/Keepalive 子集；XML 字段逐项约束仍需完整数据字典核查，不能以能解析替代。",
-      "evidence": "protocol.go; catalog.go"
+      "requirement": "已对四类本期消息的保留字段、必选/可选语义及未投影字段逐项列出；R12 修正 DeviceStatus 工作状态遗漏。完整 itemType、故障设备列表及所有扩展 XSD 校验仍未实现，不能以受限投影代替完整数据字典符合。",
+      "evidence": "INGEST-CONTRACT-2016-2022.md 逐字段核对; protocol.go; catalog_limits_test.go; catalog_budget_test.go; device_health_test.go; server_test.go"
     },
     {
       "clause": "A.3-A.4",
@@ -253,16 +253,16 @@
     {
       "clause": "C",
       "scope": "applicable",
-      "status": "pending",
-      "requirement": "PS/RTP 由 ZLM 处理；视频复制；丢包、乱序、PS 截断、时间戳异常须补最终故障证据。",
-      "evidence": "third_party/reference/ZLMediaKit/src/Rtp; test/gb28181"
+      "status": "tested",
+      "requirement": "R12 实际 UDP 丢包造成部分 PS 数据丢失、RTP 乱序/重复、TCP 拆包/粘包和 PS/RTP 时钟回退后恢复通过；两版本/H264/H265/RTP32及PS33自然回绕共8组实际录像连续、内容同步通过。加速回绕不代替24小时持续测试，也不是任意损坏PS输入的完备性证明。",
+      "evidence": "third_party/reference/ZLMediaKit/src/Rtp; test/gb28181/fault_acceptance.py; RELEASE-AUDIT-20261027.md"
     },
     {
       "clause": "D",
       "scope": "applicable",
       "status": "tested",
-      "requirement": "TCP 主动/被动角色；同租约三次有界连接尝试，至少一秒间隔，取消立即停止。媒体故障长测另列。",
-      "evidence": "TestMediaSDPRoles; TestActiveMediaRetryKeepsLeaseAndBoundedSpacing"
+      "requirement": "TCP 主动/被动角色；首次连接加三次有界重连，间隔至少一秒，取消停止；API 期限覆盖接收器五秒建连结果。媒体故障长测另列。",
+      "evidence": "TestMediaSDPRoles; TestActiveMediaRetryKeepsLeaseAndBoundedSpacing; TestActiveMediaFailureBudgetAndCancelWaiting; TestActiveConnectAllowsReceiverDialDeadline"
     },
     {
       "clause": "E",
@@ -274,9 +274,9 @@
     {
       "clause": "F",
       "scope": "profile",
-      "status": "pending",
-      "requirement": "受限编解码组合矩阵；不开发视频编码器，不将直通称为编码器规范认证。",
-      "evidence": "TestBridgeCopyAndAudioPolicy; test/gb28181/matrix.py"
+      "status": "tested",
+      "requirement": "R12 受限编解码96组合、六组内容同步、四组不支持音频降级通过；包含真实音频、AAC复制和G711转AAC；不开发视频编码器，不将直通称为编码器规范认证。高清补测及长期结果分别记录。",
+      "evidence": "TestBridgeCopyAndAudioPolicy; test/gb28181/matrix.py; test/gb28181/sync_acceptance.py"
     },
     {
       "clause": "G",
@@ -310,7 +310,7 @@
       "clause": "K",
       "scope": "applicable",
       "status": "pending",
-      "requirement": "官方正文标注规范性；媒体保活：流丢失触发清理及退避；实际故障恢复时间和无缓存增长待最终测量。",
+      "requirement": "官方正文标注规范性；流丢失触发清理及退避，R12 六组恢复与九组异常通过；最终构建四路混合2小时、1429个收流采样及36次内容复核通过，双路24小时仍在运行。旧构建24小时容量不能代替最终音频策略长测。",
       "evidence": "runtime.go stream/worker"
     },
     {

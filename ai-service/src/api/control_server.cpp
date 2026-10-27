@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -365,6 +366,7 @@ nlohmann::json ChannelManager::ChannelView(const std::string& channel_id,
       {"name", cfg->name},
       {"state", pipeline::ToString(worker->State())},
       {"config", cfg_dict},
+      {"analytics_reset_supported", worker->SupportsAnalyticsReset()},
       {"stats", worker->GetStats()},
   };
 }
@@ -1179,6 +1181,21 @@ void RegisterRoutes(httplib::Server& server, std::shared_ptr<ChannelManager> man
                 manager->StopChannel(id);
                 WriteJson(res, 200, json{{"status", "stopping"}, {"channel_id", id}});
               }));
+
+  server.Post(R"(/api/v1/channels/([^/]+)/analytics/reset)",
+    Wrap(manager,[manager](const httplib::Request& req,httplib::Response& res){
+      auto body=json::parse(req.body,nullptr,false);
+      if(!body.is_object()||body.size()!=2||!body.contains("reason")||!body["reason"].is_string()||body["reason"]!="ptz_view_change"||
+         !body.contains("generation")||!body["generation"].is_string())
+        throw ApiError(422,"invalid_parameter","轨迹重置参数无效");
+      const auto generation=body["generation"].get<std::string>();
+      if(generation.empty()||generation.size()>128||
+         !std::all_of(generation.begin(),generation.end(),[](unsigned char c){return std::isalnum(c)||c=='-';}))
+        throw ApiError(422,"invalid_parameter","轨迹重置编号无效");
+      if(!manager->Get(req.matches[1])->ResetAnalytics(generation))
+        throw ApiError(409,"tracking_reset_unavailable","当前处理器不支持不中断视频的轨迹重置");
+      WriteJson(res,200,json{{"reset",true},{"apply_before_next_observation",true},{"generation",generation}});
+    }));
 
   server.Get(R"(/api/v1/channels/([^/]+)/analytics/events)",
     Wrap(manager,[manager](const httplib::Request& req,httplib::Response& res) {

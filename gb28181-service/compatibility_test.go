@@ -14,7 +14,7 @@ func TestRegistrationExpirationPriority(t *testing.T) {
 		want             int
 		bad              bool
 	}{
-		{"", "", 3600, false}, {"", "600", 600, false}, {"expires=120", "3600", 120, false},
+		{"", "", 86400, false}, {"", "600", 600, false}, {"expires=120", "3600", 120, false},
 		{"expires=0", "3600", 0, false}, {"expires=600", "0", 600, false},
 		{"expires=bad", "600", 0, true}, {"expires=", "600", 0, true}, {"expires=-1", "600", 0, true},
 	} {

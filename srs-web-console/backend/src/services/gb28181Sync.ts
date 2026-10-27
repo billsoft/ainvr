@@ -9,6 +9,10 @@ export class GB28181Sync {
   private state:Record<string,unknown>={state:'waiting_configuration',validation:'development_unverified'};
   constructor(private store:GB28181Store,private channels:ChannelService){}
   status(){return this.state;}
+  async ptz(path:string,body:unknown){
+    if(!['prepare','command','presets','preset-save','preset-remove'].includes(path))throw new GBError('ptz_invalid_operation');
+    return this.call(`/v1/ptz/${path}`,body);
+  }
   private async call(path:string,body?:unknown){
     const {settings}=await this.store.readSettings();
     const token=await this.store.pg.getSecret('gb28181/gateway-token');

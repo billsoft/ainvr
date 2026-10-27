@@ -1,0 +1,8 @@
+.ptz-player-container { container-type: inline-size; }
+.ptz-player-layout { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.ptz-player-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; flex: 1; }
+.ptz-panel { width: 100%; max-height: 55%; flex: 0 0 auto; }
+@container (min-width: 640px) {
+ .ptz-player-layout { flex-direction: row; }
+ .ptz-panel { width: 288px; height: 100%; max-height: none; }
+}

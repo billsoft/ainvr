@@ -20,6 +20,7 @@ import { formatCodec, getCodecSupport, hevcLevelIdc, isH265, planLivePlayback } 
 import { useServerRtcHevc } from '@/hooks/useServerRtcHevc'
 import { PublishCredential } from './PublishCredential'
 import { InputDiagnostics } from './InputDiagnostics'
+import { GBInputDiagnostics } from './GBInputDiagnostics'
 
 /** 通道详情页：基本信息 + 全协议推/拉流地址 + AI 处理链路图（T 型） */
 /** H.265 通道：本机能否播放、识别框模式、源流准入观察（设计 §8.4①） */
@@ -162,6 +163,7 @@ export default function ChannelDetailPage() {
       </div>
 
       {ch.upstream.protocol==='rtsp'&&<InputDiagnostics channel={ch} onStatus={updateInputStatus}/>}
+      {ch.upstream.protocol==='rtmp'&&<GBInputDiagnostics channel={ch} onStatus={updateInputStatus}/>}
       {/* T 型数据流图 */}
       {ch && !serviceUnreachable && (
         <ChannelPipelineDiagram

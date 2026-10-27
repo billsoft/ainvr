@@ -60,6 +60,20 @@ func BridgeArgs(c BridgeConfig, lease MediaLease, app, stream, audioCodec string
 		args = append(args, "-an")
 		warning = "unsupported_audio_codec"
 	}
+	if warning != "" {
+		// Disabling output audio alone still lets libavformat spend its entire
+		// live probe budget identifying an unsupported input audio track. Keep
+		// the timestamp-preserving FLV video path, explicitly discard input
+		// audio and bound stream analysis instead of timing out the whole feed.
+		for index, arg := range args {
+			if arg == "-i" {
+				prefix := append([]string(nil), args[:index]...)
+				prefix = append(prefix, "-analyzeduration", "1000000", "-probesize", "1048576", "-an")
+				args = append(prefix, args[index:]...)
+				break
+			}
+		}
+	}
 	args = append(args, "-flvflags", "no_duration_filesize", "-f", "flv", strings.TrimRight(c.RTMPBase, "/")+"/"+app+"/"+stream)
 	return args, warning, nil
 }

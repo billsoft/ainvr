@@ -1,9 +1,11 @@
 import { PROTO_LABEL } from './protocolLabels'
-import { Play, Pause, VolumeX, Volume2, ShieldCheck } from 'lucide-react'
+import { Play, Pause, VolumeX, Volume2, ShieldCheck, Move } from 'lucide-react'
 import type { PlayProtocol } from '@/utils/playerMachine'
 import { PlayerViewControls, type usePlayerView } from './PlayerViewControls'
 
 interface Props {
+  onPtz?:()=>void
+  ptzOpen?:boolean
   paused: boolean
   isMuted: boolean
   togglePlay: () => void
@@ -23,6 +25,8 @@ export function LivePlayerToolbar({
   togglePlay,
   toggleMute,
   onArming,
+  onPtz,
+  ptzOpen,
   chain,
   selectedProtocol,
   onProtocol,
@@ -54,6 +58,7 @@ export function LivePlayerToolbar({
             {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
           </button>
           <span className="flex-1" />
+          {onPtz&&<button type="button" aria-label="摄像头云台" aria-expanded={!!ptzOpen} className={'flex min-h-11 items-center gap-1.5 rounded-base px-2.5 text-xs font-medium text-white hover:bg-white/10 '+(ptzOpen?'bg-blue-700':'')} onClick={e=>{e.stopPropagation();onPtz()}}><Move size={18} aria-hidden="true"/>云台</button>}
           {onArming&&<button type="button" className="flex h-10 items-center gap-1.5 rounded-base px-2.5 text-xs font-medium text-white hover:bg-white/10 disabled:opacity-40" disabled={!videoEl||!canConnect} title="编辑热区，并为热区或整个画面选用触发器" onClick={e=>{e.stopPropagation();if(videoEl)onArming(videoEl)}}><ShieldCheck size={18} aria-hidden="true"/>布防</button>}
           {chain.length > 1 && (
             <select

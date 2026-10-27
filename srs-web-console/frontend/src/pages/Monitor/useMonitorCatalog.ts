@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { channelService } from '@/api/channelService'
 import { aiChannelService } from '@/api/aiChannelService'
+import { request } from '@/api/httpClient'
+import type { GBBinding } from '@/pages/Channels/gbTypes'
 import type { ChannelWithStatus } from '@/types/channel'
 import type { AiChannel, AiStreamOption } from '@/types/aiChannel'
 import { buildAiOutputChannelIdMap, parseStreamPath } from '@/utils/channelMatching'
@@ -10,6 +12,7 @@ export function useMonitorCatalog() {
   const [channels, setChannels] = useState<ChannelWithStatus[]>([])
   const [ai, setAi] = useState<AiChannel[]>([])
   const [streams, setStreams] = useState<AiStreamOption[]>([])
+  const [gbBindings, setGbBindings] = useState<GBBinding[] | null>(null)
   const [sourceReady, setSourceReady] = useState(false)
   const [metadataSettled, setMetadataSettled] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -44,6 +47,7 @@ export function useMonitorCatalog() {
     startPoll('接入通道', () => channelService.list(), value => { setChannels(value); setSourceReady(true) })
     startPoll('AI 配置', () => aiChannelService.list(), setAi, () => setMetadataSettled(true))
     startPoll('直播流列表', () => aiChannelService.listStreams(), setStreams)
+    startPoll('接入来源', () => request<{ items: GBBinding[] }>('/gb28181/bindings'), value => setGbBindings(value.items))
     return () => { disposed = true; clearTimeout(grace); timers.forEach(clearTimeout) }
   }, [])
   const allChannels = useMemo(() => {
@@ -73,5 +77,5 @@ export function useMonitorCatalog() {
     }
     return result
   }, [allChannels, ai])
-  return { allChannels, outputIds, variants, ready: sourceReady && metadataSettled, error: Object.values(errors).filter(Boolean).join('；') }
+  return { allChannels, outputIds, variants, gbBindings, ready: sourceReady && metadataSettled, error: Object.values(errors).filter(Boolean).join('；') }
 }

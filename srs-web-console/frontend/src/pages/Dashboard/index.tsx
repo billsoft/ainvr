@@ -1,3 +1,4 @@
+import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
 import { StorageVolumes } from '@/components/StorageVolumes'
 import { useEffect, useState } from 'react'
 import { useSettingsStore } from '@/store/settings'
@@ -123,6 +124,7 @@ export default function DashboardPage(){
     return out
   }
   return <section className="space-y-5 text-slate-800" aria-label="运行与日志中心">
+    <PtzProtectionNotice/>
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div><h1 className="text-xl font-semibold">运行与日志中心</h1><p className="mt-1 text-sm text-slate-500">设备、服务与故障记录，集中查看。</p></div>
       <div className="flex items-center gap-2">

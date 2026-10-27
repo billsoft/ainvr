@@ -1,9 +1,10 @@
 import type {PoolClient} from 'pg';
+import {PtzStore,type PtzCameraDraft} from './ptzStore.js';
 import {randomUUID} from 'node:crypto';
 import type {PgConfigStore} from './pgStore.js';
 import {defaultGBSettings,gbSettingsSchema,gbDeviceSchema,type GBSettings} from './gbSettings.js';
 
-type GBChannelConfig={deviceId:string;channelId:string;inputId?:string;transport:string;enabled:boolean;config:{name:string;description:string;protocols:string[];primary:string}};
+type GBChannelConfig={deviceId:string;channelId:string;inputId?:string;transport:string;enabled:boolean;config:{name:string;description:string;protocols:string[];primary:string};ptz?:PtzCameraDraft};
 
 export class GBError extends Error {
   constructor(message:string,public statusCode=400){super(message);}
@@ -84,16 +85,16 @@ export class GB28181Store {
     });
   }
   async saveChannel(input:GBChannelConfig,expected:number,actor:string){
-    return this.mutate(expected,actor,'gb-channel-save',client=>this.writeChannel(client,input));
+    return this.mutate(expected,actor,'gb-channel-save',client=>this.writeChannel(client,input,actor));
   }
   async saveChannels(inputs:GBChannelConfig[],expected:number,actor:string){
     if(!inputs.length||inputs.length>100||new Set(inputs.map(i=>i.deviceId+':'+i.channelId)).size!==inputs.length)throw new GBError('批量接入目录无效');
     return this.mutate(expected,actor,'gb-channels-save',async client=>{
-      const items=[];for(const input of inputs)items.push(await this.writeChannel(client,input));
+      const items=[];for(const input of inputs)items.push(await this.writeChannel(client,input,actor));
       return {count:items.length,state:'pending_application'};
     });
   }
-  private async writeChannel(client:PoolClient,input:GBChannelConfig){
+  private async writeChannel(client:PoolClient,input:GBChannelConfig,actor:string){
       const known=await client.query('SELECT 1 FROM gb28181_catalog WHERE device_id=$1 AND channel_id=$2',[input.deviceId,input.channelId]);
       if(!known.rowCount)throw new GBError('请先获取并选择设备目录');
       const current=(await client.query('SELECT * FROM gb28181_bindings WHERE device_id=$1 AND channel_id=$2 FOR UPDATE',[input.deviceId,input.channelId])).rows[0];
@@ -105,6 +106,7 @@ export class GB28181Store {
       await client.query(`INSERT INTO gb28181_bindings(binding_id,device_id,channel_id,stream_name,enabled,transport,channel_config)
         VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(device_id,channel_id) DO UPDATE SET enabled=EXCLUDED.enabled,transport=EXCLUDED.transport,channel_config=EXCLUDED.channel_config`,
         [bindingId,input.deviceId,input.channelId,`gb_${bindingId.replaceAll('-','')}`,input.enabled,input.transport,input.config]);
+      if(input.ptz){const key=`gb28181:${input.deviceId}/${input.channelId}`;await new PtzStore(this.pg.pool).writeCamera(client,key,key,input.ptz,actor)}
       return {bindingId,state:'pending_application'};
   }
   async bind(device:string,channel:string,transport:string,enabled:boolean,expected:number,actor:string){

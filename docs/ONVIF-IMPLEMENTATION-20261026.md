@@ -77,9 +77,9 @@ H.264/H.265 视频仅复制；AAC复制；G.711 A-law/μ-law、G.726/G.726LE 转
 这是既有S100P AINVR基础安装上的协调增量发布包，不是通用Jetson旧安装器或新的整机出厂镜像。前置条件：既有Node24、Python虚拟环境/依赖、参数库、后端环境和SRS均就绪；准备Go工具链与固定FFmpeg构建。生产运行不需要Go、MediaMTX或Git子模块。
 
 1. `deploy-package/build-media-bridge.sh`：按固定源SHA构建带禁止RTSP重定向补丁的音频/复制FFmpeg。发布包附许可证、补丁、构建信息和相对校验值；分发二进制时保留对应源码获取/重建方式。
-2. `python3 deploy-package/build-onvif-release.py`：输出新 `out/onvif-release-<时间>`，隔离编译前后端、Go，打包媒体/共享Python/服务观测模块/安装器和许可证；不改线上dist。构建期间源码变化则拒绝完成。
-3. 首次迁移前，应在修改旧ingest源码前捕获 `ingest-service/main.py` 的tar与SHA-256；首次安装显式传 `--baseline-ingest <tar> --baseline-ingest-sha256 <main.py的SHA>`。已有 `70-onvif.conf` 的后续更新无需重复提供。禁止用已改写源码冒充旧版本。
-4. `sudo python3 deploy-package/deploy_onvif_release.py --apply out/onvif-release-<时间> --check-source`。开发工作区加 `--check-source`；部署已校验的独立候选包可省略该参数。要求安装根目录下out路径，必要时设置 `AINVR_INSTALL_ROOT`、`AINVR_NODE`。所有产物先验SHA；保留至少1GiB系统盘余量。
-5. 回滚：`sudo python3 deploy-package/deploy_onvif_release.py --rollback .Codex-trash/onvif-deploy-<时间>`。每个备份只回滚一次；恢复可执行文件、配置归属、原启用状态、不可变ingest及前后端。增量PG迁移/历史数据保留，不删除通道数据。
+2. 后端使用 Node >=22.19.0，先在 backend 目录执行 `npm ci` 安装锁定运行依赖（含 Undici HTTP 修复）；再执行 `python3 deploy-package/build-onvif-release.py`：输出新 `out/onvif-release-<时间>`，隔离编译前后端、Go，打包媒体/共享Python/服务观测模块/安装器和许可证；不改线上dist。构建期间源码变化则拒绝完成。
+3. 当前已部署 ONVIF/PTZ 的 S100P 使用 `python3 deploy-package/prepare-ptz-components.py --candidate out/<候选>` 补齐 AI、国标与告警组件，再执行 `deploy_ptz_release.py --check out/<候选>`。
+4. `python3 deploy-package/deploy_ptz_release.py --apply out/<候选>`。先校验来源、产物、配置指纹和已挂载 SSD，再备份与替换。每服务最多三份备份，禁止系统盘回退。
+5. 回滚：`python3 deploy-package/deploy_ptz_release.py --rollback /mnt/ainvr-ssd/ainvr-rollback/backend/<时间>`。以该目录的 deployment.json 验证全部组件，不删除增量迁移和历史数据。
 
-安装器位于版本库 `deploy-package/`，不依赖被Git忽略的测试目录。新Go服务运行并不等于已启用摄像头接入；全局开关保持原值。已有网页资源有24小时/64MiB保留上限，防止升级时正在打开的页面立刻缺失代码块。
+旧的 `.Codex-trash` 发布入口已经停用，不再作为有效操作步骤。这里的联合发布器用于已经安装国标、ONVIF和AI服务的板子，并非空白系统的首次安装器；缺少已安装组件会拒绝更新，不自动拼装不完整的生产环境。全局接入开关保持原值，不因服务安装成功而自动开启。

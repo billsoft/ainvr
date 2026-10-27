@@ -54,6 +54,9 @@ func SelectVersion(configured, header string) (Version, error) {
 }
 
 type CatalogItem struct {
+	Info struct {
+		PTZType string `xml:"PTZType" json:"ptzType,omitempty"`
+	} `xml:"Info" json:"info"`
 	ID           string `xml:"DeviceID" json:"id"`
 	Name         string `xml:"Name" json:"name"`
 	Manufacturer string `xml:"Manufacturer" json:"manufacturer"`
@@ -62,6 +65,11 @@ type CatalogItem struct {
 	Status       string `xml:"Status" json:"status"`
 }
 type BusinessMessage struct {
+	HasSumNum  bool `xml:"-"`
+	PresetList struct {
+		Count int         `xml:"Num,attr"`
+		Items []PTZPreset `xml:"Item"`
+	} `xml:"PresetList"`
 	XMLName      xml.Name
 	Command      string `xml:"CmdType"`
 	SN           string `xml:"SN"`
@@ -104,7 +112,9 @@ func ParseBusinessMessage(body []byte, maxItems int) (BusinessMessage, error) {
 	}
 	d := xmlDecoder(body)
 	depth, roots, textBytes := 0, 0, 0
+	presetCountPresent := false
 	rootFields := map[string]bool{}
+	var itemFields map[string]bool
 	for {
 		t, e := d.Token()
 		if e == io.EOF {
@@ -117,11 +127,30 @@ func ParseBusinessMessage(body []byte, maxItems int) (BusinessMessage, error) {
 		case xml.Directive:
 			return m, errors.New("XML directives forbidden")
 		case xml.StartElement:
+			if depth == 1 && x.Name.Local == "PresetList" {
+				for _, a := range x.Attr {
+					if a.Name.Local == "Num" {
+						presetCountPresent = true
+					}
+				}
+			}
+			if depth == 2 && x.Name.Local == "Item" {
+				itemFields = map[string]bool{}
+			}
+			if depth == 3 && itemFields != nil {
+				switch x.Name.Local {
+				case "DeviceID", "Name", "Manufacturer", "Model", "ParentID", "Status", "PresetID", "PresetName":
+					if itemFields[x.Name.Local] {
+						return m, errors.New("duplicate catalog item field")
+					}
+					itemFields[x.Name.Local] = true
+				}
+			}
 			if depth == 1 {
 				// These fields control routing, correlation and directory completion.
 				// encoding/xml otherwise silently lets a later scalar overwrite one.
 				switch x.Name.Local {
-				case "CmdType", "SN", "DeviceID", "Status", "Result", "Online", "SumNum", "DeviceList":
+				case "CmdType", "SN", "DeviceID", "Status", "Result", "Online", "SumNum", "DeviceList", "PresetList":
 					if rootFields[x.Name.Local] {
 						return m, errors.New("duplicate business field")
 					}
@@ -136,6 +165,9 @@ func ParseBusinessMessage(body []byte, maxItems int) (BusinessMessage, error) {
 				return m, errors.New("XML structure limit")
 			}
 		case xml.EndElement:
+			if depth == 3 && x.Name.Local == "Item" {
+				itemFields = nil
+			}
 			depth--
 		case xml.CharData:
 			textBytes += len(x)
@@ -164,13 +196,28 @@ func ParseBusinessMessage(body []byte, maxItems int) (BusinessMessage, error) {
 	if m.Command == "Catalog" && !rootFields["SumNum"] {
 		return m, errors.New("missing catalog total")
 	}
+	m.HasSumNum = rootFields["SumNum"]
+	if m.Command == "PresetQuery" {
+		if !rootFields["PresetList"] || !presetCountPresent || m.SumNum < 0 || m.SumNum > 255 || m.PresetList.Count != len(m.PresetList.Items) || len(m.PresetList.Items) > 255 {
+			return m, errors.New("invalid preset list")
+		}
+		return m, nil
+	}
 	if m.SumNum < 0 || m.SumNum > maxItems || len(m.List.Items) > maxItems || m.List.Count != len(m.List.Items) {
 		return m, errors.New("catalog size mismatch")
 	}
 	seen := map[string]bool{}
 	for _, item := range m.List.Items {
-		if !catalogIDPattern.MatchString(item.ID) || seen[item.ID] || len(item.Name) > 512 {
+		if !catalogIDPattern.MatchString(item.ID) || seen[item.ID] {
 			return m, errors.New("invalid catalog item")
+		}
+		// Every retained metadata string is bounded, not only the display name.
+		// Otherwise small batches can accumulate oversized model/manufacturer
+		// fields in the long-lived directory despite the wire-size limit.
+		for _, field := range []string{item.Name, item.Manufacturer, item.Model, item.ParentID, item.Status} {
+			if len(field) > 512 {
+				return m, errors.New("catalog field limit")
+			}
 		}
 		seen[item.ID] = true
 	}
@@ -193,7 +240,7 @@ func QueryXMLForProfile(command, id string, sn uint32, profile string) ([]byte, 
 		return nil, errors.New("invalid query identity")
 	}
 	switch command {
-	case "Catalog", "DeviceInfo", "DeviceStatus":
+	case "Catalog", "DeviceInfo", "DeviceStatus", "PresetQuery":
 	default:
 		return nil, errors.New("unsupported query")
 	}

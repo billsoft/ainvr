@@ -101,8 +101,9 @@ class Device:
                     protocol='RTP/AVP' if self.mode=='udp' else 'TCP/RTP/AVP'
                     setup='' if self.mode=='udp' else ('a=setup:active\r\na=connection:new\r\n' if self.mode=='tcp-passive' else 'a=setup:passive\r\na=connection:new\r\n')
                     if self.mode=='tcp-active' and self.media_listener is None:
-                        self.media_listener=socket.socket();self.media_listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);self.media_listener.bind((self.local_ip,33000));self.media_listener.listen(1);self.media_listener.settimeout(5)
-                    answer=f'v=0\r\no={self.channel} 0 0 IN IP4 {self.local_ip}\r\ns=Play\r\nc=IN IP4 {self.local_ip}\r\nt=0 0\r\nm=video 33000 {protocol} 96\r\na=sendonly\r\na=rtpmap:96 PS/90000\r\n{setup}y={ssrc:010d}\r\n'
+                        self.media_listener=socket.socket();self.media_listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);self.media_listener.bind((self.local_ip,0));self.media_listener.listen(1);self.media_listener.settimeout(5)
+                    answer_port=self.media_listener.getsockname()[1] if self.mode=='tcp-active' else 33000
+                    answer=f'v=0\r\no={self.channel} 0 0 IN IP4 {self.local_ip}\r\ns=Play\r\nc=IN IP4 {self.local_ip}\r\nt=0 0\r\nm=video {answer_port} {protocol} 96\r\na=sendonly\r\na=rtpmap:96 PS/90000\r\n{setup}y={ssrc:010d}\r\n'
                     self.answer(headers,answer)
                 elif lines[0].startswith('ACK ') and self.media and not self.media_thread:
                     self.media_stop.clear();self.media_thread=threading.Thread(target=self.send_media);self.media_thread.start()

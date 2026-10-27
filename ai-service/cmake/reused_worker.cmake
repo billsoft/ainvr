@@ -15,6 +15,12 @@ if(AINVR_S100P)
   target_link_libraries(ainvr_s100p_control_service PRIVATE ainvr_reused_worker)
   target_sources(ainvr_s100p_control_service PRIVATE src/utils/crash_handler.cpp)
   if(BUILD_TESTING)
+    add_executable(ptz_analytics_reset_test ../test/ai_port/ptz_analytics_reset_test.cpp)
+    target_link_libraries(ptz_analytics_reset_test PRIVATE ainvr_reused_worker GTest::gtest_main)
+    set_target_properties(ptz_analytics_reset_test PROPERTIES BUILD_RPATH /usr/hobot/lib)
+    add_test(NAME ptz_analytics_reset COMMAND ptz_analytics_reset_test)
+    set_tests_properties(ptz_analytics_reset PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
     # Explicitly built hardware probes require CLI resources and are not
     # automatic ctest jobs; they never change a production channel themselves.
     foreach(pair IN ITEMS

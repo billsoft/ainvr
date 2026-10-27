@@ -125,13 +125,15 @@ describe('ConfirmDialog', () => {
     await user.click(ok)
     expect(onConfirm).toHaveBeenCalledOnce()
   })
-  it('Esc 和点遮罩都不关闭，只有「取消」关闭', async () => {
+  it('点遮罩保留确认，Esc 与取消走同一关闭流程', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()
     render(<ConfirmDialog open title="x" onConfirm={() => {}} onClose={onClose} />)
-    await user.keyboard('{Escape}')
     await user.click(screen.getByRole('dialog'))
     expect(onClose).not.toHaveBeenCalled()
+    await user.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledOnce()
+    onClose.mockClear()
     await user.click(screen.getByRole('button', { name: '取消' }))
     expect(onClose).toHaveBeenCalledOnce()
   })

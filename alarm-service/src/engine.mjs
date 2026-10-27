@@ -71,6 +71,16 @@ export function evaluate(checkpoint,input,rules) {
     for(const [key,s] of Object.entries(cp.states)){if(s.traversal?.entry){const [id,,track]=JSON.parse(key);issues.push(`passage_input_gap:${id}:${track}`);}breakEvidence(s);if(timeGap)delete s.seen_since;}
   }
   cp.session=f.stream_session_id;cp.seq=f.seq;cp.pts=f.source_pts_ns;
+  // Physical camera movement invalidates all geometry on this processor. The
+  // epoch survives pause/resume and resets evidence even without intervening
+  // frames. Tracker IDs may survive, but cannot prove a crossing across views.
+  const viewEpoch=JSON.stringify([...new Set(rules.filter(r=>r.channel_id===f.channel_id&&r.view_epoch).map(r=>r.view_epoch))].sort());
+  if(viewEpoch!==(cp.ptz_view_epoch??'[]')){
+    for(const e of Object.values(cp.episodes))ended.push({episode_id:e.id,ended_at:f.captured_at,end_reason:'view_changed'});
+    cp.states={};cp.episodes={};cp.first_seen={};cp.detection_latches={};delete cp.intervals;
+    issues.push('view_changed');
+  }
+  cp.ptz_view_epoch=viewEpoch;
   const atCapture=createScheduleEvaluator(f.captured_at),periods=new Map(),eligible=new Map(),channelRules=[];
   for(const raw of rules){
     const r=preparedRule(raw);let period;
@@ -78,6 +88,7 @@ export function evaluate(checkpoint,input,rules) {
     periods.set(JSON.stringify([r.id,r.version]),period);
     if(r.channel_id===f.channel_id&&r.state==='enabled'&&r.alarm_enabled!==false)channelRules.push([r.id,r.version,period]);
     if(period===null||r.state!=='enabled'||r.channel_id!==f.channel_id)continue;
+    if(r.view_not_before&&Date.parse(f.captured_at)<Date.parse(r.view_not_before))continue;
     if(r.source_binding&&Date.parse(f.captured_at)<Date.parse(r.source_binding.not_before))continue;
     if(r.input_stream_id!==undefined&&r.input_stream_id!==f.input_stream_id){issues.push(`rule_input_mismatch:${r.id}`);continue;}
     if(r.geometry_revision!==f.source.geometry_revision||r.label_map_version!==f.model.label_map_version){issues.push(`rule_config_mismatch:${r.id}`);continue;}

@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import {PtzCameraFields,type CameraPtzDraft,type PtzSourceSelector} from './PtzCameraFields'
+import {toast} from '@/store/toast'
 import type {GBBinding} from './gbTypes'
 import {GBSourceFields,type GBSourceDraft} from './GBSourceFields'
 import {OnvifSourceFields} from './OnvifSourceFields'
@@ -6,6 +8,7 @@ import {onvifService,type OnvifBinding} from '@/api/onvifService'
 import {request} from '@/api/httpClient'
 import { ingestService, type IngestCapabilities } from '@/api/ingestService'
 import { Check, RefreshCw, X } from 'lucide-react'
+import {useDiscardConfirmation} from '@/components/modals/useDiscardConfirmation'
 import {
   DEFAULT_WIZARD_VALUE,
   fromChannel,
@@ -62,11 +65,13 @@ export function ChannelWizard({
   onGBSaved,
   onOnvifSaved,
 }: Props) {
+  const {requestDiscard,dialog:discardDialog}=useDiscardConfirmation(open)
   const [onvifMode,setOnvifMode]=useState(false)
   const [onvifDraft,setOnvifDraft]=useState<OnvifBinding|null>(null)
   const [onvifDirty,setOnvifDirty]=useState(false)
   const [onvifBusy,setOnvifBusy]=useState(false)
   const [saving,setSaving]=useState(false)
+  const [ptzDraft,setPtzDraft]=useState<Record<string,CameraPtzDraft>>({})
   const [gbDraft,setGbDraft]=useState<GBSourceDraft|null>(null)
   const [gbMode,setGbMode]=useState(false)
   const [gbBusy,setGbBusy]=useState(false)
@@ -88,6 +93,7 @@ export function ChannelWizard({
   useEffect(() => {
     if (open) {
       setSaving(false)
+      setPtzDraft({})
       setGbDraft(null)
       setGbBusy(false)
       setGbMode(!!gbBinding)
@@ -104,11 +110,12 @@ export function ChannelWizard({
   }, [open, mode, initial, gbBinding])
 
   const baseline=mode==='edit'&&initial?{...fromChannel(initial),...(gbBinding?.channel_config?{name:gbBinding.channel_config.name,description:gbBinding.channel_config.description,protocols:gbBinding.channel_config.protocols,primary:gbBinding.channel_config.primary}:{})}:DEFAULT_WIZARD_VALUE
-  const dirty=onvifMode!==!!initial?.onvif||onvifDirty||gbMode!==!!gbBinding||gbDirty||JSON.stringify(value)!==JSON.stringify(baseline)
-  function close(){if(submitting||gbBusy||onvifBusy||saving)return;if(dirty&&!window.confirm('放弃尚未保存的通道修改？已保存的设备信息会保留。'))return;onClose()}
+  const dirty=Object.keys(ptzDraft).length>0||onvifMode!==!!initial?.onvif||onvifDirty||gbMode!==!!gbBinding||gbDirty||JSON.stringify(value)!==JSON.stringify(baseline)
+  function close(){if(submitting||gbBusy||onvifBusy||saving)return;requestDiscard(dirty,'尚未保存的通道修改将被放弃；已保存的设备信息会保留。',onClose)}
   useEffect(()=>{if(!open)return;const previous=document.activeElement as HTMLElement|null;return()=>previous?.focus()},[open])
   if (!open) return null
 
+  const ptzSources:PtzSourceSelector[]=onvifMode&&onvifDraft?[{protocol:'onvif',deviceId:onvifDraft.deviceId,videoSource:onvifDraft.videoSource}]:gbMode&&gbDraft?.deviceId?(gbDraft.batch?gbDraft.channels.map(c=>({protocol:'gb28181' as const,deviceId:gbDraft.deviceId,channelId:c.id})):gbDraft.channelId?[{protocol:'gb28181',deviceId:gbDraft.deviceId,channelId:gbDraft.channelId}]:[]):[]
   const set = <K extends keyof WizardFormValue>(key: K, v: WizardFormValue[K]) =>
     setValue((prev) => ({ ...prev, [key]: v }))
 
@@ -142,7 +149,7 @@ export function ChannelWizard({
     if(onvifMode){
       const error=(!onvifDraft?'请读取设备并选择画面和码流':null)||validateStep3(value)||validateStep1({...value,sourceType:'push'}).name
       setStep3Error(error??null);if(error||!onvifDraft)return
-      setSaving(true);try{await onvifService.saveChannel({binding:onvifDraft,...(mode==='edit'&&initial?{inputId:initial.id,expectedGeneration:initial.inputGeneration}:{}),config:{name:value.name.trim(),remark:value.description.trim(),downstreamProtocols:value.protocols,primaryProtocol:value.primary,inputEnabled:value.inputEnabled??true}});onOnvifSaved?.()}catch(e){setStep3Error((e as Error).message)}finally{setSaving(false)}
+      setSaving(true);try{const result=await onvifService.saveChannel({binding:onvifDraft,...(ptzDraft[`onvif:${onvifDraft.deviceId}/${onvifDraft.videoSource}`]?{ptz:ptzDraft[`onvif:${onvifDraft.deviceId}/${onvifDraft.videoSource}`]}:{}),...(mode==='edit'&&initial?{inputId:initial.id,expectedGeneration:initial.inputGeneration}:{}),config:{name:value.name.trim(),remark:value.description.trim(),downstreamProtocols:value.protocols,primaryProtocol:value.primary,inputEnabled:value.inputEnabled??true}});if(result.ptzApplication?.state==='failed')toast.error('通道已保存，但云台偏好未确认保存，请重新编辑此通道核对。');onOnvifSaved?.()}catch(e){setStep3Error((e as Error).message)}finally{setSaving(false)}
       return
     }
     if(gbMode){
@@ -152,10 +159,10 @@ export function ChannelWizard({
       try{
         const config={name:value.name.trim(),description:value.description.trim(),protocols:value.protocols,primary:value.primary}
         if(gbDraft.batch){
-          const channels=gbDraft.channels.map(c=>({deviceId:gbDraft.deviceId,channelId:c.id,transport:gbDraft.transport,enabled:gbDraft.enabled,config:{...config,name:config.name+' · '+c.name}}))
+          const channels=gbDraft.channels.map(c=>({...((ptzDraft[`gb28181:${gbDraft.deviceId}/${c.id}`])?{ptz:ptzDraft[`gb28181:${gbDraft.deviceId}/${c.id}`]}:{}),deviceId:gbDraft.deviceId,channelId:c.id,transport:gbDraft.transport,enabled:gbDraft.enabled,config:{...config,name:config.name+' · '+c.name}}))
           if(channels.some(c=>c.config.name.length>50)){setStep3Error('批量通道名称超过 50 字，请缩短基本信息中的名称');return}
           await request('/gb28181/channel-configs',{method:'POST',body:JSON.stringify({expectedRevision:gbDraft.revision,channels})})
-        }else await request('/gb28181/channel-config',{method:'POST',body:JSON.stringify({expectedRevision:gbDraft.revision,deviceId:gbDraft.deviceId,channelId:gbDraft.channelId,...(gbBinding?{inputId:gbBinding.input_id}:{}),transport:gbDraft.transport,enabled:gbDraft.enabled,config})})
+        }else await request('/gb28181/channel-config',{method:'POST',body:JSON.stringify({...(ptzDraft[`gb28181:${gbDraft.deviceId}/${gbDraft.channelId}`]?{ptz:ptzDraft[`gb28181:${gbDraft.deviceId}/${gbDraft.channelId}`]}:{}),expectedRevision:gbDraft.revision,deviceId:gbDraft.deviceId,channelId:gbDraft.channelId,...(gbBinding?{inputId:gbBinding.input_id}:{}),transport:gbDraft.transport,enabled:gbDraft.enabled,config})})
         onGBSaved?.()
       }catch(e){setStep3Error((e as Error).message)}finally{setSaving(false)}
       return
@@ -186,7 +193,7 @@ export function ChannelWizard({
     })
   }
 
-  return (
+  return (<>
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-3 sm:p-6"
       onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close()}if(e.key==='Tab'){const controls=Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]')).filter(el=>el.getClientRects().length>0);const first=controls[0],last=controls[controls.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}}}}
@@ -284,7 +291,7 @@ export function ChannelWizard({
                       aria-pressed={!gbMode&&!onvifMode&&value.sourceType===v}
                       type="button"
                       disabled={!!gbBinding || !!initial?.onvif || (v === 'rtsp' && !capabilities?.rtsp.enabled)}
-                      onClick={() => {if((gbDirty||onvifDirty)&&!window.confirm('放弃设备接入参数草稿并更换协议？'))return;setOnvifMode(false);setOnvifDirty(false);setOnvifDraft(null);setGbMode(false);setGbDirty(false);setGbDraft(null);set('sourceType', v)}}
+                      onClick={() => requestDiscard(gbDirty||onvifDirty,'更换协议将放弃设备接入参数草稿。',()=>{setOnvifMode(false);setOnvifDirty(false);setOnvifDraft(null);setGbMode(false);setGbDirty(false);setGbDraft(null);set('sourceType', v)})}
                       className={[
                         'flex-1 rounded-base border px-3 py-2.5 text-sm transition-colors',
                         !gbMode && !onvifMode && value.sourceType === v
@@ -295,8 +302,8 @@ export function ChannelWizard({
                       {label}
                     </button>
                   ))}
-                  <button type="button" disabled={mode==='edit'&&!initial?.onvif} onClick={()=>{if(gbDirty&&!window.confirm('放弃国标参数草稿？'))return;setOnvifMode(true);setGbMode(false);setGbDirty(false)}} aria-pressed={onvifMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${onvifMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>ONVIF 摄像头 / NVR</button>
-                  <button type="button" disabled={mode==='edit'&&!gbBinding} onClick={()=>{if(onvifDirty&&!window.confirm('放弃 ONVIF 参数草稿？'))return;setOnvifMode(false);setOnvifDirty(false);setGbMode(true)}} aria-pressed={gbMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${gbMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>GB/T 28181 摄像头 / NVR</button>
+                  <button type="button" disabled={mode==='edit'&&!initial?.onvif} onClick={()=>requestDiscard(gbDirty,'更换协议将放弃国标参数草稿。',()=>{setOnvifMode(true);setGbMode(false);setGbDirty(false)})} aria-pressed={onvifMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${onvifMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>ONVIF 摄像头 / NVR</button>
+                  <button type="button" disabled={mode==='edit'&&!gbBinding} onClick={()=>requestDiscard(onvifDirty,'更换协议将放弃 ONVIF 参数草稿。',()=>{setOnvifMode(false);setOnvifDirty(false);setGbMode(true)})} aria-pressed={gbMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${gbMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>GB/T 28181 摄像头 / NVR</button>
                 </div>
                 {mode==='edit'&&!gbBinding&&<p className="mt-1 text-xs text-ink-faint">国标设备请通过新建通道接入，现有视频源的录像和 AI 关联会保留。</p>}
                 {gbBinding&&<p className="mt-1 text-sm text-primary">来源：GB/T 28181；内部发布地址由网关管理。</p>}
@@ -360,6 +367,7 @@ export function ChannelWizard({
 
           {gbMode&&<div hidden={step!==1}><GBSourceFields binding={gbBinding} onDraft={setGbDraft} onDirty={setGbDirty} onBusy={setGbBusy}/>{step===1&&step3Error&&<p role="alert" className="mt-2 text-sm text-danger">{step3Error}</p>}</div>}
           {onvifMode&&<div hidden={step!==1}><OnvifSourceFields initial={initial?.onvif} onDraft={setOnvifDraft} onDirty={setOnvifDirty} onBusy={setOnvifBusy}/><label className="mt-4 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={value.inputEnabled??true} onChange={e=>set('inputEnabled',e.target.checked)}/>启用此输入通道</label>{step===1&&step3Error&&<p role="alert" className="mt-2 text-sm text-danger">{step3Error}</p>}</div>}
+          {(onvifMode||gbMode)&&<div hidden={step!==1}><PtzCameraFields sources={ptzSources} onDraft={setPtzDraft}/></div>}
           {step === 1 && !gbMode && !onvifMode && (
             <div className="flex flex-col gap-4">
               <div>
@@ -511,5 +519,7 @@ export function ChannelWizard({
         </div>
       </div>
     </div>
+    {discardDialog}
+    </>
   )
 }

@@ -125,6 +125,7 @@ export const onvifService = {
       interface: networkInterface,
     }),
   saveChannel: (body: {
+    ptz?: import('./ptzService').CameraPtzDraft
     binding: OnvifBinding
     inputId?: string
     expectedGeneration?: string
@@ -135,5 +136,5 @@ export const onvifService = {
       primaryProtocol: string
       inputEnabled: boolean
     }
-  }) => call<{ id: string }>('/channel-config', body),
+  }) => call<{ id: string;ptzApplication?:{state:'applied'|'failed'} }>('/channel-config', body),
 }

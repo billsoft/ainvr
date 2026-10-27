@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import {PtzGlobalSettings} from './PtzGlobalSettings'
 import { Link } from 'react-router-dom'
 import { onvifService, type OnvifSettingsResponse } from '@/api/onvifService'
 import { networkService, type NetworkInterface } from '@/api/networkService'
@@ -108,6 +109,7 @@ export function OnvifConfigForm() {
   const applied = data && status.appliedRevision === data.revision
   const names = [...new Set([...nics.map((n) => n.name), ...(data?.settings.interfaces ?? [])])]
   return (
+    <>
     <section
       className="ui-panel space-y-5 p-5"
       data-unsaved={dirty}
@@ -254,5 +256,7 @@ export function OnvifConfigForm() {
         </fieldset>
       )}
     </section>
+    <PtzGlobalSettings/>
+    </>
   )
 }

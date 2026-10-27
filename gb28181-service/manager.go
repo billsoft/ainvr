@@ -119,6 +119,9 @@ func (m *Manager) Close() {
 }
 func (m *Manager) Handler(lifetime context.Context, token string) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/ptz/", func(w http.ResponseWriter, r *http.Request) {
+		m.ptzHTTP(w, r)
+	})
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(m.Status()) })
 	mux.HandleFunc("POST /v1/config", func(w http.ResponseWriter, r *http.Request) {
 		var config RuntimeConfig

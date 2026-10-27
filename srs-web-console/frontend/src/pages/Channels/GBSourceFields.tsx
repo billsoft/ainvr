@@ -1,6 +1,7 @@
 import {useEffect,useState} from 'react'
 import {request} from '@/api/httpClient'
 import type {GBBinding} from './gbTypes'
+import {useDiscardConfirmation} from '@/components/modals/useDiscardConfirmation'
 
 type Device={id:string;name:string;version:string;enabled:boolean;mediaIPs?:string[]}
 type Item={id:string;document:{name?:string};available:boolean;input_id?:string;enabled?:boolean;transport?:string}
@@ -9,9 +10,16 @@ export type GBSourceDraft={revision:number;deviceId:string;channelId:string;tran
 const field='mt-1 block min-h-11 w-full rounded-base border border-line bg-surface px-3 text-sm'
 const button='min-h-11 rounded-base border border-line px-3 text-sm hover:border-primary'
 const emptyDevice={id:'',name:'',version:'auto',enabled:true,password:'',mediaIPs:''}
+const deviceErrors:Record<string,string>={
+ catalog_capacity_exceeded:'设备目录总量达到接入服务上限，原目录已保留。请检查设备目录规模后重新刷新。',
+ device_reported_error:'设备已注册，但报告自身故障，请检查摄像头或 NVR 状态。',
+ registration_conflict:'检测到相同编号的设备注册冲突，请核对设备身份。',
+ device_query_failed:'设备未能完成信息查询，请检查设备状态后重试。',
+}
 
 /** Device registration is a prerequisite; video binding is only saved by the wizard. */
 export function GBSourceFields({binding,onDraft,onDirty,onBusy}:{binding?:GBBinding;onDraft:(draft:GBSourceDraft)=>void;onDirty:(dirty:boolean)=>void;onBusy:(busy:boolean)=>void}){
+ const {requestDiscard,dialog:discardDialog}=useDiscardConfirmation()
  const [editRevision,setEditRevision]=useState(binding?.revision)
  const [batch,setBatch]=useState(false),[selectedChannels,setSelectedChannels]=useState<string[]>([])
  const [selected,setSelected]=useState(binding?.device_id??'')
@@ -21,7 +29,7 @@ export function GBSourceFields({binding,onDraft,onDirty,onBusy}:{binding?:GBBind
  const [ready,setReady]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[message,setMessage]=useState('')
  const [refresh,setRefresh]=useState(0),[dirty,setDirty]=useState(false),[query,setQuery]=useState('')
  const [form,setForm]=useState<'new'|'edit'|null>(null),[device,setDevice]=useState({...emptyDevice}),[deviceDirty,setDeviceDirty]=useState(false)
- const [runtime,setRuntime]=useState<{state?:string;devices?:{id:string;registered:boolean;version?:{profile:string;confirmed:boolean;peer?:string}}[]}>({})
+ const [runtime,setRuntime]=useState<{state?:string;devices?:{id:string;registered:boolean;lastError?:string;deviceOnline?:string;deviceHealth?:string;version?:{profile:string;confirmed:boolean;peer?:string}}[]}>({})
  useEffect(()=>{onDraft({revision:editRevision===undefined?options.revision:Number(editRevision),deviceId:selected,channelId:channel,transport,enabled,ready,registrationDirty:deviceDirty,batch,channels:selectedChannels.map(id=>({id,name:options.items.find(i=>i.id===id)?.document.name||id}))})},[editRevision,options.revision,selected,channel,transport,enabled,ready,deviceDirty,batch,selectedChannels,options.items,onDraft])
  useEffect(()=>{onDirty(dirty||deviceDirty)},[dirty,deviceDirty,onDirty])
  useEffect(()=>{
@@ -40,12 +48,13 @@ export function GBSourceFields({binding,onDraft,onDirty,onBusy}:{binding?:GBBind
   }}catch{/* The configuration remains editable when the runtime is unavailable. */}
   if(!cancelled)timer=setTimeout(poll,5000)
  };void poll();return()=>{cancelled=true;clearTimeout(timer)}},[selected])
- const closeDevice=()=>{if(busy)return;if(deviceDirty&&!window.confirm('放弃尚未保存的设备注册修改？'))return;setForm(null);setDeviceDirty(false)}
+ const closeDevice=()=>{if(busy)return;requestDiscard(deviceDirty,'尚未保存的设备注册修改将被放弃，已保存的设备不会改变。',()=>{setForm(null);setDeviceDirty(false)})}
  const openDevice=(kind:'new'|'edit')=>{
-  if(deviceDirty&&!window.confirm('放弃尚未保存的设备注册修改？'))return
-  const existing=options.devices.find(d=>d.id===selected)
-  setDevice(kind==='edit'&&existing?{...emptyDevice,...existing,password:'',mediaIPs:(existing.mediaIPs??[]).join(', ')}:{...emptyDevice})
-  setDeviceDirty(false);setForm(kind)
+   requestDiscard(deviceDirty,'打开另一份注册表单将放弃尚未保存的设备修改。',()=>{
+    const existing=options.devices.find(d=>d.id===selected)
+    setDevice(kind==='edit'&&existing?{...emptyDevice,...existing,password:'',mediaIPs:(existing.mediaIPs??[]).join(', ')}:{...emptyDevice})
+    setDeviceDirty(false);setForm(kind)
+   })
  }
  const saveDevice=async()=>{
   if(!device.name.trim()||!/^\d{20}$/.test(device.id)||((form==='new'||device.password)&&device.password.length<8)){setError('请填写设备名称、20 位国标编号及至少 8 位注册密码');return}
@@ -59,7 +68,7 @@ export function GBSourceFields({binding,onDraft,onDirty,onBusy}:{binding?:GBBind
    if(selected!==device.id)setSelected(device.id)
   }catch(e){setError((e as Error).message)}finally{setBusy(false);onBusy(false)}
  }
- const chooseDevice=(id:string)=>{if((dirty||deviceDirty)&&!window.confirm('更换设备将放弃本页尚未保存的接入参数，继续？'))return;setForm(null);setDeviceDirty(false);setSelected(id);setQuery('')}
+ const chooseDevice=(id:string)=>requestDiscard(dirty||deviceDirty,'更换设备将放弃本页尚未保存的接入参数。',()=>{setForm(null);setDeviceDirty(false);setSelected(id);setQuery('')})
  return <div className="space-y-4">
   <p className="text-sm text-ink-subtle">此处配置当前摄像头／NVR。平台 SIP、信令和媒体端口在 <a className="text-primary" href="/config-center?category=gb28181" target="_blank" rel="noopener noreferrer">系统配置 · 国标接入</a> 统一设置。</p>
   {error&&<p role="alert" className="rounded-base bg-danger/5 p-3 text-sm text-danger">{error}</p>}
@@ -67,7 +76,7 @@ export function GBSourceFields({binding,onDraft,onDirty,onBusy}:{binding?:GBBind
   {ready&&!options.devices.length&&<p className="rounded-base bg-primary-50 p-3 text-sm">尚未登记国标设备。请先登记摄像头／NVR，再在设备端填写平台信息；注册成功后即可选择视频目录。</p>}
   <fieldset disabled={busy} className="space-y-4">
    <label className="block text-sm font-medium">国标设备<select aria-label="国标设备" className={field} disabled={!!binding||!ready} value={selected} onChange={e=>chooseDevice(e.target.value)}><option value="">请选择设备</option>{options.devices.map(d=><option key={d.id} value={d.id}>{d.name} · {d.id}</option>)}</select></label>
-   <div className="flex flex-wrap gap-2">{!binding&&<button type="button" className={button} disabled={!ready} onClick={()=>openDevice('new')}>登记新设备</button>}{selected&&<button type="button" className={button} onClick={()=>openDevice('edit')}>编辑设备注册信息</button>}<button type="button" className={button} onClick={()=>{if(binding){setError('为同时刷新名称、备注和接入参数，请关闭此向导后重新点击通道编辑。');return}if((dirty||deviceDirty)&&!window.confirm('重新读取将放弃本页接入参数草稿，继续？'))return;setForm(null);setDeviceDirty(false);setRefresh(n=>n+1)}}>重新读取配置</button></div>
+    <div className="flex flex-wrap gap-2">{!binding&&<button type="button" className={button} disabled={!ready} onClick={()=>openDevice('new')}>登记新设备</button>}{selected&&<button type="button" className={button} onClick={()=>openDevice('edit')}>编辑设备注册信息</button>}<button type="button" className={button} onClick={()=>{if(binding){setError('为同时刷新名称、备注和接入参数，请关闭此向导后重新点击通道编辑。');return}requestDiscard(dirty||deviceDirty,'重新读取将放弃本页接入参数草稿。',()=>{setForm(null);setDeviceDirty(false);setRefresh(n=>n+1)})}}>重新读取配置</button></div>
    {form&&<section aria-label="设备注册信息" className="space-y-3 rounded-base border border-line bg-surface-page p-3" onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();closeDevice()}}}>
     <div className="flex items-center justify-between"><h4 className="font-medium">{form==='new'?'登记新设备':'编辑设备注册信息'}</h4><button type="button" aria-label="关闭设备注册信息" className="min-h-11 min-w-11" onClick={closeDevice}>×</button></div>
     <p className="text-xs text-ink-subtle">设备注册信息须先保存，设备才能注册并提供视频目录。NVR 下多个视频通道共用此注册身份；修改将影响该设备的所有视频通道。</p>
@@ -80,6 +89,8 @@ export function GBSourceFields({binding,onDraft,onDirty,onBusy}:{binding?:GBBind
    {selected&&<>
     <p className="text-xs text-slate-500">自动模式依据设备版本声明选择兼容配置；未声明时按 2016 兼容接入。手动指定用于兼容排查，不代表通过完整标准认证。</p>
     {runtime.devices?.filter(d=>d.id===selected && d.registered && d.version).map(d=><p key={d.id} className="text-sm text-slate-600">当前兼容配置：{d.version!.profile} · {d.version!.peer ? `设备声明：${d.version!.peer}` : '设备版本未确认'}</p>)}
+    {runtime.devices?.filter(d=>d.id===selected && d.lastError).map(d=><p key={d.id} role="alert" className="rounded-base bg-warning/5 p-3 text-sm text-warning-700">{d.lastError==='device_reported_error'&&d.deviceHealth==='ERROR'?'设备自检报告异常；注册连接仍在，请检查摄像头或 NVR。':deviceErrors[d.lastError!]??'设备状态异常，请查看国标服务日志。'}</p>)}
+    {runtime.devices?.filter(d=>d.id===selected && d.deviceOnline==='OFFLINE').map(d=><p key={d.id} role="status" className="text-sm text-warning-700">设备查询结果报告离线；媒体状态仍以实际收到的视频为准。</p>)}
     <div className="flex items-center justify-between gap-2 text-sm"><span>设备状态：{runtime.devices?.find(d=>d.id===selected)?.registered?'已注册':runtime.state==='disabled'?'国标服务已停用':'等待注册'}</span><button type="button" className={button} onClick={async()=>{setError('');try{await request(`/gb28181/devices/${selected}/catalog-refresh`,{method:'POST',body:'{}'});setMessage('目录请求已发送，列表会自动更新。')}catch(e){setError((e as Error).message)}}}>刷新设备目录</button></div>
     {!binding&&<label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={batch} onChange={e=>{setBatch(e.target.checked);setSelectedChannels([]);setChannel('');setDirty(true)}}/>批量接入 NVR 视频通道</label>}
     {batch&&<p className="text-xs text-ink-subtle">已选 {selectedChannels.length} 路。名称采用“基本信息中的名称 · 目录名称”；共用备注、传输和播放设置，最后统一保存。容量不足时整批不保存。</p>}
@@ -89,5 +100,6 @@ export function GBSourceFields({binding,onDraft,onDirty,onBusy}:{binding?:GBBind
     <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={e=>{setEnabled(e.target.checked);setDirty(true)}}/>启用此视频通道（停用后录像和 AI 等待视频源）</label>
    </>}
   </fieldset>
+  {discardDialog}
  </div>
 }

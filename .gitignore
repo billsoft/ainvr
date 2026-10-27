@@ -78,3 +78,6 @@ deploy/s100p/rollback-ai-*/
 
 # Generated hardware recording evidence helper
 /deploy/s100p/bin/ainvr_recording_frame
+
+# Generated browser acceptance dependencies/cache, never product source
+/test/ptz/node_modules/

@@ -1,6 +1,7 @@
 // Run only during an authorized deployment. Never print the service secrets.
 import {randomBytes} from 'node:crypto';
-import {readFile,writeFile,mkdir,access} from 'node:fs/promises';
+import {readFile,writeFile,mkdir,access,stat,chown,rename,unlink} from 'node:fs/promises';
+import {sourceMediaConfig} from './media-config.mjs';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
@@ -24,10 +25,19 @@ try{
  if(!installed)await writeFile(bootstrap,JSON.stringify({listen:'127.0.0.1:8096',token})+'\n',{mode:0o600,flag:'wx'});
  const mediaPath='/etc/ainvr/gb28181-media.ini';
  let mediaExists=true;try{await access(mediaPath);}catch{mediaExists=false;}
- if(mediaExists){const installedMedia=await readFile(mediaPath,'utf8');if(!installedMedia.split(/\r?\n/).includes(`secret=${media}`))throw new Error('Existing media credential differs; explicit credential rotation required');}
+ if(mediaExists){
+  const installedMedia=await readFile(mediaPath,'utf8');
+  if(!installedMedia.split(/\r?\n/).includes(`secret=${media}`))throw new Error('Existing media credential differs; explicit credential rotation required');
+  const updated=sourceMediaConfig(installedMedia);
+  if(updated!==installedMedia){
+   const info=await stat(mediaPath),temporary=mediaPath+'.audio-policy-'+process.pid;
+   try{await writeFile(temporary,updated,{mode:0o600,flag:'wx'});await chown(temporary,info.uid,info.gid);await rename(temporary,mediaPath);}
+   finally{await unlink(temporary).catch(e=>{if(e.code!=='ENOENT')throw e;});}
+  }
+ }
  if(!mediaExists){
   const content=`[api]\nsecret=${media}\n[general]\nlisten_ip=127.0.0.1\n[http]\nport=8097\nsslport=0\n[rtsp]\nport=8556\nsslport=0\n[rtmp]\nport=0\nsslport=0\n[rtp_proxy]\nport=0\n[srt]\nport=0\n[rtc]\nport=0\ntcpPort=0\nenableTurn=0\n[onvif]\nport=0\n[shell]\nport=0\n[hook]\nenable=0\n[protocol]\nenable_mp4=0\nenable_hls=0\nenable_hls_fmp4=0\nenable_rtmp=1\nenable_rtsp=1\n`;
-  await writeFile(mediaPath,content,{mode:0o600,flag:'wx'});
+  await writeFile(mediaPath,sourceMediaConfig(content),{mode:0o600,flag:'wx'});
  }
  console.log('Gateway credentials provisioned; platform enablement unchanged.');
 }finally{await pg.pool.end();}

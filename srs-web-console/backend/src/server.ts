@@ -1,4 +1,5 @@
 // 启动入口
+import './services/httpRuntime.js';
 import { buildApp } from './app.js';
 
 const PORT = Number(process.env.PORT) || 3001;

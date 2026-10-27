@@ -12,6 +12,7 @@ const media1NS = "http://www.onvif.org/ver10/media/wsdl"
 const media2NS = "http://www.onvif.org/ver20/media/wsdl"
 const schemaNS = "http://www.onvif.org/ver10/schema"
 const soapNS = "http://www.w3.org/2003/05/soap-envelope"
+const ptzNS = "http://www.onvif.org/ver20/ptz/wsdl"
 
 type node struct {
 	Namespaces map[string]string
@@ -97,7 +98,7 @@ func parseXML(data []byte) (*node, error) {
 func (n *node) child(name string) *node {
 	if n != nil {
 		for _, c := range n.Children {
-			if c.Name.Local == name && (c.Name.Space == schemaNS || c.Name.Space == deviceNS || c.Name.Space == media1NS || c.Name.Space == media2NS || c.Name.Space == soapNS) {
+			if c.Name.Local == name && (c.Name.Space == schemaNS || c.Name.Space == deviceNS || c.Name.Space == media1NS || c.Name.Space == media2NS || c.Name.Space == soapNS || c.Name.Space == ptzNS) {
 				return c
 			}
 		}

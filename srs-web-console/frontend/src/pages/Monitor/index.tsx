@@ -1,5 +1,6 @@
+import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, ChevronLeft, ChevronRight, GripVertical, History, Maximize2, X } from 'lucide-react'
 import { VideoPlayer } from '@/components/player/VideoPlayer'
 import { Toaster } from '@/components/ui/Toaster'
@@ -8,16 +9,32 @@ import { useMonitorStore } from '@/store/monitor'
 import { useSettingsStore } from '@/store/settings'
 import { LAYOUT_CAPACITY, MONITOR_LAYOUTS, gridClassFor } from '@/utils/monitorLayout'
 import { useMonitorCatalog } from './useMonitorCatalog'
+import {usePtzCatalog} from './usePtzCatalog'
+import {PtzPanel} from '@/components/player/PtzPanel'
 import { isH265 } from '@/utils/codec'
 import {ArmingLauncher} from '@/pages/AlarmCenter/ArmingLauncher'
 import type {ChannelWithStatus} from '@/types/channel'
+import { buildMonitorSources, type MonitorSource } from '@/utils/monitorSource'
 
 const button = 'rounded-base border border-line bg-surface px-3 py-2 text-xs text-ink-subtle hover:bg-primary-50 disabled:opacity-40'
 
+function SourceLabel({ value }: { value?: MonitorSource }) {
+  if (!value) return null
+  return <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-4 text-slate-300" title={value.detail} aria-label={value.detail}>
+    <span className="shrink-0 rounded bg-slate-800 px-1 font-medium text-slate-200">{value.protocol}</span>
+    <span className="truncate">{value.text}</span>
+  </div>
+}
+
 export default function MonitorPage() {
   const navigate = useNavigate()
+  const [params]=useSearchParams()
+  const requestedPtz=params.get('ptz'),handledPtz=useRef<string|null>(null)
   const catalogue = useMonitorCatalog()
-  const { allChannels, outputIds, variants, ready, error } = catalogue
+  const ptzCandidates=usePtzCatalog()
+  const [ptz,setPtz]=useState<{slot:string;channel:string}|null>(null)
+  const { allChannels, outputIds, variants, gbBindings, ready, error } = catalogue
+  const sourceInfo = useMemo(() => buildMonitorSources(allChannels, outputIds, variants, gbBindings), [allChannels, outputIds, variants, gbBindings])
   const state = useMonitorStore()
   const { layout, slots, page, hardLimit, focusedChannelId } = state
   const { settings, fetchSettings } = useSettingsStore()
@@ -60,6 +77,13 @@ export default function MonitorPage() {
     const s = resolved(id)?.status
     return !!s && isH265(s.videoCodec) && (s.videoWidth ?? 0) * (s.videoHeight ?? 0) >= 3840 * 1920
   }).length
+  useEffect(()=>{
+    if(!ready||!requestedPtz||handledPtz.current===requestedPtz||!byId.has(requestedPtz))return
+    handledPtz.current=requestedPtz
+    state.enterFocus(requestedPtz)
+    const channel=Object.hasOwn(outputs,requestedPtz)?outputs[requestedPtz]!:requestedPtz
+    setPtz({slot:requestedPtz,channel})
+  },[ready,requestedPtz,byId,outputs,state.enterFocus])
   const focus = focusedChannelId ? resolved(focusedChannelId) : undefined
   const used = slots.filter(Boolean).length
   const filtered = allChannels.filter(c => `${c.name} ${c.upstream.app}/${c.upstream.stream}`.toLowerCase().includes(search.toLowerCase()))
@@ -78,13 +102,14 @@ export default function MonitorPage() {
   function player(id: string) {
     const c = resolved(id)
     if (!c) return <div className="p-4 text-center text-sm text-slate-300">通道暂不可用，位置已保留</div>
-    if (!c.status.online) return <div className="p-4 text-center text-sm text-slate-300">{c.name} · 离线</div>
+    if (!c.status.online) return <div className="flex h-full min-h-0 flex-col"><div className="flex flex-1 items-center justify-center gap-3 p-4 text-center text-sm text-slate-300">{c.name} · 离线{ptzCandidates.has(c.id)&&<button className={button} onClick={()=>setPtz(p=>p?.slot===id&&p.channel===c.id?null:{slot:id,channel:c.id})}>云台状态</button>}</div>{ptz?.slot===id&&ptz.channel===c.id&&<PtzPanel channelId={c.id} onClose={()=>setPtz(null)}/>}</div>
     if (!settings) return <div className="p-4 text-center text-sm text-slate-300">正在读取监看上限，请稍候</div>
     const processorId=outputIds.get(`${c.upstream.app}/${c.upstream.stream}`)
     const parents=processorId?allChannels.filter(source=>variants.get(source.id)?.some(output=>output.id===c.id)):[]
     const original=parents.length===1?parents[0]:undefined
     const zoneSource=processorId&&original&&original.registered!==false?{id:original.id,processorId,updatedAt:original.updatedAt,createdAt:original.createdAt,inputGeneration:original.inputGeneration}:undefined
     return <VideoPlayer key={c.id} title="" protocols={c.downstream.protocols} primary={c.downstream.primary}
+      ptz={ptzCandidates.has(c.id)?{channelId:c.id,open:ptz?.slot===id&&ptz.channel===c.id,onToggle:()=>setPtz(p=>p?.slot===id&&p.channel===c.id?null:{slot:id,channel:c.id})}:undefined}
       savedZoneSource={zoneSource} compactZones={focusedChannelId!==id}
       onArming={zoneSource&&original&&processorId?video=>setArming({channel:original,processorId,outputName:c.name,video}):undefined}
       stream={{ host: window.location.hostname, app: c.upstream.app, stream: c.upstream.stream }}
@@ -125,6 +150,7 @@ export default function MonitorPage() {
       <p className="border-t border-line p-3 text-xs leading-5 text-ink-subtle">恢复通道顺序会按本列表顺序安排全部通道，超出一页自动分页。已加入的通道点击定位，移除请使用画面右上角。</p>
     </aside>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+      <PtzProtectionNotice/>
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 id="monitor-title" className="page-title">实时监看</h1>
         {focusedChannelId ? <button className={button} disabled={!!zoneChannelId} onClick={state.exitFocus} data-testid="focus-back"><ArrowLeft size={14} className="mr-1 inline" />返回宫格</button> :
@@ -148,7 +174,7 @@ export default function MonitorPage() {
       {heavyH265 >= 2 && <p role="note" className="text-xs text-amber-800">本页有 {heavyH265} 路 4K H.265 同时播放，受本机硬件解码路数限制可能卡顿或黑屏；卡顿时请减少宫格路数或单独放大。</p>}
       {moving !== null && <p role="status" className="text-xs text-primary-600">已选位置 {moving + 1}，点击目标位置的“放到这里”完成交换。<button className="ml-2 underline" onClick={() => setMoving(null)}>取消</button></p>}
       {focusedChannelId ? <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-panel bg-slate-950">
-        <div className="flex shrink-0 items-center justify-between gap-2 p-3 text-white"><span data-testid="focus-title">{focus?.name ?? byId.get(focusedChannelId)?.name ?? '通道暂不可用'}</span><div className="flex items-center gap-2">{!zoneChannelId&&variantSelect(focusedChannelId)}<button aria-label="关闭聚焦画面" disabled={!!zoneChannelId} onClick={state.closeFocus} data-testid="focus-close"><X size={16} /></button></div></div>
+        <div className="flex shrink-0 items-center justify-between gap-2 p-3 text-white"><div className="min-w-0 flex-1"><span className="block truncate" data-testid="focus-title">{focus?.name ?? byId.get(focusedChannelId)?.name ?? '通道暂不可用'}</span><SourceLabel value={focus && sourceInfo.get(focus.id)} /></div><div className="flex shrink-0 items-center gap-2">{!zoneChannelId&&variantSelect(focusedChannelId)}<button aria-label="关闭聚焦画面" disabled={!!zoneChannelId} onClick={state.closeFocus} data-testid="focus-close"><X size={16} /></button></div></div>
         <div className="relative flex min-h-0 flex-1 items-center justify-center">{player(focusedChannelId)}</div>
       </div> : <div className={`grid min-h-0 flex-1 gap-2 ${gridClassFor(layout)}`} data-testid="monitor-grid">
         {pageSlots.map((id, offset) => {
@@ -158,7 +184,7 @@ export default function MonitorPage() {
           return <div key={`${index}:${id ?? 'empty'}`} data-slot-index={index} onDragOver={e => { if (dragFrom.current !== null) e.preventDefault() }} onDrop={e => { e.preventDefault(); move(index) }}
             className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-panel border ${moving === index ? 'border-primary ring-2 ring-primary/30' : 'border-line'} bg-slate-950`}>
             <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-1 px-2 py-1 text-xs text-white">
-              <span className="min-w-0 flex-1 truncate" title={c?.name}>{index + 1} · {c?.name ?? (id ? byId.get(id)?.name ?? '通道暂不可用' : '空位')}</span>
+              <div className="min-w-0 flex-1"><span className="block truncate" title={c?.name}>{index + 1} · {c?.name ?? (id ? byId.get(id)?.name ?? '通道暂不可用' : '空位')}</span><SourceLabel value={c && sourceInfo.get(c.id)} /></div>
               {id && <>
                 {variantSelect(id)}
                 <button draggable aria-label={`移动位置 ${index + 1}`} title="拖动换位，或点击后选择目标位置" onDragStart={e => { dragFrom.current = index; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(index)) }} onDragEnd={() => { dragFrom.current = null }} onClick={() => setMoving(index)}><GripVertical size={15} /></button>
@@ -168,7 +194,7 @@ export default function MonitorPage() {
               </>}
             </div>
             <div className="relative flex min-h-0 flex-1 items-center justify-center" data-testid={`slot-tile-${index}`} onDoubleClick={e => { if (id && !(e.target as HTMLElement).closest('button,select,input')) state.enterFocus(id) }}>
-              {id ? active.has(id) ? player(id) : <p className="p-3 text-center text-xs text-slate-300">{!c ? '通道暂不可用，位置已保留' : !c.status.online ? '通道离线，位置已保留' : !settings ? '等待读取监看上限' : '并发上限已达 · 可单独放大'}</p> : <p className="p-3 text-center text-xs text-slate-400">从左侧选择通道</p>}
+              {id ? active.has(id) || (!!c && !c.status.online && ptzCandidates.has(c.id)) ? player(id) : <p className="p-3 text-center text-xs text-slate-300">{!c ? '通道暂不可用，位置已保留' : !c.status.online ? '通道离线，位置已保留' : !settings ? '等待读取监看上限' : '并发上限已达 · 可单独放大'}</p> : <p className="p-3 text-center text-xs text-slate-400">从左侧选择通道</p>}
             </div>
             {moving !== null && <button className="absolute inset-0 z-20 bg-primary/80 text-sm text-white" onClick={() => move(index)}>放到这里 · {index + 1}</button>}
           </div>

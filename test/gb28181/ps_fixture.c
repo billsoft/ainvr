@@ -9,6 +9,13 @@ void Assert_Throw(int failed,const char *exp,const char *func,const char *file,i
  (void)exp;(void)func;(void)file;(void)line;(void)message;if(failed)abort();
 }
 struct state { struct ps_muxer_t *ps; int streams[256]; int64_t pts; FILE *audio; int audio_stream; int64_t audio_pts; };
+/* Declare the complete PMT before the first PES. Adding AAC only after the
+ * first video packet emits an incomplete initial PSM, so receivers can finish
+ * track discovery as video-only and ignore the later real audio. */
+static void stream_info(void *p,int stream,int codec,const void *extra,int bytes,int finish){
+ (void)stream;(void)extra;(void)bytes;(void)finish;struct state *s=p;
+ if(codec>=0&&codec<=255&&!s->streams[codec])s->streams[codec]=ps_muxer_add_stream(s->ps,codec,NULL,0);
+}
 static void *allocate(void *p,size_t n){(void)p;return malloc(n);}
 static void release(void *p,void *b){(void)p;free(b);}
 static void be32(uint32_t n){unsigned char b[4]={n>>24,n>>16,n>>8,n};fwrite(b,1,4,stdout);}
@@ -38,6 +45,7 @@ int main(int argc,char **argv){
  s.ps=ps_muxer_create(&callbacks,&s);if(!s.ps)return 1;
  if(argc==3){s.audio=fopen(argv[1],"rb");if(!s.audio)return 5;s.audio_stream=ps_muxer_add_stream(s.ps,atoi(argv[2]),NULL,0);}
  struct ts_demuxer_t *ts=ts_demuxer_create(frame,&s);if(!ts)return 2;
+ struct ts_demuxer_notify_t notify={stream_info};ts_demuxer_set_notify(ts,&notify,&s);
  unsigned char packet[188];while(fread(packet,1,188,stdin)==188)if(ts_demuxer_input(ts,packet,188)<0)return 3;
  ts_demuxer_destroy(ts);ps_muxer_destroy(s.ps);if(s.audio)fclose(s.audio);return ferror(stdout)?4:0;
 }

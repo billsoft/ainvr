@@ -1,3 +1,4 @@
+import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
 import {ZoneHandles} from './ZoneHandles'
 import {ZoneDrawing} from './ZoneDrawing'
 import {zoneGeometryError,type ZonePoint} from '@/features/alarmGeometry'
@@ -201,6 +202,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
     {editZone?<button type="button" className="btn-primary shrink-0" disabled={locked} onClick={()=>leaveEditor(false)}>完成编辑</button>:<button type="button" className="btn-primary shrink-0" disabled={busy||!!drawing||!!removeZone||(!replacingGeometry&&!draft.dirty()&&!nameDirty()&&!session.hasPending()&&!editZone&&!busyPanel)} onClick={()=>void save()}><Save size={16} aria-hidden="true"/>{busy?'正在保存…':session.hasPending()?'重试确认保存':'保存布防'}</button>}
     <button type="button" aria-label="关闭" title="取消并关闭" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover" disabled={locked||!!removeZone} onClick={close}><X size={20} aria-hidden="true"/></button>
    </div>
+   <PtzProtectionNotice sourceId={sourceId} allowNavigation={false}/>
    {(replacingGeometry||warning)&&<div className="shrink-0 space-y-1 border-b border-line px-4 py-2 text-sm">
     {replacingGeometry&&<p role="alert" className="text-amber-800">正在按当前画面重新布防。保存后以本次热区与选用为准，旧记录保留；取消则保留原配置。</p>}
     {warning&&<p role="status" className="text-ink-subtle">{warning}</p>}

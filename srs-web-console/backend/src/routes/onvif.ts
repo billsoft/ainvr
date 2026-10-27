@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import {PtzStore,PtzError,ptzCameraDraftSchema} from '../store/ptzStore.js';
+import type {PtzManager} from '../services/ptzManager.js';
 import { OnvifStore, OnvifError, deviceSchema, onvifSettingsSchema } from '../store/onvifStore.js';
 import { OnvifManager, onvifBindingSchema } from '../services/onvifManager.js';
 const id = z.string().uuid();
@@ -7,6 +9,7 @@ export async function onvifRoutes(
   app: FastifyInstance,
   opts: {
     store: OnvifStore | null;
+    ptzStore?:PtzStore|null;ptzManager?:PtzManager|null;
     manager: OnvifManager | null;
     principal: (r: FastifyRequest) => Promise<string | null>;
   },
@@ -21,6 +24,7 @@ export async function onvifRoutes(
   });
   app.setErrorHandler((e, _req, reply) => {
     if (e instanceof z.ZodError) return reply.code(400).send({ error: 'ONVIF 请求参数无效' });
+    if(e instanceof PtzError)return reply.code(e.statusCode).send({error:e.code});
     if (e instanceof OnvifError) return reply.code(e.statusCode).send({ error: e.code });
     if ((e as any).code === 'CONFLICT') return reply.code(409).send({ error: 'version_conflict' });
     return reply.code(503).send({ error: 'onvif_unavailable' });
@@ -68,6 +72,7 @@ export async function onvifRoutes(
     const b = z
       .object({
         binding: onvifBindingSchema,
+        ptz:ptzCameraDraftSchema.optional(),
         inputId: id.optional(),
         expectedGeneration: z.string().uuid().optional(),
         config: z
@@ -87,6 +92,12 @@ export async function onvifRoutes(
       !b.config.downstreamProtocols.includes(b.config.primaryProtocol)
     )
       throw new OnvifError('invalid_playback_protocols');
-    return opts.manager!.saveChannel(b.binding, b.config, b.inputId, b.expectedGeneration);
+    const save=()=>opts.manager!.saveChannel(b.binding,b.config,b.inputId,b.expectedGeneration);
+    if(!b.ptz)return save();
+    if(!opts.ptzStore)throw new OnvifError('ptz_configuration_unavailable',503);
+    const key=`onvif:${b.binding.deviceId}/${b.binding.videoSource}`;
+    const saved=await opts.ptzStore.withCamera(key,key,b.ptz,actors.get(req)!,save);
+    const application=await opts.ptzManager?.invalidateCamera(key);
+    return {...saved.result,ptzApplication:saved.ptzApplication,application};
   });
 }

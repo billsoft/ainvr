@@ -1,4 +1,4 @@
-import {cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react'
+import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react'
 import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {request} from '@/api/httpClient'
 import {GBSourceFields} from '@/pages/Channels/GBSourceFields'
@@ -17,7 +17,7 @@ beforeEach(()=>{
 })
 afterEach(()=>{cleanup();vi.restoreAllMocks()})
 it('active device form protects close and Escape without saving discarded drafts',async()=>{
- const confirm=vi.spyOn(window,'confirm').mockReturnValue(false)
+ const confirm=vi.spyOn(window,'confirm')
  render(<GBSourceFields onDraft={()=>{}} onDirty={()=>{}} onBusy={()=>{}}/>)
  await screen.findByRole('option',{name:`测试设备 · ${id}`})
  fireEvent.click(screen.getByRole('button',{name:'登记新设备'}))
@@ -27,9 +27,16 @@ it('active device form protects close and Escape without saving discarded drafts
  fireEvent.change(screen.getByLabelText('设备名称'),{target:{value:'草稿'}})
  fireEvent.keyDown(screen.getByRole('region',{name:'设备注册信息'}),{key:'Escape'})
  expect(screen.getByLabelText('设备名称')).toHaveValue('草稿')
- confirm.mockReturnValue(true)
+ fireEvent.click(screen.getByRole('button',{name:'继续编辑'}))
+ expect(screen.getByLabelText('设备名称')).toHaveValue('草稿')
  fireEvent.click(screen.getByRole('button',{name:'关闭设备注册信息'}))
+ const dialog=screen.getByRole('dialog',{name:'放弃未保存的修改？'})
+ fireEvent.click(within(dialog).getByRole('button',{name:'关闭'}))
+ expect(screen.getByLabelText('设备名称')).toHaveValue('草稿')
+ fireEvent.click(screen.getByRole('button',{name:'取消设备修改'}))
+ fireEvent.click(screen.getByRole('button',{name:'放弃修改'}))
  expect(screen.queryByLabelText('设备名称')).toBeNull()
+ expect(confirm).not.toHaveBeenCalled()
  expect(vi.mocked(request).mock.calls.some(([,o])=>o?.method==='POST')).toBe(false)
 })
 it('active wizard saves registration only and preserves a blank password',async()=>{

@@ -1,10 +1,11 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
+import {PtzError,ptzCameraDraftSchema} from '../store/ptzStore.js';
 import {GB28181Store,GBError} from '../store/gb28181Store.js';
 import {gbSettingsSchema} from '../store/gbSettings.js';
 import type {GB28181Sync} from '../services/gb28181Sync.js';
 
-interface Options {store:GB28181Store|null;sync:GB28181Sync|null;principal:(request:FastifyRequest)=>Promise<string|null>}
+interface Options {store:GB28181Store|null;sync:GB28181Sync|null;principal:(request:FastifyRequest)=>Promise<string|null>;onPtzChanged?:(key:string)=>Promise<unknown>}
 const revision=z.number().int().min(1);
 const id=z.string().regex(/^\d{20}$/);
 export async function gb28181Routes(app:FastifyInstance,options:Options){
@@ -17,13 +18,14 @@ export async function gb28181Routes(app:FastifyInstance,options:Options){
   });
   app.setErrorHandler((e,_req,reply)=>{
     if(e instanceof z.ZodError)return reply.code(400).send({error:'请求参数无效'});
+    if(e instanceof PtzError)return reply.code(e.statusCode).send({error:e.code});
     return reply.code(e instanceof GBError?e.statusCode:503).send({error:e instanceof GBError?e.message:'国标接入暂不可用，请稍后重试'});
   });
   const store=()=>options.store!;
   app.get('/gb28181/status',async()=>options.sync?.status()??{state:'unavailable'});
   // Source identity is distinct from the internal RTMP bridge protocol.
   app.get('/gb28181/bindings',async()=>{
-    const {rows}=await store().pg.pool.query('SELECT input_id,device_id,channel_id,channel_config,(SELECT revision FROM gb28181_settings WHERE singleton) AS revision FROM gb28181_bindings WHERE input_id IS NOT NULL');
+    const {rows}=await store().pg.pool.query('SELECT binding_id,input_id,device_id,channel_id,enabled,transport,channel_config,(SELECT revision FROM gb28181_settings WHERE singleton) AS revision FROM gb28181_bindings WHERE input_id IS NOT NULL');
     return {items:rows};
   });
   app.get('/gb28181/channel-options',async req=>{
@@ -39,18 +41,18 @@ export async function gb28181Routes(app:FastifyInstance,options:Options){
   });
   app.post('/gb28181/channel-config',async req=>{
     const protocol=z.enum(['flv','hls','webrtc','rtmp','srt']);
-    const b=z.object({expectedRevision:revision,deviceId:id,channelId:id,inputId:z.string().uuid().optional(),transport:z.enum(['udp','tcp-passive','tcp-active']),enabled:z.boolean(),
+    const b=z.object({ptz:ptzCameraDraftSchema.optional(),expectedRevision:revision,deviceId:id,channelId:id,inputId:z.string().uuid().optional(),transport:z.enum(['udp','tcp-passive','tcp-active']),enabled:z.boolean(),
       config:z.object({name:z.string().trim().min(1).max(50),description:z.string().max(1000),protocols:z.array(protocol).min(1).max(5),primary:protocol}).strict()
     }).strict().parse(req.body);
     if(!b.config.protocols.includes(b.config.primary)||new Set(b.config.protocols).size!==b.config.protocols.length)throw new GBError('播放协议设置无效');
     const {expectedRevision,...input}=b;
-    return store().saveChannel(input,expectedRevision,actors.get(req)!);
+    const result=await store().saveChannel(input,expectedRevision,actors.get(req)!);if(input.ptz)await options.onPtzChanged?.(`gb28181:${input.deviceId}/${input.channelId}`);return result;
   });
   app.post('/gb28181/channel-configs',async req=>{
     const protocol=z.enum(['flv','hls','webrtc','rtmp','srt']);
-    const b=z.object({expectedRevision:revision,channels:z.array(z.object({deviceId:id,channelId:id,transport:z.enum(['udp','tcp-passive','tcp-active']),enabled:z.boolean(),config:z.object({name:z.string().trim().min(1).max(50),description:z.string().max(1000),protocols:z.array(protocol).min(1).max(5),primary:protocol}).strict()}).strict()).min(1).max(100)}).strict().parse(req.body);
+    const b=z.object({expectedRevision:revision,channels:z.array(z.object({ptz:ptzCameraDraftSchema.optional(),deviceId:id,channelId:id,transport:z.enum(['udp','tcp-passive','tcp-active']),enabled:z.boolean(),config:z.object({name:z.string().trim().min(1).max(50),description:z.string().max(1000),protocols:z.array(protocol).min(1).max(5),primary:protocol}).strict()}).strict()).min(1).max(100)}).strict().parse(req.body);
     if(b.channels.some(c=>!c.config.protocols.includes(c.config.primary)||new Set(c.config.protocols).size!==c.config.protocols.length))throw new GBError('播放协议设置无效');
-    return store().saveChannels(b.channels,b.expectedRevision,actors.get(req)!);
+    const result=await store().saveChannels(b.channels,b.expectedRevision,actors.get(req)!);for(const c of b.channels)if(c.ptz)await options.onPtzChanged?.(`gb28181:${c.deviceId}/${c.channelId}`);return result;
   });
   app.post('/gb28181/devices/:id/bind-channels',async req=>{
     const device=id.parse((req.params as {id:string}).id);

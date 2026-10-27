@@ -60,6 +60,8 @@ class ReusedChannelWorker : public ChannelWorker {
   void ValidateStart() const override;
   void ValidateSnapshotResources(const config::ChannelConfig& next) const override;
   virtual void Stop();
+  bool SupportsAnalyticsReset() const override { return true; }
+  bool ResetAnalytics(const std::string& generation) override;
   // Assigned before starting any worker thread; immutable while running.
   void SetLicenseCheck(std::function<bool()> check) { license_check_ = std::move(check); }
   bool LicenseAllowed() const noexcept {
@@ -143,6 +145,10 @@ class ReusedChannelWorker : public ChannelWorker {
   std::optional<CapturedFrame> PickNextFrame(int64_t last_consumed_seq, int* skipped);
   void InferOneFrame(CapturedFrame frame, ainvr::BpuImageResult prepared);
   std::unique_ptr<analytics::FrameAnalytics> analytics_;
+  std::mutex analytics_reset_mutex_;
+  std::string analytics_reset_generation_;
+  std::atomic<uint64_t> analytics_reset_epoch_{0};
+  uint64_t analytics_applied_reset_epoch_=0; // inference-thread owned
   void InferPromptedFrame(CapturedFrame frame);
   bool ReconnectStream();
   void OnStreamError(const std::string& msg);

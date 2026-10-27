@@ -62,6 +62,19 @@ void SleepMs(double ms) {
 }
 }  // namespace
 
+bool ReusedChannelWorker::ResetAnalytics(const std::string& generation) {
+  if(generation.empty()||generation.size()>128)return false;
+  std::lock_guard<std::mutex> lock(analytics_reset_mutex_);
+  if(analytics_reset_generation_==generation)return true;
+  analytics_reset_generation_=generation;
+  // Serialize the reset with result/SEI publication, not media capture/inference.
+  // A result computed before this reset must not be appended after the clear.
+  std::lock_guard<std::mutex> publication(frame_mutex_);
+  analytics_reset_epoch_.fetch_add(1);
+  result_buffer_.Clear();
+  return true;
+}
+
 void ReusedChannelWorker::ValidateStart() const {
   auto cfg=LoadCfg();auto model=cfg->model;
   if(!model_root_.empty()&&std::filesystem::path(model.path).is_relative())
@@ -1027,6 +1040,11 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   result.detections = rescaled;
   result.model_extra = adapter_->ResultMetadata();
   // Inference-thread owned; source epoch/generation resets track identity.
+  const auto view_reset_epoch=analytics_reset_epoch_.load();
+  if(view_reset_epoch!=analytics_applied_reset_epoch_){
+    analytics_.reset();
+    analytics_applied_reset_epoch_=view_reset_epoch;
+  }
   if (!analytics_) {
     auto policy=analytics::PhaseEffective(cfg->analytics);
     policy.enabled=policy.enabled && cfg->model.adapter!="locateanything_bpu" &&
@@ -1043,6 +1061,8 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     analytics::LinkEventArchive(result,cfg->snapshot.enabled);
   } else analytics_->Apply(result,frame.epoch,frame.stream_generation.value_or(-1));
 
+  result.model_extra["analytics"]["view_reset_epoch"]=view_reset_epoch;
+  if(analytics_reset_epoch_.load()!=view_reset_epoch)return;
   if(auto journal=std::atomic_load(&observation_journal_)){
     try{
       if(frame.epoch!=stream_epoch_.load()||!LicenseAllowed()){
@@ -1077,6 +1097,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   {
     std::lock_guard<std::mutex> lock(frame_mutex_);
     if (frame.epoch != stream_epoch_.load()) return;
+    if (analytics_reset_epoch_.load()!=view_reset_epoch) return;
     if (!LicenseAllowed()) return;
     result_buffer_.Append(result);
     StampSei(result, frame.stream_generation);

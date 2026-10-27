@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +29,7 @@ type Settings struct {
 	Interfaces []string `json:"interfaces"`
 }
 type Server struct {
+	ptz       *ptzHTTP
 	mu        sync.RWMutex
 	settings  Settings
 	token     [32]byte
@@ -39,8 +41,9 @@ func NewServer(token string) (*Server, error) {
 	if len(token) < 32 || len(token) > 512 {
 		return nil, failure("invalid_service_token")
 	}
-	return &Server{token: sha256.Sum256([]byte(token)), slots: make(chan struct{}, 4), discovery: make(chan struct{}, 1)}, nil
+	return &Server{ptz: newPTZHTTP(), token: sha256.Sum256([]byte(token)), slots: make(chan struct{}, 4), discovery: make(chan struct{}, 1)}, nil
 }
+func (s *Server) Close() { s.ptz.Close() }
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -107,6 +110,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	settings := s.settings
 	s.mu.RUnlock()
+	if strings.HasPrefix(r.URL.Path, "/v1/ptz/") {
+		s.ptz.Serve(w, r, settings)
+		return
+	}
 	if !settings.Enabled {
 		writeJSON(w, 503, map[string]string{"error": "onvif_disabled"})
 		return

@@ -29,6 +29,7 @@ type Device struct {
 	CertificateSHA256 string `json:"certificateSHA256,omitempty"`
 }
 type Profile struct {
+	PTZConfig   string  `json:"ptzConfig,omitempty"`
 	Service     string  `json:"service"`
 	Token       string  `json:"token"`
 	Name        string  `json:"name"`
@@ -113,6 +114,9 @@ func (c *Client) security() string {
 	return `<wsse:Security s:mustUnderstand="1" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"><wsse:UsernameToken><wsse:Username>` + escape(c.device.Username) + `</wsse:Username><wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">` + base64.StdEncoding.EncodeToString(h.Sum(nil)) + `</wsse:Password><wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">` + base64.StdEncoding.EncodeToString(nonce) + `</wsse:Nonce><wsu:Created>` + created + `</wsu:Created></wsse:UsernameToken></wsse:Security>`
 }
 func (c *Client) soap(ctx context.Context, endpoint, namespace, action, inner string, anonymous bool) (*node, error) {
+	if ctx.Err() != nil {
+		return nil, failure("device_unreachable")
+	}
 	u, e := c.policy.checkURL(endpoint, "soap")
 	if e != nil {
 		return nil, e
@@ -258,12 +262,12 @@ func (c *Client) endpoints(ctx context.Context) error {
 				continue
 			}
 			namespace := s.text("Namespace")
-			if namespace == media1NS || namespace == media2NS {
+			if namespace == media1NS || namespace == media2NS || namespace == ptzNS {
 				c.services[namespace] = s.text("XAddr")
 			}
 		}
 	}
-	if len(c.services) == 0 || (len(c.services) == 1 && c.services["clock"] != "") {
+	if c.services[media1NS] == "" && c.services[media2NS] == "" {
 		n, e = c.soap(ctx, c.device.URL, deviceNS, "GetCapabilities", "<m:Category>Media</m:Category>", false)
 		if e != nil {
 			return e
@@ -314,6 +318,10 @@ func (c *Client) profiles(ctx context.Context) ([]Profile, error) {
 			}
 			fps, _ := strconv.ParseFloat(video.path("RateControl").text("FrameRateLimit"), 64)
 			row := Profile{Service: service, Token: p.attr("token"), Name: p.text("Name"), VideoSource: source.text("SourceToken"), VideoCodec: strings.ToUpper(video.text("Encoding")), Width: number(video.child("Resolution"), "Width"), Height: number(video.child("Resolution"), "Height"), FPS: fps, AudioCodec: strings.ToUpper(audio.text("Encoding"))}
+			row.PTZConfig = p.child("PTZConfiguration").attr("token")
+			if ns == media2NS {
+				row.PTZConfig = p.path("Configurations", "PTZ").attr("token")
+			}
 			if row.Token == "" || len(row.Token) > 256 || row.VideoSource == "" || len(row.VideoSource) > 256 {
 				continue
 			}

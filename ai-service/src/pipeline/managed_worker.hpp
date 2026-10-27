@@ -20,6 +20,10 @@ class ChannelWorker {
   // before the controller persists an update to an executing channel.
   virtual void ValidateSnapshotResources(const config::ChannelConfig&) const {}
   virtual void Stop() = 0;
+  // Invalidate tracking before the next observation without reconnecting media
+  // or rebuilding the model. False means the worker cannot honour the request.
+  virtual bool SupportsAnalyticsReset() const { return false; }
+  virtual bool ResetAnalytics(const std::string&) { return false; }
   virtual ChannelState State() const = 0;
   virtual void SetLicenseCheck(std::function<bool()> check) = 0;
   virtual void SetSnapshotSink(std::shared_ptr<SnapshotSink> sink) = 0;

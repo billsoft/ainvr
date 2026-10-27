@@ -38,7 +38,9 @@ func TestActiveMediaRetryKeepsLeaseAndBoundedSpacing(t *testing.T) {
 		calls = append(calls, time.Now())
 		n := len(calls)
 		mu.Unlock()
-		if n < 3 {
+		// A device can start listening only on the third reconnection. The
+		// original connection is not itself one of the required retries.
+		if n < 4 {
 			fmt.Fprint(w, `{"code":-1}`)
 		} else {
 			fmt.Fprint(w, `{"code":0}`)
@@ -53,7 +55,7 @@ func TestActiveMediaRetryKeepsLeaseAndBoundedSpacing(t *testing.T) {
 		t.Fatal(err)
 	}
 	mu.Lock()
-	if len(calls) != 3 {
+	if len(calls) != 4 {
 		t.Fatalf("calls=%d", len(calls))
 	}
 	for i := 1; i < len(calls); i++ {
@@ -68,7 +70,41 @@ func TestActiveMediaRetryKeepsLeaseAndBoundedSpacing(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 3 {
+	if len(calls) != 4 {
 		t.Fatal("cancelled attempt sent")
+	}
+}
+
+func TestActiveMediaFailureBudgetAndCancelWaiting(t *testing.T) {
+	for _, cancelWaiting := range []bool{false, true} {
+		t.Run(fmt.Sprint("cancel=", cancelWaiting), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+			defer cancel()
+			var mu sync.Mutex
+			calls := 0
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				calls++
+				mu.Unlock()
+				fmt.Fprint(w, `{"code":-1}`)
+				if cancelWaiting {
+					cancel()
+				}
+			}))
+			defer api.Close()
+			m := &MediaReceiver{config: MediaConfig{API: api.URL, Secret: "test"}, client: api.Client()}
+			if m.ConnectWithRetry(ctx, MediaLease{Mode: "tcp-active", Stream: "bounded-session"}, "192.0.2.1", 30000) == nil {
+				t.Fatal("failed connection reported success")
+			}
+			want := 4 // First connection and three reconnections, then stop.
+			if cancelWaiting {
+				want = 1
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if calls != want {
+				t.Fatalf("connection attempts=%d, want %d", calls, want)
+			}
+		})
 	}
 }

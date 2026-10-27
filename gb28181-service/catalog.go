@@ -7,6 +7,27 @@ import (
 	"time"
 )
 
+// Product memory budgets, not limits imposed by the GB XML schema. Keep
+// completed directories and refresh work separately bounded so refreshing an
+// existing directory can replace it without evicting another device's data.
+const catalogCacheBudget = 32 << 20
+const catalogRefreshBudget = 32 << 20
+
+var errCatalogCapacity = errors.New("catalog memory capacity exhausted")
+
+func catalogItemBytes(item CatalogItem) int {
+	// Include conservative map/struct overhead as well as decoded strings.
+	return 256 + len(item.ID) + len(item.Name) + len(item.Manufacturer) + len(item.Model) + len(item.ParentID) + len(item.Status)
+}
+
+func catalogSliceBytes(items []CatalogItem) int {
+	total := 0
+	for _, item := range items {
+		total += catalogItemBytes(item)
+	}
+	return total
+}
+
 // A query generation prevents delayed responses to an older refresh from
 // overwriting the current directory. Partial refreshes never imply deletion.
 type Catalog struct {
@@ -16,12 +37,23 @@ type Catalog struct {
 	total    int
 	max      int
 	items    map[string]CatalogItem
+	bytes    int
 }
 
 func NewCatalog(sn string, deadline time.Time, max int) *Catalog {
 	return &Catalog{SN: sn, Deadline: deadline, total: -1, max: max, items: map[string]CatalogItem{}}
 }
 func (c *Catalog) Add(m BusinessMessage, now time.Time) (bool, error) {
+	return c.addWithinBudget(m, now, -1)
+}
+
+func (c *Catalog) memory() (int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.bytes, c.total >= 0 && len(c.items) == c.total
+}
+
+func (c *Catalog) addWithinBudget(m BusinessMessage, now time.Time, budget int) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !now.Before(c.Deadline) || m.SN != c.SN || m.Command != "Catalog" {
@@ -30,21 +62,37 @@ func (c *Catalog) Add(m BusinessMessage, now time.Time) (bool, error) {
 	if m.SumNum < 0 || m.SumNum > c.max || (c.total >= 0 && c.total != m.SumNum) {
 		return false, errors.New("inconsistent catalog total")
 	}
-	merged := make(map[string]CatalogItem, len(c.items)+len(m.List.Items))
-	for id, item := range c.items {
-		merged[id] = item
-	}
+	// Validate a bounded incoming batch before committing. Do not copy the
+	// entire growing directory for every one-item response.
+	added := make(map[string]CatalogItem, len(m.List.Items))
+	bytes := c.bytes
 	for _, item := range m.List.Items {
-		if old, ok := merged[item.ID]; ok && old != item {
-			return false, errors.New("conflicting duplicate catalog item")
+		if old, ok := c.items[item.ID]; ok {
+			if old != item {
+				return false, errors.New("conflicting duplicate catalog item")
+			}
+			continue
 		}
-		merged[item.ID] = item
+		if old, ok := added[item.ID]; ok {
+			if old != item {
+				return false, errors.New("conflicting duplicate catalog item")
+			}
+			continue
+		}
+		added[item.ID] = item
+		bytes += catalogItemBytes(item)
 	}
-	if len(merged) > m.SumNum {
+	if len(c.items)+len(added) > m.SumNum {
 		return false, errors.New("catalog exceeds declared total")
 	}
+	if budget >= 0 && bytes > budget {
+		return false, errCatalogCapacity
+	}
 	c.total = m.SumNum
-	c.items = merged
+	for id, item := range added {
+		c.items[id] = item
+	}
+	c.bytes = bytes
 	return len(c.items) == c.total, nil
 }
 func (c *Catalog) Snapshot() []CatalogItem {

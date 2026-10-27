@@ -14,11 +14,11 @@ def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def tree(path):return {p.relative_to(path).as_posix():sha(p) for p in sorted(path.rglob('*')) if p.is_file() and '__pycache__' not in p.parts}
 def sources():
     files=[]
-    for name in ['srs-web-console/backend/src','srs-web-console/frontend/src','onvif-service','ingest-service','shared/host-restart-helper','shared/python']:
+    for name in ['srs-web-console/backend/src','srs-web-console/frontend/src','onvif-service','shared/ptzcontrol','ingest-service','shared/host-restart-helper','shared/python']:
         files.extend(p for p in (ROOT/name).rglob('*') if p.is_file() and not p.is_relative_to(ROOT/'shared/host-restart-helper/data') and '__pycache__' not in p.parts and 'node_modules' not in p.parts and '.git' not in p.parts)
     for name in ['srs-web-console/backend','srs-web-console/frontend']:
         files.extend(p for p in (ROOT/name).iterdir() if p.is_file() and (p.suffix in ['.json','.ts','.js','.cjs'] or p.name=='index.html'))
-    files.extend(ROOT/'deploy-package'/name for name in ['deploy_onvif_release.py','install-onvif.sh','provision-onvif.mjs','ainvr-onvif.service'])
+    files.extend(ROOT/'deploy-package'/name for name in ['deploy_ptz_release.py','release_common.py','ptz-production-state.mjs','ptz_rollback_guard.py','ptz-rollback-state.mjs'])
     return {p.relative_to(ROOT).as_posix():sha(p) for p in sorted(set(files))}
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
@@ -35,15 +35,22 @@ def main():
         backend=ROOT/'srs-web-console/backend';frontend=ROOT/'srs-web-console/frontend'
         run(['node','node_modules/typescript/bin/tsc','-p','tsconfig.json','--outDir',str(output/'backend')],backend,'backend-build')
         shutil.copytree(backend/'src/store/migrations',output/'backend/store/migrations',dirs_exist_ok=True)
+        (output/'backend/ptz-compatibility.json').write_text(json.dumps({'schema':1,'viewGuardVersion':1})+'\n')
         run(['node','node_modules/typescript/bin/tsc','-b','--noEmit'],frontend,'frontend-typecheck')
         run(['node','node_modules/vite/bin/vite.js','build','--outDir',str(output/'frontend')],frontend,'frontend-build')
         go=Path(os.environ.get('AINVR_GO',str(ROOT/'out/gb28181/go/bin/go')))
+        # First-party replacement is source, not a downloaded module archive.
+        # Mark it as a workspace main module for checksum verification; both
+        # source trees are already frozen in source-manifest.json.
+        workspace=output/'verification.work'
+        workspace.write_text('go 1.24.0\nuse (\n'+str(ROOT/'onvif-service')+'\n'+str(ROOT/'shared/ptzcontrol')+'\n)\n')
+        env['GOWORK']=str(workspace)
         run([str(go),'mod','verify'],ROOT/'onvif-service','go-dependencies')
         (output/'onvif').mkdir()
         run([str(go),'build','-trimpath','-o',str(output/'onvif/ainvr_onvif'),'./cmd/onvif'],ROOT/'onvif-service','go-build')
         shutil.copytree(ROOT/'out/media-bridge/runtime',output/'media-bridge')
         (output/'deploy-package').mkdir()
-        for name in ['deploy_onvif_release.py','install-onvif.sh','provision-onvif.mjs','ainvr-onvif.service']:
+        for name in ['deploy_ptz_release.py','release_common.py','ptz-production-state.mjs','ptz_rollback_guard.py','ptz-rollback-state.mjs']:
             shutil.copy2(ROOT/'deploy-package'/name,output/'deploy-package'/name)
         (output/'onvif/licenses').mkdir()
         module_cache=Path(subprocess.check_output([str(go),'env','GOMODCACHE'],cwd=ROOT/'onvif-service',env=env,text=True).strip())

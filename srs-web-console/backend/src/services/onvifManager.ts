@@ -66,6 +66,15 @@ export class OnvifManager {
       channels: Object.fromEntries([...this.tasks].map(([id, v]) => [id, { error: v.error }])),
     };
   }
+  async preparePtz(binding: OnvifBinding) {
+    const { record, device } = await this.store.device(binding.deviceId);
+    if (Number(record.version) !== binding.deviceVersion) throw new OnvifError('device_configuration_changed',409);
+    return this.call('/v1/ptz/prepare',{device,service:binding.service,token:binding.profileToken,videoSource:binding.videoSource});
+  }
+  async ptz(path:string,body:unknown) {
+    if (!['command','status','presets','preset-save','preset-remove'].includes(path)) throw new OnvifError('ptz_invalid_operation');
+    return this.call(`/v1/ptz/${path}`,body);
+  }
   inputAllowed(channel: Channel) {
     return (
       !channel.onvif ||
@@ -83,7 +92,7 @@ export class OnvifManager {
         headers: { 'X-Service-Token': token, 'Content-Type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
         redirect: 'error',
-        signal: AbortSignal.timeout(48000),
+        signal: AbortSignal.timeout(path.startsWith('/v1/ptz/')?10000:48000),
       });
     } catch {
       throw new OnvifError('control_service_unavailable', 503);

@@ -61,3 +61,22 @@ func TestHTTPBridgePreservesMediaTimestamps(t *testing.T) {
 		t.Fatal("unbounded or unsanitized diagnostic")
 	}
 }
+
+func TestUnsupportedAudioDoesNotDelayVideoInputAnalysis(t *testing.T) {
+	c := BridgeConfig{HTTPBase: "http://127.0.0.1:8097", RTSPBase: "rtsp://127.0.0.1:8556", RTMPBase: "rtmp://127.0.0.1:1935"}
+	args, warning, err := BridgeArgs(c, MediaLease{Stream: "gb_test"}, "live", "fixed", "opus")
+	if err != nil || warning != "unsupported_audio_codec" {
+		t.Fatalf("wrong unsupported audio policy: %s %v", warning, err)
+	}
+	joined := strings.Join(args, " ")
+	input := strings.Index(joined, " -i ")
+	if input < 0 || !strings.Contains(joined[:input], "-analyzeduration 1000000 -probesize 1048576 -an") {
+		t.Fatal("unsupported source audio can consume an unbounded live analysis window")
+	}
+	if !strings.Contains(joined, "http://127.0.0.1:8097/rtp/gb_test.live.flv") || strings.Contains(joined, "-rtsp_transport") || strings.Contains(joined, "-fflags") {
+		t.Fatal("fallback discarded the timestamp-preserving video path")
+	}
+	if !strings.Contains(joined[input:], "-c:v copy -an") {
+		t.Fatal("unsupported audio reached the output or video was transcoded")
+	}
+}

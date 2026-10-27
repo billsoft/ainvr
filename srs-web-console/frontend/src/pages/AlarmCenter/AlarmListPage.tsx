@@ -1,3 +1,4 @@
+import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
 import {useLocation} from 'react-router-dom'
 import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react'
 import {alarmEventService,type AlarmEvent,type AckDisposition,type AlarmFilters,type AckItem} from '@/api/alarmEventService'
@@ -205,6 +206,7 @@ export default function AlarmListPage(){
    <p className="hidden border-t border-line p-4 text-sm leading-relaxed text-ink-subtle md:block">同一通道的同一目标只有一条告警，显示命中的最高级别。</p>
   </nav>
   <main className="alarm-workspace flex min-w-0 flex-1 flex-col">
+   <PtzProtectionNotice/>
    <div className="space-y-3 px-4 pb-3 pt-4 md:px-6">
     <div className="flex flex-wrap items-center gap-3">
      <div role="group" aria-label="处理状态" className="flex gap-1 rounded-base border border-line bg-surface p-1">{([['pending','未审核'],['human','已人工审核'],['ai','已 AI 审核'],['all','全部']] as const).map(([id,label])=>

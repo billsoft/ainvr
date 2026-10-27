@@ -1,6 +1,12 @@
 // Fastify 应用构建（可复用，测试用 fastify.inject 不启端口）
 import { storageRoutes } from './routes/storage.js';
 import {onvifRoutes} from './routes/onvif.js';
+import {ptzRoutes} from './routes/ptz.js';
+import {PtzStore} from './store/ptzStore.js';
+import {PtzManager} from './services/ptzManager.js';
+import {preparePtzAdapter} from './services/ptzAdapter.js';
+import {PtzGuardedSnapshot} from './services/ptzGuardedSnapshot.js';
+import {ptzAi} from './services/ptzAi.js';
 import {OnvifStore} from './store/onvifStore.js';
 import {OnvifManager} from './services/onvifManager.js';
 import {alarmTriggerRoutes} from './routes/alarmTriggerRoutes.js';
@@ -410,13 +416,23 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const alarmConfigurationReady=pgStore?await prepareAlarmConfiguration(instance,()=>migrateLegacyAlarms(pgStore.pool),alarmPrincipal):false;
     const triggerStore=pgStore&&alarmConfigurationReady?new AlarmTriggerStore(pgStore.pool):null;
     const armingStore=pgStore&&alarmConfigurationReady?new AlarmArmingStore(pgStore.pool):null;
-    const ruleSync=triggerStore&&armingStore?new AlarmRuleSync(new AlarmCombinedSnapshot(triggerStore,armingStore),alarmConnection):null;
+    const ruleSync=triggerStore&&armingStore&&pgStore?new AlarmRuleSync(new PtzGuardedSnapshot(new AlarmCombinedSnapshot(triggerStore,armingStore),pgStore.pool,async()=>({channels:(await channelStore.read()).channels,ai:await ptzAI!.list()})),alarmConnection):null;
     const gbStore=pgStore?new GB28181Store(pgStore):null;
     gbSync=gbStore?new GB28181Sync(gbStore,channelService):null;
-    await instance.register(gb28181Routes,{store:gbStore,sync:gbSync,principal:alarmPrincipal});
+    await instance.register(gb28181Routes,{store:gbStore,sync:gbSync,principal:alarmPrincipal,onPtzChanged:async key=>ptzManager?.invalidateCamera(key)});
     const onvifStore=pgStore?new OnvifStore(pgStore):null;
     onvifManager=onvifStore?new OnvifManager(onvifStore,channelService):null;
-    await instance.register(onvifRoutes,{store:onvifStore,manager:onvifManager,principal:alarmPrincipal});
+    const ptzStore=pgStore&&alarmConfigurationReady?new PtzStore(pgStore.pool):null;
+    const ptzAI=pgStore?ptzAi(()=>settingsStore.read(),pgStore,aiServiceBaseUrl):null;
+    const ptzManager=ptzStore&&ptzAI?new PtzManager(ptzStore,{
+      channels:async()=>(await channelStore.read()).channels,
+      ai:()=>ptzAI.list(),prepare:root=>preparePtzAdapter(root,ptzStore,onvifManager,gbSync),
+      synchronize:()=>ruleSync?.synchronize()??Promise.resolve({state:'unavailable'}),
+      resetProcessors:ids=>ptzAI.reset(ids),checkProcessors:ids=>ptzAI.checkReset(ids),
+    }):null;
+    await instance.register(onvifRoutes,{store:onvifStore,manager:onvifManager,principal:alarmPrincipal,ptzStore,ptzManager});
+    ptzManager?.start();
+    await instance.register(ptzRoutes,{manager:ptzManager,store:ptzStore,principal:alarmPrincipal,channels:async()=>(await channelStore.read()).channels});
     if(onvifManager){let stopped=false;let timer:ReturnType<typeof setTimeout>|undefined;
       const poll=async()=>{await onvifManager?.synchronize();if(!stopped){timer=setTimeout(poll,5000);timer.unref()}};
       instance.addHook('onReady',async()=>{void poll()});instance.addHook('onClose',async()=>{stopped=true;clearTimeout(timer)});
