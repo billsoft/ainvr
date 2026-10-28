@@ -73,7 +73,8 @@ class ChannelManager {
                            std::shared_ptr<config::ConfigStore> store = nullptr,
                            WorkerFactory worker_factory = nullptr,
                            std::function<bool()> license_check = {},
-                           std::function<void(const config::SnapshotStoreConfig&, const std::string&)> history_delete = {});
+                           std::function<void(const config::SnapshotStoreConfig&, const std::string&)> history_delete = {},
+                           config::SearchProducerLeaseReader search_producer_reader = {});
 
   // 404 ApiError(不存在)。
   std::shared_ptr<pipeline::ChannelWorker> Get(const std::string& channel_id) const;
@@ -162,6 +163,7 @@ class ChannelManager {
   std::shared_ptr<output::SnapshotStore> EnsureSnapshotLocked(
       const std::string& id, const std::shared_ptr<pipeline::ChannelWorker>& worker);
   std::function<bool()> license_check_;
+  config::SearchProducerLeaseReader search_producer_reader_;
   std::set<std::string> manually_stopped_; // lock_ protected; preserved across license recovery
   WorkerFactory worker_factory_;
   config::AppConfig boot_cfg_;

@@ -10,8 +10,8 @@ using Clock=std::chrono::steady_clock;
 double Ms(Clock::duration d){return std::chrono::duration<double,std::milli>(d).count();}
 }
 BpuImageRunner::BpuImageRunner(const std::string& path,BpuImageContract contract,
-                               const std::string& image_input_name)
-    :model_(path),contract_(contract),description_(model_.Describe()),
+                               const std::string& image_input_name,const std::string& program_name)
+    :model_(path,program_name),contract_(contract),description_(model_.Describe()),
      image_input_name_(image_input_name),images_({true,true,false}) {
   if(contract_==BpuImageContract::FloatNchw)
     image_input_index_=BpuFloatImageInputIndex(description_["inputs"],image_input_name_);

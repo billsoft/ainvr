@@ -52,8 +52,6 @@ Tensor MakeTensor(hbDNNHandle_t model, bool input, int index, BufferPool& pool) 
   return t;
 }
 }
-DmaBuffer::DmaBuffer(size_t bytes) { Check(hbUCPMallocCached(&memory,bytes,0),"allocate DMA"); }
-DmaBuffer::~DmaBuffer() { if(memory.virAddr) hbUCPFree(&memory); }
 size_t Tensor::elements() const {
   size_t count=1; const auto& p=descriptor.properties;
   for(int d=0;d<p.validShape.numDimensions;++d) count*=p.validShape.dimensionSize[d];

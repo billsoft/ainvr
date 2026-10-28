@@ -51,10 +51,6 @@ int main(int argc, char** argv) {
     auto license_config = lic::LoadConfigFromEnv(argv[4]);
     lic::LicenseClient license(license_config, lic::MakeHttpFetcher(license_config));
     license.Start();
-    auto manager = std::make_shared<ai_service::api::ChannelManager>(config, store,
-      [model_root=std::string(argv[3])](const cfg::ChannelConfig& ch, const cfg::SnapshotStoreConfig& snapshots) {
-        return std::make_shared<ai_service::pipeline::ReusedChannelWorker>(ch,snapshots,model_root);
-      }, [&] { return license.IsLicensed(); });
     // Preserve the original callback: compare restart requirements with the
     // boot configuration, even if the same changed value was already persisted.
     auto config_client=cfg::ClientFromEnv("ai-service",
@@ -64,6 +60,14 @@ int main(int argc, char** argv) {
         cfg::ApplyConfigCenterPatch(*store,patch);
         return {true,cfg::SnapshotStoreRestartRequired(config,patch)};
       });
+    // Construct the existing config owner before workers, but start its polling
+    // at the same point below. Readers capture weak authority, not this client.
+    auto manager = std::make_shared<ai_service::api::ChannelManager>(config, store,
+      [model_root=std::string(argv[3])](const cfg::ChannelConfig& ch, const cfg::SnapshotStoreConfig& snapshots) {
+        return std::make_shared<ai_service::pipeline::ReusedChannelWorker>(ch,snapshots,model_root);
+      }, [&] { return license.IsLicensed(); },
+      std::function<void(const cfg::SnapshotStoreConfig&, const std::string&)>{},
+      config_client ? config_client->SearchProducerReader() : cfg::SearchProducerLeaseReader{});
     httplib::Server server;
     server.set_pre_routing_handler([](const httplib::Request& q, httplib::Response&) {
       const_cast<httplib::Request&>(q).headers.erase("Accept-Encoding");

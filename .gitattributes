@@ -1,0 +1,2 @@
+# Preserve the pinned upstream license verbatim.
+third_party/cpp-httplib/LICENSE whitespace=-blank-at-eof

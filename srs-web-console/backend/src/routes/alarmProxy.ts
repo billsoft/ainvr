@@ -2,45 +2,16 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {verifyPassword} from '../services/passwordHash.js';
 import {LoginAttempts} from '../services/consoleSessions.js';
 import {clientIdentity} from '../services/proxyIdentity.js';
+import {endpoint, limitedJson, type InternalServiceConnection} from '../services/internalServiceHttp.js';
+export {endpoint, limitedJson} from '../services/internalServiceHttp.js';
 
-export interface AlarmConnection {
-  baseUrl: string;
-  apiToken: string;
-  timeoutMs: number;
-}
+export type AlarmConnection = InternalServiceConnection;
 export interface AlarmProxyOptions {
   passwordHash?:()=>Promise<string>;
   /** Only the applied backend configuration, never an unpublished form draft. */
   connection: () => Promise<AlarmConnection | null>;
   /** Server-validated console principal. Never read the actor from client headers. */
   principal: (request: FastifyRequest) => Promise<string | null>;
-}
-
-const allowedHosts = new Set(['127.0.0.1', '[::1]', 'localhost', 'host.docker.internal']);
-export function endpoint(config: AlarmConnection, path: string): URL {
-  const base = new URL(config.baseUrl);
-  if (base.protocol !== 'http:' || !allowedHosts.has(base.hostname) ||
-      base.username || base.password || base.search || base.hash || base.pathname !== '/' ||
-      !base.port || !Number.isInteger(config.timeoutMs) || config.timeoutMs < 100 || config.timeoutMs > 30000 ||
-      typeof config.apiToken !== 'string' || config.apiToken.length < 32) {
-    throw new Error('Invalid alarm service connection');
-  }
-  return new URL(path, base);
-}
-export async function limitedJson(response: Response): Promise<unknown> {
-  if (!response.body) throw new Error('Empty response');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = []; let size = 0;
-  try {
-    while (true) {
-      const result = await reader.read();
-      if (result.done) break;
-      size += result.value.length;
-      if (size > 2 * 1024 * 1024) throw new Error('Response too large');
-      chunks.push(result.value);
-    }
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } finally { await reader.cancel().catch(() => undefined); }
 }
 
 /** Named BFF API only. Producer input, health probes and credentials are never proxied. */

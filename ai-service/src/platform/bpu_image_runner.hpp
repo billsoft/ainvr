@@ -13,8 +13,11 @@ struct BpuImageResult {
 };
 class BpuImageRunner {
  public:
+  // Multi-program HBM packages require an explicit program; omission retains
+  // the existing single-program behavior and never picks a program by order.
   BpuImageRunner(const std::string& model_path,BpuImageContract contract,
-                 const std::string& image_input_name="");
+                 const std::string& image_input_name="",
+                 const std::string& program_name="");
   BpuImageResult Run(const Nv12Frame& frame,const ImageTransform& transform,
                     const std::map<std::string,std::vector<float>>& auxiliary={});
   // Prepare on the GLES owner thread, then execute BPU asynchronously. Caller

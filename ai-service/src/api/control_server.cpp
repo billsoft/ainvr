@@ -259,9 +259,11 @@ bool NeedsFaceEnhancer(const config::ChannelConfig& cfg) {
 
 ChannelManager::ChannelManager(config::AppConfig config, std::shared_ptr<config::ConfigStore> store,
                                WorkerFactory worker_factory, std::function<bool()> license_check,
-                               std::function<void(const config::SnapshotStoreConfig&, const std::string&)> history_delete)
+                               std::function<void(const config::SnapshotStoreConfig&, const std::string&)> history_delete,
+                               config::SearchProducerLeaseReader search_producer_reader)
     : history_delete_(history_delete ? std::move(history_delete) : output::SnapshotStore::DropChannelHistory),
-      license_check_(std::move(license_check)), worker_factory_(std::move(worker_factory)), boot_cfg_(config),
+      license_check_(std::move(license_check)), search_producer_reader_(std::move(search_producer_reader)),
+      worker_factory_(std::move(worker_factory)), boot_cfg_(config),
       boot_api_key_(config.server.api_key), store_(std::move(store)), start_time_(NowWall()) {
   for (auto&& ch_cfg : config.channels) {
     if (!ch_cfg.enabled && !ch_cfg.deletion_pending) continue;
@@ -281,6 +283,7 @@ std::shared_ptr<pipeline::ChannelWorker> ChannelManager::MakeWorker(
   auto worker = worker_factory_(cfg, ss);
   if (!worker) throw std::logic_error("Worker factory returned null");
   worker->SetLicenseCheck(license_check_);
+  worker->SetSearchProducerLeaseReader(search_producer_reader_);
   return worker;
 }
 

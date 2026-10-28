@@ -53,8 +53,8 @@ describe('automatic save endpoint', () => {
     expect(store.encryptSecret).toHaveBeenCalledWith('mongodb://writer:test@host/db');
     expect(store.encryptSecret).toHaveBeenCalledWith('readonly-test');
     const written = JSON.parse(queries.find(q => q.sql.startsWith('INSERT INTO config_documents')).args[3]);
-    expect(written.snapshot_store.mongo_uri).toBe('${secret:ai-service/snapshot_store.mongo_uri}');
-    expect(written.snapshot_store.mongo_readonly_password).toBe('${secret:ai-service/snapshot_store.mongo_readonly_password}');
+    expect(written.snapshot_store.mongo_uri).toMatch(/^\$\{secret:ai-service\/snapshot_store\.mongo_uri\/[a-f0-9-]{36}\}$/);
+    expect(written.snapshot_store.mongo_readonly_password).toMatch(/^\$\{secret:ai-service\/snapshot_store\.mongo_readonly_password\/[a-f0-9-]{36}\}$/);
     await app.close();
   });
   it('forbids service credentials from starting or inspecting admin jobs', async () => {

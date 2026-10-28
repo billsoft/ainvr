@@ -3,7 +3,7 @@
 #include "image_pipeline.hpp"
 #include "request.hpp"
 #include "reservation.hpp"
-#include <hb_mem_mgr.h>
+#include "../../shared/cpp/bpu_reserved_pool.hpp"
 #include "config_center.hpp"
 #include "configuration_state.hpp"
 #include "vpu_decoder.hpp"
@@ -116,11 +116,7 @@ struct Service {
       if(!engine) {
         try {
           auto next=std::make_unique<ainvr::llm::Engine>(settings.at("package_root"));
-          uint64_t total=0;
-          if(hb_mem_module_open()!=0)throw std::runtime_error("memory_module_unavailable");
-          int heap_rc=hb_mem_get_heap_size(HB_MEM_USAGE_PRIV_HEAP_2_RESERVED,&total);
-          hb_mem_module_close();
-          if(heap_rc!=0)throw std::runtime_error("memory_pool_unknown");
+          const uint64_t total=ainvr::ReadBpuReservedPoolBytes();
           reservation=std::make_unique<ainvr::llm::Reservation>(settings.value("reservation_root",std::string("/run/ainvr")),
               next->manifest().at("resources").at("ion_bytes_measured").get<uint64_t>(),512ULL*1024*1024,total);
           next->Load();

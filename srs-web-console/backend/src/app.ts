@@ -1,3 +1,13 @@
+import { searchRoutes } from './routes/searchRoutes.js';
+import { searchRuntimeRoutes } from './routes/searchRuntimeRoutes.js';
+import { SearchConfigAdapter } from './store/searchConfigAdapter.js';
+import { SearchRuntimeStore } from './store/searchRuntimeStore.js';
+import { readAppliedSearchConnection, readAppliedSearchSettings, type SearchRuntimeDependencies } from './services/searchConnection.js';
+import { buildSearchSourceCatalog, readSearchAiProcessors } from './services/searchSourceCatalog.js';
+import { SearchNativeClient } from './services/searchNativeClient.js';
+import { PersistentSearchWorker } from './services/persistentSearchWorker.js';
+import { createSearchRecordingAvailability } from './services/searchRecordingAvailability.js';
+import { osHelperConfigFromEnv, storageRequest } from './services/osHelperClient.js';
 // Fastify 应用构建（可复用，测试用 fastify.inject 不启端口）
 import { storageRoutes } from './routes/storage.js';
 import {onvifRoutes} from './routes/onvif.js';
@@ -213,6 +223,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         ['/api/channels', '/api/ai/channels'].includes(pathname)) return;
     if(boundService==='alarm-service'&&req.method==='POST'&&['/api/internal/alarm-review','/api/internal/alarm-recording-evidence'].includes(pathname))return;
     if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/alarm-evidence\/[a-f0-9]{64}(?:\/image)?$/.test(pathname))return;
+    if (boundService === 'search-service' &&
+      ((req.method === 'GET' && pathname === '/api/internal/search/runtime-config') ||
+       (req.method === 'POST' && pathname === '/api/internal/search/runtime-state'))) return;
+    if (boundService === 'ai-service' && req.method === 'GET' && pathname === '/api/internal/search/producer-config') return;
     if (boundService && url.startsWith('/api/v1/config/')) {
       (req as any).boundService = boundService;
       return;
@@ -245,6 +259,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   fastify.addHook('onClose', async () => licenseGate.stop());
   fastify.addHook('onRequest', async (req, reply) => {
     const url = req.raw.url ?? '';
+    const pathname = url.split('?')[0];
+    if (resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'search-service' &&
+      ((req.method === 'GET' && pathname === '/api/internal/search/runtime-config') ||
+       (req.method === 'POST' && pathname === '/api/internal/search/runtime-state'))) return;
+    if (resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'ai-service' &&
+      req.method === 'GET' && pathname === '/api/internal/search/producer-config') return;
     if (licenseGate.isExempt(url, req.method)) return;
     const d = licenseGate.decide();
     if (d.block) {
@@ -333,6 +353,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
           new PullModeAdapter('recorder'),
           new AlarmConfigAdapter(),
           new LlmConfigAdapter(),
+          new SearchConfigAdapter(),
         ]);
         // 升级会用离线包默认配置覆盖 srs.conf：按配置中心重新下发（失败不阻断启动）
         await restoreLocalConfig(pgStore, backendAdapter);
@@ -444,6 +465,78 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       instance.addHook('onReady',async()=>{void poll();});
       instance.addHook('onClose',async()=>{stopped=true;clearTimeout(timer);});
     }
+    let searchCatalogPending: Promise<ReturnType<typeof buildSearchSourceCatalog>> | null = null;
+    let searchCatalogUntil = 0;
+    let searchCatalogLoading = false;
+    const searchCatalog = async () => {
+      if (searchCatalogPending && (searchCatalogLoading || Date.now() < searchCatalogUntil)) return searchCatalogPending;
+      const pending = (async () => buildSearchSourceCatalog((await channelStore.read()).channels,
+        await readSearchAiProcessors(await settingsStore.read(), pgStore, aiServiceBaseUrl)))();
+      searchCatalogPending = pending; searchCatalogLoading = true;
+      void pending.then(() => { if (searchCatalogPending === pending) { searchCatalogLoading = false; searchCatalogUntil = Date.now() + 1000; } },
+        () => { if (searchCatalogPending === pending) searchCatalogLoading = false; });
+      void pending.catch(() => { if (searchCatalogPending === pending) searchCatalogPending = null; });
+      return pending;
+    };
+    const searchChannels = async () => { try { return (await searchCatalog()).channels; } catch { return []; } };
+    const searchRuntime = pgStore ? new SearchRuntimeStore(pgStore.pool) : null;
+    let searchVolumesPending: Promise<unknown> | null = null;
+    const searchDependencies: SearchRuntimeDependencies | null = pgStore ? {
+      store: pgStore, sourceCatalog: searchCatalog,
+      volumes: async () => {
+        const helper = osHelperConfigFromEnv();
+        if (!helper) throw new Error('storage_unavailable');
+        if (!searchVolumesPending) {
+          const pending = storageRequest(helper, '/storage/volumes');
+          searchVolumesPending = pending;
+          void pending.then(() => { if (searchVolumesPending === pending) searchVolumesPending = null; },
+            () => { if (searchVolumesPending === pending) searchVolumesPending = null; });
+        }
+        return searchVolumesPending;
+      },
+    } : null;
+    // Search is a same-host native service, bound exclusively to loopback.
+    const searchHost = process.env.SEARCH_SERVICE_HOST ?? '127.0.0.1';
+    await instance.register(searchRuntimeRoutes, {
+      dependencies: searchDependencies, runtime: searchRuntime, principal: alarmPrincipal,
+      internalPrincipal: async req => resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'search-service',
+      producerPrincipal: async req => resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'ai-service',
+      managementConnection: async () => {
+        const token = [...serviceTokens].find(([, service]) => service === 'search-service')?.[0];
+        return token && ['127.0.0.1', 'localhost', 'host.docker.internal'].includes(searchHost)
+          ? { baseUrl: `http://${searchHost}:8400`, apiToken: token, timeoutMs: 3000 } : null;
+      },
+    });
+    const searchNative = new SearchNativeClient(() => searchDependencies && searchRuntime
+      ? readAppliedSearchConnection(searchDependencies, searchRuntime, searchHost) : Promise.resolve(null));
+    const nativeSearchStatus = searchNative.status.bind(searchNative);
+    searchNative.status = async () => {
+      if (!pgStore || !searchRuntime) return { ready: false, reason: 'config_pending', model_version: null };
+      const applied = await readAppliedSearchSettings(pgStore);
+      if (!applied) return { ready: false, reason: 'config_pending', model_version: null };
+      return !applied.enabled ? { ready: false, reason: 'disabled', model_version: null } : nativeSearchStatus();
+    };
+    const searchWorker = new PersistentSearchWorker({
+      native: searchNative, channels: searchChannels,
+      queryConcurrency: async () => pgStore ? (await readAppliedSearchSettings(pgStore))?.limits.query_concurrency ?? 2 : 2,
+      sessionTtlSeconds: async () => pgStore ? (await readAppliedSearchSettings(pgStore))?.limits.search_ttl_s ?? 3600 : 3600,
+      coverageKinds: async channelId => {
+        if (!pgStore) return ['scene'];
+        const applied = await readAppliedSearchSettings(pgStore), source = (await searchCatalog()).sources.find(value => value.channel_id === channelId);
+        if (!applied || !source) throw new Error('source_catalog_unavailable');
+        const kinds: ('object' | 'scene')[] = [];
+        if (applied.sampling.object && source.object) kinds.push('object');
+        if (applied.sampling.scene) kinds.push('scene');
+        return kinds;
+      },
+      recordingAvailability: createSearchRecordingAvailability(async () => {
+        const token = [...serviceTokens].find(([, service]) => service === 'recorder')?.[0];
+        if (!token) return null;
+        return { baseUrl: (await settingsStore.read()).recorderService?.baseUrl || recorderServiceBaseUrl,
+          apiToken: token, timeoutMs: 2000 };
+      }),
+    });
+    await instance.register(searchRoutes, { principal: alarmPrincipal, channels: searchChannels, worker: searchWorker });
     await instance.register(flowRoutes,{
       store:armingStore,
       principal:alarmPrincipal,connection:alarmConnection,synchronization:ruleSync,

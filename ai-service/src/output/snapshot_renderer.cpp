@@ -56,13 +56,17 @@ std::optional<EncodedSnapshot> SnapshotRenderer::RenderOriginal(const Nv12Frame&
   auto plan=PlanSnapshot(bbox,frame.width,frame.height,cfg,square);if(!plan)return std::nullopt;
   auto t=SnapshotTransform(*plan,bt709,full_range);EncodedSnapshot result;result.plan=*plan;
   const bool aligned=t.width>=18&&t.height>=18&&t.width%2==0&&t.height%2==0;
+  if(policy_==SnapshotEncodingPolicy::HardwareOnly && !aligned)
+    throw std::runtime_error("snapshot_hardware_dimensions_unsupported");
   if(hardware_&&aligned){
     auto image=images_.RunJpegNv12(frame,t);result.render_backend=image.backend;result.fallback_reasons=image.fallback_reasons;
     try{
       std::array<int,3> key{t.width,t.height,cfg.jpeg_quality};
       if(!jpeg_||jpeg_config_!=key){jpeg_.reset();jpeg_=std::make_unique<JpegEncoder>(key[0],key[1],key[2]);jpeg_config_=key;}
       result.jpeg=jpeg_->EncodeFullRangeNv12(image.jpeg_nv12);result.encoder_backend="jpu";return result;
-    }catch(const std::runtime_error& e){jpeg_.reset();result.fallback_reasons.push_back(std::string("JPU failed: ")+e.what());}
+    }catch(const std::runtime_error& e){jpeg_.reset();
+      if(policy_==SnapshotEncodingPolicy::HardwareOnly)throw std::runtime_error("snapshot_hardware_encode_failed");
+      result.fallback_reasons.push_back(std::string("JPU failed: ")+e.what());}
   }else result.fallback_reasons.push_back(hardware_?"JPU requires even dimensions at least 18; preserve crop with CPU JPEG":"Dedicated hardware disabled");
   auto image=images_.RunNv12(frame,t);result.render_backend=image.backend;
   result.fallback_reasons.insert(result.fallback_reasons.end(),image.fallback_reasons.begin(),image.fallback_reasons.end());

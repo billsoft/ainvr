@@ -14,6 +14,7 @@ describe('配置中心服务名单', () => {
       'recorder',
       'alarm-service',
       'llm-service',
+      'search-service',
     ])
   })
 

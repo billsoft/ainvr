@@ -1,5 +1,5 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
-import {limitedJson} from './alarmProxy.js';
+import {limitedJson} from '../services/internalServiceHttp.js';
 interface Options {
   recordingConnection?:()=>Promise<{baseUrl:string;token:string}>;
   alarmConnection?:()=>Promise<{baseUrl:string;apiToken:string}|null>;

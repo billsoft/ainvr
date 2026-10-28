@@ -6,6 +6,8 @@
 #include <functional>
 #include <future>
 #include <mutex>
+#include <optional>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -43,19 +45,40 @@ class ArchiveExecutor {
   ArchiveExecutor& operator=(const ArchiveExecutor&) = delete;
 
   std::future<void> Submit(std::function<void()> fn) {
-    auto task = std::make_shared<std::packaged_task<void()>>(std::move(fn));
-    auto result = task->get_future();
+    std::future<void> result;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       space_.wait(lock, [this] { return stopping_ || tasks_.size() < capacity_; });
       if (stopping_) throw std::runtime_error("archive executor stopped");
-      tasks_.emplace_back([task] { (*task)(); });
+      result = EnqueueLocked(std::move(fn));
     }
     ready_.notify_one();
     return result;
   }
 
+  // Optional background work must not slow real-time producers. A contended
+  // admission lock, full queue or shutdown rejects immediately; the callback is
+  // never executed in that case. A returned future has the same completion and
+  // exception contract as Submit and must be joined before captures are freed.
+  std::optional<std::future<void>> TrySubmit(std::function<void()> fn) {
+    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+    if (!lock.owns_lock() || stopping_ || tasks_.size() >= capacity_)
+      return std::nullopt;
+    auto result = EnqueueLocked(std::move(fn));
+    lock.unlock();
+    ready_.notify_one();
+    return result;
+  }
+
  private:
+  // Caller holds mutex_. Both admission modes use exactly the same queue and
+  // packaged-task exception handling; no parallel executor is introduced.
+  std::future<void> EnqueueLocked(std::function<void()> fn) {
+    auto task = std::make_shared<std::packaged_task<void()>>(std::move(fn));
+    auto result = task->get_future();
+    tasks_.emplace_back([task] { (*task)(); });
+    return result;
+  }
   void Shutdown() {
     { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; }
     ready_.notify_all();

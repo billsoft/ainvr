@@ -76,6 +76,7 @@ export async function resolveSecretRefs(
  *  重新算哈希）。这里改用 rejectReservedAdminPasswordField() 显式拒绝，
  *  见下方定义处的完整说明。 */
 export const KNOWN_SECRET_PATHS: Record<string, string[][]> = {
+  'search-service': [['callers', '*', 'key']],
   'llm-service': [['admin_key'], ['api_keys', '*', 'key']],
   'alarm-service': [['mongo_uri'], ['api_token'], ['producer_token']],
   recorder: [
@@ -145,7 +146,12 @@ export async function sanitizeImportDocSecrets(
 
     // 明文非空 → 写入 secrets + 替换占位符
     if (typeof val === 'string' && val.length > 0) {
-      const secretKey = pathToSecretKey(service, path) + (['alarm-service', 'llm-service'].includes(service) ? '/' + crypto.randomUUID() : '');
+      // URI/password snapshots must remain immutable while a new draft waits
+      // for AI restart. Keep server.api_key's established canonical contract.
+      const versioned = ['alarm-service', 'llm-service', 'search-service'].includes(service) ||
+        (service === 'ai-service' && path[0] === 'snapshot_store' &&
+          ['mongo_uri', 'mongo_readonly_password'].includes(path[1] ?? ''));
+      const secretKey = pathToSecretKey(service, path) + (versioned ? '/' + crypto.randomUUID() : '');
       if (client) {
         // 同一事务内写：加锁避免并发，用相同的加密方式
         const ciphertext = await pgStore.encryptSecret(val);

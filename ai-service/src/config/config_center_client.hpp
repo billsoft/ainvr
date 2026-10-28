@@ -15,6 +15,7 @@
 #include <thread>
 
 #include <nlohmann/json_fwd.hpp>
+#include "search_producer_grant.hpp"
 
 namespace ai_service::config {
 
@@ -30,7 +31,8 @@ std::string ServiceTokenEnvName(const std::string& service_name);
 class ConfigCenterClient {
  public:
   ConfigCenterClient(std::string base_url, std::string service_name, std::string service_token,
-                      ApplyCallback on_apply, int poll_interval_seconds = 10);
+                      ApplyCallback on_apply, int poll_interval_seconds = 10,
+                      SearchProducerClock producer_clock = {});
   ~ConfigCenterClient();
 
   ConfigCenterClient(const ConfigCenterClient&) = delete;
@@ -41,10 +43,19 @@ class ConfigCenterClient {
 
   std::optional<int64_t> AppliedVersion() const;
   int PollInterval() const { return poll_interval_; }
+  // Non-networking immutable view. A retained lease must use IsCurrent() before
+  // preparation and before publication; the full source table is never copied.
+  std::optional<SearchProducerLease> GetSearchProducerGrant() const;
+  // The closure retains only weak revocation authority, never this client.
+  // Stop/destruction safely invalidates readers retained by workers.
+  SearchProducerLeaseReader SearchProducerReader() const;
 
  private:
   void RunLoop();
   void TryUpdate();
+  void RefreshSearchProducerGrant();
+  enum class RequestTarget { Config, SearchProducer };
+  enum class RequestFailure { Transport, Rejected, Invalid };
   void DoUpdate();
   void BumpRetry();
   void ResetRetry();
@@ -53,11 +64,14 @@ class ConfigCenterClient {
   std::optional<nlohmann::json> MergeDocuments(const nlohmann::json& docs);
   bool Report(int64_t version, const std::string& status, bool restart_required,
               const std::string& error);
-  // GET(body=nullptr)/POST;path 不含 /api/v1/config 前缀(内部拼接)。
+  // Config paths omit /api/v1/config; the producer target accepts no path,
+  // method/body choice or foreign service and uses its one fixed raw endpoint.
   // 失败(网络/非 2xx/JSON 解析失败)返回 nullopt,不抛异常——跟 v1
   // "配置中心不可达时静默等下一轮"的语义一致。
   std::optional<nlohmann::json> Request(const std::string& path, const std::string& method,
-                                        const nlohmann::json* body);
+                                        const nlohmann::json* body,
+                                        RequestTarget target = RequestTarget::Config,
+                                        RequestFailure* failure = nullptr);
 
   std::string base_url_;
   std::string service_name_;
@@ -65,6 +79,8 @@ class ConfigCenterClient {
   ApplyCallback on_apply_;
   int poll_interval_;
 
+  std::shared_ptr<SearchProducerGrantAuthority> producer_authority_;
+  std::mutex lifecycle_mutex_;
   std::thread thread_;
   std::atomic<bool> stop_event_{false};
   std::mutex wait_mutex_;

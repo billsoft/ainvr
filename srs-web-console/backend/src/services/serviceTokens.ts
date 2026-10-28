@@ -19,6 +19,7 @@ const ENV_BY_SERVICE: Record<ConfigServiceName, string> = {
   recorder: 'CONFIG_SERVICE_TOKEN_RECORDER',
   'alarm-service': 'CONFIG_SERVICE_TOKEN_ALARM_SERVICE',
   'llm-service': 'CONFIG_SERVICE_TOKEN_LLM_SERVICE',
+  'search-service': 'CONFIG_SERVICE_TOKEN_SEARCH_SERVICE',
 };
 
 /** token 值 → 服务名。启动时从 env 加载一次。 */
@@ -26,7 +27,10 @@ export function loadServiceTokens(env: NodeJS.ProcessEnv = process.env): Map<str
   const map = new Map<string, string>();
   for (const [svc, envName] of Object.entries(ENV_BY_SERVICE)) {
     const t = (env[envName] ?? '').trim();
-    if (t) map.set(t, svc);
+    if (t) {
+      if (map.has(t)) throw new Error('Each configuration service requires a distinct credential');
+      map.set(t, svc);
+    }
   }
   return map;
 }

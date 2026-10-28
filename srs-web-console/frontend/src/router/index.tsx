@@ -1,3 +1,4 @@
+import SearchPage from '@/pages/Search'
 import FlowPage from '@/pages/Flow'
 import { Navigate, createBrowserRouter } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
@@ -28,6 +29,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/monitor" replace /> },
       { path: 'dashboard', element: <DashboardPage /> },
+      { path: 'smart-search', element: <SearchPage />, errorElement: <RouteErrorBoundary /> },
       { path: 'alarm-analysis', element: <AlarmTriggersPage />, errorElement: <RouteErrorBoundary /> },
       { path: 'alarms', element: <AlarmListPage />, errorElement: <RouteErrorBoundary /> },
       { path: 'flow-statistics', element: <FlowPage />, errorElement: <RouteErrorBoundary /> },

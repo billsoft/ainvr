@@ -8,7 +8,7 @@ export interface AiSourceLink {
     publish: { enabled: boolean; effective_target_url?: string; target_url?: string | null };
   };
 }
-function stream(url: string) {
+export function localRtmpStreamPath(url: string) {
   try {
     const u = new URL(url);
     if (
@@ -41,10 +41,10 @@ export function resolvePtzSource(
   const parents = new Map<string, Set<string>>();
   const processors = new Map<string, Set<string>>();
   for (const a of ai) {
-    const input = byStream.get(stream(a.config.stream.url) ?? '') ?? [];
+    const input = byStream.get(localRtmpStreamPath(a.config.stream.url) ?? '') ?? [];
     const output =
       byStream.get(
-        stream(a.config.publish.effective_target_url || a.config.publish.target_url || '') ?? '',
+        localRtmpStreamPath(a.config.publish.effective_target_url || a.config.publish.target_url || '') ?? '',
       ) ?? [];
     if (input.length === 1) {
       const ids = processors.get(input[0]!.id) ?? new Set();

@@ -17,6 +17,7 @@ import { DatabaseConfigForm } from './DatabaseConfigForm'
 import { StreamingConfigForm } from './StreamingConfigForm'
 import { AiServiceConfigForm } from './AiServiceConfigForm'
 import { RecorderConfigForm } from './RecorderConfigForm'
+import { SearchServiceConfigForm } from './SearchServiceConfigForm'
 import { NetworkConfigForm } from './NetworkConfigForm'
 import { SystemTimeForm } from './SystemTimeForm'
 import { RemoteAssistForm } from './RemoteAssistForm'
@@ -32,6 +33,7 @@ export const SERVICES: { key: string; label: string; description: string }[] = [
   { key: 'recorder', label: '录像服务', description: '录像存储、保留策略等' },
   { key: 'alarm-service', label: '告警微服务', description: '行为分析、告警与统计' },
   { key: 'llm-service', label: '大模型微服务', description: '图片复审、调用与资源' },
+  { key: 'search-service', label: '智能搜索服务', description: '搜索模型、采集范围与索引' },
 ]
 const categories: [string, string, string][] = [
   ['basic', '基础配置', '监看上限、访问密码'],
@@ -43,6 +45,7 @@ const categories: [string, string, string][] = [
   ['recorder', '录像微服务配置', '存储、配额、分段'],
   ['alarm-service', '告警微服务配置', '独立服务连接、数据库、鉴权'],
   ['llm-service', '大模型微服务配置', '模型、复审参数、资源与调用'],
+  ['search-service', '智能搜索', '模型、采集范围、历史与索引存储'],
   ['network', '网络管理', '网卡状态、IP 配置、WiFi'],
   ['time', '日期和时间', '设备时间、校准、时间服务器'],
   ['license', '授权管理', '机器码、注册密钥、授权状态'],
@@ -178,6 +181,7 @@ export default function ConfigCenterPage() {
           onBusyChange={setPasswordBusy} />}
         {category === 'alarm-service' && <AlarmServiceConfigForm document={doc('alarm-service')} onSaveBatch={saveBatch} />}
         {category === 'llm-service' && <LlmServiceConfigForm key={doc('llm-service')?.updatedAt??'new'} document={doc('llm-service')} onSaveBatch={saveBatch} />}
+        {category === 'search-service' && <SearchServiceConfigForm key={doc('search-service')?.updatedAt ?? 'new'} document={doc('search-service')} onSaveBatch={saveBatch} />}
         {category === 'database' && <DatabaseConfigForm aiServiceDoc={doc('ai-service')} onSavePartial={savePartial} />}
         {category === 'streaming' && <StreamingConfigForm backendDoc={doc('backend')} srsDoc={doc('srs')} onSavePartial={savePartial} />}
         {category === 'ai-service' && <AiServiceConfigForm backendDoc={doc('backend')} aiServiceDoc={doc('ai-service')} onSaveBatch={saveBatch} />}

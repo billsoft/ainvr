@@ -64,6 +64,9 @@ class ReusedChannelWorker : public ChannelWorker {
   bool ResetAnalytics(const std::string& generation) override;
   // Assigned before starting any worker thread; immutable while running.
   void SetLicenseCheck(std::function<bool()> check) { license_check_ = std::move(check); }
+  void SetSearchProducerLeaseReader(config::SearchProducerLeaseReader reader) override {
+    search_producer_reader_ = std::move(reader);
+  }
   bool LicenseAllowed() const noexcept {
     if (license_revoked_.load()) return false;
     if (!CurrentLicenseAllowed()) {
@@ -99,6 +102,12 @@ class ReusedChannelWorker : public ChannelWorker {
   nlohmann::json GetStats() const;
 
  protected:
+  std::optional<config::SearchProducerLease> ReadSearchProducerLease() const noexcept {
+    try {
+      auto lease = search_producer_reader_ ? search_producer_reader_() : std::nullopt;
+      return lease && lease->IsCurrent() ? lease : std::nullopt;
+    } catch (...) { return std::nullopt; }
+  }
   // Business tests override the hardware factory; production always uses BPU.
   virtual std::unique_ptr<adapters::BpuChannelAdapter> CreatePlatformAdapter(const config::ModelConfig& model);
 
@@ -110,6 +119,7 @@ class ReusedChannelWorker : public ChannelWorker {
   std::unique_ptr<analytics::EventWorker> notification_worker_;
   std::atomic<uint64_t> event_stage_failures_{0};
   std::function<bool()> license_check_;
+  config::SearchProducerLeaseReader search_producer_reader_;
   // Once either worker observes revocation, both must finish this generation.
   // Only Start(), after joining the old threads, may clear the latch.
   mutable std::atomic<bool> license_revoked_{false};

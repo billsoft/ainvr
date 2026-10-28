@@ -132,11 +132,9 @@ std::vector<float> BpuPromptEngine::Encode(const std::vector<std::string>& phras
     const std::vector<std::string> group(phrases.begin()+begin,phrases.begin()+std::min(begin+8,phrases.size()));
   auto rows=Tokenize(resources_,group);std::vector<float> embeddings(8*512,0);
   const auto& input=text_description_.at("inputs").at(0);
-  const size_t bytes=input.at("aligned_bytes").get<size_t>();
-  if(bytes<77*sizeof(int32_t)||bytes>4*1024*1024||input.at("byte_strides").at(1)!=4)
-    throw std::runtime_error("Text token SDK layout mismatch");
   for(size_t i=0;i<rows.size();++i) {
-    std::vector<unsigned char> packed(bytes,0);std::memcpy(packed.data(),rows[i].data(),77*sizeof(int32_t));
+    const std::vector<int32_t> tokens(rows[i].begin(),rows[i].end());
+    auto packed=PackBpuTokenIds(tokens,input,49408);
     auto outputs=text_.Run({packed});auto encoded=DecodeTensor(outputs.at(0),text_description_.at("outputs").at(0));
     if(encoded.size()!=512)throw std::runtime_error("Text embedding size mismatch");
     for(float x:encoded)if(!std::isfinite(x))throw std::runtime_error("Non-finite text embedding");

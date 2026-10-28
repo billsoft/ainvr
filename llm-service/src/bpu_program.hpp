@@ -1,6 +1,7 @@
 #pragma once
 #include <hobot/dnn/hb_dnn.h>
 #include <hobot/hb_ucp.h>
+#include "../../shared/cpp/bpu_dma_buffer.hpp"
 #include <nlohmann/json.hpp>
 #include <functional>
 #include <map>
@@ -9,13 +10,7 @@
 #include <vector>
 
 namespace ainvr::llm {
-struct DmaBuffer {
-  hbUCPSysMem memory{};
-  explicit DmaBuffer(size_t bytes);
-  ~DmaBuffer();
-  DmaBuffer(const DmaBuffer&) = delete;
-  DmaBuffer& operator=(const DmaBuffer&) = delete;
-};
+using DmaBuffer = ainvr::BpuDmaBuffer;
 struct Tensor {
   hbDNNTensor descriptor{};
   std::shared_ptr<DmaBuffer> buffer;

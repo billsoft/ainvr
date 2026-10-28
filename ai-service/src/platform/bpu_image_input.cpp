@@ -14,7 +14,7 @@ struct Layout {
 };
 Layout Read(const nlohmann::json& d, int dtype, bool image=true) {
   if(d.at("dtype_id").get<int>()!=dtype || d.at("quantization").get<int>()!=NONE)
-    throw std::invalid_argument("BPU image input dtype/quantization does not match explicit contract");
+    throw std::invalid_argument("BPU tensor input dtype/quantization does not match explicit contract");
   Layout l{d.at("shape").get<std::vector<int64_t>>(),
     d.at("byte_strides").get<std::vector<int64_t>>(),d.at("aligned_bytes").get<size_t>()};
   if(l.shape.empty() || l.shape.size()>8 || (image && l.shape.size()!=4) ||
@@ -32,6 +32,33 @@ Layout Read(const nlohmann::json& d, int dtype, bool image=true) {
     throw std::invalid_argument("BPU image storage is invalid or exceeds image limits");
   return l;
 }
+template<class T> std::vector<unsigned char> CopyTensorRows(const std::vector<T>& values,const Layout& l) {
+  const size_t count=values.size(),width=l.shape.back(),rows=count/width;
+  std::vector<unsigned char> result(l.bytes,0);
+  for(size_t row=0;row<rows;++row) {
+    size_t remaining=row,offset=0;
+    for(size_t axis=l.shape.size()-1;axis>0;--axis) {
+      size_t dimension=l.shape[axis-1];
+      offset+=(remaining%dimension)*size_t(l.strides[axis-1]);
+      remaining/=dimension;
+    }
+    if(offset>l.bytes || width*sizeof(T)>l.bytes-offset)
+      throw std::invalid_argument("Auxiliary BPU tensor row exceeds SDK storage");
+    std::memcpy(result.data()+offset,values.data()+row*width,width*sizeof(T));
+  }
+  return result;
+}
+template<class T> std::vector<unsigned char> PackTokens(const std::vector<T>& values,
+    const nlohmann::json& d,int dtype,int64_t vocabulary_size) {
+  const auto l=Read(d,dtype,false);
+  if(l.shape.size()!=2 || l.shape[1]>512 || l.shape[1]!=int64_t(values.size()) ||
+     l.strides.back()!=sizeof(T) || l.bytes>65536 || vocabulary_size<1 || vocabulary_size>16777216)
+    throw std::invalid_argument("Invalid bounded BPU token tensor contract");
+  for(const auto value:values)if(value<0 || int64_t(value)>=vocabulary_size)
+    throw std::invalid_argument("BPU token index outside selected vocabulary");
+  return CopyTensorRows(values,l);
+}
+
 std::vector<unsigned char> CopyPlane(const unsigned char* source,int height,int row_bytes,
                                      const Layout& l) {
   if(l.strides[1]<row_bytes || size_t(l.strides[1])*height>l.bytes)
@@ -68,21 +95,15 @@ std::vector<unsigned char> PackBpuFloatTensor(const std::vector<float>& values,
     throw std::invalid_argument("Auxiliary BPU float32 tensor layout/count mismatch");
   for(float value:values)if(!std::isfinite(value))
     throw std::invalid_argument("Auxiliary BPU tensor has a non-finite value");
-  const size_t width=l.shape.back(),rows=count/width;
-  std::vector<unsigned char> result(l.bytes,0);
-  for(size_t row=0;row<rows;++row) {
-    size_t remaining=row,offset=0;
-    for(size_t axis=l.shape.size()-1;axis>0;--axis) {
-      size_t dimension=l.shape[axis-1];
-      offset+=(remaining%dimension)*size_t(l.strides[axis-1]);
-      remaining/=dimension;
-    }
-    if(offset>l.bytes || width*sizeof(float)>l.bytes-offset)
-      throw std::invalid_argument("Auxiliary BPU tensor row exceeds SDK storage");
-    std::memcpy(result.data()+offset,values.data()+row*width,width*sizeof(float));
-  }
-  return result;
+  return CopyTensorRows(values,l);
 }
+std::vector<unsigned char> PackBpuTokenIds(const std::vector<int32_t>& values,const nlohmann::json& d,int64_t vocabulary_size) {
+  return PackTokens(values,d,HB_DNN_TENSOR_TYPE_S32,vocabulary_size);
+}
+std::vector<unsigned char> PackBpuTokenIds(const std::vector<int64_t>& values,const nlohmann::json& d,int64_t vocabulary_size) {
+  return PackTokens(values,d,HB_DNN_TENSOR_TYPE_S64,vocabulary_size);
+}
+
 size_t BpuFloatImageInputIndex(const nlohmann::json& inputs,const std::string& name) {
   if(!inputs.is_array() || inputs.empty() || inputs.size()>16)
     throw std::invalid_argument("Invalid BPU input descriptor count");

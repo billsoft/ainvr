@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { ImageOff } from 'lucide-react'
 import { snapshotService } from '@/api/snapshotService'
+import { requestBlob } from '@/api/httpClient'
 
-interface Props {
-  channelId: string
-  imageId: string
+interface SharedProps {
   alt: string
   className?: string
   /** 'cover'（默认）用于网格缩略图裁切铺满；'contain' 用于大图/放大层——
@@ -13,6 +12,8 @@ interface Props {
   variant?: 'processed' | 'original'
   onImageLoaded?: () => void
 }
+
+type Props = SharedProps & ({ channelId: string; imageId: string; path?: never } | { path: string; channelId?: never; imageId?: never })
 
 /**
  * 懒加载的鉴权图片——用在识别历史时间轴里。<img src> 标签没法附带自定义
@@ -26,7 +27,7 @@ interface Props {
  * 时显示占位图标，不是让整张卡片跟着崩掉：浏览页面是异步游标分页，允许
  * 列表加载完之后、用户实际看到某一条之前，这条记录已经被淘汰。
  */
-export function AuthImage({ channelId, imageId, alt, className, objectFit = 'cover', variant = 'processed', onImageLoaded }: Props) {
+export function AuthImage({ channelId, imageId, path, alt, className, objectFit = 'cover', variant = 'processed', onImageLoaded }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [inView, setInView] = useState(false)
   const [url, setUrl] = useState<string | null>(null)
@@ -53,11 +54,12 @@ export function AuthImage({ channelId, imageId, alt, className, objectFit = 'cov
   useEffect(() => {
     if (!inView) return
     let cancelled = false
+    const abort = new AbortController()
     setUrl(null)
     setStatus('loading')
-    const fetchImage = variant === 'original'
-      ? snapshotService.getImageBlob(channelId, imageId, 'original')
-      : snapshotService.getImageBlob(channelId, imageId)
+    const fetchImage = path ? requestBlob(path, abort.signal) : variant === 'original'
+      ? snapshotService.getImageBlob(channelId!, imageId!, 'original')
+      : snapshotService.getImageBlob(channelId!, imageId!)
     void fetchImage.then((blob) => {
       if (cancelled) return
       if (!blob) {
@@ -71,8 +73,9 @@ export function AuthImage({ channelId, imageId, alt, className, objectFit = 'cov
     })
     return () => {
       cancelled = true
+      abort.abort()
     }
-  }, [inView, channelId, imageId, variant])
+  }, [inView, channelId, imageId, path, variant])
 
   // object URL 是浏览器进程级资源，组件卸载/图片换了都必须显式释放，
   // 不然长时间浏览会积累内存泄漏（朋友圈式时间轴一次会话可能滚过几百条）。
@@ -89,6 +92,7 @@ export function AuthImage({ channelId, imageId, alt, className, objectFit = 'cov
       ) : status === 'missing' || status === 'error' ? (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-surface-page text-ink-faint" title={status === 'error' ? '图片暂时无法加载' : variant === 'original' ? '这条历史记录未保存原图或已被淘汰' : '记录已被淘汰'}>
           <ImageOff size={20} aria-hidden />
+          {path && <span className="text-sm">{status === 'error' ? '图片暂时无法加载' : '图片未保存或已过期'}</span>}
           {variant === 'original' && <span className="text-sm">{status === 'error' ? '原图暂时无法加载' : '原图未保存或已被淘汰'}</span>}
         </div>
       ) : (

@@ -11,6 +11,11 @@ std::vector<unsigned char> PackBpuFloatNchw(const std::vector<float>& values,
 // Auxiliary tensors contain BPU-produced embeddings, never CPU NN results.
 std::vector<unsigned char> PackBpuFloatTensor(const std::vector<float>& values,
                                             const nlohmann::json& descriptor);
+// Bounded nonnegative tokenizer indices; this is layout copying, not model math.
+std::vector<unsigned char> PackBpuTokenIds(const std::vector<int32_t>& values,
+    const nlohmann::json& descriptor, int64_t vocabulary_size);
+std::vector<unsigned char> PackBpuTokenIds(const std::vector<int64_t>& values,
+    const nlohmann::json& descriptor, int64_t vocabulary_size);
 size_t BpuFloatImageInputIndex(const nlohmann::json& descriptors,
                               const std::string& image_name);
 std::vector<std::vector<unsigned char>> PackBpuFloatInputs(

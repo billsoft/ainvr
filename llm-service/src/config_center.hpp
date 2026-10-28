@@ -1,17 +1,11 @@
 #pragma once
-#include <httplib.h>
-#include <nlohmann/json.hpp>
+#include "../../shared/cpp/config_center_client.hpp"
+#include <cmath>
 #include <set>
 #include <regex>
-#include <fstream>
-#include <sys/stat.h>
 namespace ainvr::llm {
-inline nlohmann::json ReadPrivateJson(const std::string& path){
-  struct stat st{};
-  if(stat(path.c_str(),&st)||!S_ISREG(st.st_mode)||(st.st_mode&077)||st.st_size>65536)
-    throw std::runtime_error("private configuration file required");
-  std::ifstream f(path);nlohmann::json j;f>>j;return j;
-}
+using ainvr::config::ReadPrivateJson;
+using ainvr::config::ConfigTransport;
 inline nlohmann::json NormalizeSettings(const nlohmann::json& s,int version) {
   if(s.at("listen").at("host")!="127.0.0.1"||s.at("listen").at("port")!=8300||
      s.at("model").at("package_id")!="qwen3vl-4b-review-v3")throw std::invalid_argument("unsupported endpoint or model");
@@ -37,21 +31,4 @@ inline nlohmann::json NormalizeSettings(const nlohmann::json& s,int version) {
     {"exec_timeout_s",integer("exec_timeout_s",1,120)},
     {"submit_time_share_cap_percent",integer("submit_time_share_cap_percent",5,90)}};
 }
-class ConfigTransport {
- public:
-  explicit ConfigTransport(const nlohmann::json& b):token_(b.at("service_token")) {
-    std::string url=b.at("control_url");
-    std::smatch m;if(!std::regex_match(url,m,std::regex("http://(127\\.0\\.0\\.1|localhost):([0-9]{1,5})/?")))throw std::invalid_argument("local config endpoint required");
-    int port=std::stoi(m[2]);if(port<1||port>65535||token_.size()<32)throw std::invalid_argument("invalid bootstrap");
-    client_=std::make_unique<httplib::Client>(m[1],port);client_->set_connection_timeout(3);client_->set_read_timeout(10);client_->set_write_timeout(10);
-  }
-  nlohmann::json Request(const std::string& path,const nlohmann::json* body=nullptr){
-    httplib::Headers headers={{"x-service-token",token_}};
-    auto result=body?client_->Post(("/api/v1/config/"+path).c_str(),headers,body->dump(),"application/json"):
-                     client_->Get(("/api/v1/config/"+path).c_str(),headers);
-    if(!result||result->status!=200||result->body.size()>1024*1024)throw std::runtime_error("configuration center unavailable");
-    auto j=nlohmann::json::parse(result->body);if(j.at("code")!=0)throw std::runtime_error("configuration request failed");return j.at("data");
-  }
- private:std::string token_;std::unique_ptr<httplib::Client> client_;
-};
 } // namespace ainvr::llm

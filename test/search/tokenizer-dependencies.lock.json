@@ -1,0 +1,13 @@
+{
+  "tokenizers_cpp": {"commit": "c586c52f93f7b060753bd2388eb96a105cb7374d", "license": "Apache-2.0"},
+  "sentencepiece": {"commit": "e0f0f966959108415183d6cbe7a9051ca8bc2da1", "version": "0.2.2", "license": "Apache-2.0"},
+  "abseil": {
+    "version": "20260107.1",
+    "url": "https://codeload.github.com/abseil/abseil-cpp/tar.gz/refs/tags/20260107.1",
+    "sha256": "4314e2a7cbac89cac25a2f2322870f343d81579756ceff7f431803c2c9090195",
+    "license": "Apache-2.0",
+    "license_source": "https://github.com/abseil/abseil-cpp/blob/20260107.1/LICENSE"
+  },
+  "unicode": {"icu_major": 70, "icu_unicode_major": 14, "reference_unicode": "13.0.0", "policy": "scalar_lower_ageguard_v1"},
+  "golden_reference": {"transformers": "4.46.3", "sentencepiece_python": "0.2.0", "python": "3.10.12"}
+}

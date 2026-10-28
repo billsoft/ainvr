@@ -102,6 +102,9 @@ class SnapshotPatchWorker : public ai_service::pipeline::ChannelWorker {
   void Stop() override {++stops;state_=ai_service::pipeline::ChannelState::kIdle;}
   ai_service::pipeline::ChannelState State() const override {return state_;}
   void SetLicenseCheck(std::function<bool()>) override {}
+  void SetSearchProducerLeaseReader(cfg::SearchProducerLeaseReader reader) override {
+    ++reader_installs; search_reader = std::move(reader);
+  }
   void SetSnapshotSink(std::shared_ptr<ai_service::pipeline::SnapshotSink>) override {}
   std::shared_ptr<const cfg::ChannelConfig> Config() const override {return config_;}
   void ApplyHotPatch(const cfg::ChannelConfig& c,const std::set<std::string>&) override {
@@ -116,6 +119,8 @@ class SnapshotPatchWorker : public ai_service::pipeline::ChannelWorker {
       throw api::ApiError(422,"face_model_not_ready","TEST ONLY missing enhancement model");
   }
   mutable int checks=0;int starts=0,stops=0,patches=0;
+  int reader_installs=0;
+  cfg::SearchProducerLeaseReader search_reader;
  private:
   std::shared_ptr<const cfg::ChannelConfig> config_;
   ai_service::pipeline::ChannelState state_;
@@ -125,9 +130,10 @@ struct SnapshotPatchFixture {
   fs::path directory;
   std::shared_ptr<cfg::ConfigStore> store;
   std::shared_ptr<SnapshotPatchWorker> worker;
+  std::vector<std::shared_ptr<SnapshotPatchWorker>> created_workers;
   std::shared_ptr<api::ChannelManager> manager;
   bool licensed=false;
-  explicit SnapshotPatchFixture(bool running) {
+  explicit SnapshotPatchFixture(bool running, cfg::SearchProducerLeaseReader reader = {}) {
     directory=fs::temp_directory_path()/("ainvr-snapshot-patch-"+std::to_string(getpid()));
     fs::create_directory(directory);
     cfg::ChannelConfig c;c.id="isolated-snapshot-patch";c.name="TEST ONLY";
@@ -141,8 +147,9 @@ struct SnapshotPatchFixture {
     store=std::make_shared<cfg::ConfigStore>(directory/"base.json",directory/"overlay.json");
     manager=std::make_shared<api::ChannelManager>(store->Load(),store,
       [this,running](const cfg::ChannelConfig& ch,const cfg::SnapshotStoreConfig&){
-        worker=std::make_shared<SnapshotPatchWorker>(ch,running);return worker;
-      },[this]{return licensed;});
+        worker=std::make_shared<SnapshotPatchWorker>(ch,running);created_workers.push_back(worker);return worker;
+      },[this]{return licensed;},
+      std::function<void(const cfg::SnapshotStoreConfig&, const std::string&)>{},std::move(reader));
     licensed=true; // Keep this control-only fixture from constructing a real archive.
   }
   ~SnapshotPatchFixture(){manager.reset();worker.reset();fs::remove_all(directory);}
@@ -186,4 +193,40 @@ TEST(SnapshotPatchPreflight, LicenseRecoveryRestoresStoppedHistoryWithoutStartin
   EXPECT_FALSE(f.manager->GetSnapshotStore("isolated-snapshot-patch")->GetStats().value("connected", false));
   f.manager->StopAll();
   EXPECT_EQ(f.manager->GetSnapshotStore("isolated-snapshot-patch"), nullptr);
+}
+
+TEST(SearchProducerWiring, InjectsReaderForInitialAddedAndRebuiltWorkersWithoutStartingThem) {
+  auto lifetime = std::make_shared<int>(0);
+  cfg::SearchProducerLeaseReader reader = [weak = std::weak_ptr<int>(lifetime)]() -> std::optional<cfg::SearchProducerLease> {
+    if (const auto live = weak.lock()) ++*live;
+    return std::nullopt;
+  };
+  SnapshotPatchFixture f(false, reader); f.licensed = false; // No archives, decoder or inference.
+  ASSERT_EQ(f.created_workers.size(), 1);
+  const auto original = f.worker;
+  ASSERT_TRUE(original->search_reader); EXPECT_EQ(original->reader_installs, 1);
+  EXPECT_FALSE(original->search_reader()); EXPECT_EQ(*lifetime, 1);
+  auto added = *original->Config(); added.id = "isolated-search-added"; added.name = "TEST added";
+  added.enabled = false; added.stream.url = "rtmp://127.0.0.1:1935/live/never-open-added";
+  auto creation = cfg::ChannelConfigToJson(added); creation.erase("manually_stopped"); creation.erase("deletion_pending");
+  EXPECT_NO_THROW(f.manager->CreateChannel(creation));
+  ASSERT_EQ(f.created_workers.size(), 2); ASSERT_TRUE(f.created_workers[1]->search_reader);
+  EXPECT_NO_THROW(f.manager->UpdateChannelConfig("isolated-snapshot-patch",
+    {{"stream", {{"url", "rtmp://127.0.0.1:1935/live/never-open-rebuilt"}}}}));
+  ASSERT_EQ(f.created_workers.size(), 3);
+  EXPECT_NE(f.manager->Get("isolated-snapshot-patch"), original);
+  for (const auto& worker : f.created_workers) {
+    ASSERT_TRUE(worker->search_reader); EXPECT_EQ(worker->reader_installs, 1);
+    EXPECT_FALSE(worker->search_reader()); EXPECT_EQ(worker->starts, 0);
+  }
+  EXPECT_EQ(*lifetime, 4);
+  lifetime.reset(); // Retained old workers cannot dereference a destroyed provider owner.
+  for (const auto& worker : f.created_workers) EXPECT_FALSE(worker->search_reader());
+}
+
+TEST(SearchProducerWiring, DefaultReaderKeepsExistingWorkerSubstitutesInert) {
+  SnapshotPatchFixture f(false);
+  EXPECT_EQ(f.worker->reader_installs, 1);
+  EXPECT_FALSE(f.worker->search_reader);
+  EXPECT_EQ(f.worker->starts, 0);
 }

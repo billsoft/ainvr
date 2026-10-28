@@ -119,3 +119,29 @@ TEST(BpuImageInput, LegacySingleImagePackingRemainsIdentical) {
   auto all=ainvr::PackBpuFloatInputs(pixels,json::array({image}),"",{});
   ASSERT_EQ(all.size(),1u);EXPECT_EQ(all[0],ainvr::PackBpuFloatNchw(pixels,image));
 }
+
+TEST(BpuImageInput, Int64TokenIdsKeepFullVocabularyAndPadding) {
+  auto d=Descriptor(HB_DNN_TENSOR_TYPE_S64,{1,64},{544,8},544);
+  std::vector<int64_t> tokens(64,1);tokens[0]=249999;tokens[1]=0;tokens[2]=32768;
+  auto packed=ainvr::PackBpuTokenIds(tokens,d,250000);
+  ASSERT_EQ(packed.size(),544u);
+  for(size_t i=0;i<tokens.size();++i){int64_t value;std::memcpy(&value,packed.data()+i*8,8);EXPECT_EQ(value,tokens[i]);}
+  for(size_t i=512;i<packed.size();++i)EXPECT_EQ(packed[i],0);
+}
+TEST(BpuImageInput, TokenContractsRejectWrongWidthVocabularyAndOverlaps) {
+  auto d=Descriptor(HB_DNN_TENSOR_TYPE_S64,{1,64},{512,8},512);
+  std::vector<int64_t> tokens(64,1);
+  EXPECT_THROW(ainvr::PackBpuTokenIds(std::vector<int32_t>(64,1),d,250000),std::invalid_argument);
+  tokens[0]=-1;EXPECT_THROW(ainvr::PackBpuTokenIds(tokens,d,250000),std::invalid_argument);
+  tokens[0]=250000;EXPECT_THROW(ainvr::PackBpuTokenIds(tokens,d,250000),std::invalid_argument);
+  tokens[0]=1;d["byte_strides"]={256,8};EXPECT_THROW(ainvr::PackBpuTokenIds(tokens,d,250000),std::invalid_argument);
+  d=Descriptor(HB_DNN_TENSOR_TYPE_S64,{1,64},{512,4},512);EXPECT_THROW(ainvr::PackBpuTokenIds(tokens,d,250000),std::invalid_argument);
+  d=Descriptor(HB_DNN_TENSOR_TYPE_S64,{1,64},{512,8},511);EXPECT_THROW(ainvr::PackBpuTokenIds(tokens,d,250000),std::invalid_argument);
+}
+TEST(BpuImageInput, ExistingClipInt32TokenLayoutRemainsExact) {
+  auto d=Descriptor(HB_DNN_TENSOR_TYPE_S32,{1,77},{320,4},320);
+  std::vector<int32_t> tokens(77,0);tokens[0]=49406;tokens[1]=49407;
+  auto packed=ainvr::PackBpuTokenIds(tokens,d,49408);
+  ASSERT_EQ(packed.size(),320u);EXPECT_EQ(std::memcmp(packed.data(),tokens.data(),77*4),0);
+  for(size_t i=77*4;i<packed.size();++i)EXPECT_EQ(packed[i],0);
+}

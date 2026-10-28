@@ -6,6 +6,8 @@
 #include <cctype>
 #include <cstdlib>
 #include <iostream>
+#include <chrono>
+#include <regex>
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -25,22 +27,33 @@ std::string ServiceTokenEnvName(const std::string& service_name) {
 
 ConfigCenterClient::ConfigCenterClient(std::string base_url, std::string service_name,
                                        std::string service_token, ApplyCallback on_apply,
-                                       int poll_interval_seconds)
+                                       int poll_interval_seconds, SearchProducerClock producer_clock)
     : base_url_(std::move(base_url)),
       service_name_(std::move(service_name)),
       service_token_(std::move(service_token)),
       on_apply_(std::move(on_apply)),
-      poll_interval_(poll_interval_seconds) {}
+      poll_interval_(poll_interval_seconds),
+      producer_authority_(std::make_shared<SearchProducerGrantAuthority>(std::move(producer_clock))) {
+  if (poll_interval_ < 1 || poll_interval_ > 300 ||
+      !std::regex_match(service_name_, std::regex("[a-z0-9][a-z0-9_-]{0,63}")) || service_token_.size() > 512 ||
+      std::any_of(service_token_.begin(), service_token_.end(), [](unsigned char c) { return c < 32 || c == 127; }))
+    throw std::invalid_argument("invalid_configuration_client_settings");
+}
 
 ConfigCenterClient::~ConfigCenterClient() { Stop(); }
 
 void ConfigCenterClient::Start() {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+  if (thread_.joinable()) return;
   stop_event_.store(false);
+  producer_authority_->Start();
   thread_ = std::thread([this] { RunLoop(); });
 }
 
 void ConfigCenterClient::Stop() {
+  std::lock_guard<std::mutex> lock(lifecycle_mutex_);
   stop_event_.store(true);
+  producer_authority_->Stop();
   wait_cond_.notify_all();
   if (thread_.joinable()) thread_.join();
 }
@@ -50,8 +63,19 @@ std::optional<int64_t> ConfigCenterClient::AppliedVersion() const {
   return applied_version_;
 }
 
+std::optional<SearchProducerLease> ConfigCenterClient::GetSearchProducerGrant() const {
+  return service_name_ == "ai-service" ? producer_authority_->Read() : std::nullopt;
+}
+SearchProducerLeaseReader ConfigCenterClient::SearchProducerReader() const {
+  if (service_name_ != "ai-service") return {};
+  return [authority = std::weak_ptr<SearchProducerGrantAuthority>(producer_authority_)] {
+    const auto current = authority.lock();
+    return current ? current->Read() : std::nullopt;
+  };
+}
+
 void ConfigCenterClient::RunLoop() {
-  AI_LOG(kInfo, "ai-service.config-center", "[config-center] 启动:service=" << service_name_ << " base=" << base_url_
+  AI_LOG(kInfo, "ai-service.config-center", "[config-center] started service=" << service_name_
             << " poll=" << poll_interval_ << "s");
   TryUpdate();  // 启动先试一次
 
@@ -74,9 +98,32 @@ void ConfigCenterClient::RunLoop() {
 void ConfigCenterClient::TryUpdate() {
   try {
     DoUpdate();
-  } catch (const std::exception& e) {
-    AI_LOG(kError, "ai-service.config-center", "[config-center] 更新异常: " << e.what());
+  } catch (...) {
+    AI_LOG(kError, "ai-service.config-center", "[config-center] config_update_failed");
     BumpRetry();
+  }
+  // Same owner and existing poll/backoff; unchanged AI config versions still
+  // refresh this independent projection. No additional thread or scheduler.
+  if (service_name_ == "ai-service" && !stop_event_.load()) RefreshSearchProducerGrant();
+}
+
+void ConfigCenterClient::RefreshSearchProducerGrant() {
+  try {
+    const auto started = producer_authority_->Now();
+    RequestFailure failure = RequestFailure::Transport;
+    auto document = Request("", "GET", nullptr, RequestTarget::SearchProducer, &failure);
+    if (!document) {
+      // A temporary network failure cannot extend the original lease. Explicit
+      // rejection, malformed data and disable/pending revoke immediately.
+      if (failure != RequestFailure::Transport) producer_authority_->Invalidate();
+      return;
+    }
+    auto parsed = ParseSearchProducerGrant(*document);
+    if (!stop_event_.load() && !producer_authority_->Install(parsed, started))
+      AI_LOG(kWarning, "ai-service.config-center", "[config-center] producer_grant_rejected");
+  } catch (...) {
+    producer_authority_->Invalidate();
+    AI_LOG(kWarning, "ai-service.config-center", "[config-center] invalid_producer_grant");
   }
 }
 
@@ -92,34 +139,83 @@ void ConfigCenterClient::ResetRetry() {
 
 std::optional<nlohmann::json> ConfigCenterClient::Request(const std::string& path,
                                                           const std::string& method,
-                                                          const nlohmann::json* body) {
+                                                          const nlohmann::json* body,
+                                                          RequestTarget target, RequestFailure* failure) {
+  constexpr size_t maximum = 8 * 1024 * 1024;
+  auto mark = [&](RequestFailure value) { if (failure) *failure = value; };
+  mark(RequestFailure::Transport);
   try {
+    if (stop_event_.load()) return std::nullopt;
+    std::string full_path;
+    if (target == RequestTarget::SearchProducer) {
+      if (service_name_ != "ai-service" || method != "GET" || body || !path.empty()) {
+        mark(RequestFailure::Invalid); return std::nullopt;
+      }
+      full_path = "/api/internal/search/producer-config";
+    } else {
+      if ((method != "GET" && method != "POST") || path.empty() || path.front() != '/' ||
+          path.size() > 1024 || path.find_first_of("\r\n") != std::string::npos) {
+        mark(RequestFailure::Invalid); return std::nullopt;
+      }
+      full_path = "/api/v1/config" + path;
+    }
     httplib::Client cli(base_url_);
-    cli.set_connection_timeout(5);
-    cli.set_read_timeout(5);
-    std::string full_path = "/api/v1/config" + path;
-
-    httplib::Headers headers;
-    if (!service_token_.empty()) headers.emplace("X-Service-Token", service_token_);
-
-    std::string body_str = body ? body->dump() : "{}";
-    httplib::Result res = (method == "GET")
-                              ? cli.Get(full_path.c_str(), headers)
-                              : cli.Post(full_path.c_str(), headers, body_str, "application/json");
-    if (!res || res->status < 200 || res->status >= 300) {
-      AI_LOG(kWarning, "ai-service.config-center", "[config-center] HTTP " << (res ? res->status : -1) << ": " << method << " "
-                << path);
+    cli.set_connection_timeout(3); cli.set_read_timeout(3); cli.set_write_timeout(3);
+    cli.set_follow_location(false); cli.set_keep_alive(false); cli.set_compress(false); cli.set_decompress(false);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const auto proceed = [&] { return !stop_event_.load() && std::chrono::steady_clock::now() < deadline; };
+    httplib::Request request; request.method = method; request.path = full_path;
+    if (!service_token_.empty()) request.headers.emplace("X-Service-Token", service_token_);
+    if (body) {
+      request.body = body->dump();
+      if (request.body.size() > maximum) { mark(RequestFailure::Invalid); return std::nullopt; }
+      request.headers.emplace("Content-Type", "application/json");
+    }
+    std::string received;
+    request.response_handler = [&](const httplib::Response& response) {
+      if (!proceed()) return false;
+      if (response.status < 200 || response.status >= 300) { mark(RequestFailure::Rejected); return false; }
+      auto content_type = response.get_header_value("Content-Type");
+      std::transform(content_type.begin(), content_type.end(), content_type.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+      if (content_type.rfind("application/json", 0) != 0 || (content_type.size() > 16 && content_type[16] != ';')) {
+        mark(RequestFailure::Invalid); return false;
+      }
+      if (response.get_header_value_count("Content-Length") > 1) { mark(RequestFailure::Invalid); return false; }
+      if (response.has_header("Content-Length")) {
+        const auto length = response.get_header_value("Content-Length");
+        if (length.empty() || length.size() > 10 || !std::all_of(length.begin(), length.end(), [](unsigned char c) { return c >= '0' && c <= '9'; }) ||
+            std::stoull(length) > maximum) { mark(RequestFailure::Invalid); return false; }
+      }
+      return true;
+    };
+    request.content_receiver = [&](const char* data, size_t size, uint64_t, uint64_t) {
+      if (!proceed()) return false;
+      if (size > maximum - received.size()) { mark(RequestFailure::Invalid); return false; }
+      received.append(data, size); return true;
+    };
+    request.progress = [&](uint64_t, uint64_t) { return proceed(); };
+    const auto response = cli.send(request);
+    if (!response || response->status < 200 || response->status >= 300 || !proceed()) {
+      AI_LOG(kWarning, "ai-service.config-center", "[config-center] request_unavailable service=" << service_name_
+        << " target=" << (target == RequestTarget::Config ? "config" : "search-producer"));
       return std::nullopt;
     }
-    json result = json::parse(res->body, nullptr, false);
-    if (result.is_discarded()) return std::nullopt;
-    if (result.value("code", -1) != 0) {
-      AI_LOG(kWarning, "ai-service.config-center", "[config-center] 返回非 0: " << result.value("error", ""));
+    // Parse errors can embed response content. Never log what() or the body.
+    mark(RequestFailure::Invalid);
+    auto result = json::parse(received, [](int depth, auto, auto&) {
+      if (depth > 16) throw std::invalid_argument("configuration_response_depth");
+      return true;
+    });
+    if (!proceed()) return std::nullopt;
+    if (target == RequestTarget::SearchProducer) return result;
+    if (!result.is_object() || result.value("code", -1) != 0) {
+      AI_LOG(kWarning, "ai-service.config-center", "[config-center] response_rejected");
       return std::nullopt;
     }
     return result.value("data", json());
-  } catch (const std::exception& e) {
-    AI_LOG(kError, "ai-service.config-center", "[config-center] 不可达: " << e.what());
+  } catch (...) {
+    mark(RequestFailure::Invalid);
+    AI_LOG(kWarning, "ai-service.config-center", "[config-center] request_failed");
     return std::nullopt;
   }
 }
@@ -219,9 +315,9 @@ void ConfigCenterClient::DoUpdate() {
   ApplyResult result;
   try {
     result = on_apply_ ? on_apply_(*config) : ApplyResult{true, false};
-  } catch (const std::exception& e) {
-    AI_LOG(kError, "ai-service.config-center", "[config-center] 应用异常 v" << *desired << ": " << e.what());
-    Fail(*desired, e.what());
+  } catch (...) {
+    AI_LOG(kError, "ai-service.config-center", "[config-center] config_apply_failed v" << *desired);
+    Fail(*desired, "配置应用失败");
     return;
   }
   auto [ok, restart_required] = result;

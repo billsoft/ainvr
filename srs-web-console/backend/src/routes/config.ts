@@ -8,6 +8,7 @@ import { ADMIN_PASSWORD_SECRET_KEY } from '../services/adminPasswordMigration.js
 import { ConfigRoutesOptions, resolveSecretRefs, sanitizeImportDocSecrets, rejectReservedAdminPasswordField, serviceScopeError } from './configPolicy.js';
 export type { ConfigRoutesOptions } from './configPolicy.js';
 import { registerConfigTransferRoutes } from './configTransferRoutes.js';
+import { prepareSearchSettings } from '../store/searchConfigAdapter.js';
 export async function configRoutes(fastify: FastifyInstance, opts: ConfigRoutesOptions) {
   const { pgStore, orchestrator } = opts;
   const serviceTokens = opts.serviceTokens ?? new Map<string, string>();
@@ -71,7 +72,8 @@ export async function configRoutes(fastify: FastifyInstance, opts: ConfigRoutesO
           // Do not substitute deployment defaults or expose legacy credentials.
           const baseline = old.rows[0]?.config ?? (change.service === 'backend'
             ? await opts.readBackendSettings?.() : undefined) ?? {};
-          const config = { ...baseline, ...change.config };
+          let config = { ...baseline, ...change.config };
+          if (change.service === 'search-service') config = prepareSearchSettings(config, old.rows[0]?.config);
           if (change.service === 'backend') {
             delete config.adminPasswordHash;
             config.aiService = { ...baseline.aiService, ...change.config.aiService };
@@ -318,6 +320,10 @@ export async function configRoutes(fastify: FastifyInstance, opts: ConfigRoutesO
     if (!isConfigService(service)) {
       reply.status(404);
       return { code: 404, error: `未知服务「${service}」` };
+    }
+    if (service === 'search-service') {
+      reply.status(409);
+      return { code: 409, error: '搜索服务必须通过带依赖版本的 runtime-state 上报' };
     }
     const boundService = resolveServiceByToken(serviceTokens, req.headers['x-service-token']);
     if (boundService && boundService !== service) {

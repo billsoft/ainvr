@@ -81,3 +81,6 @@ deploy/s100p/rollback-ai-*/
 
 # Generated browser acceptance dependencies/cache, never product source
 /test/ptz/node_modules/
+
+# Generated local browser build cache
+**/.vite/

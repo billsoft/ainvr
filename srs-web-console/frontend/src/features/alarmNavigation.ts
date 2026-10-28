@@ -1,5 +1,6 @@
 import type {AlarmEvent} from '@/api/alarmEventService'
-export const PLAYBACK_MARGIN_MS=2000
+import { EVIDENCE_PRE_ROLL_MS, recordingPlaybackHref } from './playbackNavigation'
+export const PLAYBACK_MARGIN_MS=EVIDENCE_PRE_ROLL_MS
 export function playbackRange(alarm:AlarmEvent){
  const occurred=Date.parse(alarm.occurred_at),last=Date.parse(alarm.last_seen_at)
  if(!Number.isFinite(occurred)||!Number.isFinite(last)||last<occurred)return null
@@ -13,11 +14,11 @@ export function playbackRange(alarm:AlarmEvent){
 /** Replay the owning AI output; never silently redirect to its input. */
 export function playbackHref(alarm:AlarmEvent){
  const range=playbackRange(alarm)
- return alarm.playback_stream_id&&range?`/playback/${encodeURIComponent(alarm.playback_stream_id)}?from=${range.from}&to=${range.to}&autoplay=1`:null
+ return range?recordingPlaybackHref(alarm.playback_stream_id,range.from,range.to):null
 }
 export function keyframePlaybackHref(alarm:AlarmEvent,capturedAt:string){
  const at=Date.parse(capturedAt)
- return alarm.playback_stream_id&&Number.isFinite(at)?`/playback/${encodeURIComponent(alarm.playback_stream_id)}?from=${at-PLAYBACK_MARGIN_MS}&to=${at+15000}&autoplay=1`:null
+ return recordingPlaybackHref(alarm.playback_stream_id,at-PLAYBACK_MARGIN_MS,at+15000)
 }
 
 /** Exact processor identity is essential when several processors share an input. */
