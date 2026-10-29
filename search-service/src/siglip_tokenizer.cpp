@@ -67,12 +67,19 @@ void LowerScalar(std::string& out, UChar32 cp) {
 }  // namespace
 
 SiglipTextTokenizer::SiglipTextTokenizer(const std::string& blob, const std::string& package) {
-  if (package != "siglip-so400m-i18n-full-int8")
+  gemma_ = package == "siglip2-base-full-int8";
+  if (package != "siglip-so400m-i18n-full-int8" && !gemma_)
     throw TokenizerError("tokenizer_package_unsupported");
   UVersionInfo icu{}, unicode{}; u_getVersion(icu); u_getUnicodeVersion(unicode);
   if (icu[0] != 70 || unicode[0] != 14)
     throw TokenizerError("tokenizer_unicode_version_unsupported");
   tokenizer_ = ainvr::text::CheckedSentencePiece(blob, false);
+  if (gemma_) {
+    if (tokenizer_->GetVocabSize() != ainvr::text::kSiglip2EmbeddingRows || tokenizer_->TokenToId("<pad>") != ainvr::text::kSiglip2PadId ||
+        tokenizer_->TokenToId("<eos>") != ainvr::text::kSiglip2EosId || tokenizer_->TokenToId("<unk>") != 3)
+      throw TokenizerError("tokenizer_model_incompatible");
+    return;
+  }
   if (tokenizer_->GetVocabSize() != 250100 || tokenizer_->TokenToId("</s>") != ainvr::text::kSiglipEosId ||
       tokenizer_->TokenToId("<unk>") != 2)
     throw TokenizerError("tokenizer_model_incompatible");
@@ -93,7 +100,44 @@ std::string SiglipTextTokenizer::NormalizeForTokenization(const std::string& tex
   return out;
 }
 
+std::string SiglipTextTokenizer::NormalizeForGemma(const std::string& text) {
+  if (text.size() > kMaxInputBytes) throw TokenizerError("tokenizer_input_too_large");
+  ainvr::text::RequireUtf8(text);
+  // The reference ran on Unicode 13 (Python 3.10) and leaves later-assigned scalars unchanged; ICU 70 knows Unicode 14. Lower runs of
+  // older scalars as one string (keeps the Final_Sigma context like str.lower) and copy newer scalars verbatim.
+  std::string out; std::u16string run;
+  auto flush = [&] {
+    if (run.empty()) return;
+    std::u16string lowered(run.size() * 3 + 8, u'\0'); UErrorCode status = U_ZERO_ERROR;
+    const auto count = u_strToLower(lowered.data(), int32_t(lowered.size()), run.data(), int32_t(run.size()), "", &status);
+    if (U_FAILURE(status) || count < 0 || size_t(count) > lowered.size()) throw TokenizerError("tokenizer_normalization_failed");
+    int32_t at = 0;
+    while (at < count) { UChar32 next; U16_NEXT(lowered.data(), at, count, next); AppendUtf8(out, next); }
+    run.clear();
+  };
+  int32_t at = 0; const auto length = int32_t(text.size());
+  while (at < length) {
+    UChar32 cp; U8_NEXT(text.data(), at, length, cp);
+    UVersionInfo age{}; u_charAge(cp, age);
+    if (age[0] > 13) { flush(); AppendUtf8(out, cp); continue; }
+    char16_t unit[2]; int32_t n = 0; U16_APPEND_UNSAFE(unit, n, cp);
+    run.append(unit, size_t(n));
+  }
+  flush();
+  return out;
+}
+
 SiglipTokenIds SiglipTextTokenizer::Encode64(const std::string& text) {
+  if (gemma_) {
+    auto ids = tokenizer_->Encode(NormalizeForGemma(text));
+    for (const auto id : ids) if (id < 0 || id >= ainvr::text::kSiglip2EmbeddingRows)
+      throw TokenizerError("tokenizer_embedding_token_out_of_range");
+    ids.push_back(int32_t(ainvr::text::kSiglip2EosId));
+    if (ids.size() > ainvr::text::kSiglipSequenceLength) throw TokenizerError("tokenizer_query_too_long");
+    SiglipTokenIds result; result.ids.fill(ainvr::text::kSiglip2PadId); result.tokens = ids.size();
+    std::copy(ids.begin(), ids.end(), result.ids.begin());
+    return result;
+  }
   const auto normalized = NormalizeForTokenization(text);
   struct Part { std::string text; int32_t special = -1; };
   std::vector<Part> parts;

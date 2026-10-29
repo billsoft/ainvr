@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { CalendarClock, ChevronDown, ChevronRight, CircleAlert, Folder, FolderOpen, Play, Search } from 'lucide-react'
 import { recordingService } from '@/api/recordingService'
 import { Toaster } from '@/components/ui/Toaster'
@@ -12,6 +12,7 @@ import { RecordingPlayer } from './RecordingPlayer'
 import { ChannelScheduleDialog } from './ChannelScheduleDialog'
 import { initialRange, rangeFromQuery, resolvePlayback, seiMarks, type PlaybackRange } from './model'
 import { useRangeRecordings } from './useRangeRecordings'
+import { smartSearchHref } from '@/features/searchNavigation'
 
 function usageColor(pct: number) { return pct >= 90 ? 'bg-danger' : pct >= 70 ? 'bg-warning' : 'bg-success' }
 function storageLabel(kind?: string) { return kind === 'smb' ? 'NAS' : '本机磁盘' }
@@ -467,6 +468,7 @@ export default function PlaybackPage() {
 
       {/* ============ 右主区（播放器 + 时间轴）============ */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
+        {smartSearchHref(channelId, range.from, range.to) && <Link className="inline-flex min-h-11 items-center gap-2 self-start rounded-base border border-line px-3 text-sm" to={smartSearchHref(channelId, range.from, range.to)!}><Search size={16} />搜索所选摄像头与时间</Link>}
         {(playNotice || checking || catalogue.loading || catalogue.error) && <div role="status" className="rounded-base border border-line bg-surface px-4 py-2 text-sm">
           {checking ? '正在确认录像文件…' : catalogue.error || (catalogue.loading ? '正在加载所选时间范围…' : playNotice)}
         </div>}

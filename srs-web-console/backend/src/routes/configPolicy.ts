@@ -17,6 +17,10 @@ import crypto from 'node:crypto';
 import type { PgConfigStore } from '../store/pgStore.js';
 import type { PublishOrchestrator } from '../store/publishOrchestrator.js';
 import { ADMIN_PASSWORD_SECRET_KEY } from '../services/adminPasswordMigration.js';
+import type { SearchModelMigrationRouteOptions } from './searchModelMigrationRoutes.js';
+import type { prepareSearchModelMigrationActivation } from '../services/searchModelMigrationActivation.js';
+import type {SearchJob} from '../store/searchJobs.js';
+import type {SearchMigrationPlanArtifacts} from '../services/searchModelMigrationPlanArtifacts.js';
 
 export interface ConfigRoutesOptions extends FastifyPluginOptions {
   pgStore: PgConfigStore;
@@ -26,6 +30,12 @@ export interface ConfigRoutesOptions extends FastifyPluginOptions {
   serviceTokens?: Map<string, string>;
   aiServiceBaseUrl?: string;
   readBackendSettings?: () => Promise<import("../types/channel.js").AppSettings>;
+  searchMigrations?: Omit<SearchModelMigrationRouteOptions,'activate'|'apply'|'publishPlan'|'restorePlan'> & {
+    prepareActivation: typeof prepareSearchModelMigrationActivation;
+    activationStore: Parameters<typeof prepareSearchModelMigrationActivation>[1]['store'];
+    onPlanApplyReady?:(bindings:{publish:(job:SearchJob,proof:SearchMigrationPlanArtifacts,signal:AbortSignal)=>Promise<void>;
+      restore:(job:SearchJob,signal:AbortSignal)=>Promise<void>})=>void;
+  };
 }
 
 /** ${secret:key} 占位符：配置文档里敏感值只存引用，明文只在 PG config_secrets

@@ -37,7 +37,7 @@ def deployment_units():
         return {**UNITS, 'ai-service': 'ainvr-ai.service',
                 'frontend': 'ainvr-web.service', 'backend': 'ainvr-backend.service',
                 'alarm-service': 'ainvr-alarm.service', 'llm-service': 'ainvr-llm.service',
-                **{name: unit for name, unit in {'onvif': 'ainvr-onvif.service', 'gb28181': 'ainvr-gb28181.service', 'gb-media': 'ainvr-gb-media.service'}.items()
+                **{name: unit for name, unit in {'onvif': 'ainvr-onvif.service', 'gb28181': 'ainvr-gb28181.service', 'gb-media': 'ainvr-gb-media.service', 'search-service': 'ainvr-search.service'}.items()
                    if Path('/etc/systemd/system', unit).exists()}}
     return UNITS
 
@@ -46,7 +46,7 @@ def deployment_containers():
     if os.environ.get('AINVR_DEPLOYMENT_MODE') == 'native':
         return {k: v for k, v in CONTAINERS.items() if k not in ('frontend', 'backend')}
     return CONTAINERS
-SOURCES = ['host', 'frontend', 'backend', 'srs', 'postgres', 'mongodb', 'ai-service', 'recorder', 'alarm-service', 'llm-service', 'onvif', 'gb28181', 'gb-media', 'helper']
+SOURCES = ['host', 'frontend', 'backend', 'srs', 'postgres', 'mongodb', 'ai-service', 'recorder', 'alarm-service', 'llm-service', 'search-service', 'onvif', 'gb28181', 'gb-media', 'helper']
 DEFAULTS = {'fileMiB': 5, 'files': 3, 'historyHours': 72, 'level': 'INFO', 'repeatSeconds': 60}
 LEVELS = {'DEBUG': 10, 'INFO': 20, 'WARN': 30, 'ERROR': 40}
 
@@ -203,6 +203,14 @@ def alarm_health_url(pid: int, proc=Path('/proc')) -> str:
     if len(listeners) != 1: raise ValueError('Ambiguous or unavailable alarm listener')
     host, port = listeners[0]
     return f'http://{host}:{port}/readyz'
+
+
+def search_service_health(state, health):
+    # Public /health proves process liveness only. No secret is needed by the
+    # host collector; model/index/admission readiness stays in the search BFF.
+    alive = state == 'active' and isinstance(health, dict) and health.get('alive') is True
+    return alive, ('进程存活；模型、索引与采集状态见智能搜索' if alive else
+                   '搜索进程探测未通过，请检查日志')
 
 
 def memory_bytes(text: str):
@@ -585,6 +593,7 @@ class Observer:
                     continue
                 url = alarm_health_url(pid) if source == 'alarm-service' else {'ai-service': 'http://127.0.0.1:8000/health',
                        'llm-service': 'http://127.0.0.1:8300/health',
+                       'search-service': 'http://127.0.0.1:8400/health',
                        'recorder': 'http://127.0.0.1:8100/v1/recorder/health',
                        'backend': 'http://127.0.0.1:3001/api/branding',
                        'frontend': 'http://127.0.0.1:8088/api/branding'}[source]
@@ -596,6 +605,8 @@ class Observer:
                     row['detail'] = '服务就绪；消费、存储与规则状态见告警监视' if row['healthy'] else '告警服务未就绪，请检查告警监视和日志'
                 elif source == 'llm-service':
                     row['healthy'], row['detail'] = llm_service_health(row['state'], health)
+                elif source == 'search-service':
+                    row['healthy'], row['detail'] = search_service_health(row['state'], health)
                 elif source == 'recorder':
                     row['healthy'] = health.get('ok') is True and health.get('storageHealthy') is True
                     row['detail'] = recorder_detail(health)

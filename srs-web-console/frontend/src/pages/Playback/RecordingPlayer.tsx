@@ -98,6 +98,29 @@ export function RecordingPlayer({
    * 定位未完成时不发布假进度，确认实际落位后才上报媒体时钟。
    */
   const pendingSeekRef = useRef<number | null>(null)
+  const seekTokenRef = useRef(0)
+  const seekRequestRef = useRef<{ video: HTMLVideoElement; src: string | null; token: number; assigned: boolean; at: number; observed: boolean } | null>(null)
+  function currentSeekRequest(video: HTMLVideoElement) {
+    const request = seekRequestRef.current
+    return videoRef.current === video && request?.video === video && request.token === seekTokenRef.current
+      && request.src === video.getAttribute('src') ? request : null
+  }
+  function seekHasLanded(video: HTMLVideoElement, allowProgress = false) {
+    const pending = pendingSeekRef.current, request = currentSeekRequest(video)
+    if (pending == null) return true
+    if (!request?.assigned || video.seeking || video.error || video.readyState < 2) return false
+    const delta = video.currentTime - pending
+    if (Math.abs(delta) <= 0.6) return true
+    // seeked/timeupdate may be delivered after playback has advanced. Only
+    // decoded progress after this source/token's successful assignment counts;
+    // a requested property value alone never becomes published media time.
+    const elapsed = Math.max(0, performance.now() - request.at) / 1000
+    return allowProgress && request.observed && delta > 0 && delta <= elapsed * Math.max(0.01, video.playbackRate) + 0.6
+  }
+  function observeSeek(video: HTMLVideoElement) {
+    const request = currentSeekRequest(video)
+    if (request && !video.seeking && !video.error && video.readyState >= 2) request.observed = true
+  }
   /**
    * 每次换段（新 <video> 挂载，含分段自然播完 onEnded→onNext 的自动续播）：
    * 新元素要重新拉取/缓冲，浏览器展示任何一帧之前有个天然的黑屏间隙；
@@ -134,6 +157,7 @@ export function RecordingPlayer({
   // 换段：重置错误态与倍速、时钟落到段起始+初始偏移
   useEffect(() => {
     pendingSeekRef.current = null
+    seekRequestRef.current = null
     setError(false)
     setPlaying(false)
     setSpeedMenuOpen(false)
@@ -189,38 +213,53 @@ export function RecordingPlayer({
     setHidePaused(false)
     v.pause()
   }
+  function handlePlayFailure(video: HTMLVideoElement, reason: unknown, token: number, src: string | null) {
+    if (videoRef.current !== video || seekTokenRef.current !== token || video.getAttribute('src') !== src) return
+    const name = reason && typeof reason === 'object' && 'name' in reason ? reason.name : null
+    // Pause/seek interruptions and browser autoplay policy are retryable. A
+    // real MediaError still wins, even when play() also rejects with AbortError.
+    if (!video.error && (name === 'AbortError' || name === 'NotAllowedError')) return
+    setError(true); setSeekVeil(false); onError?.()
+  }
   /** 用户主动播放 */
   function userPlay() {
     const v = videoRef.current
     if (!v) return
     manualPausedRef.current = false
-    void v.play().catch(() => { setError(true); onError?.() })
+    const token = seekTokenRef.current, src = v.getAttribute('src')
+    void v.play().catch(reason => handlePlayFailure(v, reason, token, src))
   }
 
   useEffect(() => {
     const v = videoRef.current
     if (!v || !segment) return
     const target = Math.max(0, offsetMs / 1000)
+    const request = { video: v, src: playUrl, token: ++seekTokenRef.current, assigned: false, at: performance.now(), observed: false }
+    seekRequestRef.current = request
     pendingSeekRef.current = target
     setSeekVeil(true)
     setError(false)
     const timeoutId = window.setTimeout(() => {
+      if (currentSeekRequest(v) !== request) return
       if (pendingSeekRef.current != null) {
+        if (seekHasLanded(v, true)) { pendingSeekRef.current = null; setSeekVeil(false); return }
         v.pause(); setError(true); setSeekVeil(false); onError?.()
       }
     }, 15000)
     if (v.error) v.load()
     const apply = () => {
-      if (pendingSeekRef.current == null) return
+      if (pendingSeekRef.current == null || currentSeekRequest(v) !== request) return
       // duration 已知时不能越过段尾（极端边缘点击），留 50ms 余量
       const max = Number.isFinite(v.duration) && v.duration > 0 ? Math.max(0, v.duration - 0.05) : target
       const wanted = Math.min(target, max)
       pendingSeekRef.current = wanted
-      if (Math.abs(v.currentTime - wanted) > 0.3) {
-        try { v.currentTime = wanted } catch { /* 个别浏览器在 HAVE_NOTHING 赋值会抛，等 canplay 再来 */ }
-      }
+      request.assigned = false; request.observed = false; request.at = performance.now()
+      try {
+        if (Math.abs(v.currentTime - wanted) > 0.3) v.currentTime = wanted
+        request.assigned = Math.abs(v.currentTime - wanted) <= 0.3
+      } catch { /* Metadata may not be usable yet; canplay retries this same token. */ }
       setAbsTs(segment.startTs + wanted * 1000)
-      void v.play().catch(() => { /* Autoplay may require an explicit play click. */ })
+      void v.play().catch(reason => handlePlayFailure(v, reason, request.token, request.src))
     }
     // 同段内拖动时间轴时元数据早已加载，直接 seek；换段则等 metadata，
     // canplay 再兜底一次（部分 MP4 在 loadedmetadata 时赋值会被重置到 0）
@@ -228,6 +267,7 @@ export function RecordingPlayer({
     v.addEventListener('loadedmetadata', apply)
     v.addEventListener('canplay', apply)
     return () => {
+      if (seekRequestRef.current === request) { seekRequestRef.current = null; pendingSeekRef.current = null; seekTokenRef.current++ }
       window.clearTimeout(timeoutId)
       v.removeEventListener('loadedmetadata', apply)
       v.removeEventListener('canplay', apply)
@@ -311,13 +351,14 @@ export function RecordingPlayer({
     return () => window.removeEventListener('keydown', onKey)
   }, [playing, segment, checking])
 
-  function handleTimeUpdate() {
+  function handleTimeUpdate(event: React.SyntheticEvent<HTMLVideoElement>) {
     if (checking) return
-    const v = videoRef.current
-    if (!v || !segment) return
+    const v = event.currentTarget
+    if (v !== videoRef.current || !segment) return
     if (v.seeking) return
+    observeSeek(v)
     const pending = pendingSeekRef.current
-    if (pending != null && Math.abs(v.currentTime - pending) > 0.6) {
+    if (pending != null && !seekHasLanded(v, true)) {
       // Do not publish a requested time as if it were a decoded frame.
       return
     }
@@ -335,15 +376,14 @@ export function RecordingPlayer({
   }
 
   /** 浏览器确认一次寻址：落位到请求值附近就解除 pending */
-  function handleSeeked() {
+  function handleSeeked(event: React.SyntheticEvent<HTMLVideoElement>) {
     if (checking) return
-    const v = videoRef.current
-    if (!v || !segment) return
+    const v = event.currentTarget
+    if (v !== videoRef.current || !segment) return
+    observeSeek(v)
     const pending = pendingSeekRef.current
-    if (pending != null && Math.abs(v.currentTime - pending) > 0.6) return
-    if (pending != null && Math.abs(v.currentTime - pending) <= 0.6) {
-      pendingSeekRef.current = null
-    }
+    if (pending != null && !seekHasLanded(v, true)) return
+    if (pending != null) pendingSeekRef.current = null
     setSeekVeil(false)
     const ts = segment.startTs + v.currentTime * 1000
     setCurrentTime(v.currentTime)
@@ -351,22 +391,24 @@ export function RecordingPlayer({
     onTimeUpdate?.(ts)
   }
 
-  function handleLoadedMetadata() {
-    const v = videoRef.current
-    if (!v) return
+  function handleLoadedMetadata(event: React.SyntheticEvent<HTMLVideoElement>) {
+    const v = event.currentTarget
+    if (v !== videoRef.current) return
     setDuration(v.duration || 0)
   }
 
   /** 原生 playing 事件（真正开始出画面）：没有待落位的段内偏移时直接揭开
    *  遮罩；若还在等 apply() 把 currentTime 跳到目标偏移，须等 handleSeeked
    *  确认落地才能揭开，否则会在跳转前提前露出错误帧（frame 0）。 */
-  function handlePlaying() {
-    if (checking) { videoRef.current?.pause(); return }
+  function handlePlaying(event: React.SyntheticEvent<HTMLVideoElement>) {
+    const v = event.currentTarget
+    if (v !== videoRef.current) return
+    if (checking) { v.pause(); return }
     setError(false)
     setHidePaused(false)
     wantResumeRef.current = false
     const pending = pendingSeekRef.current
-    if (pending == null || Math.abs((videoRef.current?.currentTime ?? 0) - pending) <= 0.6) {
+    if (pending == null || seekHasLanded(v)) {
       pendingSeekRef.current = null
       setSeekVeil(false)
     }
@@ -499,7 +541,7 @@ export function RecordingPlayer({
             onPlaying={handlePlaying}
             onPause={() => setPlaying(false)}
             onEnded={() => onNext?.()}
-            onError={() => { setError(true); setSeekVeil(false); onError?.() }}
+            onError={event => { if (event.currentTarget !== videoRef.current) return; setError(true); setSeekVeil(false); onError?.() }}
             onClick={() => {
               if (playing) userPause()
               else userPlay()

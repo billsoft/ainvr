@@ -7,15 +7,28 @@
 namespace ainvr::search {
 namespace {
 [[noreturn]] void Invalid() { throw std::runtime_error("search_text_model_contract_invalid"); }
+// One measured profile per supported complete-vocabulary package; pruned packages need token remapping and are not supported.
+struct Profile {
+  const char* id; int64_t dimensions, rows, pad, eos; const char* program; const char* normalization; const char* sha256; uint64_t bytes;
+};
+const Profile& ProfileFor(const PackageSpec& spec) {
+  static const Profile profiles[] = {
+    {"siglip2-base-full-int8", 768, ainvr::text::kSiglip2EmbeddingRows, ainvr::text::kSiglip2PadId, ainvr::text::kSiglip2EosId,
+     "siglip2_base_text", ainvr::text::kSiglip2NormalizationSpec, kSiglip2BaseTextMeasuredSha256, kSiglip2BaseTextReservationBytes},
+    {"siglip-so400m-i18n-full-int8", 1152, ainvr::text::kSiglipEmbeddingRows, ainvr::text::kSiglipPadId, ainvr::text::kSiglipEosId,
+     "siglip_text", ainvr::text::kSiglipNormalizationSpec, kSo400mTextMeasuredSha256, kSo400mTextReservationBytes}};
+  for (const auto& profile : profiles) if (spec.id == profile.id) return profile;
+  Invalid();
+}
 void Spec(const PackageSpec& spec) {
-  if (spec.id != DefaultPackageId() || spec.pruned || spec.dimensions != 1152 ||
-      spec.embedding_vocab_size != ainvr::text::kSiglipEmbeddingRows ||
-      spec.pad_id != ainvr::text::kSiglipPadId || spec.eos_id != ainvr::text::kSiglipEosId ||
-      spec.text.program != "siglip_text" || spec.text.input.name != "input_ids" ||
+  const auto& p = ProfileFor(spec);
+  if (spec.pruned || int64_t(spec.dimensions) != p.dimensions || int64_t(spec.embedding_vocab_size) != p.rows ||
+      int64_t(spec.pad_id) != p.pad || int64_t(spec.eos_id) != p.eos ||
+      spec.text.program != p.program || spec.text.input.name != "input_ids" ||
       spec.text.input.dtype != "S64" || spec.text.input.shape != std::vector<int64_t>{1,int64_t(ainvr::text::kSiglipSequenceLength)} ||
       spec.text.output.name != "text_embedding" || spec.text.output.dtype != "F32" ||
-      spec.text.output.shape != std::vector<int64_t>{1,1152} ||
-      spec.input_spec_version.find(ainvr::text::kSiglipNormalizationSpec) == std::string::npos)
+      spec.text.output.shape != std::vector<int64_t>{1,p.dimensions} ||
+      spec.input_spec_version.find(p.normalization) == std::string::npos)
     Invalid();
 }
 void Tensor(const nlohmann::json& tensor, const TensorSpec& expected, int type, int64_t element_bytes,
@@ -37,19 +50,19 @@ void Tensor(const nlohmann::json& tensor, const TensorSpec& expected, int type, 
 }
 }  // namespace
 uint64_t BpuTextReservationBytes(const VerifiedPackage& package) {
-  if (!package.files_verified || package.spec != &FindPackageSpec(DefaultPackageId()) ||
+  if (!package.files_verified || !package.spec || package.spec != &FindPackageSpec(package.spec->id) ||
       !std::regex_match(package.model_version, std::regex("search-v1-[a-f0-9]{64}")))
     throw std::runtime_error("search_text_package_unverified");
   Spec(*package.spec);
   const auto path = "hbm/" + package.spec->text.file;
   size_t matches = 0;
   for (const auto& artifact : package.artifacts) if (artifact.relative_path == path) {
-    if (artifact.sha256 != kSo400mTextMeasuredSha256)
+    if (artifact.sha256 != ProfileFor(*package.spec).sha256)
       throw std::runtime_error("search_text_resource_profile_unverified");
     ++matches;
   }
   if (matches != 1) throw std::runtime_error("search_text_resource_profile_unverified");
-  return kSo400mTextReservationBytes;
+  return ProfileFor(*package.spec).bytes;
 }
 void ValidateBpuTextDescription(const nlohmann::json& description, const PackageSpec& spec) {
   try {

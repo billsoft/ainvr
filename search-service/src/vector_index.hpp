@@ -36,7 +36,9 @@ struct Scope {
   int64_t from_ms = 0, to_ms = 0;
   size_t limit = 20;
 };
-struct Hit { std::string id; double score; std::string fingerprint{}; };
+struct IndexEvidenceRef { std::string id, fingerprint; int64_t captured_ms = 0; };
+struct Hit { std::string id; double score; std::string fingerprint{}; std::vector<IndexEvidenceRef> evidence_refs{}; };
+struct IndexReference { std::string id, fingerprint, channel; int64_t captured_ms; };
 
 // Exact CPU retrieval baseline, not model inference. Authoritative records are
 // persisted separately; this bounded projection can be rebuilt after restart.
@@ -94,16 +96,43 @@ class VectorIndex {
   }
   void Remove(const std::string& id) { records_.erase(id); }
   size_t Size() const { return records_.size(); }
-  std::vector<Hit> Query(const std::vector<float>& vector, const Scope& scope) const {
+  // Bounded global maintenance cursor, independent of any query scope. Copy
+  // only identity/digest; never materialize vectors just to check liveness.
+  std::vector<IndexReference> ScanReferences(std::string& cursor, size_t limit) const {
+    if (!limit || limit > 64) throw std::invalid_argument("invalid_index_scan_limit");
+    std::vector<IndexReference> out;
+    const auto count = std::min(limit, records_.size()); out.reserve(count);
+    if (!count) { cursor.clear(); return out; }
+    auto entry = records_.upper_bound(cursor);
+    for (size_t i = 0; i < count; ++i) {
+      if (entry == records_.end()) entry = records_.begin();
+      out.push_back({entry->first, entry->second.fingerprint, entry->second.channel, entry->second.captured_ms}); ++entry;
+    }
+    cursor = out.back().id;
+    return out;
+  }
+  // Transfer a completed bounded projection into the immutable file writer.
+  // Rvalue-only: no second vector-store abstraction or copied payload retained.
+  std::vector<Record> ReleaseRecords() && {
+    std::vector<Record> out; out.reserve(records_.size());
+    for (auto& entry : records_) out.push_back(std::move(entry.second));
+    records_.clear();
+    return out;
+  }
+  static void ValidateScope(const Scope& scope) {
     if (scope.channels.empty() || scope.channels.size() > 100 ||
         scope.from_ms < 0 || scope.to_ms <= scope.from_ms ||
         scope.to_ms - scope.from_ms > int64_t(31) * 86400000 ||
         scope.limit == 0 || scope.limit > 100)
       throw std::invalid_argument("invalid_search_scope");
+  }
+  std::vector<Hit> Query(const std::vector<float>& vector, const Scope& scope) const {
+    ValidateScope(scope);
     auto query = Normalize(vector);
     // Structured keys avoid collisions from delimiters in opaque identities.
     using Key = std::vector<std::string>;
-    std::map<Key, Hit> groups;
+    struct Group { Hit hit; IndexEvidenceRef first, last; };
+    std::map<Key, Group> groups;
     for (const auto& [id, record] : records_) {
       if (!scope.channels.count(record.channel) || record.captured_ms < scope.from_ms ||
           record.captured_ms >= scope.to_ms) continue;
@@ -111,13 +140,23 @@ class VectorIndex {
       for (size_t i = 0; i < dimensions_; ++i) score += double(query[i]) * record.vector[i];
       const Key key = record.scene ? Key{"scene", id} :
         Key{"object", record.channel, record.processor, record.session, record.track};
+      const IndexEvidenceRef ref{id, record.fingerprint, record.captured_ms};
       auto found = groups.find(key);
-      if (found == groups.end() || score > found->second.score ||
-          (score == found->second.score && id < found->second.id))
-        groups[key] = {id, score, record.fingerprint};
+      if (found == groups.end()) { groups.emplace(key, Group{{id, score, record.fingerprint}, ref, ref}); continue; }
+      auto& group = found->second;
+      if (score > group.hit.score || (score == group.hit.score && id < group.hit.id)) group.hit = {id, score, record.fingerprint};
+      if (record.captured_ms < group.first.captured_ms || (record.captured_ms == group.first.captured_ms && id < group.first.id)) group.first = ref;
+      if (record.captured_ms > group.last.captured_ms || (record.captured_ms == group.last.captured_ms && id > group.last.id)) group.last = ref;
     }
     std::vector<Hit> hits;
-    for (const auto& [_, hit] : groups) hits.push_back(hit);
+    for (auto& [_, group] : groups) {
+      auto& hit = group.hit;
+      const auto& match = records_.at(hit.id);
+      hit.evidence_refs.push_back({hit.id, hit.fingerprint, match.captured_ms});
+      for (const auto& ref : {group.first, group.last})
+        if (std::none_of(hit.evidence_refs.begin(), hit.evidence_refs.end(), [&](const auto& item) { return item.id == ref.id; })) hit.evidence_refs.push_back(ref);
+      hits.push_back(std::move(hit));
+    }
     std::sort(hits.begin(), hits.end(), [](const auto& a, const auto& b) {
       return a.score == b.score ? a.id < b.id : a.score > b.score;
     });

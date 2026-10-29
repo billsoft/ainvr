@@ -15,7 +15,7 @@ int main(int argc,char** argv){
  assert(argc==2);const std::string root=argv[1];
  nlohmann::json before;
  {
-  ObservationJournal journal(root,"processor");journal.Stage(sample(1));before=journal.Status();
+  ObservationJournal journal(root,"processor");journal.Stage(sample(1));assert(journal.Flush());before=journal.Status();
   bool rejected=false;try{ObservationJournal second(root,"processor");}catch(...){rejected=true;}assert(rejected);
  }
  {
@@ -23,7 +23,7 @@ int main(int argc,char** argv){
   assert(journal.Status().at("next_offset")=="1");journal.Stage(sample(2));journal.Stage(sample(3));
  }
  {
-  ObservationJournal journal(root+"-quota","processor",1024*1024,1);journal.Stage(sample(1));
+  ObservationJournal journal(root+"-quota","processor",1024*1024,1);journal.Stage(sample(1));assert(journal.Flush());
   bool full=false;try{journal.Stage(sample(2));}catch(...){full=true;}assert(full);assert(journal.Status().at("next_offset")=="1");
   const auto identity=std::filesystem::path(root+"-quota")/ObservationJournal::Hash("processor")/"producer.json";
   std::ifstream input(identity);const std::string before_state((std::istreambuf_iterator<char>(input)),{});
@@ -32,7 +32,7 @@ int main(int argc,char** argv){
   assert(before_state==after_state);assert(journal.Status().at("full_rejections")==101);
   std::filesystem::remove(identity.parent_path()/"00000000000000000000.json");
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-  journal.Stage(sample(2));assert(journal.Status().at("next_offset")=="2");
+  journal.Stage(sample(2));assert(journal.Flush());assert(journal.Status().at("next_offset")=="2");
  }
  std::cout<<"Native ordered observation journal PASS\n";
 }

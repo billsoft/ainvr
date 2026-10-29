@@ -172,7 +172,7 @@ PackageSpec Spec(bool so400m, bool pruned) {
   spec.tokenizer = so400m ? "siglip-so400m-i18n.spiece.model" : "siglip2-base.tokenizer.model";
   if (pruned) spec.tokenizer_auxiliary = {std::string(so400m ? "so400m_top16000" : "siglip2_top16000") + ".npz"};
   spec.input_spec_version = "image-area-rgb-u8-round-before-normalize-mean127.5-div127.5-squash256-l2-v1;source-yuv-matrix-range-from-frame-metadata;";
-  spec.input_spec_version += so400m ? ainvr::text::kSiglipNormalizationSpec : "text-gemma-lower-sp-eos1-pad0-s64x64-v1";
+  spec.input_spec_version += so400m ? ainvr::text::kSiglipNormalizationSpec : ainvr::text::kSiglip2NormalizationSpec;
   if (pruned) spec.input_spec_version += ";pruned-longest-kept-piece-remap-v1";
   return spec;
 }
@@ -184,14 +184,14 @@ struct PackageVerificationState {
   std::vector<HeldFile> files, directories;
 };
 const std::vector<PackageSpec>& PackageSpecs() {
-  static const std::vector<PackageSpec> specs{Spec(true, false), Spec(false, false), Spec(true, true), Spec(false, true)};
+  static const std::vector<PackageSpec> specs{Spec(false, false), Spec(true, false), Spec(false, true), Spec(true, true)};
   return specs;
 }
 const PackageSpec& FindPackageSpec(const std::string& id) {
   for (const auto& spec : PackageSpecs()) if (spec.id == id) return spec;
   throw std::invalid_argument("unknown_search_model_package");
 }
-const char* DefaultPackageId() { return "siglip-so400m-i18n-full-int8"; }
+const char* DefaultPackageId() { return "siglip2-base-full-int8"; }
 int VerifiedPackage::BorrowedFileDescriptor(const std::string& relative_path) const {
   if (state_ && files_verified) for (const auto& file : state_->files) if (file.relative == relative_path) return file.fd.get();
   throw std::invalid_argument("unverified_model_artifact");

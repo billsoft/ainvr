@@ -74,7 +74,8 @@ class ChannelManager {
                            WorkerFactory worker_factory = nullptr,
                            std::function<bool()> license_check = {},
                            std::function<void(const config::SnapshotStoreConfig&, const std::string&)> history_delete = {},
-                           config::SearchProducerLeaseReader search_producer_reader = {});
+                           config::SearchProducerLeaseReader search_producer_reader = {},
+                           std::shared_ptr<output::SearchSamplingOwner> search_sampling_owner = {});
 
   // 404 ApiError(不存在)。
   std::shared_ptr<pipeline::ChannelWorker> Get(const std::string& channel_id) const;
@@ -164,6 +165,7 @@ class ChannelManager {
       const std::string& id, const std::shared_ptr<pipeline::ChannelWorker>& worker);
   std::function<bool()> license_check_;
   config::SearchProducerLeaseReader search_producer_reader_;
+  std::shared_ptr<output::SearchSamplingOwner> search_sampling_owner_;
   std::set<std::string> manually_stopped_; // lock_ protected; preserved across license recovery
   WorkerFactory worker_factory_;
   config::AppConfig boot_cfg_;
@@ -184,7 +186,10 @@ class ChannelManager {
 
 // 注册全部路由(§1.1 的 18 条)到 server 上。server 生命周期由调用方
 // (main.cpp)持有和 Listen();这里只做路由注册,不阻塞。
+// The S100P entry point supplies its EXISTING affine search hardware owner.
+// A missing callback is unavailable, never an alternate encoder or thread.
+using SearchReencodeImage = std::function<nlohmann::json(const nlohmann::json&,const std::string&)>;
 void RegisterRoutes(httplib::Server& server, std::shared_ptr<ChannelManager> manager,
-                    std::function<nlohmann::json()> runtime_health = {});
+                    std::function<nlohmann::json()> runtime_health = {},SearchReencodeImage search_reencode = {});
 
 }  // namespace ai_service::api

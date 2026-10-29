@@ -40,7 +40,7 @@ export function LlmServiceConfigForm({document,onSaveBatch}:{document?:ConfigDoc
       await onSaveBatch([{service:'llm-service',group:'system',name:'settings',config:{enabled,
         listen:{host:'127.0.0.1',port:8300},admin_key:admin||config.admin_key,api_keys:keys,
         model:{package_id:'qwen3vl-4b-review-v3',load_policy:'resident',ion_reserve_mb:512},
-        tasks:{'alarm-review-zh-v1':{calibration_temperature:t,aspect_policy:'reject'}},
+        tasks:{...(config.tasks as Record<string,unknown>|undefined),'alarm-review-zh-v1':{calibration_temperature:t,aspect_policy:'reject'}},
         scheduling:{queue_size:q,queue_timeout_s:w,exec_timeout_s:e,submit_time_share_cap_percent:s,prefill_profile:'s256'},
         logging:{record_requests:false}}}])
       setAdmin('');setCallers(previous=>previous.map(c=>({...c,key:''})))

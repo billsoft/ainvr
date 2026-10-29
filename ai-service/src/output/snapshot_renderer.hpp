@@ -25,6 +25,10 @@ class SnapshotRenderer {
   std::optional<EncodedSnapshot> RenderOriginal(const Nv12Frame& frame,
       const std::array<double,4>& bbox,const ai_service::config::SnapshotConfig& config,
       bool square,bool bt709,bool full_range);
+  // Explicit caller-owned plan. Changing encoded canvas does not change its
+  // source_rectangle/FOV; callers must record the actual encoded dimensions.
+  EncodedSnapshot RenderPlanned(const Nv12Frame& frame,const SnapshotPlan& plan,
+      int jpeg_quality,bool bt709,bool full_range);
  private:
   static PreprocessorOptions CheckedOptions(PreprocessorOptions options, SnapshotEncodingPolicy policy) {
     if(policy==SnapshotEncodingPolicy::HardwareOnly && (!options.dedicated_hardware || options.cpu_reference))

@@ -27,6 +27,13 @@ void Command(mongoc_client_t* client, const std::string& db, const nlohmann::ord
   bool ok = mongoc_client_command_simple(client, db.c_str(), input, nullptr, &reply, &error);
   bson_destroy(input); bson_destroy(&reply); Check(ok, "fixture command failed");
 }
+Json StoredShortlist(mongoc_client_t* client,const std::string& database,const std::string& version){
+  auto* collection=mongoc_client_get_collection(client,database.c_str(),"search_sessions");bson_t filter=BSON_INITIALIZER;
+  BSON_APPEND_UTF8(&filter,"version",version.c_str());auto* cursor=mongoc_collection_find_with_opts(collection,&filter,nullptr,nullptr);
+  const bson_t* doc=nullptr;Check(mongoc_cursor_next(cursor,&doc),"stored shortlist missing");
+  char* text=bson_as_relaxed_extended_json(doc,nullptr);const auto row=Json::parse(text);bson_free(text);
+  mongoc_cursor_destroy(cursor);bson_destroy(&filter);mongoc_collection_destroy(collection);return row.at("shortlist");
+}
 int main() {
   if (!std::getenv("AINVR_SEARCH_TEST_MONGO")) { std::cout << "SKIP: isolated Mongo fixture not requested\n"; return 77; }
   const std::string uri = "mongodb://127.0.0.1:25440/?serverSelectionTimeoutMS=2000";
@@ -97,6 +104,68 @@ int main() {
     Check(reused && reused->items.empty() && reused->coverage == "partial", "reused ID changed an old snapshot image");
     Check(!history->SearchFeedback(changed.id, changed.actor, Id(93), true), "reused reference accepted old feedback");
     Check(!history->SearchImage(changed.id, changed.actor, Id(93), Id(93)), "reused ID image leaked from old snapshot");
+    // One existing grouped hit freezes main/earliest/latest evidence only.
+    auto early=Make(201,at+200),main=Make(202,at+300),late=Make(203,at+400);
+    early.record.track=main.record.track=late.record.track="evidence-group";
+    const auto early_fp=history->ReplaceTrackSlot(early,0,"","early-first");history->Put(main);history->Put(late);
+    const auto main_fp=history->Get(Id(202),false)->fingerprint,late_fp=history->Get(Id(203),false)->fingerprint;
+    changed=request;changed.id=Id(300);changed.scope.to_ms=at+1000;const auto multi_version=history->BeginSearch(changed);
+    Check(history->PublishSearch(changed.id,changed.actor,multi_version,{{Id(202),.9,main_fp,{{Id(202),main_fp},{Id(201),early_fp},{Id(203),late_fp}}}},"sampled"),"multiframe publication");
+    const auto multi=history->ReadSearch(changed.id,changed.actor);
+    Check(multi&&multi->items.size()==1&&multi->items[0].frames.size()==3,"multiframe evidence missing");
+    Check(multi->items[0].started_ms==at+200&&multi->items[0].ended_ms==at+400,"frozen evidence range");
+    Check(multi->items[0].frames[0].at("role")=="match"&&multi->items[0].frames[1].at("role")=="before"&&multi->items[0].frames[2].at("role")=="after","frame roles");
+    Check(bool(history->SearchImage(changed.id,changed.actor,Id(202),Id(201))),"owned related image denied");
+    Check(!history->SearchImage(changed.id,"not-owner",Id(202),Id(201)),"related image crossed actor");
+    Check(!history->SearchImage(changed.id,changed.actor,Id(202),Id(10)),"unfrozen image crossed target");
+    auto cross=Make(204,at+500);cross.record.track="evidence-group";cross.evidence["recording_channel_id"]=Id(999);history->Put(cross);
+    auto bad_request=changed;bad_request.id=Id(301);const auto bad_version=history->BeginSearch(bad_request);
+    Reject([&]{history->PublishSearch(bad_request.id,bad_request.actor,bad_version,{{Id(202),.9,main_fp,{{Id(202),main_fp},{Id(204),history->Get(Id(204),false)->fingerprint}}}},"sampled");});
+    bad_request.id=Id(302);const auto too_many_version=history->BeginSearch(bad_request);
+    Reject([&]{history->PublishSearch(bad_request.id,bad_request.actor,too_many_version,{{Id(202),.9,main_fp,{{Id(202),main_fp},{Id(201),early_fp},{Id(203),late_fp},{Id(204),main_fp}}}},"sampled");});
+    bad_request.id=Id(304);const auto wrong_main_version=history->BeginSearch(bad_request);
+    Reject([&]{history->PublishSearch(bad_request.id,bad_request.actor,wrong_main_version,{{Id(202),.9,main_fp,{{Id(202),std::string(64,'e')}}}},"sampled");});
+    auto newer_early=early;newer_early.record.captured_ms+=1;newer_early.evidence["frame_id"]=Id(211);
+    newer_early.evidence["source_pts_ns"]=std::to_string(newer_early.record.captured_ms*1000000LL);newer_early.evidence["source_frame_index"]="211";
+    history->ReplaceTrackSlot(newer_early,0,early_fp,"early-replaced");
+    const auto reduced=history->ReadSearch(changed.id,changed.actor);
+    Check(reduced&&reduced->coverage=="partial"&&reduced->items[0].frames.size()==2&&reduced->items[0].started_ms==at+200,"replaced related frame altered frozen range");
+    Check(!history->SearchImage(changed.id,changed.actor,Id(202),Id(201))&&!history->SearchImage(changed.id,changed.actor,Id(202),Id(211)),"related slot replacement leaked new pixels");
+    Check(history->ReadSearch(changed.id,changed.actor,1,20)->coverage=="partial","another page hid related evidence loss");
+    history->DeleteRange(main.record.channel,at+300,at+301);
+    Check(history->ReadSearch(changed.id,changed.actor)->items.empty(),"related evidence revived a deleted main candidate");
+    Check(!history->SearchImage(changed.id,changed.actor,Id(202),Id(203)),"deleted main still authorized related image");
+    auto scene=Make(205,at+600);scene.record.scene=true;scene.record.track="";history->Put(scene);
+    auto scene_other=Make(206,at+700);scene_other.record.scene=true;scene_other.record.track="";history->Put(scene_other);
+    bad_request.id=Id(303);const auto scene_version=history->BeginSearch(bad_request);const auto scene_fp=history->Get(Id(205),false)->fingerprint;
+    Reject([&]{history->PublishSearch(bad_request.id,bad_request.actor,scene_version,{{Id(205),.8,scene_fp,{{Id(205),scene_fp},{Id(206),history->Get(Id(206),false)->fingerprint}}}},"sampled");});
+    Check(history->PublishSearch(bad_request.id,bad_request.actor,scene_version,{{Id(205),.8,scene_fp,{{Id(205),scene_fp}}}},"sampled"),"scene singleton");
+    Check(history->ReadSearch(bad_request.id,bad_request.actor)->items[0].frames.size()==1,"scene merged unrelated evidence");
+    // Exercise the largest admitted wire shape: 60 distinct groups, three
+    // frozen UUID/SHA256 refs each. Never truncate a slot or evidence reference.
+    auto boundary=changed;boundary.id=Id(350);const auto boundary_version=history->BeginSearch(boundary);
+    std::vector<SearchSessionCandidate> boundary_hits;
+    for(int group=0;group<60;++group){
+      std::vector<SearchSessionEvidenceRef> refs;
+      for(int frame=0;frame<3;++frame){auto value=Make(1000+group*3+frame,at+100+frame);value.record.track="boundary-group-"+std::to_string(group);
+        history->Put(value);refs.push_back({value.record.id,history->Get(value.record.id,false)->fingerprint});}
+      boundary_hits.push_back({refs[1].sample_id,.12345678901234567,refs[1].fingerprint,{refs[1],refs[0],refs[2]}});
+    }
+    Check(history->PublishSearch(boundary.id,boundary.actor,boundary_version,boundary_hits,"sampled"),"60x3 publication rejected");
+    const auto boundary_page=history->ReadSearch(boundary.id,boundary.actor,0,60);
+    Check(boundary_page&&boundary_page->items.size()==60,"60x3 silently truncated candidates");
+    for(const auto& item:boundary_page->items)Check(item.frames.size()==3,"60x3 silently truncated evidence");
+    auto stored=StoredShortlist(client.get(),database,boundary_version);const auto stored_bytes=stored.dump().size();
+    Check(stored_bytes>16384&&stored_bytes<=65536,"60x3 shortlist byte bound incorrect");
+    std::cout<<"60x3 frozen shortlist bytes="<<stored_bytes<<" (limit65536)\n";
+    auto excess_request=boundary;excess_request.id=Id(351);const auto excess_version=history->BeginSearch(excess_request);
+    auto excess_hits=boundary_hits;excess_hits.push_back(boundary_hits.front());
+    Reject([&]{history->PublishSearch(excess_request.id,excess_request.actor,excess_version,excess_hits,"sampled");});
+    Check(!history->ReadSearch(excess_request.id,excess_request.actor)->published,"over-capacity publication partially committed");
+    stored["untrusted_padding"]=std::string(65536,'x');const auto oversized=stored.dump();
+    const auto oversized_sha=SampleSha256(reinterpret_cast<const uint8_t*>(oversized.data()),oversized.size());
+    Command(client.get(),database,{{"update","search_sessions"},{"updates",Json::array({{{"q",{{"version",boundary_version}}},{"u",{{"$set",{{"shortlist",stored},{"shortlist_sha",oversized_sha}}}}}}})}});
+    Reject([&]{history->ReadSearch(boundary.id,boundary.actor);});
     // Concurrent reopen is idempotent and cannot create more than one snapshot.
     changed = request; changed.id = Id(60); changed.actor = "another";
     std::atomic<bool> failed{false}; std::vector<std::thread> calls;

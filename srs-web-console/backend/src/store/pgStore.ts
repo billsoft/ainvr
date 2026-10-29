@@ -242,6 +242,7 @@ export class PgConfigStore {
     services: string[];
     prepare: (client: import('pg').PoolClient) => Promise<void>;
   }): Promise<ConfigVersion> {
+    options?.signal?.throwIfAborted();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -251,6 +252,7 @@ export class PgConfigStore {
       await client.query('SELECT pg_advisory_xact_lock(hashtext(\'config_publish\'))');
       // Automatic saves merge, validate and store documents/secrets in this same
       // transaction. A rejected save must never become visible to pull clients.
+      options?.signal?.throwIfAborted();
       if (options) await options.prepare(client);
       options?.signal?.throwIfAborted();
 

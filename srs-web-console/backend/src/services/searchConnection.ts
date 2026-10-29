@@ -3,8 +3,9 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { PgConfigStore } from '../store/pgStore.js';
 import { searchSettingsSchema, type SearchSettings } from '../store/searchConfigAdapter.js';
+import type {SearchMigrationIngestionGate} from './searchModelMigrationPlan.js';
 import type { SearchSource, SearchSourceCatalog } from './searchSourceCatalog.js';
-import type { SearchRuntimeState } from '../store/searchRuntimeStore.js';
+import type { SearchRuntimeState, SearchModelAuthority } from '../store/searchRuntimeStore.js';
 import type { InternalServiceConnection } from './internalServiceHttp.js';
 
 type ConfigStore = Pick<PgConfigStore, 'getServiceState' | 'getVersionSnapshotForService' | 'getSecret'>;
@@ -17,11 +18,16 @@ export interface SearchRuntimeConfiguration {
   history_connection: { uri: string | null; database: string | null; source_version: number | null };
   index_directory: SearchIndexDirectory; sources: SearchSource[];
   dependency_status: 'history_unavailable' | 'storage_unavailable' | 'source_catalog_unavailable' | null;
+  ingestion_gate?:SearchMigrationIngestionGate|null;
+  active_model_pin?: SearchModelAuthority['active_model_pin'];
+  approved_model_transition?: SearchModelAuthority['approved_model_transition'];
 }
 export interface SearchRuntimeDependencies {
   store: ConfigStore;
   sourceCatalog: () => Promise<SearchSourceCatalog>;
   volumes: () => Promise<unknown>;
+  modelAuthority?: () => Promise<SearchModelAuthority>;
+  ingestionGate?:(current:{revision:string;source_ids:readonly string[];active_model:SearchModelAuthority['active_model_pin'];approved_transition?:SearchModelAuthority['approved_model_transition']})=>Promise<{gate:SearchMigrationIngestionGate|null}>;
 }
 export class SearchConfigurationError extends Error {
   constructor(readonly code: 'config_pending' | 'caller_credentials_unavailable' | 'config_changed') { super(code); }
@@ -62,7 +68,7 @@ export function resolveSearchIndexDirectory(settings: SearchSettings, rawVolumes
   const root = path.posix.resolve(volume.mountPath), resolved = path.posix.resolve(root, selected.relative_path);
   if (!resolved.startsWith(`${root}/`)) return absent;
   return { ...selected, resolved_path: resolved, ready: true,
-    generation: digest([volume.id, volume.device, volume.filesystem, root]) };
+    generation: digest([volume.id, volume.device, volume.filesystem, root, selected.relative_path, resolved]) };
 }
 
 /** The service's own published settings remain the only search definition.
@@ -101,9 +107,11 @@ export async function readEffectiveSearchConfiguration(dependencies: SearchRunti
       }
     }
   }
-  const [rawVolumes, catalog] = await Promise.all([
+  const [rawVolumes, catalog, authority] = await Promise.all([
     dependencyWithin(dependencies.volumes), dependencyWithin(dependencies.sourceCatalog),
+    dependencies.modelAuthority ? dependencyWithin(dependencies.modelAuthority) : Promise.resolve(undefined),
   ]);
+  if(dependencies.modelAuthority && !authority)throw new SearchConfigurationError('config_pending');
   const index = resolveSearchIndexDirectory(settings, rawVolumes);
   const sources = (catalog?.sources ?? []).filter(source => settings.sampling.mode === 'all' ||
     settings.sampling.channel_ids.includes(source.channel_id)).map(source => ({ ...source,
@@ -112,12 +120,16 @@ export async function readEffectiveSearchConfiguration(dependencies: SearchRunti
   const dependency = !history.uri || !history.database ? 'history_unavailable' : !index.ready ? 'storage_unavailable' :
     !catalog || (settings.sampling.mode === 'selected' && sources.length !== settings.sampling.channel_ids.length) ? 'source_catalog_unavailable' : null;
   const revision = digest({ desired, settings, history, index, sources, source_identities: catalog?.identities ?? null,
-    dependency_status: dependency });
+    dependency_status: dependency, ...(authority ? {model_authority:authority}: {}) });
   const [serviceAfter, aiAfter] = await Promise.all([store.getServiceState('search-service'), store.getServiceState('ai-service')]);
   if (serviceAfter?.desiredVersion !== service?.desiredVersion || aiAfter?.appliedVersion !== aiState?.appliedVersion)
     throw new SearchConfigurationError('config_changed');
+  if(dependencies.modelAuthority && JSON.stringify(await dependencyWithin(dependencies.modelAuthority))!==JSON.stringify(authority))
+    throw new SearchConfigurationError('config_changed');
+  const operational=dependencies.ingestionGate?await dependencyWithin(()=>dependencies.ingestionGate!({revision,source_ids:sources.map(source=>source.channel_id),active_model:authority?.active_model_pin??null,...(authority?{approved_transition:authority.approved_model_transition}:{})})):undefined;
+  if(dependencies.ingestionGate&&!operational)throw new SearchConfigurationError('config_pending');
   return { desired_version: desired, revision, settings, history_connection: history,
-    index_directory: index, sources, dependency_status: dependency };
+    index_directory: index, sources, dependency_status: dependency, ...(authority ?? {}),...(operational?{ingestion_gate:operational.gate}:{}) };
 }
 
 /** All BFF data operations are fenced by both the acknowledged version and the

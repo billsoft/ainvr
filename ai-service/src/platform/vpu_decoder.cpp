@@ -1,6 +1,8 @@
 #include "vpu_decoder.hpp"
 #include "media_memory.hpp"
 #include "picture_tokens.hpp"
+#include "decoded_frame_layout.hpp"
+#include "compressed_packet_layout.hpp"
 #include <hb_media_codec.h>
 #include <hb_media_error.h>
 #include <hb_mem_mgr.h>
@@ -26,17 +28,21 @@ struct VpuDecoder::State {
   AVCodecParserContext* parser=nullptr;
   AVCodecContext* parser_context=nullptr;
   PictureTokens pending;
+  Codec codec=Codec::H264;
   bool initialized=false,started=false,finished=false,failed=false;int max_width=0,max_height=0;
   int output_fd=-1;
   ~State(){if(output_fd>=0)hb_mm_mc_close_fd(&context,output_fd);
-    if(started)hb_mm_mc_pause(&context);if(initialized)hb_mm_mc_release(&context);
-    if(parser)av_parser_close(parser);avcodec_free_context(&parser_context);}
+    if(started)hb_mm_mc_pause(&context);
+    if(initialized)hb_mm_mc_release(&context);
+    if(parser)av_parser_close(parser);
+    avcodec_free_context(&parser_context);}
   bool Queue(const std::vector<uint8_t>& bytes,uint64_t pts,int timeout,bool eos){
     if(timeout<0)throw std::invalid_argument("Negative codec timeout");
     if(finished)throw std::runtime_error("Decoder already received end of stream");
-    if((bytes.empty()&&!eos)||bytes.size()>context.video_dec_params.bitstream_buf_size)throw std::invalid_argument("Invalid access unit size");
+    const auto queued_bytes=DecoderQueuedPacketBytes(codec,bytes.size(),context.video_dec_params.bitstream_buf_size,eos);
     media_codec_buffer_t in{};int rc=hb_mm_mc_dequeue_input_buffer(&context,&in,timeout);
-    if(rc==HB_MEDIA_ERR_WAIT_TIMEOUT)return false;Check(rc,"dequeue compressed buffer");
+    if(rc==HB_MEDIA_ERR_WAIT_TIMEOUT)return false;
+    Check(rc,"dequeue compressed buffer");
     if(parser&&!eos){
       auto padded=bytes;padded.resize(bytes.size()+AV_INPUT_BUFFER_PADDING_SIZE);
       uint8_t* parsed=nullptr;int parsed_size=0;
@@ -44,14 +50,15 @@ struct VpuDecoder::State {
       if(consumed!=int(bytes.size())||parsed_size!=int(bytes.size()))throw std::runtime_error("Incomplete picture parser output");
       pending.Push(parser->output_picture_number,pts);
     }
-    in.type=MC_VIDEO_STREAM_BUFFER;in.vstream_buf.size=bytes.size();in.vstream_buf.pts=pts;in.vstream_buf.stream_end=eos;
+    in.type=MC_VIDEO_STREAM_BUFFER;in.vstream_buf.size=queued_bytes;in.vstream_buf.pts=pts;in.vstream_buf.stream_end=eos;
     if(!bytes.empty())std::memcpy(in.vstream_buf.vir_ptr,bytes.data(),bytes.size());
+    if(queued_bytes>bytes.size())std::memset(in.vstream_buf.vir_ptr+bytes.size(),0,queued_bytes-bytes.size());
     Check(hb_mm_mc_queue_input_buffer(&context,&in,timeout),"submit compressed buffer");finished=eos;return true;
   }
 };
 VpuDecoder::VpuDecoder(Codec codec,int width,int height):state_(std::make_unique<State>()){
   if(width<=0||height<=0||width%2||height%2||width>8192||height>8192)throw std::invalid_argument("Invalid maximum decode dimensions");
-  auto& s=*state_;s.max_width=width;s.max_height=height;auto& c=s.context;auto& p=c.video_dec_params;
+  auto& s=*state_;s.codec=codec;s.max_width=width;s.max_height=height;auto& c=s.context;auto& p=c.video_dec_params;
   c.encoder=false;p.feed_mode=MC_FEEDING_MODE_FRAME_SIZE;p.pix_fmt=MC_PIXEL_FORMAT_NV12;
   p.bitstream_buf_size=(uint64_t(width)*height*3/2+1023)&~uint64_t(1023);p.bitstream_buf_count=4;p.frame_buf_count=6;
   switch(codec){
@@ -110,10 +117,18 @@ std::optional<Nv12Frame> VpuDecoder::Receive(int timeout){
       deadline-std::chrono::steady_clock::now()).count();
   int rc=hb_mm_mc_dequeue_output_buffer(&s.context,&out,&info,
       static_cast<int>(std::max<int64_t>(1,remaining)));
-  if(rc==HB_MEDIA_ERR_WAIT_TIMEOUT)return std::nullopt;Check(rc,"receive decoded frame");
+  if(rc==HB_MEDIA_ERR_WAIT_TIMEOUT)return std::nullopt;
+  Check(rc,"receive decoded frame");
   struct ReturnBuffer {State& s;media_codec_buffer_t& out;~ReturnBuffer(){hb_mm_mc_queue_output_buffer(&s.context,&out,1000);}} release{s,out};
-  auto& v=out.vframe_buf;int w=v.width,h=v.height,ys=v.stride>0?v.stride:w,uvs=v.vstride>0?v.vstride:ys;
-  if(w<=0||h<=0||w%2||h%2||w>s.max_width||h>s.max_height||ys<w||uvs<w||!v.vir_ptr[0]||!v.vir_ptr[1])throw std::runtime_error("Unsupported decoded frame layout/resolution change");
+  auto& v=out.vframe_buf;
+  DecodedNv12Layout allocation{v.width,v.height,v.stride,v.vstride,v.size,{v.compSize[0],v.compSize[1]},
+    bool(v.vir_ptr[0]),bool(v.vir_ptr[1]),v.pix_fmt==MC_PIXEL_FORMAT_NV12};
+  if(s.codec==Codec::Jpeg||s.codec==Codec::Mjpeg){
+    const auto& jpeg=info.jpeg_frame_info;
+    allocation.display_width=jpeg.display_width;allocation.display_height=jpeg.display_height;allocation.jpeg_decode_result=jpeg.decode_result;
+  }
+  const auto visible=ValidateDecodedNv12Layout(s.codec,allocation,s.max_width,s.max_height);
+  const int w=visible.width,h=visible.height,ys=visible.luma_stride,uvs=visible.chroma_stride;
   Nv12Frame frame;frame.width=w;frame.height=h;frame.pts=v.pts;
   if(s.parser){
     const auto& metadata=info.video_frame_info;

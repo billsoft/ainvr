@@ -56,7 +56,7 @@ export type SearchSettings = z.infer<typeof searchSettingsSchema>;
 export const DEFAULT_SEARCH_SETTINGS: SearchSettings = {
   schema_version: '1.0', enabled: false, listen: { host: '127.0.0.1', port: 8400 }, callers: [],
   history: { source: 'ai-history' }, index_storage: { volume_id: null, relative_path: 'ainvr/search-index' },
-  model: { package_id: 'siglip-so400m-i18n-full-int8' }, sampling: { mode: 'all', channel_ids: [], object: true, scene: true,
+  model: { package_id: 'siglip2-base-full-int8' }, sampling: { mode: 'all', channel_ids: [], object: true, scene: true,
     object_interval_ms: 1000, scene_active_interval_ms: 10000, scene_static_interval_ms: 60000,
     scene_change_min_interval_ms: 3000, track_slots: 8 },
   limits: { query_concurrency: 2, http_workers: 4, http_queue: 4, producer_queue: 1, producer_bytes: 134217728,

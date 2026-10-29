@@ -1,6 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import crypto from 'node:crypto';
-import { ConfigApply } from '../services/configApply.js';
+import { ConfigApply,type ApplyOperation } from '../services/configApply.js';
+import {setTimeout as delay} from 'node:timers/promises';
+import type {SearchModelMigrationRouteOptions} from './searchModelMigrationRoutes.js';
 import type { ConfigDocument } from '../store/pgStore.js';
 import { isConfigService } from '../store/services.js';
 import { resolveServiceByToken } from '../services/serviceTokens.js';
@@ -9,6 +11,11 @@ import { ConfigRoutesOptions, resolveSecretRefs, sanitizeImportDocSecrets, rejec
 export type { ConfigRoutesOptions } from './configPolicy.js';
 import { registerConfigTransferRoutes } from './configTransferRoutes.js';
 import { prepareSearchSettings } from '../store/searchConfigAdapter.js';
+import { prepareSearchVerifyLlmConfiguration } from '../services/searchVerifyConfiguration.js';
+import { assertSearchModelSelectionChange } from '../services/searchModelSelectionGuard.js';
+import { searchModelMigrationRoutes } from './searchModelMigrationRoutes.js';
+import {prepareSearchModelMigrationPlanActivation,prepareSearchModelMigrationPlanRestore} from '../services/searchModelMigrationActivation.js';
+import {searchMigrationPlanProgressSchema} from '../services/searchModelMigrationPlan.js';
 export async function configRoutes(fastify: FastifyInstance, opts: ConfigRoutesOptions) {
   const { pgStore, orchestrator } = opts;
   const serviceTokens = opts.serviceTokens ?? new Map<string, string>();
@@ -26,6 +33,42 @@ export async function configRoutes(fastify: FastifyInstance, opts: ConfigRoutesO
       return response.ok;
     } catch { return false; }
   });
+  if(opts.searchMigrations) {
+    const migration=opts.searchMigrations;
+    const publishPlan=(input:Parameters<NonNullable<SearchModelMigrationRouteOptions['publishPlan']>>[0],external?:AbortSignal)=>{
+      const state=searchMigrationPlanProgressSchema.parse(input.job.migration_progress);
+      const expires=Math.min(state.switch_deadline_ms??0,input.job.lease_until?.getTime()??0,input.job.expires_at.getTime());
+      if(expires<=Date.now())throw new Error('migration_finalization_timeout');
+      return autoApply.start(['search-service'],signal=>orchestrator.publish('切换已验收搜索模型（完整历史）',input.job.actor,{
+        services:['search-service'],signal,prepare:client=>prepareSearchModelMigrationPlanActivation(client,{...input,store:migration.activationStore,artifacts:migration.planArtifacts}),
+      }),{timeoutMs:Math.max(1,expires-Date.now()),signal:external});
+    };
+    const restorePlan=(input:Parameters<NonNullable<SearchModelMigrationRouteOptions['restorePlan']>>[0],external?:AbortSignal)=>autoApply.start(['search-service'],signal=>orchestrator.publish('恢复搜索模型原配置',input.job.actor,{
+      services:['search-service'],signal,prepare:client=>prepareSearchModelMigrationPlanRestore(client,{...input,store:migration.activationStore}),
+    }),{timeoutMs:30000,signal:external});
+    const waitIdle=async(signal:AbortSignal)=>{while(autoApply.busy){signal.throwIfAborted();await delay(100,undefined,{signal});}signal.throwIfAborted();};
+    const waitApply=async(operation:ApplyOperation,signal:AbortSignal)=>{
+      while(operation.status==='running'){signal.throwIfAborted();await delay(100,undefined,{signal});}
+      if(operation.status!=='succeeded')throw new Error('migration_apply_failed');
+    };
+    migration.onPlanApplyReady?.({
+      publish:async(job,frozen,signal)=>{
+        await waitIdle(signal);const context=await (migration.internalContext??migration.context)();
+        if(!context||!job.lease_owner)throw new Error('migration_source_changed');
+        await waitApply(publishPlan({job,worker:job.lease_owner,context,frozen},signal),signal);
+      },
+      restore:async(job,signal)=>{
+        await waitIdle(signal);if(!job.lease_owner)throw new Error('migration_job_stale');
+        await waitApply(restorePlan({job,worker:job.lease_owner},signal),signal);
+      },
+    });
+    await searchModelMigrationRoutes(fastify,{...migration,apply:autoApply,
+      activate:input=>autoApply.start(['search-service'],signal=>orchestrator.publish('切换已验收搜索模型',input.actor,{
+        services:['search-service'],signal,prepare:client=>migration.prepareActivation(client,{...input,store:migration.activationStore,artifacts:migration.artifacts}),
+      })),
+      publishPlan,restorePlan,
+    });
+  }
 
   fastify.get('/v1/config/apply', async (req, reply) => {
     const err = serviceScopeError(req as any, null);
@@ -73,7 +116,17 @@ export async function configRoutes(fastify: FastifyInstance, opts: ConfigRoutesO
           const baseline = old.rows[0]?.config ?? (change.service === 'backend'
             ? await opts.readBackendSettings?.() : undefined) ?? {};
           let config = { ...baseline, ...change.config };
-          if (change.service === 'search-service') config = prepareSearchSettings(config, old.rows[0]?.config);
+          if (change.service === 'search-service') {
+            config = prepareSearchSettings(config, old.rows[0]?.config);
+            await assertSearchModelSelectionChange(client,baseline,config);
+          }
+          if (change.service === 'llm-service') {
+            // Merge only this category's existing task map. The internal search
+            // caller is provisioned in this same save transaction and never
+            // rotates because an older browser omitted its hidden entry.
+            config.tasks = { ...(baseline.tasks ?? {}), ...(change.config.tasks ?? {}) };
+            config = (await prepareSearchVerifyLlmConfiguration(pgStore, client, config, baseline)).settings;
+          }
           if (change.service === 'backend') {
             delete config.adminPasswordHash;
             config.aiService = { ...baseline.aiService, ...change.config.aiService };

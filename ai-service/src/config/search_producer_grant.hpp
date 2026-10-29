@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <nlohmann/json_fwd.hpp>
+#include "../../../search-service/src/model_pin.hpp"
 
 namespace ai_service::config {
 using SearchProducerClock = std::function<std::chrono::steady_clock::time_point()>;
@@ -33,6 +34,9 @@ struct SearchProducerGrant {
   SearchProducerSampling sampling;
   // The frame's channel_id is a processor ID, NOT an AINVR output UUID.
   std::map<std::string, SearchProducerSource> sources;
+  // One canonical identity, shared with the native service. Absent only for
+  // legacy standalone fixtures; production receives the actual ACKed PG pin.
+  std::optional<ainvr::search::RuntimeModelPin> expected_model{};
 };
 struct ParsedSearchProducerGrant {
   std::shared_ptr<const SearchProducerGrant> grant;

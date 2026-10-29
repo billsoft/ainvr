@@ -55,8 +55,8 @@ std::string Fingerprint(const Json& document) {
 ParsedSearchProducerGrant ParseSearchProducerGrant(const Json& document) {
   try {
     Keys(document, {"enabled", "reason", "endpoint", "api_token", "revision", "model", "sampling", "sources", "valid_for_ms", "limits"});
-    Keys(document.at("model"), {"package_id"});
     if (!Boolean(document.at("enabled"))) {
+      Keys(document.at("model"), {"package_id"});
       const auto reason = Text(document.at("reason"), 1, 32);
       if ((reason != "disabled" && reason != "config_pending") || !document.at("endpoint").is_null() ||
           !document.at("api_token").is_null() || !document.at("revision").is_null() ||
@@ -67,6 +67,9 @@ ParsedSearchProducerGrant ParseSearchProducerGrant(const Json& document) {
     }
     if (!document.at("reason").is_null() || Integer(document.at("valid_for_ms"), 30000, 30000) != 30000) Invalid();
     auto grant = std::make_shared<SearchProducerGrant>();
+    const auto& model=document.at("model");
+    if(model.is_object()&&model.size()==1)Keys(model,{"package_id"});
+    else Keys(model,{"package_id","expected_model_version","expected_package_sha256"});
     grant->endpoint = Text(document.at("endpoint"), 1, 64);
     if (grant->endpoint != "http://127.0.0.1:8400") Invalid();
     grant->api_token = Text(document.at("api_token"), 32, 512);
@@ -75,6 +78,12 @@ ParsedSearchProducerGrant ParseSearchProducerGrant(const Json& document) {
     if (!std::regex_match(grant->revision, std::regex("[a-f0-9]{64}"))) Invalid();
     grant->package_id = Text(document.at("model").at("package_id"), 1, 128);
     if (!std::regex_match(grant->package_id, std::regex("[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}"))) Invalid();
+    if(model.contains("expected_model_version")){
+      ainvr::search::RuntimeModelPin pin{grant->package_id,Text(model.at("expected_package_sha256"),64,64),
+        Text(model.at("expected_model_version"),74,74)};
+      if(!ainvr::search::ValidRuntimeModelPin(pin))Invalid();
+      grant->expected_model=std::move(pin);
+    }
     const auto& limits = document.at("limits");
     Keys(limits, {"producer_queue", "producer_bytes", "image_max_bytes", "retention_days"});
     grant->limits = {Integer(limits.at("producer_queue"), 1, 4), Integer(limits.at("producer_bytes"), 8388608, 268435456),

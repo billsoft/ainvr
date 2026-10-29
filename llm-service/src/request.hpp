@@ -9,7 +9,8 @@
 #include <stdexcept>
 namespace ainvr::llm {
 struct InputError:std::invalid_argument{std::string code;InputError(std::string c,std::string m):std::invalid_argument(m),code(std::move(c)) {}};
-struct ReviewRequest { std::string kind,description,id; std::vector<uint8_t> jpeg; int width,height; bool letterbox=false; double temperature=1; std::optional<std::array<float,4>> target; std::vector<std::array<float,2>> region; float approach=0; };
+struct ImageRequest { std::string id; std::vector<uint8_t> jpeg; int width=0,height=0; bool letterbox=false; };
+struct ReviewRequest : ImageRequest { std::string kind,description; double temperature=1; std::optional<std::array<float,4>> target; std::vector<std::array<float,2>> region; float approach=0; };
 inline std::vector<uint8_t> DecodeBase64(const std::string& text) {
   if(text.empty()||text.size()>12*1024*1024||text.size()%4)throw std::invalid_argument("invalid image encoding or size");
   size_t padding=text.back()=='=' ? 1:0;

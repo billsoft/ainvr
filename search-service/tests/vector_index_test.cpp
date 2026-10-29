@@ -48,5 +48,40 @@ int main() {
   Check(mutable_index.Size() == 1 && replaced[0].score == 0 && replaced[0].fingerprint == replacement.fingerprint);
   Reject([&] { mutable_index.ReplaceTrackSlot(slot, slot.fingerprint); });
   Check(mutable_index.Fingerprint(slot.id) == replacement.fingerprint);
+  // Cursor maintenance visits every entry independently of time/source scope,
+  // never returns vector payload, never repeats within a batch, and wraps.
+  std::string cursor;
+  auto refs = index.ScanReferences(cursor, 2);
+  Check(refs.size() == 2 && refs[0].id == "b" && refs[1].id == "c" && cursor == "c");
+  index.Remove("c");
+  refs = index.ScanReferences(cursor, 2);
+  Check(refs.size() == 2 && refs[0].id == "d" && refs[1].id == "e");
+  refs = index.ScanReferences(cursor, 64);
+  Check(refs.size() == 4 && refs[0].id == "f" && refs[1].id == "b" && cursor == "e");
+  refs = mutable_index.ScanReferences(cursor, 1);
+  Check(refs.size() == 1 && refs[0].fingerprint == replacement.fingerprint);
+  Reject([&] { index.ScanReferences(cursor, 0); });
+  Reject([&] { index.ScanReferences(cursor, 65); });
+  VectorIndex bounded("paired-v1", 2, 100);
+  for (int n = 0; n < 100; ++n) bounded.Upsert(Row(std::to_string(n), "outside-query", "s", std::to_string(n), {1, 0}));
+  cursor.clear(); std::set<std::string> seen;
+  for (int n = 0; n < 4; ++n) {
+    refs = bounded.ScanReferences(cursor, 32); Check(refs.size() == 32);
+    for (const auto& ref : refs) seen.insert(ref.id);
+  }
+  Check(seen.size() == 100);
+  VectorIndex evidence_index("paired-v1",2,8);
+  auto earliest=Row("early","allowed","same-session","same-person",{0,1});earliest.captured_ms=1000;earliest.fingerprint=std::string(64,'a');
+  auto winner=earliest;winner.id="winner";winner.captured_ms=2000;winner.vector={1,0};winner.fingerprint=std::string(64,'b');
+  auto latest=earliest;latest.id="late";latest.captured_ms=3000;latest.vector={.5f,.5f};latest.fingerprint=std::string(64,'c');
+  evidence_index.Upsert(earliest);evidence_index.Upsert(winner);evidence_index.Upsert(latest);
+  auto grouped=evidence_index.Query({1,0},{{"allowed"},0,4000,20});
+  Check(grouped.size()==1&&grouped[0].id=="winner"&&grouped[0].evidence_refs.size()==3);
+  Check(grouped[0].evidence_refs[0].id=="winner"&&grouped[0].evidence_refs[1].id=="early"&&grouped[0].evidence_refs[2].id=="late");
+  auto scoped=evidence_index.Query({1,0},{{"allowed"},1500,2500,20});Check(scoped[0].evidence_refs.size()==1);
+  auto separate=latest;separate.id="other-processor";separate.processor="other";evidence_index.Upsert(separate);
+  separate.id="scene";separate.scene=true;evidence_index.Upsert(separate);
+  grouped=evidence_index.Query({1,0},{{"allowed"},0,4000,20});Check(grouped.size()==3);
+  for(const auto& hit:grouped)if(hit.id=="scene")Check(hit.evidence_refs.size()==1&&hit.evidence_refs[0].id=="scene");
   std::cout << "vector index: identity, scope, grouping, limits and validation passed\n";
 }

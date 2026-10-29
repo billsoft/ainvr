@@ -72,7 +72,7 @@ def main():
             try:
                 current=health('http://127.0.0.1:8300/health')
                 backend=health('http://127.0.0.1:3001/api/health')
-                if current['config_version']==old['config_version'] and current['model']=='unloaded' and current['admission']['mode']=='exclusive_large_model' and backend['data']['status']=='ok':break
+                if current['config_version']==old['config_version'] and current['model']=='unloaded' and current['admission']['mode']=='byte_accounted_coexistence' and backend['data']['status']=='ok':break
             except Exception:pass
             time.sleep(1)
         else:raise RuntimeError('new services did not acknowledge existing configuration')

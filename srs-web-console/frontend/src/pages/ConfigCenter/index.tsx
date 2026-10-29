@@ -181,7 +181,7 @@ export default function ConfigCenterPage() {
           onBusyChange={setPasswordBusy} />}
         {category === 'alarm-service' && <AlarmServiceConfigForm document={doc('alarm-service')} onSaveBatch={saveBatch} />}
         {category === 'llm-service' && <LlmServiceConfigForm key={doc('llm-service')?.updatedAt??'new'} document={doc('llm-service')} onSaveBatch={saveBatch} />}
-        {category === 'search-service' && <SearchServiceConfigForm key={doc('search-service')?.updatedAt ?? 'new'} document={doc('search-service')} onSaveBatch={saveBatch} />}
+        {category === 'search-service' && <SearchServiceConfigForm key={doc('search-service')?.updatedAt ?? 'new'} document={doc('search-service')} onSaveBatch={saveBatch} onReload={()=>load(['search-service'])} />}
         {category === 'database' && <DatabaseConfigForm aiServiceDoc={doc('ai-service')} onSavePartial={savePartial} />}
         {category === 'streaming' && <StreamingConfigForm backendDoc={doc('backend')} srsDoc={doc('srs')} onSavePartial={savePartial} />}
         {category === 'ai-service' && <AiServiceConfigForm backendDoc={doc('backend')} aiServiceDoc={doc('ai-service')} onSaveBatch={saveBatch} />}

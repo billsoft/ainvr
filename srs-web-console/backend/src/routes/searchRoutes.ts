@@ -1,11 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import type { SearchSourceChannel } from '../services/searchSourceCatalog.js';
 import { searchQuerySchema, searchRangeSchema, searchPageSchema, searchDetailSchema, searchCoverageSchema, sameSearchScope,
   type SearchScope, type SearchWorker, type SearchPage } from '../services/searchContract.js';
 import { PersistentSearchError } from '../services/persistentSearchWorker.js';
 interface Options {
   principal: (request: FastifyRequest) => Promise<string | null>;
-  channels: (actor: string) => Promise<{ id: string; name: string }[]>;
+  channels: (actor: string) => Promise<SearchSourceChannel[]>;
   worker?: SearchWorker;
 }
 const params = z.object({ id: z.string().uuid(), resultId: z.string().uuid().optional(), frameId: z.string().uuid().optional() }).strict();

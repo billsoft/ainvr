@@ -35,10 +35,12 @@ struct SearchSamplingObject {
   std::optional<double> quality, change;
   std::string processor_id, stream_session_id;
   int64_t source_frame_index = -1;
+  std::string probe_reference_fingerprint{};
 };
 struct SearchSamplingScene {
   bool usable = false, active = false;
   std::optional<double> change;
+  std::string probe_reference_fingerprint{};
 };
 struct SearchSamplingConfig {
   size_t max_sources = 128, max_tracks = 4096, max_pending = 1;
@@ -56,9 +58,9 @@ class SearchSamplingPolicy {
   // fences also reject callbacks accidentally retargeted to a replacement owner;
   // these are never a tracking/session identity or a durable request protocol.
   using Token = uint64_t;
-  enum class Reason { First, Best, Change, SceneFirst, SceneInterval, SceneChange };
+  enum class Reason { First, Best, Change, SceneFirst, SceneInterval, SceneChange, ObjectProbe, SceneProbe };
   enum class Status { Proposed, Pending, NotEligible, NotDue, Unbound, StaleFrame, Capacity, Invalid, Busy };
-  enum class Outcome { Committed, Failed, Unknown };
+  enum class Outcome { Committed, Failed, Unknown, NoChange, Abandoned };
   struct Candidate {
     Token token = 0;
     SearchSamplingFrame frame;
@@ -67,6 +69,8 @@ class SearchSamplingPolicy {
     Reason reason = Reason::First;
     std::optional<double> quality, change;
     std::string expected_fingerprint;
+    std::string probe_reference_fingerprint{};
+    double probe_threshold=.25;
   };
   struct Proposal { Status status; std::optional<Candidate> candidate{}; };
   struct Slot {
@@ -78,10 +82,15 @@ class SearchSamplingPolicy {
     std::array<std::optional<Slot>, 8> slots{};
     std::optional<double> best_quality;
     int64_t last_committed_pts_ns = -1;
+    int64_t last_probe_attempt_pts_ns=-1,last_checked_pts_ns=-1;
     Token pending = 0;
     size_t Count() const { size_t n = 0; for (const auto& slot : slots) if (slot) ++n; return n; }
   };
   struct Counters { size_t sources = 0, tracks = 0, pending = 0; };
+  static bool IsProbe(const Candidate& c){return c.reason==Reason::ObjectProbe||c.reason==Reason::SceneProbe;}
+  static bool ProbeContractValid(const Candidate& c){return IsProbe(c)&&FingerprintValid(c.probe_reference_fingerprint)&&
+    Measure(c.probe_threshold)&&(c.reason==Reason::ObjectProbe?
+      (c.slot&&*c.slot>=2&&*c.slot<8&&!c.track_id.empty()):(!c.slot&&c.track_id.empty()));}
 
   explicit SearchSamplingPolicy(SearchSamplingConfig config = {}): config_(config) {
     if (!config.max_sources || config.max_sources > 1024 || !config.max_tracks || config.max_tracks > 65536 ||
@@ -92,6 +101,22 @@ class SearchSamplingPolicy {
   }
   SearchSamplingPolicy(const SearchSamplingPolicy&) = delete;
   SearchSamplingPolicy& operator=(const SearchSamplingPolicy&) = delete;
+
+  // Timing/threshold hot updates preserve committed slots, pending CAS tokens,
+  // source identity and capacity. A normal grant refresh must not forget first.
+  bool UpdateTiming(const SearchSamplingConfig& config) {
+    if (config.object_interval_ns < 0 || config.scene_active_interval_ns <= 0 ||
+        config.scene_static_interval_ns <= 0 || config.scene_change_interval_ns <= 0 ||
+        !Measure(config.object_change_threshold) || !Measure(config.scene_change_threshold)) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_.object_interval_ns = config.object_interval_ns;
+    config_.scene_active_interval_ns = config.scene_active_interval_ns;
+    config_.scene_static_interval_ns = config.scene_static_interval_ns;
+    config_.scene_change_interval_ns = config.scene_change_interval_ns;
+    config_.object_change_threshold = config.object_change_threshold;
+    config_.scene_change_threshold = config.scene_change_threshold;
+    return true;
+  }
 
   // Called by the worker's synchronous lifecycle boundary, never inferred from
   // a newly received frame. A late frame cannot roll a new session back.
@@ -127,7 +152,8 @@ class SearchSamplingPolicy {
     return true;
   }
   Proposal ProposeObject(const SearchSamplingFrame& frame, const SearchSamplingObject& object) {
-    if (!OptionalMeasure(object.quality) || !OptionalMeasure(object.change) || !Identity(object.track_id)) return {Status::Invalid};
+    if (!OptionalMeasure(object.quality) || !OptionalMeasure(object.change) || !Identity(object.track_id)||
+        (!object.probe_reference_fingerprint.empty()&&!FingerprintValid(object.probe_reference_fingerprint))) return {Status::Invalid};
     std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock); if (!lock.owns_lock()) return {Status::Busy};
     Source* source = nullptr; const auto validity = AcceptFrame(frame, source);
     if (validity != Status::Proposed) return {validity};
@@ -147,7 +173,9 @@ class SearchSamplingPolicy {
     if (!track.slots[0]) { candidate.slot = 0; candidate.reason = Reason::First; }
     else if (object.quality && (!track.best_quality || *object.quality > *track.best_quality)) {
       candidate.slot = 1; candidate.reason = Reason::Best;
-    } else if (object.change && *object.change >= config_.object_change_threshold) {
+    } else if ((object.change && *object.change >= config_.object_change_threshold)||
+        (!object.probe_reference_fingerprint.empty()&&(track.last_probe_attempt_pts_ns<0||
+          (frame.source_pts_ns>track.last_probe_attempt_pts_ns&&frame.source_pts_ns-track.last_probe_attempt_pts_ns>=config_.object_interval_ns)))) {
       size_t slot = 2;
       while (slot < 8 && track.slots[slot]) ++slot;
       if (slot == 8) {
@@ -155,7 +183,9 @@ class SearchSamplingPolicy {
         for (size_t n = 3; n < 8; ++n)
           if (track.slots[n]->source_pts_ns < track.slots[slot]->source_pts_ns) slot = n;
       }
-      candidate.slot = slot; candidate.reason = Reason::Change;
+      candidate.slot = slot;
+      candidate.reason=object.change&&*object.change>=config_.object_change_threshold?Reason::Change:Reason::ObjectProbe;
+      if(IsProbe(candidate)){candidate.change.reset();candidate.probe_reference_fingerprint=object.probe_reference_fingerprint;candidate.probe_threshold=config_.object_change_threshold;}
     } else return {Status::NotDue};
     if (pending_.size() >= config_.max_pending ||
         (found == source->tracks.end() && tracks_ >= config_.max_tracks))
@@ -171,6 +201,7 @@ class SearchSamplingPolicy {
       }
       pending_.emplace(candidate.token, std::move(pending));
       found->second.pending = candidate.token;
+      if(IsProbe(candidate))found->second.last_probe_attempt_pts_ns=frame.source_pts_ns;
       return proposal;
     } catch (const std::bad_alloc&) {
       if (created) { source->tracks.erase(found); --tracks_; }
@@ -178,11 +209,13 @@ class SearchSamplingPolicy {
     }
   }
   Proposal ProposeScene(const SearchSamplingFrame& frame, const SearchSamplingScene& scene) {
-    if (!OptionalMeasure(scene.change)) return {Status::Invalid};
+    if (!OptionalMeasure(scene.change)||(!scene.probe_reference_fingerprint.empty()&&!FingerprintValid(scene.probe_reference_fingerprint))) return {Status::Invalid};
     std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock); if (!lock.owns_lock()) return {Status::Busy};
     Source* source = nullptr; const auto validity = AcceptFrame(frame, source);
     if (validity != Status::Proposed) return {validity};
     if (!scene.usable || (frame.analytics_status != "active" && frame.analytics_status != "detection_only")) return {Status::NotEligible};
+    if(frame.source_pts_ns<=source->scene_retired_pts_ns||frame.source_frame_index<=source->scene_retired_frame_index)
+      return {Status::NotDue};
     if (source->scene_pending) return {Status::Pending};
     Reason reason = Reason::SceneFirst;
     if (source->scene_committed_pts_ns >= 0) {
@@ -192,16 +225,21 @@ class SearchSamplingPolicy {
       if (elapsed >= interval) reason = Reason::SceneInterval;
       else if (scene.change && *scene.change >= config_.scene_change_threshold && elapsed >= config_.scene_change_interval_ns)
         reason = Reason::SceneChange;
+      else if(!scene.probe_reference_fingerprint.empty()&&elapsed>=config_.scene_change_interval_ns&&
+          (source->scene_probe_attempt_pts_ns<0||(frame.source_pts_ns>source->scene_probe_attempt_pts_ns&&
+            frame.source_pts_ns-source->scene_probe_attempt_pts_ns>=config_.scene_change_interval_ns)))reason=Reason::SceneProbe;
       else return {Status::NotDue};
     }
     if (pending_.size() >= config_.max_pending) return {Status::Capacity};
     Candidate candidate; candidate.token = NewToken(); if (!candidate.token) return {Status::Capacity};
     candidate.frame = frame;
     candidate.reason = reason; candidate.change = scene.change;
+    if(IsProbe(candidate)){candidate.change.reset();candidate.probe_reference_fingerprint=scene.probe_reference_fingerprint;candidate.probe_threshold=config_.scene_change_threshold;}
     try {
       Proposal proposal{Status::Proposed, candidate}; Pending pending{candidate, false};
       pending_.emplace(candidate.token, std::move(pending));
       source->scene_pending = candidate.token;
+      if(IsProbe(candidate))source->scene_probe_attempt_pts_ns=frame.source_pts_ns;
       return proposal;
     } catch (const std::bad_alloc&) { return {Status::Capacity}; }
   }
@@ -209,15 +247,20 @@ class SearchSamplingPolicy {
   // Failed means definitely not committed (admission/encoding/authoritative
   // rejection). A timeout is Unknown, never Failed. Retain the exact frame/job
   // externally, then Retry with the same token/body; this class owns no pixels.
+  // Abandoned cancels ONLY an uncertain scene's local metadata, without saying
+  // whether it committed. Its capture identity can never be proposed again.
+  // An uncertain object must retire its whole track, preserving the slot fence.
   // The job must retain that frame AND its matching Detection/crop transform;
   // looking up the latest box for track_id after admission is not permitted.
   bool Resolve(Token token, Outcome outcome, const std::string& fingerprint = "") {
-    if ((outcome != Outcome::Committed && outcome != Outcome::Failed && outcome != Outcome::Unknown) ||
+    if ((outcome != Outcome::Committed && outcome != Outcome::Failed && outcome != Outcome::Unknown&&outcome!=Outcome::NoChange&&outcome!=Outcome::Abandoned) ||
         (outcome == Outcome::Committed && !FingerprintValid(fingerprint)) ||
         (outcome != Outcome::Committed && !fingerprint.empty())) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     auto found = pending_.find(token); if (found == pending_.end()) return false;
     const auto& candidate = found->second.candidate;
+    if(outcome==Outcome::Abandoned&&(!found->second.unknown||candidate.slot))return false;
+    if(outcome==Outcome::NoChange&&(!IsProbe(candidate)||found->second.unknown))return false;
     if (outcome == Outcome::Committed && !candidate.expected_fingerprint.empty() &&
         candidate.expected_fingerprint == fingerprint) return false;
     auto source = Bound(candidate.frame.binding); if (!source) return false;
@@ -233,11 +276,17 @@ class SearchSamplingPolicy {
         if (candidate.quality && (!track->second.best_quality || *candidate.quality > *track->second.best_quality))
           track->second.best_quality = candidate.quality;
       }
+      if(IsProbe(candidate)&&(outcome==Outcome::Committed||outcome==Outcome::NoChange))track->second.last_checked_pts_ns=candidate.frame.source_pts_ns;
       track->second.pending = 0;
       if (track->second.Count() == 0) { source->tracks.erase(track); --tracks_; }
     } else {
       if (source->scene_pending != token) return false;
       if (outcome == Outcome::Committed) source->scene_committed_pts_ns = candidate.frame.source_pts_ns;
+      if(outcome==Outcome::Abandoned){
+        source->scene_retired_pts_ns=std::max(source->scene_retired_pts_ns,candidate.frame.source_pts_ns);
+        source->scene_retired_frame_index=std::max(source->scene_retired_frame_index,candidate.frame.source_frame_index);
+      }
+      if(IsProbe(candidate)&&(outcome==Outcome::Committed||outcome==Outcome::NoChange))source->scene_checked_pts_ns=candidate.frame.source_pts_ns;
       source->scene_pending = 0;
     }
     pending_.erase(found);
@@ -294,6 +343,8 @@ class SearchSamplingPolicy {
   struct Source {
     SearchSamplingBinding binding;
     int64_t highest_pts_ns = -1, highest_frame_index = -1, scene_committed_pts_ns = -1;
+    int64_t scene_probe_attempt_pts_ns=-1,scene_checked_pts_ns=-1;
+    int64_t scene_retired_pts_ns=-1,scene_retired_frame_index=-1;
     std::map<std::string, TrackSnapshot> tracks;
     Token scene_pending = 0;
   };

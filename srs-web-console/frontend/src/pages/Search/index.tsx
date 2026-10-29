@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { CalendarDays, Search, RefreshCw } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { searchEntryScope } from '@/features/searchNavigation'
+import { SearchCoveragePanel } from './SearchCoveragePanel'
 import { DateTimeRangePicker } from '@/components/ui/DateTimeRangePicker'
 import { toDatetimeLocalValue, parseDatetimeLocalValue, formatRangeFull } from '@/utils/timeRange'
-import { searchService, type SearchStatus, type SearchPageResult } from '@/api/searchService'
+import { newOperationId } from '@/utils/operationId'
+import { searchService, type SearchStatus, type SearchPageResult, type SearchChannel } from '@/api/searchService'
 import { SearchResults } from './SearchResults'
 
 const button = 'min-h-11 rounded-base border border-line bg-surface px-4 text-sm hover:bg-primary-50 disabled:opacity-50'
@@ -14,20 +18,26 @@ function coverageAfter(current: SearchPageResult['coverage'], next: SearchPageRe
   return current === 'unknown' || next === 'unknown' ? 'unknown' : 'sampled'
 }
 export default function SearchPage() {
+  const [entryParams, setEntryParams] = useSearchParams()
+  const [inherited] = useState(() => searchEntryScope(entryParams))
+  const [inheritedVisible, setInheritedVisible] = useState(!!inherited)
   const [query, setQuery] = useState('')
   const [data, setData] = useState<SearchPageResult | null>(null)
   const [submitted, setSubmitted] = useState('')
   const [searching, setSearching] = useState(false)
   const [moreLoading, setMoreLoading] = useState(false)
   const [queryError, setQueryError] = useState('')
+  const [descriptionError, setDescriptionError] = useState(false)
+  const descriptionInput = useRef<HTMLInputElement>(null)
   const [refreshError, setRefreshError] = useState('')
   const [evidenceNotice, setEvidenceNotice] = useState(false)
+  const [accessError, setAccessError] = useState('')
   const epoch = useRef(0)
   const active = useRef<{ id: string; abort: AbortController } | null>(null)
   const loadedPages = useRef<LoadedPage[]>([])
   const currentData = useRef<SearchPageResult | null>(null)
   const staleResults = useRef(new Set<string>())
-  const needsUpdate = (item: SearchPageResult['items'][number]) => !staleResults.current.has(item.id) && waiting(item)
+  const needsUpdate = (item: SearchPageResult['items'][number], index: number) => !staleResults.current.has(item.id) && (waiting(item) || (index < 5 && item.verification.state === 'candidate'))
   useEffect(() => { currentData.current = data }, [data])
   function stop() {
     epoch.current++
@@ -49,14 +59,15 @@ export default function SearchPage() {
   }, [])
   const [scopeOpen, setScopeOpen] = useState(true)
   const [filter, setFilter] = useState('')
-  const [selected, setSelected] = useState<string[]>([])
-  const [channels, setChannels] = useState<{ id: string; name: string }[]>([])
+  const [selected, setSelected] = useState<string[]>(inherited?.channel_ids ?? [])
+  const [channels, setChannels] = useState<SearchChannel[]>([])
   const [status, setStatus] = useState<SearchStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
   const [picker, setPicker] = useState(false)
   const [range, setRange] = useState(() => {
+    if (inherited) return { from: toDatetimeLocalValue(new Date(inherited.from)), to: toDatetimeLocalValue(new Date(Date.parse(inherited.to) - 1)) }
     const now = new Date()
     return { from: toDatetimeLocalValue(new Date(now.getTime() - 86400000)), to: toDatetimeLocalValue(now) }
   })
@@ -75,13 +86,23 @@ export default function SearchPage() {
   }, [retry])
   const from = parseDatetimeLocalValue(range.from), to = parseDatetimeLocalValue(range.to)
   const visible = channels.filter(c => c.name.toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase()))
+  const visibleSelectionCount = new Set([...selected, ...visible.map(c => c.id)]).size
+  const currentListExceedsLimit = visibleSelectionCount > 100
+  const selectionAtLimit = selected.length >= 100
   const validRange = !!from && !!to && to.getTime() >= from.getTime() && to.getTime() + 1000 - from.getTime() <= 31 * 86400000
   async function run() {
-    if (!status?.ready || !validRange || !query.trim() || !selected.length || selected.length > 100) return
+    if (loading || error || !status?.ready || !validRange || !query.trim() || !selected.length || selected.length > 100) return
+    let id: string
+    try { id = newOperationId('uuid') }
+    catch (e) {
+      setQueryError(e instanceof Error ? e.message : '无法创建搜索请求，请重试')
+      setDescriptionError(false)
+      return
+    }
     stop()
-    const own = epoch.current, abort = new AbortController(), id = crypto.randomUUID()
+    const own = epoch.current, abort = new AbortController()
     active.current = { id, abort }
-    setSearching(true); setQueryError(''); setRefreshError(''); setEvidenceNotice(false); setData(null); setSubmitted(query.trim())
+    setSearching(true); setQueryError(''); setDescriptionError(false); setRefreshError(''); setEvidenceNotice(false); setAccessError(''); setData(null); setSubmitted(query.trim())
     try {
       const next = await searchService.query({ query: query.trim(), request_id: id, verify: true,
         scope: { channel_ids: selected, from: from!.toISOString(), to: new Date(to!.getTime() + 1000).toISOString() } }, abort.signal)
@@ -92,6 +113,10 @@ export default function SearchPage() {
     } catch (e) {
       if (epoch.current === own && !abort.signal.aborted) {
         setQueryError(e instanceof Error ? e.message : '搜索失败，请重试'); active.current = null
+        const code = e && typeof e === 'object' && 'code' in e ? e.code : null
+        const invalidDescription = typeof code === 'string' && ['query_too_long', 'query_too_large', 'query_invalid_utf8', 'query_unrepresentable'].includes(code)
+        setDescriptionError(invalidDescription)
+        if (invalidDescription) descriptionInput.current?.focus()
         // A failed/expired HTTP response may still have opened a persisted
         // query. Do not leave its unfinished verification running unnoticed.
         void searchService.cancel(id).catch(() => undefined)
@@ -118,7 +143,7 @@ export default function SearchPage() {
   }
   const pendingUpdates = data?.items.some(needsUpdate) ?? false
   useEffect(() => {
-    if (!data || !pendingUpdates) return
+    if (!data || !pendingUpdates || accessError) return
     const id = data.search_id, own = epoch.current, abort = new AbortController()
     let busy = false, pageOffset = 0
     const deadline = Date.now() + 10 * 60000
@@ -159,26 +184,51 @@ export default function SearchPage() {
         }
         if (epoch.current === own && !abort.signal.aborted) setRefreshError('')
       } catch (e) {
-        if (!abort.signal.aborted && epoch.current === own) setRefreshError(e instanceof Error ? e.message : '复核状态更新失败，可重新搜索')
+        if (!abort.signal.aborted && epoch.current === own) {
+          const status = e && typeof e === 'object' && 'status' in e ? e.status : null
+          if (status === 403 || status === 404 || status === 410) {
+            clearInterval(timer)
+            setAccessError(status === 403 ? '搜索证据访问权限已变化，已停止更新和反馈；请重新选择有权限的摄像头搜索。' : '本次搜索或证据已过期，已停止更新和反馈；请重新搜索。')
+            setRefreshError('')
+            void searchService.cancel(id).catch(() => undefined)
+          } else setRefreshError(e instanceof Error ? e.message : '复核状态更新失败，可重新搜索')
+        }
       } finally { busy = false }
     }
     const timer = setInterval(() => void update(), 4000)
     return () => { clearInterval(timer); abort.abort() }
-  }, [data?.search_id, pendingUpdates])
+  }, [data?.search_id, pendingUpdates, accessError])
   const message = loading ? '正在检查搜索服务…' : error || (status?.reason === 'disabled'
     ? '智能搜索尚未启用，请到系统配置中选择模型、采集范围与外挂存储后启用。'
     : status?.reason === 'config_pending' ? '搜索配置正在等待服务应用，请稍后重新检查。'
     : status?.reason === 'storage_unavailable'
-    ? '搜索历史存储暂不可用，请检查外挂存储。'
+    ? '搜索历史或索引存储暂不可用，请检查外挂存储和历史库状态。'
     : status?.reason === 'service_unavailable' ? '搜索服务暂不可用，请检查服务运行状态后重新尝试。'
     : '搜索模型与索引尚未就绪。条件可先设置，尚不能搜索录像。')
   return <div className="mx-auto w-full max-w-7xl space-y-5 p-4 md:p-6">
     <header><h1 className="text-2xl font-semibold text-ink">智能搜索</h1>
       <p className="mt-1 text-sm text-ink-subtle">描述要查找的目标，结合时间与摄像头查找录像证据。</p></header>
-    <form onSubmit={e => { e.preventDefault(); void run() }} className="space-y-4 rounded-xl border border-line bg-surface p-4 md:p-5" aria-label="搜索条件">
+    {(!status?.ready || error) && <section role={error ? 'alert' : 'status'} className="rounded-xl border border-line bg-surface p-5">
+      <h2 className="font-medium text-ink">{loading ? '正在检查搜索服务' : error ? '暂时无法读取搜索状态' : status?.reason === 'disabled' ? '智能搜索未启用' : status?.reason === 'config_pending' ? '配置等待应用' : status?.reason === 'storage_unavailable' ? '搜索存储不可用' : status?.reason === 'service_unavailable' ? '搜索服务暂不可用' : '等待搜索能力就绪'}</h2>
+      <p className="mt-2 text-sm text-ink-subtle">{message}</p>
+      <p className="mt-2 text-sm text-ink-subtle">当前无法完成所选范围的搜索，不能据此判断是否发生过事件。</p>
+      <div className="mt-4 flex flex-wrap items-center gap-2"><button type="button" className={`${button} inline-flex items-center gap-2`} disabled={loading} onClick={() => setRetry(n => n + 1)}><RefreshCw size={16} />重新检查</button>
+        {!loading && status && ['disabled', 'config_pending', 'model_pending', 'storage_unavailable'].includes(status.reason ?? '') && <Link to="/config-center?category=search-service" className="inline-flex min-h-11 items-center px-2 text-sm text-primary">前往搜索配置</Link>}</div>
+    </section>}
+    <form onSubmit={e => { e.preventDefault(); void run() }} onKeyDown={e => {
+      if (e.key === 'Escape' && searching && !picker && !e.defaultPrevented && !e.nativeEvent.isComposing) { e.preventDefault(); stop() }
+    }} className="min-w-0 space-y-4 rounded-xl border border-line bg-surface p-4 md:p-5" aria-label="搜索条件">
+      {inheritedVisible && <p className="text-sm text-ink-subtle">已继承入口的摄像头与时间；无权或不可搜索的摄像头不会被选中。<button type="button" className={`${button} ml-2`} onClick={() => {
+        const now = new Date(); setSelected([]); setRange({ from: toDatetimeLocalValue(new Date(now.getTime() - 86400000)), to: toDatetimeLocalValue(now) }); setInheritedVisible(false); setEntryParams({}, { replace: true })
+      }}>清除继承范围</button></p>}
       <label className="block text-sm font-medium text-ink" htmlFor="search-description">想找什么？</label>
-      <input id="search-description" value={query} onChange={e => setQuery(e.target.value)} maxLength={256}
-        placeholder="例如：背黑色双肩包的人" className="min-h-12 w-full rounded-base border border-line bg-surface px-4 text-ink" />
+      <input ref={descriptionInput} id="search-description" value={query} onChange={e => {
+        setQuery(e.target.value)
+        if (descriptionError) { setDescriptionError(false); setQueryError('') }
+      }} maxLength={256} aria-invalid={descriptionError || undefined}
+        aria-describedby={`search-description-hint${descriptionError ? ' search-query-error' : ''}`}
+        onKeyDown={e => { if (e.key === 'Enter' && e.nativeEvent.isComposing) e.preventDefault() }}
+        placeholder="例如：背黑色双肩包的人" className="min-h-12 w-full min-w-0 rounded-base border border-line bg-surface px-4 text-ink" />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-sm text-ink-subtle">已选 {selected.length} 个摄像头 · {from && to ? `${formatRangeFull(from)} — ${formatRangeFull(to)}` : '请选择时间范围'}</span>
         <button type="button" className={button} aria-expanded={scopeOpen} onClick={() => setScopeOpen(v => !v)}>{scopeOpen ? '收起范围' : '调整范围'}</button>
@@ -188,39 +238,47 @@ export default function SearchPage() {
           <CalendarDays size={18} />选择时间范围</button>
         <span className="text-sm text-ink-subtle">{from && to ? `${formatRangeFull(from)} — ${formatRangeFull(to)}` : '请选择时间范围'}</span>
       </div>
-      <fieldset className="rounded-base border border-line p-3">
-        <legend className="px-1 text-sm font-medium">摄像头 · 已选 {selected.length}</legend>
+      <fieldset disabled={loading || !!error} className="rounded-base border border-line p-3"
+        aria-describedby={currentListExceedsLimit || selectionAtLimit ? 'search-source-limit' : undefined}>
+        <legend className="px-1 text-sm font-medium">摄像头 · 已选 {selected.length} / 100</legend>
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <input aria-label="查找摄像头" value={filter} onChange={e => setFilter(e.target.value)} placeholder="查找摄像头…" className="min-h-11 rounded-base border border-line px-3" />
-          <button type="button" className={button} disabled={!visible.length} onClick={() => setSelected(ids => [...new Set([...ids, ...visible.map(c => c.id)])])}>选择当前列表</button>
+          <input aria-label="查找摄像头" value={filter} onChange={e => setFilter(e.target.value)} placeholder="查找摄像头…" className="min-h-11 w-full min-w-0 rounded-base border border-line px-3 sm:w-auto sm:flex-1" />
+          <button type="button" className={button} disabled={!visible.length || currentListExceedsLimit} onClick={() => setSelected(ids => {
+            const next = [...new Set([...ids, ...visible.map(c => c.id)])]
+            return next.length <= 100 ? next : ids
+          })}>选择当前列表</button>
           <button type="button" className={button} disabled={!selected.length} onClick={() => setSelected([])}>清除选择</button>
         </div>
         <div className="grid max-h-52 grid-cols-1 gap-1 overflow-auto sm:grid-cols-2 lg:grid-cols-3">
-          {visible.map(c => <label key={c.id} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-base px-2 hover:bg-primary-50">
-            <input type="checkbox" checked={selected.includes(c.id)} onChange={e => setSelected(ids => e.target.checked ? [...ids, c.id] : ids.filter(id => id !== c.id))} />
-            <span className="truncate">{c.name}</span></label>)}
+          {visible.map(c => <label key={c.id} className={`flex min-h-11 min-w-0 items-center gap-2 rounded-base px-2 ${selectionAtLimit && !selected.includes(c.id) ? 'cursor-not-allowed text-ink-subtle' : 'cursor-pointer hover:bg-primary-50'}`}>
+            <input type="checkbox" checked={selected.includes(c.id)} disabled={selectionAtLimit && !selected.includes(c.id)}
+              onChange={e => setSelected(ids => e.target.checked ? ids.length < 100 ? [...new Set([...ids, c.id])] : ids : ids.filter(id => id !== c.id))} />
+            <span className="min-w-0 flex-1"><span className="block truncate">{c.name}</span>{c.sampling_supported === false && <span className="block text-xs text-amber-800">全景采集待验证 · 可查历史</span>}</span></label>)}
         </div>
-        {!loading && !visible.length && <p className="text-sm text-ink-subtle">{channels.length ? '没有匹配的摄像头' : '暂无可用通道，请先在接入管理中配置'}</p>}
+        {(currentListExceedsLimit || selectionAtLimit) && <p id="search-source-limit" className="mt-2 text-xs text-ink-subtle">
+          {currentListExceedsLimit
+            ? `全部选中当前列表后将达到 ${visibleSelectionCount} 个摄像头，单次最多 100 个；请先筛选或取消部分选择。`
+            : '已选满 100 个摄像头；取消部分选择后可以添加其他摄像头。'}
+        </p>}
+        {loading ? <p className="text-sm text-ink-subtle">正在读取摄像头列表…</p>
+          : error ? <p className="text-sm text-ink-subtle">暂时无法读取摄像头列表，请恢复服务后重新检查。</p>
+          : !visible.length && <p className="text-sm text-ink-subtle">{channels.length ? '没有匹配的摄像头' : '暂无可搜索的 AI 输出通道，请先配置 AI 通道。'}</p>}
       </fieldset></>}
-      <p className="text-xs text-ink-subtle">时间与位置以所选条件为准；描述中的“昨晚”等条件不会自动生效。</p>
+      <p id="search-description-hint" className="text-xs text-ink-subtle">时间与位置以所选条件为准；描述中的“昨晚”等条件不会自动生效。</p>
             {selected.length > 100 && <p role="alert" className="text-sm text-red-600">单次最多选择 100 个通道，请缩小范围。</p>}
       <div className="flex gap-2">
         <button type="submit" disabled={loading || !status?.ready || !validRange || !query.trim() || !selected.length || selected.length > 100 || searching} className="inline-flex min-h-11 items-center gap-2 rounded-base bg-primary px-5 text-white disabled:opacity-50"><Search size={18} />{searching ? '正在搜索…' : '搜索录像'}</button>
         {searching && <button type="button" className={button} onClick={stop}>取消搜索</button>}
       </div>
     </form>
-    {(!status?.ready || error) && <section role={error ? 'alert' : 'status'} className="rounded-xl border border-line bg-surface p-5">
-      <h2 className="font-medium text-ink">{error ? '暂时无法读取搜索状态' : status?.reason === 'disabled' ? '智能搜索未启用' : status?.reason === 'config_pending' ? '配置等待应用' : status?.reason === 'service_unavailable' ? '搜索服务暂不可用' : '等待搜索能力就绪'}</h2>
-      <p className="mt-2 text-sm text-ink-subtle">{message}</p>
-      <p className="mt-2 text-sm text-ink-subtle">当前无法完成所选范围的搜索，不能据此判断是否发生过事件。</p>
-      <button type="button" className={`${button} mt-4 inline-flex items-center gap-2`} disabled={loading} onClick={() => setRetry(n => n + 1)}><RefreshCw size={16} />重新检查</button>
-    </section>}
-    {queryError && <p role="alert" className="rounded-base border border-red-200 bg-red-50 p-3 text-sm text-red-700">{queryError}</p>}
+
+    {queryError && <p id="search-query-error" role="alert" className="rounded-base border border-red-200 bg-red-50 p-3 text-sm text-red-700">{queryError}</p>}
     {refreshError && <p role="alert" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{refreshError}</p>}
     {evidenceNotice && data && <p role="status" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">部分候选证据已过期或不可访问，已停止更新这些候选；可通过已有录像链接核对，或重新搜索。</p>}
     {searching && <p role="status" className="text-sm text-ink-subtle">正在查找“{submitted}”的候选，可随时取消。</p>}
-    {data && <><p className="text-sm text-ink-subtle">本次描述：“{submitted}” · {formatRangeFull(new Date(data.scope.from))} — {formatRangeFull(new Date(data.scope.to))}</p>
-      <SearchResults key={data.search_id} data={data} moreLoading={moreLoading} onMore={() => void more()}
+    {data && <><p className="text-sm text-ink-subtle">本次描述：“{submitted}” · {formatRangeFull(new Date(data.scope.from))} — {formatRangeFull(new Date(Date.parse(data.scope.to) - 1))}</p>
+      <SearchCoveragePanel key={`coverage-${data.search_id}`} scope={data.scope} channels={channels} onDenied={setAccessError} />
+      <SearchResults key={data.search_id} data={data} moreLoading={moreLoading} readOnlyReason={accessError} onAccessDenied={setAccessError} onMore={() => void more()}
         onUpdate={item => setData(old => old && old.search_id === data.search_id ? { ...old, items: old.items.map(i => i.id === item.id ? { ...i, feedback: item.feedback } : i) } : old)} /></>}
     {picker && <DateTimeRangePicker open from={range.from} to={range.to} onClose={() => setPicker(false)}
       onConfirm={(start, end) => { setRange({ from: start, to: end }); setPicker(false) }}

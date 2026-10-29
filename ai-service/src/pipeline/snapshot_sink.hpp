@@ -14,8 +14,8 @@ class SnapshotSink {
  public:
   virtual ~SnapshotSink() = default;
   // Wait before selecting the next source frame, without retaining a decoder surface.
-  virtual void WaitForCapacity(const std::function<bool()>& cancelled) {}
-  virtual void ReserveForFrame(cv::Size size) {}
+  virtual void WaitForCapacity(const std::function<bool()>&) {}
+  virtual void ReserveForFrame(cv::Size) {}
   // snapshot_cfg 由调用方(ChannelWorker::InferOneFrame)每帧从当前生效
   // 配置里现取现传——热更新(§1.2 SNAPSHOT_HOT_SUBFIELDS)因此天然对
   // SnapshotSink 生效,不需要额外的配置同步通路。

@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "annotation": {
+    "source": "human",
+    "id": "REPLACE-WITH-REAL-ANNOTATION-VERSION",
+    "corpus_id": "REPLACE-WITH-FROZEN-FIELD-CORPUS-ID"
+  },
+  "queries": [
+    {
+      "id": "q-positive-template",
+      "text": "替换为人工标注的现场查询；本模板不是现场标签",
+      "scope": { "channel_ids": ["camera-output-id"], "from_ms": 1000, "to_ms": 61000 },
+      "labels": {
+        "reviewed": false,
+        "complete": false,
+        "no_match": false,
+        "relevant": [
+          { "id": "replace-with-event-id", "grade": 3, "channel_id": "camera-output-id", "from_ms": 10000, "to_ms": 13000 }
+        ]
+      },
+      "runs": {
+        "B1": [],
+        "B2": [],
+        "B3": [],
+        "final": [
+          { "id": "replace-with-event-id", "channel_id": "camera-output-id", "from_ms": 11000, "to_ms": 14000 }
+        ]
+      }
+    },
+    {
+      "id": "q-no-match-template",
+      "text": "替换为人工确认在该范围无匹配的查询",
+      "scope": { "channel_ids": ["camera-output-id"], "from_ms": 1000, "to_ms": 61000 },
+      "labels": { "reviewed": false, "complete": false, "no_match": true, "relevant": [] },
+      "runs": { "B1": [], "B2": [], "B3": [], "final": [] }
+    }
+  ]
+}

@@ -6,7 +6,7 @@
 #include <iostream>
 #include <stdexcept>
 namespace {
-int wait_rc=0,release_rc=0,submit_rc=0,frees=0,releases=0,unloads=0,wait_ms=0,submits=0;
+int create_rc=0,wait_rc=0,release_rc=0,submit_rc=0,frees=0,releases=0,unloads=0,wait_ms=0,submits=0,creates=0;
 void Require(bool x){if(!x)throw std::runtime_error("BPU resource custody assertion failed");}
 void Properties(hbDNNTensorProperties* p){*p={};p->validShape.numDimensions=1;p->validShape.dimensionSize[0]=4;p->stride[0]=1;p->alignedByteSize=4;}
 }
@@ -27,7 +27,7 @@ int32_t hbUCPMallocCached(hbUCPSysMem* p,uint64_t n,int32_t){p->virAddr=std::cal
 int32_t hbUCPMemFlush(const hbUCPSysMem*,int32_t){return 0;}
 int32_t hbUCPFree(hbUCPSysMem* p){++frees;std::free(p->virAddr);p->virAddr=nullptr;return 0;}
 int32_t hbDNNRelease(hbDNNPackedHandle_t){++unloads;return 0;}
-int32_t hbDNNInferV2(hbUCPTaskHandle_t* p,hbDNNTensor*,const hbDNNTensor*,hbDNNHandle_t){*p=reinterpret_cast<void*>(3);return 0;}
+int32_t hbDNNInferV2(hbUCPTaskHandle_t* p,hbDNNTensor*,const hbDNNTensor*,hbDNNHandle_t){++creates;*p=reinterpret_cast<void*>(3);return create_rc;}
 int32_t hbUCPSubmitTask(hbUCPTaskHandle_t,hbUCPSchedParam*){++submits;return submit_rc;}
 int32_t hbUCPWaitTaskDone(hbUCPTaskHandle_t,int32_t ms){wait_ms=ms;return wait_rc;}
 int32_t hbUCPReleaseTask(hbUCPTaskHandle_t){++releases;return release_rc;}
@@ -38,14 +38,20 @@ int main(int argc,char** argv){try{
   else if(mode=="unknown")wait_rc=HB_UCP_UNKNOWN_ERROR;
   else if(mode=="release")release_rc=HB_UCP_API_USE_ERROR;
   else if(mode=="submit")submit_rc=HB_UCP_TASK_NUMBER_EXCEED_LIMIT;
+  else if(mode=="createfail")create_rc=HB_UCP_UNKNOWN_ERROR;
+  else if(mode=="create_releasefail"){create_rc=HB_UCP_UNKNOWN_ERROR;release_rc=HB_UCP_API_USE_ERROR;}
+  else if(mode=="submit_releasefail"){submit_rc=HB_UCP_TASK_NUMBER_EXCEED_LIMIT;release_rc=HB_UCP_API_USE_ERROR;}
   else Require(mode=="success");
-  const bool fault=mode=="timeout"||mode=="unknown"||mode=="release";
+  const bool fault=mode=="timeout"||mode=="unknown"||mode=="release"||mode=="create_releasefail"||mode=="submit_releasefail";
   {ainvr::BpuModel model("fake-never-opened");
     bool threw=false;try{auto out=model.Run({{1,2,3,4}});Require(out.size()==1&&out[0].size()==4);}catch(const std::runtime_error&){threw=true;}
     Require(threw==(mode!="success"));Require(ainvr::BpuRuntimeHealthy()!=fault);
-    if(fault){const int before=submits;try{model.Run({{1,2,3,4}});Require(false);}catch(const std::runtime_error&){}Require(submits==before);}
+    if(fault){const int before=submits,created=creates;try{model.Run({{1,2,3,4}});Require(false);}catch(const std::runtime_error&){}Require(submits==before&&creates==created);}
   }
-  Require(wait_ms==(mode=="submit"?0:10000));
+  const bool create_failed=mode=="createfail"||mode=="create_releasefail";
+  const bool submit_failed=mode=="submit"||mode=="submit_releasefail";
+  Require(creates==1);Require(submits==(create_failed?0:1));
+  Require(wait_ms==((create_failed||submit_failed)?0:10000));
   Require(frees==(fault?0:2));Require(unloads==(fault?0:1));
   Require(releases==((mode=="timeout"||mode=="unknown")?0:1));
   Require(ainvr::BpuQuarantinedBytes()==(fault?8u:0u));

@@ -1,0 +1,15 @@
+# One bounded native executor of existing PostgreSQL SearchJobs leases.
+add_library(ainvr_search_index_builder src/index_build_worker.cpp)
+target_link_libraries(ainvr_search_index_builder PUBLIC ainvr_search_history ainvr_search_index_jobs ainvr_search_index_shard_files)
+target_compile_options(ainvr_search_index_builder PRIVATE -Wall -Wextra -Werror)
+add_library(ainvr_search_index_builder_test_impl STATIC src/index_build_worker.cpp)
+target_compile_definitions(ainvr_search_index_builder_test_impl PUBLIC AINVR_INDEX_BUILDER_TESTING=1)
+# The Scan fixture borrows domain declarations only. Do not load libmongoc's
+# SASL process initializers into a software test that never accesses a DB.
+target_link_libraries(ainvr_search_index_builder_test_impl PUBLIC ainvr_search_index_jobs ainvr_search_index_shard_files_test_impl)
+target_compile_options(ainvr_search_index_builder_test_impl PRIVATE -Wall -Wextra -Werror)
+add_executable(ainvr_search_index_builder_test tests/index_build_worker_test.cpp)
+target_link_libraries(ainvr_search_index_builder_test PRIVATE ainvr_search_index_builder_test_impl)
+target_compile_options(ainvr_search_index_builder_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME search_index_builder COMMAND ainvr_search_index_builder_test)
+set_tests_properties(search_index_builder PROPERTIES LABELS software TIMEOUT 20)

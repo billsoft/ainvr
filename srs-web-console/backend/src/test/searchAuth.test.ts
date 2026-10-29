@@ -15,6 +15,10 @@ it('root authentication scopes search configuration, AI producer projection and 
     const auth = (token: string) => ({ 'x-service-token': token });
     expect((await app.inject({ url: '/api/internal/search/runtime-config', headers: auth(search) })).statusCode).toBe(503);
     expect((await app.inject({ url: '/api/internal/search/runtime-config', headers: auth(ai) })).statusCode).toBe(401);
+    const indexPayload = { action: 'claim', worker: '00000000-0000-4000-8000-000000000001', kind: 'index', revision: 'a'.repeat(64) };
+    expect((await app.inject({ method: 'POST', url: '/api/internal/search/index-jobs', headers: auth(search), payload: indexPayload })).statusCode).toBe(503);
+    expect((await app.inject({ method: 'POST', url: '/api/internal/search/index-jobs', headers: auth(ai), payload: indexPayload })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: '/api/internal/search/index-jobs', headers: auth(search) })).statusCode).toBe(401);
     const producer = await app.inject({ url: '/api/internal/search/producer-config', headers: auth(ai) });
     expect(producer.statusCode).toBe(200);
     expect(producer.json()).toEqual({ enabled: false, reason: 'config_pending', endpoint: null, api_token: null,
@@ -26,6 +30,7 @@ it('root authentication scopes search configuration, AI producer projection and 
     const consoleHeaders = { 'x-console-token': login.json().data.token };
     expect((await app.inject({ url: '/api/internal/search/runtime-config', headers: consoleHeaders })).statusCode).toBe(403);
     expect((await app.inject({ url: '/api/internal/search/producer-config', headers: consoleHeaders })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url: '/api/internal/search/index-jobs', headers: consoleHeaders, payload: indexPayload })).statusCode).toBe(403);
     expect((await app.inject({ url: '/api/search/status', headers: consoleHeaders })).json())
       .toEqual({ ready: false, reason: 'config_pending', model_version: null });
     expect(producer.body).not.toContain(search); expect(producer.body).not.toContain(ai);

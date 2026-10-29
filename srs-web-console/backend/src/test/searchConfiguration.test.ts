@@ -19,7 +19,7 @@ describe('search configuration shares the existing parameter-store contract', ()
   });
   it('is disabled and resource bounded before models or historical storage exist', async () => {
     expect(searchSettingsSchema.parse(defaults()).enabled).toBe(false);
-    expect(defaults().model.package_id).toBe('siglip-so400m-i18n-full-int8');
+    expect(defaults().model.package_id).toBe('siglip2-base-full-int8');
     expect((await new SearchConfigAdapter().validate([{ group: 'system', name: 'settings', config: defaults() }] as never)).ok).toBe(true);
     for (const overrides of [{ enabled: true }, { listen: { host: '0.0.0.0', port: 8400 } },
       { limits: { ...defaults().limits, producer_bytes: 2 ** 40 } },
@@ -39,6 +39,13 @@ describe('search configuration shares the existing parameter-store contract', ()
     expect(searchSettingsSchema.safeParse(d).success).toBe(false);
     d.callers[0].scope = 'console'; d.callers[1].key = d.callers[0].key;
     expect(searchSettingsSchema.safeParse(d).success).toBe(false);
+  });
+  it('preserves explicitly selected so400m and empty models instead of applying the new default', () => {
+    for (const package_id of ['siglip-so400m-i18n-full-int8', null]) {
+      const selected = { ...defaults(), model: { package_id } };
+      expect(prepareSearchSettings(selected).model.package_id).toBe(package_id);
+      expect(prepareSearchSettings(selected).enabled).toBe(false);
+    }
   });
   it('provisions only at explicit save and preserves versioned references on later edits', async () => {
     const first = prepareSearchSettings(defaults());

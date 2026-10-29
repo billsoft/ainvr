@@ -1,6 +1,7 @@
 import {afterEach,expect,it,vi} from 'vitest'
 import {act,cleanup,fireEvent,render,screen} from '@testing-library/react'
 import {LlmServiceConfigForm} from '../pages/ConfigCenter/LlmServiceConfigForm'
+import type {ConfigDocument} from '@/api/configService'
 const request=vi.hoisted(()=>vi.fn())
 vi.mock('@/api/httpClient',()=>({request}))
 afterEach(()=>{cleanup();request.mockReset();vi.unstubAllGlobals()})
@@ -40,4 +41,19 @@ it('uses only the latest selected image and clears a previous score when its des
   expect(JSON.parse(call[1].body).image.jpeg_base64).toBe('c2Vjb25k')
   fireEvent.change(screen.getByLabelText('告警描述'),{target:{value:'新的描述'}})
   expect(screen.queryByText(/属实分数 0.8000/)).toBeNull()
+})
+
+it('preserves the independent search task when changing alarm configuration',async()=>{
+  const search={enabled:false,aspect_policy:'letterbox',decision_policy:'abc-visible-v1'}
+  const document:ConfigDocument={id:1,service:'llm-service',group:'system',name:'settings',createdAt:'',updatedAt:'',config:{
+    enabled:false,admin_key:'${secret:llm-service/admin_key}',api_keys:[{name:'console-try',key:'${secret:llm-service/console-try.key}'}],
+    tasks:{'alarm-review-zh-v1':{calibration_temperature:1,aspect_policy:'reject'},'search-verify-zh-v1':search}}}
+  const save=vi.fn().mockResolvedValue(undefined)
+  render(<LlmServiceConfigForm document={document} onSaveBatch={save}/>)
+  fireEvent.change(screen.getByLabelText('分数校准温度'),{target:{value:'2'}})
+  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'保存并应用'}))})
+  expect(save).toHaveBeenCalledTimes(1)
+  const tasks=save.mock.calls[0]![0][0].config.tasks
+  expect(tasks['search-verify-zh-v1']).toEqual(search)
+  expect(tasks['alarm-review-zh-v1']).toEqual({calibration_temperature:2,aspect_policy:'reject'})
 })

@@ -6,6 +6,8 @@
 #include <thread>
 #include <unistd.h>
 #include "api/control_server.hpp"
+#include "api/search_reencode_http_contract.hpp"
+#include "output/search_sampling_owner.hpp"
 #include "pipeline/unavailable_worker.hpp"
 using nlohmann::json;
 namespace cfg = ai_service::config;
@@ -27,7 +29,7 @@ class OutputConfigTest : public ::testing::Test {
     std::ofstream(dir / "base.json") << base.dump();
     store = std::make_shared<cfg::ConfigStore>(dir / "base.json", dir / "overlay.json");
     manager = MakeManager();
-    api::RegisterRoutes(server, manager);
+    api::RegisterRoutes(server, manager, {}, ReencodeHandler());
     port = server.bind_to_any_port("127.0.0.1"); ASSERT_GT(port,0);
     thread = std::thread([&]{ server.listen_after_bind(); });
     for(int i=0;i<40&&!server.is_running();++i) std::this_thread::sleep_for(std::chrono::milliseconds(25));
@@ -39,6 +41,7 @@ class OutputConfigTest : public ::testing::Test {
         return std::make_shared<ai_service::pipeline::UnavailableWorker>(ch);
       },[this]{return licensed;});
   }
+  virtual api::SearchReencodeImage ReencodeHandler(){return {};}
   void TearDown() override {
     server.stop(); if(thread.joinable())thread.join(); manager.reset();
     fs::remove_all(dir);
@@ -56,6 +59,52 @@ class OutputConfigTest : public ::testing::Test {
   int port;
   httplib::Headers headers{{"x-api-key",std::string(32,'x')}};
 };
+
+class ReencodeControlTest:public OutputConfigTest {
+ protected:
+  api::SearchReencodeImage ReencodeHandler()override {
+    return [this](const json& input,const std::string& image) {
+      ++reencode_calls;received_image=image;
+      // Explicit software route oracle, not an image/model inference result.
+      return json{{"software_route_fixture",true},{"request_id",input.at("request_id")}};
+    };
+  }
+  json Request()const {
+    const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    return {{"schema_version","search-reencode-image-v1"},{"request_id","10000000-0000-4000-8000-000000000001"},
+      {"job_id","10000000-0000-4000-8000-000000000002"},{"generation",1},{"payload_fingerprint",std::string(64,'a')},
+      {"target",{{"package_id","siglip2-base-full-int8"},{"package_sha256",std::string(64,'b')},{"model_version","search-v1-"+std::string(64,'b')}}},
+      {"sample_id","10000000-0000-4000-8000-000000000003"},{"source_fingerprint",std::string(64,'c')},
+      {"jpeg_sha256",ainvr::search::SampleSha256(jpeg)},{"expires_ms",now+20000}};
+  }
+  httplib::Result Send(const json& input,bool authenticated=true) {
+    auto h=authenticated?headers:httplib::Headers{};h.emplace("x-ainvr-search-reencode",input.dump());
+    httplib::Client client("127.0.0.1",port);return client.Post("/api/v1/search/reencode",h,jpeg,"image/jpeg");
+  }
+  const std::string jpeg{"\xff\xd8\x07\x08\xff\xd9",6};
+  int reencode_calls=0;std::string received_image;
+};
+TEST_F(ReencodeControlTest, UsesExistingAuthenticationAndSendsUnmodifiedRawImageToInjectedOwner) {
+  auto denied=Send(Request(),false);ASSERT_TRUE(denied);EXPECT_EQ(denied->status,401);EXPECT_EQ(reencode_calls,0);
+  auto response=Send(Request());ASSERT_TRUE(response);ASSERT_EQ(response->status,200)<<response->body;
+  EXPECT_TRUE(json::parse(response->body).at("software_route_fixture"));EXPECT_EQ(reencode_calls,1);EXPECT_EQ(received_image,jpeg);
+}
+TEST_F(ReencodeControlTest, RejectsWrongImageAndExpiredWorkBeforeCallingOwner) {
+  auto input=Request();input["jpeg_sha256"]=std::string(64,'d');
+  auto response=Send(input);ASSERT_TRUE(response);EXPECT_EQ(response->status,422);EXPECT_EQ(reencode_calls,0);
+  input=Request();input["expires_ms"]=1;response=Send(input);ASSERT_TRUE(response);EXPECT_EQ(response->status,410);EXPECT_EQ(reencode_calls,0);
+}
+TEST_F(ReencodeControlTest, CapabilitiesDescribeImplementationWithoutClaimingLoadedModel) {
+  httplib::Client client("127.0.0.1",port);auto response=client.Get("/api/v1/search/reencode/capabilities",headers);
+  ASSERT_TRUE(response);ASSERT_EQ(response->status,200);const auto value=json::parse(response->body);
+  EXPECT_TRUE(value.at("implemented"));EXPECT_FALSE(value.contains("ready"));EXPECT_EQ(value.at("max_image_bytes"),8*1024*1024);
+  EXPECT_FALSE(value.at("cpu_model_fallback"));EXPECT_EQ(reencode_calls,0);
+}
+TEST_F(ReencodeControlTest, OrdinaryControlRequestsKeepTheirPreviousBodyLimit) {
+  httplib::Client client("127.0.0.1",port);
+  auto response=client.Put("/api/v1/channels/door/config",headers,std::string(1024*1024+1,'x'),"application/json");
+  ASSERT_TRUE(response);EXPECT_EQ(response->status,413);EXPECT_EQ(reencode_calls,0);
+}
 
 TEST_F(OutputConfigTest, SavesSelectedOutputWithStoppedLegacyModelAndSurvivesReload) {
   auto r=Save({{"stream",{{"url","rtmp://127.0.0.1:1935/live/xm"},{"protocol","rtmp"}}},
@@ -105,6 +154,9 @@ class SnapshotPatchWorker : public ai_service::pipeline::ChannelWorker {
   void SetSearchProducerLeaseReader(cfg::SearchProducerLeaseReader reader) override {
     ++reader_installs; search_reader = std::move(reader);
   }
+  void SetSearchSamplingSource(std::shared_ptr<ai_service::output::SearchSamplingSource> source) override {
+    ++source_installs; search_source = std::move(source);
+  }
   void SetSnapshotSink(std::shared_ptr<ai_service::pipeline::SnapshotSink>) override {}
   std::shared_ptr<const cfg::ChannelConfig> Config() const override {return config_;}
   void ApplyHotPatch(const cfg::ChannelConfig& c,const std::set<std::string>&) override {
@@ -121,6 +173,8 @@ class SnapshotPatchWorker : public ai_service::pipeline::ChannelWorker {
   mutable int checks=0;int starts=0,stops=0,patches=0;
   int reader_installs=0;
   cfg::SearchProducerLeaseReader search_reader;
+  int source_installs = 0;
+  std::shared_ptr<ai_service::output::SearchSamplingSource> search_source;
  private:
   std::shared_ptr<const cfg::ChannelConfig> config_;
   ai_service::pipeline::ChannelState state_;
@@ -133,7 +187,8 @@ struct SnapshotPatchFixture {
   std::vector<std::shared_ptr<SnapshotPatchWorker>> created_workers;
   std::shared_ptr<api::ChannelManager> manager;
   bool licensed=false;
-  explicit SnapshotPatchFixture(bool running, cfg::SearchProducerLeaseReader reader = {}) {
+  explicit SnapshotPatchFixture(bool running, cfg::SearchProducerLeaseReader reader = {},
+    std::shared_ptr<ai_service::output::SearchSamplingOwner> owner = {}) {
     directory=fs::temp_directory_path()/("ainvr-snapshot-patch-"+std::to_string(getpid()));
     fs::create_directory(directory);
     cfg::ChannelConfig c;c.id="isolated-snapshot-patch";c.name="TEST ONLY";
@@ -149,7 +204,7 @@ struct SnapshotPatchFixture {
       [this,running](const cfg::ChannelConfig& ch,const cfg::SnapshotStoreConfig&){
         worker=std::make_shared<SnapshotPatchWorker>(ch,running);created_workers.push_back(worker);return worker;
       },[this]{return licensed;},
-      std::function<void(const cfg::SnapshotStoreConfig&, const std::string&)>{},std::move(reader));
+      std::function<void(const cfg::SnapshotStoreConfig&, const std::string&)>{},std::move(reader),std::move(owner));
     licensed=true; // Keep this control-only fixture from constructing a real archive.
   }
   ~SnapshotPatchFixture(){manager.reset();worker.reset();fs::remove_all(directory);}
@@ -201,9 +256,12 @@ TEST(SearchProducerWiring, InjectsReaderForInitialAddedAndRebuiltWorkersWithoutS
     if (const auto live = weak.lock()) ++*live;
     return std::nullopt;
   };
-  SnapshotPatchFixture f(false, reader); f.licensed = false; // No archives, decoder or inference.
+  auto owner = std::make_shared<ai_service::output::SearchSamplingOwner>(reader);
+  SnapshotPatchFixture f(false, reader, owner); f.licensed = false; // No archives, decoder or inference.
   ASSERT_EQ(f.created_workers.size(), 1);
   const auto original = f.worker;
+  ASSERT_TRUE(original->search_source);
+  const auto original_token = original->search_source->Token();
   ASSERT_TRUE(original->search_reader); EXPECT_EQ(original->reader_installs, 1);
   EXPECT_FALSE(original->search_reader()); EXPECT_EQ(*lifetime, 1);
   auto added = *original->Config(); added.id = "isolated-search-added"; added.name = "TEST added";
@@ -217,9 +275,13 @@ TEST(SearchProducerWiring, InjectsReaderForInitialAddedAndRebuiltWorkersWithoutS
   EXPECT_NE(f.manager->Get("isolated-snapshot-patch"), original);
   for (const auto& worker : f.created_workers) {
     ASSERT_TRUE(worker->search_reader); EXPECT_EQ(worker->reader_installs, 1);
+    ASSERT_TRUE(worker->search_source); EXPECT_EQ(worker->source_installs, 1);
     EXPECT_FALSE(worker->search_reader()); EXPECT_EQ(worker->starts, 0);
   }
   EXPECT_EQ(*lifetime, 4);
+  EXPECT_NE(f.created_workers[0]->search_source, f.created_workers[2]->search_source);
+  EXPECT_NE(original->search_source->Token(), original_token);
+  EXPECT_EQ(owner->Usage().retained_jobs, 0); EXPECT_EQ(owner->Usage().retained_bytes, 0);
   lifetime.reset(); // Retained old workers cannot dereference a destroyed provider owner.
   for (const auto& worker : f.created_workers) EXPECT_FALSE(worker->search_reader());
 }
@@ -228,5 +290,6 @@ TEST(SearchProducerWiring, DefaultReaderKeepsExistingWorkerSubstitutesInert) {
   SnapshotPatchFixture f(false);
   EXPECT_EQ(f.worker->reader_installs, 1);
   EXPECT_FALSE(f.worker->search_reader);
+  EXPECT_FALSE(f.worker->search_source); EXPECT_EQ(f.worker->source_installs, 0);
   EXPECT_EQ(f.worker->starts, 0);
 }

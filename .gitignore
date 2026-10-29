@@ -32,6 +32,8 @@ ai-service/models/
 
 # Generated deployment executable; build/install scripts remain versioned
 /deploy/s100p/bin/ainvr_ai_service
+/deploy/s100p/bin/ainvr_llm_service
+/deploy/s100p/bin/ainvr_search_service
 
 # Reviewed obsolete LocateAnything executor/installer versions (files retained)
 /ai-service/runtime/locateanything_bpu_grouped_executor_v3.py

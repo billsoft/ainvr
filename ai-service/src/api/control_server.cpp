@@ -1,5 +1,7 @@
 #include "../analytics/event_store.hpp"
 #include "control_server.hpp"
+#include "search_reencode_http_contract.hpp"
+#include "../output/search_sampling_owner.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -260,9 +262,11 @@ bool NeedsFaceEnhancer(const config::ChannelConfig& cfg) {
 ChannelManager::ChannelManager(config::AppConfig config, std::shared_ptr<config::ConfigStore> store,
                                WorkerFactory worker_factory, std::function<bool()> license_check,
                                std::function<void(const config::SnapshotStoreConfig&, const std::string&)> history_delete,
-                               config::SearchProducerLeaseReader search_producer_reader)
+                               config::SearchProducerLeaseReader search_producer_reader,
+                               std::shared_ptr<output::SearchSamplingOwner> search_sampling_owner)
     : history_delete_(history_delete ? std::move(history_delete) : output::SnapshotStore::DropChannelHistory),
       license_check_(std::move(license_check)), search_producer_reader_(std::move(search_producer_reader)),
+      search_sampling_owner_(std::move(search_sampling_owner)),
       worker_factory_(std::move(worker_factory)), boot_cfg_(config),
       boot_api_key_(config.server.api_key), store_(std::move(store)), start_time_(NowWall()) {
   for (auto&& ch_cfg : config.channels) {
@@ -284,6 +288,8 @@ std::shared_ptr<pipeline::ChannelWorker> ChannelManager::MakeWorker(
   if (!worker) throw std::logic_error("Worker factory returned null");
   worker->SetLicenseCheck(license_check_);
   worker->SetSearchProducerLeaseReader(search_producer_reader_);
+  if (search_sampling_owner_)
+    worker->SetSearchSamplingSource(search_sampling_owner_->CreateSource(cfg.id));
   return worker;
 }
 
@@ -1050,6 +1056,11 @@ httplib::Server::Handler Wrap(std::shared_ptr<ChannelManager> manager, AuthedHan
   return [manager, fn](const httplib::Request& req, httplib::Response& res) {
     try {
       if (!CheckAuth(manager, req, res)) return;
+      // Only the fixed raw-JPEG endpoint receives the larger global wire cap.
+      // Ordinary configuration/control requests retain their previous 1 MiB.
+      if(req.path!="/api/v1/search/reencode"&&req.body.size()>1024*1024) {
+        WriteJson(res,413,json{{"error",{{"code","request_too_large"},{"message","请求内容超过限制"}}}});return;
+      }
       fn(req, res);
     } catch (const ApiError& e) {
       WriteError(res, e);
@@ -1100,7 +1111,28 @@ int IntParam(const httplib::Request& req, const char* name, int default_value) {
 }  // namespace
 
 void RegisterRoutes(httplib::Server& server, std::shared_ptr<ChannelManager> manager,
-                    std::function<json()> runtime_health) {
+                    std::function<json()> runtime_health,SearchReencodeImage search_reencode) {
+  const auto reencode_gate=std::make_shared<std::mutex>();
+  server.Get("/api/v1/search/reencode/capabilities",Wrap(manager,[search_reencode](const auto&,auto& res){
+    WriteJson(res,200,json{{"schema_version","search-reencode-capabilities-v1"},{"implemented",bool(search_reencode)},
+      {"target_package_ids",search_reencode?json::array({"siglip2-base-full-int8"}):json::array()},
+      {"max_image_bytes",kSearchReencodeMaxImageBytes},{"max_duration_ms",30000},
+      {"cpu_model_fallback",false},{"cpu_image_processing",false}});
+  }));
+  server.Post("/api/v1/search/reencode",Wrap(manager,[search_reencode,reencode_gate](const auto& req,auto& res){
+    if(!search_reencode)throw ApiError(503,"search_reencode_unavailable","当前服务未提供历史图像重编码");
+    std::unique_lock<std::mutex> gate(*reencode_gate,std::try_to_lock);
+    if(!gate.owns_lock())throw ApiError(429,"search_reencode_busy","历史图像重编码忙，请稍后重试");
+    if(req.get_header_value("Content-Type")!="image/jpeg")throw ApiError(422,"invalid_search_reencode_request","需要原始 JPEG 图像");
+    json input;
+    try {
+      input=ReadSearchReencodeHttpRequest(req.get_header_value("x-ainvr-search-reencode"),req.body,
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+    }catch(const SearchReencodeInputError& error){
+      throw ApiError(error.expired?410:422,error.what(),error.expired?"重编码授权已过期":"重编码图像或任务身份无效");
+    }
+    WriteJson(res,200,search_reencode(input,req.body));
+  }));
   // No disk access, manager/archive locks or license dependency in liveness.
   // /health remains the richer business diagnostic endpoint.
   server.Get("/livez", [](const httplib::Request&, httplib::Response& res) {

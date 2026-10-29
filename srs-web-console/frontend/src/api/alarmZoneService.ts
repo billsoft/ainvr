@@ -1,8 +1,9 @@
 import {request} from './httpClient'
 import type {ZonePoint} from '@/features/alarmGeometry'
+import {newOperationId} from '@/utils/operationId'
 
 export function newAlarmOperationId(){
-  return Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,'0')).join('')
+  return newOperationId()
 }
 export interface AlarmZoneInput {
   zone_id:string;channel_id:string;name:string;geometry_revision:string

@@ -5,6 +5,7 @@
 // Copyright AINVR. Original channel business with S100P hardware adapters.
 #include "reused_channel_worker.hpp"
 #include "../output/review_frame_cache.hpp"
+#include "../output/search_sampling_metrics.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -71,6 +72,7 @@ bool ReusedChannelWorker::ResetAnalytics(const std::string& generation) {
   // A result computed before this reset must not be appended after the clear.
   std::lock_guard<std::mutex> publication(frame_mutex_);
   analytics_reset_epoch_.fetch_add(1);
+  if (search_sampling_source_) search_sampling_source_->Reset();
   result_buffer_.Clear();
   return true;
 }
@@ -175,6 +177,7 @@ void ReusedChannelWorker::Start() {
   // 整个进程(所有通道)就没了。
   if (capture_thread_.joinable()) capture_thread_.join();
   if (infer_thread_.joinable()) infer_thread_.join();
+  if (search_sampling_source_) search_sampling_source_->Reset();
   if(!std::atomic_load(&observation_journal_)){
     if(const char* root=std::getenv("AINVR_OBSERVATION_SPOOL_ROOT");root&&*root)
       std::atomic_store(&observation_journal_,std::make_shared<analytics::ObservationJournal>(root,channel_id_));
@@ -237,6 +240,7 @@ void ReusedChannelWorker::Start() {
   // (§3.2c 已记录的生产事故),每次 Start() 都要重新清零。
   {
     std::lock_guard<std::mutex> lock(stats_mutex_);
+    timing_observation_ = TimingObservation{};
     stats_preprocess_ = utils::TimingStats(200);
     stats_frame_map_ = utils::TimingStats(200);
     stats_map_context_ = utils::TimingStats(200);
@@ -323,6 +327,7 @@ void ReusedChannelWorker::Start() {
 
 void ReusedChannelWorker::Stop() {
   stop_event_.store(true);
+  if (search_sampling_source_) search_sampling_source_->Reset();
   if (reconnect_) reconnect_->Stop();
 
   {
@@ -384,6 +389,7 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
   double elapsed = start_time > 0.0 ? NowMono() - start_time : 0.0;
 
   nlohmann::json stats;
+  TimingObservationSnapshot timing_snapshot;
   auto cfg = LoadCfg();
   {
     std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -439,7 +445,12 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
          }},
         {"result_buffer_size", result_buffer_.Size()},
     };
+    timing_snapshot = timing_observation_.Snapshot();
   }
+  // Serialize only after releasing the stats lock. No diagnostic metadata is
+  // added to result buffers, SEI payloads, observations, or archive envelopes.
+  stats["timing"].update(TimingWindowsJson(timing_snapshot));
+  stats["timing_observation"] = TimingObservationJson(timing_snapshot);
   if(auto latest=result_buffer_.Latest();latest&&latest->model_extra.contains("analytics")) {
     const auto& a=latest->model_extra.at("analytics");
     stats["tracking_capability"]={{"status",a.value("status",std::string("unavailable"))},
@@ -574,6 +585,7 @@ void ReusedChannelWorker::CaptureLoop() {
       {
         std::lock_guard<std::mutex> lock(frame_mutex_);
         stream_epoch_.fetch_add(1);
+        if (search_sampling_source_) search_sampling_source_->Reset();
         latest_frame_.reset();
         pending_frames_.clear();
         result_buffer_.Clear();
@@ -709,6 +721,7 @@ void ReusedChannelWorker::FailFromCapture(const std::string& reason) {
   SetState(ChannelState::kError);
   // 推理线程只看 stop_event_:一并置位让它退出,线程由下次 Start()/Stop() 收掉
   stop_event_.store(true);
+  if (search_sampling_source_) search_sampling_source_->Reset();
   frame_cond_.notify_all();
 }
 
@@ -760,13 +773,16 @@ void ReusedChannelWorker::OnStreamError(const std::string& error_msg) {
 // ---- 推理线程 ----
 
 std::optional<ReusedChannelWorker::CapturedFrame> ReusedChannelWorker::PickNextFrame(
-    int64_t last_consumed_seq, int* skipped) {
+    int64_t last_consumed_seq, int* skipped,bool* expired_observation) {
   std::lock_guard<std::mutex> lock(frame_mutex_);
-  *skipped = 0;
+  *skipped = 0;*expired_observation=false;
   const auto now=NowMono();
   while(!pending_frames_.empty() &&
         (pending_frames_.front().seq<=last_consumed_seq ||
-         now-pending_frames_.front().captured_mono>.25))pending_frames_.pop_front();
+         now-pending_frames_.front().captured_mono>.25)){
+    if(pending_frames_.front().seq>last_consumed_seq)*expired_observation=true;
+    pending_frames_.pop_front();
+  }
   if (pending_frames_.empty()) {
     return std::nullopt;
   }
@@ -791,6 +807,7 @@ void ReusedChannelWorker::InferLoop() {
   }
   log::Info(kLogModule, "[" + channel_id_ + "] 推理线程已启动");
   int64_t last_consumed_seq = -1;
+  output::SearchObservationClock observations;
   // One previous inference overlaps preparation of the next frame. Results
   // remain FIFO; at most two BPU futures and one model's SDK buffers exist.
   const char* pipeline_setting=std::getenv("AINVR_BPU_PIPELINE");
@@ -803,7 +820,8 @@ void ReusedChannelWorker::InferLoop() {
   while (!stop_event_.load() && LicenseAllowed()) {
     auto cfg = LoadCfg();
     double interval = cfg->inference_fps > 0.0 ? 1.0 / cfg->inference_fps : 0.0;
-    if (reset_deadline_.exchange(false)) next_deadline_ = 0.0;
+    observations.Cadence(interval);
+    if (reset_deadline_.exchange(false)) {observations.Gap(output::SearchObservationGapReason::Reset);next_deadline_ = 0.0;}
     double now = NowMono();
     bool dispatch_due=true;
 
@@ -845,9 +863,17 @@ void ReusedChannelWorker::InferLoop() {
       if (stop_event_.load() || !LicenseAllowed()) continue;
     }
     int skipped = 0;
-    auto frame = dispatch_due?PickNextFrame(last_consumed_seq, &skipped):std::nullopt;
+    bool expired_observation=false;
+    auto frame = dispatch_due?PickNextFrame(last_consumed_seq, &skipped,&expired_observation):std::nullopt;
+    if(expired_observation)observations.Slip(output::SearchObservationGapReason::ExpiredQueuedFrame);
     if (frame.has_value()) {
+      frame->search_sampling_token = search_sampling_source_ ? search_sampling_source_->Token() : 0;
       const int64_t archive_skipped = ArchiveAdmissionSkips(before_archive_wait, frame->seq, skipped);
+      if(archive_skipped>0)observations.Slip(output::SearchObservationGapReason::ArchiveSkip);
+      else if(interval<=0&&skipped>0)observations.Gap(output::SearchObservationGapReason::FullFrameDrop);
+      // Do not use SplitSkipped's heuristic as a continuity certificate.
+      // This selected slot exists even if SDK dispatch/result/publication fails.
+      frame->search_observation=observations.Dispatch(NowMono(),next_deadline_,interval);
       last_consumed_seq = frame->seq;
       if (skipped > 0) {
         std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -864,6 +890,7 @@ void ReusedChannelWorker::InferLoop() {
     if (!frame.has_value() && !queued_frame.has_value()) {
       SleepMs(5.0);
       if (interval > 0.0 && next_deadline_ < NowMono() - interval) {
+        observations.Slip(output::SearchObservationGapReason::NoFrameDeadlineMiss);
         next_deadline_ = NowMono() + interval;
       }
       continue;
@@ -871,28 +898,60 @@ void ReusedChannelWorker::InferLoop() {
 
     double infer_start = NowMono();
     try {
+      bool observe_caller = true;
+      auto caller_identity = frame ? TimingIdentity(*frame) : TimingIdentity(*queued_frame);
+      ScopedTimingObservation caller_timer([&](double) {
+        if (observe_caller) RecordTiming(TimingStage::CallerFrameWall,
+          (NowMono() - infer_start) * 1000.0, caller_identity);
+      });
       ainvr::BpuImageResult prepared;
       if(frame && pipeline_enabled){
         const auto pre=ResolvePreprocess(cfg->preprocess,adapter_->DefaultPreprocess());
-        auto next=adapter_->RunFrameAsync(frame->ref->nv12,pre,frame->ref->bt709,frame->ref->full_range);
+        auto next=[&] {
+          const auto identity = TimingIdentity(*frame);
+          ScopedTimingObservation timer([this, identity](double ms) {
+            RecordTiming(TimingStage::PrepareDispatch, ms, identity);
+          });
+          return adapter_->RunFrameAsync(frame->ref->nv12,pre,frame->ref->bt709,frame->ref->full_range);
+        }();
         if(interval>0)next_deadline_=NextInferenceDeadline(next_deadline_,NowMono(),interval);
         if(!queued_frame){
           queued_frame=std::move(frame);queued_result=std::move(next);queued_start=infer_start;
+          observe_caller = false; // Dispatch only; no frame result was collected yet.
           continue;
         }
         auto previous_frame=std::move(queued_frame);auto previous_result=std::move(queued_result);
         const double previous_start=queued_start;
         queued_frame=std::move(frame);queued_result=std::move(next);queued_start=infer_start;
-        frame=std::move(previous_frame);infer_start=previous_start;prepared=previous_result.get();
+        frame=std::move(previous_frame);infer_start=previous_start;
+        caller_identity = TimingIdentity(*frame);
+        prepared=[&] {
+          ScopedTimingObservation timer([&](double ms) {
+            RecordTiming(TimingStage::AsyncResultWait, ms, caller_identity);
+          });
+          return previous_result.get();
+        }();
       }else if(queued_frame){
         frame=std::move(queued_frame);queued_frame.reset();infer_start=queued_start;
-        prepared=queued_result.get();
+        caller_identity = TimingIdentity(*frame);
+        prepared=[&] {
+          ScopedTimingObservation timer([&](double ms) {
+            RecordTiming(TimingStage::AsyncResultWait, ms, caller_identity);
+          });
+          return queued_result.get();
+        }();
       }else{
         const auto pre=ResolvePreprocess(cfg->preprocess,adapter_->DefaultPreprocess());
+        ScopedTimingObservation timer([&](double ms) {
+          RecordTiming(TimingStage::PrepareDispatch, ms, caller_identity);
+        });
         prepared=adapter_->RunFrame(frame->ref->nv12,pre,frame->ref->bt709,frame->ref->full_range);
       }
+      RecordTiming(TimingStage::DispatchToResultReady,
+        (NowMono() - infer_start) * 1000.0, caller_identity);
       InferOneFrame(std::move(*frame),std::move(prepared));
     } catch (const std::exception& e) {
+      observations.Gap(output::SearchObservationGapReason::InferenceError);
       int errs;
       {
         std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -956,9 +1015,26 @@ void ReusedChannelWorker::InferPromptedFrame(CapturedFrame) {
   throw std::runtime_error("开放词汇模型的 BPU 输入和执行适配尚未完成");
 }
 
+void ReusedChannelWorker::RecordTiming(TimingStage stage, double milliseconds,
+                                      TimingFrameIdentity frame) noexcept {
+  try {
+    std::lock_guard lock(stats_mutex_);
+    timing_observation_.Observe(stage, milliseconds, frame);
+  } catch (...) {} // Observability cannot change inference or durability policy.
+}
+
 void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResult prepared) {
   if (adapter_->IsPrompted()) { InferPromptedFrame(std::move(frame)); return; }
   if (!LicenseAllowed()) return;
+  const auto timing_identity = TimingIdentity(frame);
+  ScopedTimingObservation host_timer([this, timing_identity](double ms) {
+    RecordTiming(TimingStage::HostFrameWall, ms, timing_identity);
+  });
+  RecordTiming(TimingStage::OutputDecode, prepared.output_decode_ms, timing_identity);
+  // Read before processing; PTZ/source/stop resets revoke this token even if an
+  // old inference result reaches the publication boundary later.
+  const auto search_source = search_sampling_source_;
+  const auto search_token = frame.search_sampling_token;
   auto cfg = LoadCfg();
   if (snapshot_sink_ && cfg->snapshot.enabled)
     snapshot_sink_->ReserveForFrame({frame.width, frame.height});
@@ -971,9 +1047,18 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   {
     std::lock_guard lock(stats_mutex_);
     stats_preprocess_.Add(prepared.preprocess_ms);stats_inference_.Add(prepared.inference_ms);
+    timing_observation_.Observe(TimingStage::Preprocess, prepared.preprocess_ms, timing_identity);
+    timing_observation_.Observe(TimingStage::Inference, prepared.inference_ms, timing_identity);
   }
   utils::Timer post_timer;
   std::vector<Detection> detections;
+  std::vector<Detection> tracking_candidates;
+  double host_postprocess_ms = 0;
+  {
+  ScopedTimingObservation timer([&](double ms) {
+    host_postprocess_ms = ms;
+    RecordTiming(TimingStage::HostPostprocess, ms, timing_identity);
+  });
   if(multi_output) detections=adapter_->PostprocessMulti(prepared.outputs,scale_info,
       cfg->postprocess.conf_threshold,cfg->postprocess.iou_threshold,cfg->postprocess.max_detections);
   else{
@@ -983,7 +1068,6 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   }
   // Preserve the user's display/archive threshold. A separate decode retains
   // low-confidence candidates for ByteTrack recovery, never publishing them.
-  std::vector<Detection> tracking_candidates;
   if(cfg->analytics.enabled) {
     const double floor=std::min(0.1,cfg->postprocess.conf_threshold);
     constexpr int candidate_limit=1000;
@@ -991,6 +1075,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
       prepared.outputs,scale_info,floor,cfg->postprocess.iou_threshold,candidate_limit);
     else tracking_candidates=adapter_->Postprocess(
       prepared.outputs[0],scale_info,floor,cfg->postprocess.iou_threshold,candidate_limit);
+  }
   }
   {
     std::lock_guard lock(stats_mutex_);
@@ -1035,12 +1120,18 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     result.time_preprocess_ms = stats_preprocess_.Mean();
     result.time_inference_ms = stats_inference_.Mean();
     result.time_postprocess_ms = stats_postprocess_.Mean();
+    timing_observation_.Prepared({timing_identity, result.timestamp,
+      prepared.preprocess_ms, prepared.inference_ms, prepared.output_decode_ms, host_postprocess_ms});
   }
   result.task_type = adapter_->TaskType();
   result.detections = rescaled;
   result.model_extra = adapter_->ResultMetadata();
   // Inference-thread owned; source epoch/generation resets track identity.
   const auto view_reset_epoch=analytics_reset_epoch_.load();
+  {
+  ScopedTimingObservation timer([this, timing_identity](double ms) {
+    RecordTiming(TimingStage::Analytics, ms, timing_identity);
+  });
   if(view_reset_epoch!=analytics_applied_reset_epoch_){
     analytics_.reset();
     analytics_applied_reset_epoch_=view_reset_epoch;
@@ -1062,19 +1153,29 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   } else analytics_->Apply(result,frame.epoch,frame.stream_generation.value_or(-1));
 
   result.model_extra["analytics"]["view_reset_epoch"]=view_reset_epoch;
+  }
   if(analytics_reset_epoch_.load()!=view_reset_epoch)return;
   if(auto journal=std::atomic_load(&observation_journal_)){
     try{
       if(frame.epoch!=stream_epoch_.load()||!LicenseAllowed()){
         result.model_extra["observation_delivery"]={{"state","skipped"},{"reason","source_or_license_changed"},{"stage_failures",observation_stage_failures_.load()}};
       }else{
+        {
+        ScopedTimingObservation timer([this, timing_identity](double ms) {
+          RecordTiming(TimingStage::ObservationStage, ms, timing_identity);
+        });
         journal->Stage(result);
-        result.model_extra["observation_delivery"]={{"state","staged"},{"stage_failures",observation_stage_failures_.load()}};
+        }
+        // Durable write happens on the journal writer thread; failures are counted there (async_failures).
+        result.model_extra["observation_delivery"]={{"state","queued"},{"stage_failures",observation_stage_failures_.load()}};
       }
     }catch(...){++observation_stage_failures_;result.model_extra["observation_delivery"]={{"state","failed"},{"stage_failures",observation_stage_failures_.load()}};}
   }
 
   if(auto outbox=std::atomic_load(&event_outbox_)) {
+    ScopedTimingObservation timer([this, timing_identity](double ms) {
+      RecordTiming(TimingStage::EventOutboxStage, ms, timing_identity);
+    });
     auto& data=result.model_extra["analytics"];
     if(data.contains("events")) for(auto& event:data["events"]) {
       try {event["retention_days"]=cfg->analytics.retention_days;
@@ -1094,6 +1195,11 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   }
 
   utils::Timer sei_timer;
+  double sei_elapsed_ms = -1;
+  ScopedTimingObservation sei_observation([&](double ms) {
+    RecordTiming(TimingStage::SeiStamp, sei_elapsed_ms >= 0 ? sei_elapsed_ms : ms, timing_identity);
+  });
+  std::optional<output::SearchFrameCapture> search_capture;
   {
     std::lock_guard<std::mutex> lock(frame_mutex_);
     if (frame.epoch != stream_epoch_.load()) return;
@@ -1101,14 +1207,78 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     if (!LicenseAllowed()) return;
     result_buffer_.Append(result);
     StampSei(result, frame.stream_generation);
+    // Binding is metadata-only and fenced under the existing publication lock.
+    // A default not-ready execution port cannot retain this frame or run work.
+    if (search_source && frame.ref && !stop_event_.load() &&
+        frame.stream_generation == CurrentStreamGeneration()) {
+      try {
+        const auto lease = ReadSearchProducerLease();
+        if (lease && lease->grant && result.model_extra.contains("analytics")) {
+          const auto source = lease->grant->sources.find(channel_id_);
+          const auto session = result.model_extra.at("analytics").value("stream_session_id", std::string());
+          if (source != lease->grant->sources.end() && !session.empty()) {
+            output::SearchFrameCapture capture;
+            capture.fence = {channel_id_, session, source->second.input_path, source->second.output_path,
+              frame.epoch, frame.stream_generation, view_reset_epoch, frame.width, frame.height,
+              result.frame_width, result.frame_height, output::SearchFrameGeometryKind::FullFrameAxisScale, true};
+            // Processing mode, not a claim about physical lens calibration.
+            // Raw planar frames retain their original pixel coordinate system;
+            // unvalidated ERP search never silently falls back to a planar crop.
+            capture.fence.projection = cfg->snapshot.projection_mode == "none" ?
+              output::SearchSourceProjection::RawPlanar : output::SearchSourceProjection::ERP;
+            capture.mapped_pts_ns = frame.pts_ns; capture.capture_sequence = frame.seq;
+            capture.observation=frame.search_observation;
+            capture.captured_wall = frame.captured_wall;
+            capture.worker_input_url = cfg->stream.url; capture.worker_output_url = cfg->publish.target_url.value_or("");
+            capture.decoder_frame_index = frame.ref->frame_index;
+            capture.original_source_pts_ns = frame.ref->source_pts_ns;
+            capture.bt709 = frame.ref->bt709; capture.full_range = frame.ref->full_range;
+            if (search_source->Bind(search_token, capture.fence)) search_capture = std::move(capture);
+          }
+        }
+      } catch (...) { /* Optional search cannot fail result/SEI publication. */ }
+    }
   }
   {
     std::lock_guard<std::mutex> lock(stats_mutex_);
-    stats_sei_stamp_.Add(sei_timer.ElapsedMs());
+    sei_elapsed_ms = sei_timer.ElapsedMs();
+    stats_sei_stamp_.Add(sei_elapsed_ms);
     stats_frame_age_.Add((NowMono()-frame.captured_mono)*1000.0);
   }
 
+  if (search_capture) {
+    ScopedTimingObservation timer([this, timing_identity](double ms) {
+      RecordTiming(TimingStage::SearchSamplingOffer, ms, timing_identity);
+    });
+    try {
+      // The retainer is synchronous and borrowed until admission succeeds. Only
+      // the shared owner may create the alias after reserving its global budget.
+      const output::SearchSamplingPixelRetainer retain = [&frame] {
+        return std::shared_ptr<const ainvr::Nv12Frame>(frame.ref, &frame.ref->nv12);
+      };
+      const auto complete=[](const output::SearchSamplingOffer& offer){
+        using S=output::SearchSamplingOffer::Status;
+        return offer.status==S::Queued||offer.status==S::NotDue||offer.status==S::NotEligible||
+          offer.status==S::NeedsReconcile||(offer.status==S::Busy&&offer.token!=0)||offer.deferred;
+      };
+      bool objects_complete=true;
+      for (const auto& detection : result.detections) if (!detection.track_id.empty()) {
+        const auto quality=output::SearchObjectPixelSupport(detection.bbox,result.frame_width,result.frame_height,
+          frame.ref->nv12.width,frame.ref->nv12.height);
+        const auto offer=search_source->OfferObject(search_token,result,*search_capture,frame.ref->nv12,
+          retain,detection.track_id,quality.has_value(),quality);
+        objects_complete=quality.has_value()&&complete(offer)&&objects_complete;
+      }
+      output::SearchSamplingScene scene;
+      scene.usable = true; scene.active = !result.detections.empty();
+      const auto scene_offer=search_source->OfferScene(search_token,result,*search_capture,frame.ref->nv12,retain,scene);
+      search_source->EndFrame(search_token,result,*search_capture,objects_complete,complete(scene_offer));
+    } catch (...) { /* Sampling refusal must not interrupt existing business. */ }
+  }
   if (LicenseAllowed() && output::SharedReviewFrameCache().Enabled(channel_id_) && result.model_extra.contains("analytics")) {
+    ScopedTimingObservation timer([this, timing_identity](double ms) {
+      RecordTiming(TimingStage::ReviewFrameOffer, ms, timing_identity);
+    });
     const auto session=result.model_extra["analytics"].value("stream_session_id",std::string());
     if(!session.empty())output::SharedReviewFrameCache().Offer({{"channel_id",channel_id_},{"stream_session_id",session},
       {"source_pts_ns",std::to_string(result.frame_pts_ns)},{"source_frame_index",std::to_string(result.frame_index)},
@@ -1124,6 +1294,11 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   }
   if (snapshot_sink_ && LicenseAllowed()) {
     utils::Timer snapshot_timer;
+    double snapshot_elapsed_ms = -1;
+    ScopedTimingObservation snapshot_observation([&](double ms) {
+      RecordTiming(TimingStage::SnapshotOffer,
+        snapshot_elapsed_ms >= 0 ? snapshot_elapsed_ms : ms, timing_identity);
+    });
     static std::atomic<uint64_t> next_snapshot_tag{1};
     const auto snapshot_tag=next_snapshot_tag.fetch_add(1);
     snapshot_sink_->OfferResult({{frame.width,frame.height}, [this,&frame](const cv::Rect& region,cv::Mat& host) {
@@ -1157,7 +1332,8 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
         snapshot_tag,frame.ref->bt709,frame.ref->full_range}},
       result,cfg->name,pre_rescale_detections,adapter_->SquareSnapshotCrop(),cfg->snapshot);
     std::lock_guard<std::mutex> lock(stats_mutex_);
-    stats_snapshot_offer_.Add(snapshot_timer.ElapsedMs());
+    snapshot_elapsed_ms = snapshot_timer.ElapsedMs();
+    stats_snapshot_offer_.Add(snapshot_elapsed_ms);
   }
 }
 
@@ -1316,6 +1492,7 @@ void ReusedChannelWorker::InitModelComponents() {
 }
 
 void ReusedChannelWorker::Cleanup() {
+  if (search_sampling_source_) search_sampling_source_->Reset();
   snapshot_converter_.reset();
   if (adapter_) adapter_.reset();
 

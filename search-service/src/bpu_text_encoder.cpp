@@ -1,6 +1,6 @@
 #include "bpu_text_encoder.hpp"
 #include "siglip_tokenizer.hpp"
-#include "../../shared/cpp/bpu_reservation.hpp"
+#include "../../shared/cpp/bpu_coexist_reservation.hpp"
 #include "../../shared/cpp/bpu_dma_buffer.hpp"
 #include "../../shared/cpp/bpu_reserved_pool.hpp"
 #include "../../ai-service/src/platform/bpu.hpp"
@@ -12,7 +12,7 @@
 
 namespace ainvr::search {
 namespace {
-constexpr uint64_t kMinimumHeadroom = 512ULL * 1024 * 1024;
+constexpr uint64_t kMinimumHeadroom = 64ULL * 1024 * 1024;
 constexpr uint64_t kMaximumS100Pool = 7680ULL * 1024 * 1024;
 std::string TokenizerBytes(const VerifiedPackage& package) {
   const auto relative = "tokenizers/" + package.spec->tokenizer;
@@ -48,7 +48,7 @@ std::string TokenizerBytes(const VerifiedPackage& package) {
 struct BpuTextEncoder::Impl {
   // Declaration order matters: normal teardown destroys BpuModel before the
   // held package descriptors, and destroys the reservation last.
-  std::unique_ptr<ainvr::BpuReservation> reservation;
+  std::unique_ptr<ainvr::BpuCoexistReservation> reservation;
   VerifiedPackage package;
   std::unique_ptr<SiglipTextTokenizer> tokenizer;
   std::unique_ptr<ainvr::BpuModel> model;
@@ -80,8 +80,11 @@ std::unique_ptr<BpuTextEncoder> BpuTextEncoder::Load(VerifiedPackage package,
   const auto actual_pool = ainvr::ReadBpuReservedPoolBytes();
   const auto total = std::min(actual_pool, options.total_bytes);
   // No BPU constructor, SDK model load, or DMA allocation may precede this.
-  impl->reservation = std::make_unique<ainvr::BpuReservation>(options.reservation_directory,
-      bytes, options.headroom_bytes, total, "search-service");
+  ainvr::IonPolicy policy;
+  policy.pool_bytes = total;
+  policy.min_free = options.headroom_bytes;
+  impl->reservation = std::make_unique<ainvr::BpuCoexistReservation>(options.reservation_directory,
+      "search-service", bytes, policy);
   if (!VerifyStillCurrent(impl->package)) throw std::runtime_error("search_model_artifact_changed");
   impl->tokenizer = std::make_unique<SiglipTextTokenizer>(TokenizerBytes(impl->package), impl->package.spec->id);
   if (!VerifyStillCurrent(impl->package)) throw std::runtime_error("search_model_artifact_changed");
@@ -93,14 +96,15 @@ std::unique_ptr<BpuTextEncoder> BpuTextEncoder::Load(VerifiedPackage package,
   impl->description = impl->model->Describe();
   ValidateBpuTextDescription(impl->description, *impl->package.spec);
   if (!VerifyStillCurrent(impl->package)) throw std::runtime_error("search_model_artifact_changed");
-  // Match Qwen's actual load-time 512MiB headroom probe. This is additional to
-  // static policy, not evidence of future capacity or permission to coexist.
+  // Same-size allocation probe as the admission margin. It is additional to the
+  // byte-accounted policy, not evidence of future capacity.
   { ainvr::BpuDmaBuffer headroom(options.headroom_bytes); }
   impl->reservation->Loaded();
   return std::unique_ptr<BpuTextEncoder>(new BpuTextEncoder(std::move(impl)));
 }
 std::string BpuTextEncoder::ModelVersion() const { return impl_->package.model_version; }
 size_t BpuTextEncoder::Dimensions() const { return impl_->package.spec->dimensions; }
+bool BpuTextEncoder::Healthy() const { return ainvr::BpuRuntimeHealthy(); }
 std::vector<float> BpuTextEncoder::Encode(const std::string& text) {
   std::unique_lock<std::mutex> lock(impl_->inference, std::try_to_lock);
   if (!lock.owns_lock()) throw std::runtime_error("search_busy");

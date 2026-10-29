@@ -1,0 +1,26 @@
+# Managed runtime owns only CPU index maintenance; BPU remains on main/HTTP owners.
+add_library(ainvr_search_index_runtime src/index_runtime.cpp src/migration_artifacts.cpp)
+target_link_libraries(ainvr_search_index_runtime PUBLIC ainvr_search_index_builder ainvr_search_http)
+target_compile_options(ainvr_search_index_runtime PRIVATE -Wall -Wextra -Werror)
+target_link_libraries(ainvr_search_service PRIVATE ainvr_search_index_runtime)
+# Private ordinary-directory support is linked only into the software fixture.
+add_library(ainvr_search_index_runtime_test_impl STATIC src/index_runtime.cpp src/migration_artifacts.cpp)
+target_link_libraries(ainvr_search_index_runtime_test_impl PUBLIC ainvr_search_index_builder_test_impl ainvr_search_http)
+target_compile_options(ainvr_search_index_runtime_test_impl PRIVATE -Wall -Wextra -Werror)
+add_executable(ainvr_search_index_runtime_test tests/index_runtime_test.cpp)
+target_link_libraries(ainvr_search_index_runtime_test PRIVATE ainvr_search_index_runtime_test_impl)
+target_compile_options(ainvr_search_index_runtime_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME search_managed_index_runtime COMMAND ainvr_search_index_runtime_test)
+set_tests_properties(search_managed_index_runtime PROPERTIES LABELS software TIMEOUT 15)
+
+add_executable(ainvr_search_migration_artifacts_test ../test/search/migration_artifacts_runtime_test.cpp)
+target_link_libraries(ainvr_search_migration_artifacts_test PRIVATE ainvr_search_index_runtime_test_impl)
+target_compile_options(ainvr_search_migration_artifacts_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME search_migration_artifacts COMMAND ainvr_search_migration_artifacts_test)
+set_tests_properties(search_migration_artifacts PROPERTIES LABELS software SKIP_RETURN_CODE 77 TIMEOUT 20)
+
+# Slow software capacity measurement, explicit target/runner only; never part
+# of a service build, automatic CTest, or hardware/model acceptance.
+add_executable(ainvr_search_migration_throughput EXCLUDE_FROM_ALL ../test/search/migration_throughput_test.cpp)
+target_link_libraries(ainvr_search_migration_throughput PRIVATE ainvr_search_index_runtime_test_impl)
+target_compile_options(ainvr_search_migration_throughput PRIVATE -Wall -Wextra -Werror)

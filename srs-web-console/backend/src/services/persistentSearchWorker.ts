@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { SearchSourceChannel } from './searchSourceCatalog.js';
 import { sameSearchScope, searchPageSchema, searchQuerySchema, searchRangeSchema, searchResultSchema,
   type SearchCoverage, type SearchPage, type SearchQuery, type SearchResult, type SearchScope, type SearchWorker } from './searchContract.js';
 import { SearchNativeError, type NativeCoverageRange, type NativeSearchSession, type SearchNativeClient } from './searchNativeClient.js';
@@ -11,9 +12,15 @@ export interface PersistentSearchOptions {
   queryConcurrency?: number | (() => Promise<number>);
   sessionTtlSeconds?: number | (() => Promise<number>);
   /** Current server-side grants, refreshed on every read and mutation. */
-  channels: (actor: string) => Promise<{ id: string; name: string }[]>;
-  /** Required coverage kinds come from the applied channel sampling policy. */
-  coverageKinds?: (channelId: string, actor: string) => Promise<readonly Kind[]>;
+  channels: (actor: string) => Promise<SearchSourceChannel[]>;
+  /** Nonblocking wake only; PG/Mongo retain all durable task/result state. */
+  verificationPublished?: () => void;
+  verificationCancel?: (id: string, actor: string) => Promise<void>;
+  verificationAvailability?: () => { available: boolean | null; reason: string | null };
+  /** Optional proven policy for the entire requested historical interval.
+   * Current channel capabilities cannot establish it. Null/empty means unknown,
+   * never permission to mark that history fully sampled. */
+  coverageKinds?: (channelId: string, actor: string, scope: SearchScope) => Promise<readonly Kind[] | null>;
   /** Must honor signal for remote I/O. One shared page budget prevents a slow
    * recorder from delaying the first search results. */
   recordingAvailability?: (input: { channelId: string; from: string; to: string; actor: string; signal: AbortSignal }) => Promise<'available' | 'missing' | 'pending'>;
@@ -24,6 +31,7 @@ export class PersistentSearchError extends Error {
 function translated(error: unknown): never {
   if (error instanceof PersistentSearchError || error instanceof z.ZodError) throw error;
   if (error instanceof SearchNativeError) {
+    if (error.code === 'scope_denied') throw noAccess();
     if (error.code === 'query_too_long' || error.code === 'query_too_large')
       throw new PersistentSearchError(error.code, 400, '搜索描述过长，请保留关键特征后重试');
     if (error.code === 'query_invalid_utf8' || error.code === 'query_unrepresentable')
@@ -47,6 +55,7 @@ function projection<T>(schema: z.ZodType<T>, value: unknown): T {
   return parsed.data;
 }
 function covers(from: number, to: number, ranges: NativeCoverageRange[]): boolean {
+  if (ranges.some(r => r.state !== 'sampled' && r.from < to && r.to > from)) return false;
   let until = from;
   for (const range of ranges.filter(r => r.state === 'sampled').sort((a, b) => a.from - b.from || b.to - a.to)) {
     if (range.from > until) return false;
@@ -84,6 +93,7 @@ export class PersistentSearchWorker implements SearchWorker {
     this.sessionTtlSeconds = () => configuredNumber(ttl, ttlSchema);
   }
   status() { return this.options.native.status(); }
+  private wakeVerification() { try { this.options.verificationPublished?.(); } catch { /* Optional background work never fails the shortlist. */ } }
   private async authorize(scope: SearchScope, actor: string) {
     actorSchema.parse(actor); searchRangeSchema.parse(scope);
     const visible = new Map((await this.options.channels(actor)).map(c => [c.id, c.name]));
@@ -93,25 +103,35 @@ export class PersistentSearchWorker implements SearchWorker {
   private async classify(scope: SearchScope, actor: string, ranges: NativeCoverageRange[]): Promise<SearchCoverage['state']> {
     if (!ranges.length) return 'unknown';
     const from = Date.parse(scope.from), to = Date.parse(scope.to);
+    let unknownPolicy = false;
     for (const channel of scope.channel_ids) {
       // Conservative default includes the independent scene branch; a detector
       // alone cannot establish coverage of objects it never classified.
-      const required = this.options.coverageKinds ? await this.options.coverageKinds(channel, actor) : ['object', 'scene'] as const;
-      if (!required.length || required.length > 2 || new Set(required).size !== required.length || required.some(k => k !== 'object' && k !== 'scene'))
+      const required = this.options.coverageKinds ? await this.options.coverageKinds(channel, actor, scope) : ['object', 'scene'] as const;
+      if (required === null || !required.length) { unknownPolicy = true; continue; }
+      if (required.length > 2 || new Set(required).size !== required.length || required.some(k => k !== 'object' && k !== 'scene'))
         throw new Error('invalid_sampling_policy');
       for (const kind of required) if (!covers(from, to, ranges.filter(r => r.channel === channel && r.scene === (kind === 'scene')))) return 'partial';
     }
-    return 'sampled';
+    return unknownPolicy ? 'unknown' : 'sampled';
+  }
+  private async coverageRanges(scope: SearchScope, model: string): Promise<NativeCoverageRange[] | null> {
+    try { return await this.options.native.coverage(scope, model); }
+    catch (error) {
+      // Degrade only the independent coverage read, never permission or query failures.
+      if (error instanceof SearchNativeError && ['unavailable', 'storage_unavailable', 'busy', 'invalid_response'].includes(error.code)) return null;
+      throw error;
+    }
   }
   async coverage(scope: SearchScope, actor: string): Promise<SearchCoverage> {
     try {
       await this.authorize(scope, actor);
       const status = await this.status();
       if (!status.model_version) throw new SearchNativeError(status.reason === 'storage_unavailable' ? 'storage_unavailable' : 'model_pending');
-      const ranges = await this.options.native.coverage(scope, status.model_version);
-      const state = await this.classify(scope, actor, ranges);
+      const ranges = await this.coverageRanges(scope, status.model_version);
+      const state = ranges === null ? 'unknown' : await this.classify(scope, actor, ranges);
       await this.authorize(scope, actor);
-      return { scope, state, ranges: ranges.map(r => ({
+      return { scope, state, ranges: (ranges ?? []).map(r => ({
         channel_id: r.channel, from: new Date(r.from).toISOString(), to: new Date(r.to).toISOString(),
         kind: r.scene ? 'scene' : 'object', state: r.state,
       })) };
@@ -135,7 +155,7 @@ export class PersistentSearchWorker implements SearchWorker {
       let snapshot = await this.options.native.readSearch(input.request_id, actor);
       if (snapshot && (snapshot.query !== input.query || snapshot.verify !== input.verify || !sameSearchScope(snapshot.scope, input.scope)))
         throw new PersistentSearchError('search_conflict', 409, '这次搜索的条件已改变，请重新搜索');
-      if (snapshot?.published) return await this.project(snapshot, actor);
+      if (snapshot?.published) { if (snapshot.verify) this.wakeVerification(); return await this.project(snapshot, actor); }
       const status = await this.status();
       if (!status.ready || !status.model_version) throw new SearchNativeError(status.reason === 'storage_unavailable' ? 'storage_unavailable' : status.reason === 'model_pending' ? 'model_pending' : 'unavailable');
       if (snapshot && snapshot.model_version !== status.model_version) throw new SearchNativeError('model_pending');
@@ -145,18 +165,19 @@ export class PersistentSearchWorker implements SearchWorker {
       if (!snapshot || snapshot.version !== version) throw expired();
       if (!snapshot.published) {
         const hits = await this.options.native.match(input.query, input.scope, status.model_version);
-        const ranges = await this.options.native.coverage(input.scope, status.model_version);
-        let coverage = await this.classify(input.scope, actor, ranges);
+        const ranges = await this.coverageRanges(input.scope, status.model_version);
+        let coverage = ranges === null ? 'unknown' : await this.classify(input.scope, actor, ranges);
         if (hits.partial && coverage === 'sampled') coverage = 'partial';
         // Authorization can change while BPU work runs. No new snapshot is
         // published after loss of a channel grant.
         await this.authorize(input.scope, actor);
         await this.options.native.publishSearch(input.request_id, actor, version, coverage,
-          hits.items.map(item => ({ sample_id: item.id, similarity: item.similarity, ...(item.fingerprint ? { fingerprint: item.fingerprint } : {}) })));
+          hits.items.map(item => ({ sample_id: item.id, similarity: item.similarity, ...(item.fingerprint ? { fingerprint: item.fingerprint } : {}), ...(item.evidence_refs ? { evidence_refs: item.evidence_refs } : {}) })));
       }
       const page = await this.options.native.readSearch(input.request_id, actor);
       if (!page) throw expired();
       if (!page.published || page.version !== version || !sameSearchScope(page.scope, input.scope)) throw new Error('invalid_search_publication');
+      if (page.verify) this.wakeVerification();
       return await this.project(page, actor);
     } catch (error) { return translated(error); }
     finally {
@@ -165,7 +186,7 @@ export class PersistentSearchWorker implements SearchWorker {
     }
   }
   private async resultProjection(sample: NativeSearchSession['items'][number], snapshot: NativeSearchSession, actor: string,
-    visible: Map<string, string>, signal: AbortSignal): Promise<SearchResult> {
+    visible: Map<string, string>, signal: AbortSignal, ordinal = 0): Promise<SearchResult> {
     if (!snapshot.scope.channel_ids.includes(sample.channel_id) || !visible.has(sample.channel_id)) throw noAccess();
     const recording = sample.evidence.recording_channel_id;
     if (recording && !visible.has(recording)) throw noAccess();
@@ -177,31 +198,39 @@ export class PersistentSearchWorker implements SearchWorker {
         const finish = (value: SearchResult['recording']['state']) => { signal.removeEventListener('abort', aborted); resolve(value); };
         const aborted = () => finish('pending'); signal.addEventListener('abort', aborted, { once: true });
         // Promise.resolve also contains a synchronous adapter exception.
-        void Promise.resolve().then(() => provider({ channelId: recording, from: at, to: at, actor, signal }))
+        void Promise.resolve().then(() => provider({ channelId: recording, from: sample.started_ms === undefined ? at : new Date(sample.started_ms).toISOString(),
+            to: sample.ended_ms === undefined ? at : new Date(sample.ended_ms).toISOString(), actor, signal }))
           .then(value => finish(value), () => finish('pending'));
         if (signal.aborted) aborted();
       });
     }
+    const availability = this.options.verificationAvailability?.();
+    const unavailable = snapshot.verify && ordinal < 5 && availability?.available === false;
     return projection(searchResultSchema, {
       id: sample.id, channel_id: sample.channel_id, channel_name: visible.get(sample.channel_id),
       source_input_id: sample.evidence.source_input_id, processor_id: sample.processor_id || null,
-      output_channel_id: sample.evidence.output_channel_id, kind: sample.kind, started_at: at, ended_at: at,
-      frames: [{ id: sample.evidence.frame_id, captured_at: at, role: 'match' }],
+      output_channel_id: sample.evidence.output_channel_id, kind: sample.kind,
+      started_at: sample.started_ms === undefined ? at : new Date(sample.started_ms).toISOString(),
+      ended_at: sample.ended_ms === undefined ? at : new Date(sample.ended_ms).toISOString(),
+      frames: sample.frames?.map(frame => ({ id: frame.id, captured_at: new Date(frame.captured_ms).toISOString(), role: frame.role, ...(sample.kind === 'object' && frame.bbox ? { bbox: frame.bbox } : {}) }))
+        ?? [{ id: sample.evidence.frame_id, captured_at: at, role: 'match' }],
       recording: { channel_id: recording, state: recordingState },
-      // A separate verified search template/provider must be wired before any
-      // queued/running/match label can be truthful. Never reuse alarm thresholds.
-      verification: { state: snapshot.verify ? 'unavailable' : 'candidate' },
+      // Only authoritative per-slot progress may claim queued/running/final.
+      // Uncalibrated search decisions never reuse alarm-review thresholds.
+      verification: snapshot.verify && sample.verification ? { state: sample.verification.state, validated: false,
+        cached: sample.verification.cached, reason: sample.verification.reason } : unavailable
+        ? { state: 'unavailable', validated: false, cached: false, reason: availability.reason ?? 'task_unavailable' } : { state: 'candidate' },
       feedback: sample.feedback === null ? null : sample.feedback ? 'relevant' : 'irrelevant',
     });
   }
-  private async project(snapshot: NativeSearchSession, actor: string): Promise<SearchPage> {
+  private async project(snapshot: NativeSearchSession, actor: string, offset = 0): Promise<SearchPage> {
     const visible = await this.authorize(snapshot.scope, actor);
     if (!snapshot.published) throw new PersistentSearchError('search_busy', 429, '这次搜索尚未完成，请稍后重试');
     // Keep recorder checks bounded as well; a large page must not fan out sixty
     // requests to another service concurrently.
     const items: SearchResult[] = [];
     const signal = AbortSignal.timeout(2000);
-    for (const sample of snapshot.items) items.push(await this.resultProjection(sample, snapshot, actor, visible, signal));
+    for (const [index, sample] of snapshot.items.entries()) items.push(await this.resultProjection(sample, snapshot, actor, visible, signal, offset + index));
     const current = await this.authorize(snapshot.scope, actor);
     if (items.some(item => item.recording.channel_id && !current.has(item.recording.channel_id))) throw noAccess();
     return projection(searchPageSchema, { search_id: snapshot.search_id, scope: snapshot.scope, model_version: snapshot.model_version,
@@ -215,7 +244,7 @@ export class PersistentSearchWorker implements SearchWorker {
         const value = z.string().regex(/^v1\.(0|[1-5]?\d|60)$/).parse(cursor); offset = Number(value.slice(3));
       }
       const snapshot = await this.options.native.readSearch(id, actor, offset);
-      return snapshot ? await this.project(snapshot, actor) : null;
+      return snapshot ? await this.project(snapshot, actor, offset) : null;
     } catch (error) { return translated(error); }
   }
   private async owned(id: string, resultId: string, actor: string) {
@@ -232,7 +261,7 @@ export class PersistentSearchWorker implements SearchWorker {
     try {
       const row = await this.owned(id, resultId, actor);
       if (!row) return null;
-      const item = await this.resultProjection(row.sample, row.snapshot, actor, row.visible, AbortSignal.timeout(2000));
+      const item = await this.resultProjection(row.sample, row.snapshot, actor, row.visible, AbortSignal.timeout(2000), row.snapshot.items.findIndex(item => item.id === row.sample.id));
       const current = await this.authorize(row.snapshot.scope, actor);
       if (item.recording.channel_id && !current.has(item.recording.channel_id)) throw noAccess();
       return { search_id: id, scope: row.snapshot.scope, item };
@@ -241,7 +270,7 @@ export class PersistentSearchWorker implements SearchWorker {
   async image(id: string, resultId: string, frameId: string, actor: string): Promise<Buffer | null> {
     try {
       idSchema.parse(frameId); const row = await this.owned(id, resultId, actor);
-      if (!row || row.sample.evidence.frame_id !== frameId) return null;
+      if (!row || !(row.sample.frames ?? [{ id: row.sample.evidence.frame_id }]).some(frame => frame.id === frameId)) return null;
       if (row.sample.evidence.recording_channel_id && !row.visible.has(row.sample.evidence.recording_channel_id)) throw noAccess();
       // The native operation checks snapshot fingerprint and reads JPEG under
       // one storage lock. A second raw sample-ID lookup could race ID reuse.
@@ -260,7 +289,14 @@ export class PersistentSearchWorker implements SearchWorker {
     } catch (error) { return translated(error); }
   }
   async cancel(id: string, actor: string): Promise<void> {
-    try { idSchema.parse(id); actorSchema.parse(actor); await this.options.native.cancelSearch(id, actor); }
+    try {
+      idSchema.parse(id); actorSchema.parse(actor);
+      // Cancel the known active remote request promptly; native cancellation
+      // retains durable submitted references for crash/restart compensation.
+      try { await this.options.verificationCancel?.(id, actor); } catch { /* Native cancellation still must happen. */ }
+      await this.options.native.cancelSearch(id, actor);
+      this.wakeVerification();
+    }
     catch (error) { return translated(error); }
   }
 }

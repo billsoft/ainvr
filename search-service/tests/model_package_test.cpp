@@ -83,11 +83,16 @@ struct Fixture {
 int main() {
   static_assert(!std::is_copy_constructible_v<VerifiedPackage>);
   try {
-    Check(std::string(DefaultPackageId()) == "siglip-so400m-i18n-full-int8", "wrong default");
+    Check(std::string(DefaultPackageId()) == "siglip2-base-full-int8", "wrong default");
     Check(PackageSpecs().size() == 4 && PackageSpecs()[0].id == DefaultPackageId(), "candidate duplication/order"); ++cases;
     Reject([] { FindPackageSpec("../../private"); });
     for (const auto& spec : PackageSpecs()) {
       Fixture fixture(spec); auto verified = fixture.Verify();
+      const auto profile=VerifyModelProfile(fixture.root.string(),spec.id);
+      Check(profile.at("package_sha256")==verified.model_version.substr(10)&&
+        profile.at("model_version")==verified.model_version&&profile.at("dimensions")==spec.dimensions&&
+        profile.at("runtime_ready")==false&&profile.at("files_verified")==true,"verified profile drift or false readiness");
+      Reject([&]{VerifyModelProfile(fixture.root.string(),"../../unknown");});
       Check(verified.files_verified && !verified.production_approval_declared && verified.model_version.size() == 74, "file/approval conflated");
       Check(verified.spec->vision.program == spec.vision.program && VerifyStillCurrent(verified), "program selection or held identities");
       const auto catalog = ModelCatalog(fixture.root.string());
@@ -98,7 +103,7 @@ int main() {
       Check(seen, "valid package missing from catalog"); ++cases;
     }
     {
-      Fixture fixture; fixture.Edit(true, [](auto& metadata) { metadata["family"] = "siglip2-base-patch16-256"; });
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); fixture.Edit(true, [](auto& metadata) { metadata["family"] = "siglip2-base-patch16-256"; });
       Reject([&] { fixture.Verify(); });
       Check(ModelCatalog(fixture.root.string()).at("items").at(0).at("reason") == "model_package_invalid", "bad metadata disappeared");
     }
@@ -112,20 +117,20 @@ int main() {
       [](auto& m) { m["programs"].erase("pooler_output"); },
       [](auto& m) { m["production_approved"] = "true"; },
     }) {
-      Fixture fixture; fixture.Edit(false, mutation); Reject([&] { fixture.Verify(); });
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); fixture.Edit(false, mutation); Reject([&] { fixture.Verify(); });
     }
     {
-      Fixture fixture; fixture.Edit(true, [&](auto& m) { m["programs"][fixture.spec.text.program]["inputs"][0]["dtype"] = "S32"; });
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); fixture.Edit(true, [&](auto& m) { m["programs"][fixture.spec.text.program]["inputs"][0]["dtype"] = "S32"; });
       Reject([&] { fixture.Verify(); });
     }
     {
-      Fixture fixture; Write(fixture.root / "hbm" / fixture.spec.text.file, "tampered"); Reject([&] { fixture.Verify(); });
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); Write(fixture.root / "hbm" / fixture.spec.text.file, "tampered"); Reject([&] { fixture.Verify(); });
     }
     {
-      Fixture fixture; Write(fixture.root / "tokenizers" / fixture.spec.tokenizer, "tampered-tokenizer"); Reject([&] { fixture.Verify(); });
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); Write(fixture.root / "tokenizers" / fixture.spec.tokenizer, "tampered-tokenizer"); Reject([&] { fixture.Verify(); });
     }
     {
-      Fixture fixture; auto first = fixture.Verify(); const auto old_version = first.model_version;
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); auto first = fixture.Verify(); const auto old_version = first.model_version;
       Write(fixture.root / "tokenizers" / fixture.spec.tokenizer, "intentional-new-vocabulary"); fixture.Manifest();
       auto second = fixture.Verify(); Check(old_version != second.model_version && !VerifyStillCurrent(first), "tokenizer did not fence vector space"); ++cases;
     }
@@ -136,48 +141,48 @@ int main() {
       fs::remove(fixture.root / "tokenizers" / fixture.spec.tokenizer_auxiliary.front()); Reject([&] { fixture.Verify(); });
     }
     {
-      Fixture fixture; for (bool text : {false, true}) fixture.Edit(text, [](auto& m) { m["accuracy_verified"] = true; m["production_approved"] = true; });
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); for (bool text : {false, true}) fixture.Edit(text, [](auto& m) { m["accuracy_verified"] = true; m["production_approved"] = true; });
       auto verified = fixture.Verify(); Check(verified.production_approval_declared, "declaration not retained");
       const auto catalog = ModelCatalog(fixture.root.string());
       for (const auto& item : catalog.at("items")) Check(item.at("ready") == false, "metadata claims enabled inference");
       ++cases;
     }
     {
-      Fixture fixture; const auto path = fixture.root / "hbm" / fixture.spec.vision.file;
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); const auto path = fixture.root / "hbm" / fixture.spec.vision.file;
       fs::rename(path, path.string() + ".original"); fs::create_symlink(path.string() + ".original", path); Reject([&] { fixture.Verify(); });
     }
     {
-      Fixture fixture; fs::rename(fixture.root / "hbm", fixture.root / "real-hbm"); fs::create_directory_symlink("real-hbm", fixture.root / "hbm"); Reject([&] { fixture.Verify(); });
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); fs::rename(fixture.root / "hbm", fixture.root / "real-hbm"); fs::create_directory_symlink("real-hbm", fixture.root / "hbm"); Reject([&] { fixture.Verify(); });
     }
     {
-      Fixture fixture; auto alias = fixture.root / "alias"; fs::create_directory_symlink(fixture.root, alias);
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); auto alias = fixture.root / "alias"; fs::create_directory_symlink(fixture.root, alias);
       Reject([&] { VerifyPackageAtTrustedRoot(alias.string(), fixture.spec.id); });
       Reject([&] { VerifyPackageAtTrustedRoot(fixture.root.string() + "/../" + fixture.root.filename().string(), fixture.spec.id); });
     }
     {
-      Fixture fixture; auto raw = Read(fixture.MetadataPath()); raw.insert(1, "\"target\":\"rdk_s100p\","); Write(fixture.MetadataPath(), raw); fixture.Manifest(); Reject([&] { fixture.Verify(); });
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); auto raw = Read(fixture.MetadataPath()); raw.insert(1, "\"target\":\"rdk_s100p\","); Write(fixture.MetadataPath(), raw); fixture.Manifest(); Reject([&] { fixture.Verify(); });
     }
     {
-      Fixture fixture; Write(fixture.root / "SHA256SUMS.txt", std::string(64, 'a') + "  ../outside\n"); Reject([&] { fixture.Verify(); });
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); Write(fixture.root / "SHA256SUMS.txt", std::string(64, 'a') + "  ../outside\n"); Reject([&] { fixture.Verify(); });
     }
     {
-      Fixture fixture; auto verified = fixture.Verify(); const auto relative = "tokenizers/" + fixture.spec.tokenizer;
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); auto verified = fixture.Verify(); const auto relative = "tokenizers/" + fixture.spec.tokenizer;
       const int stable = verified.BorrowedFileDescriptor(relative); const auto path = fixture.root / relative;
       std::thread replace([&] { Write(path.string() + ".new", "replacement"); fs::rename(path.string() + ".new", path); }); replace.join();
       Check(!VerifyStillCurrent(verified), "concurrent replacement accepted");
       char original = 0; Check(pread(stable, &original, 1, 0) == 1 && original == 't', "held FD followed replaced file"); ++cases;
     }
     {
-      Fixture fixture; auto verified = fixture.Verify(); const auto path = fixture.root / "hbm" / fixture.spec.text.file;
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); auto verified = fixture.Verify(); const auto path = fixture.root / "hbm" / fixture.spec.text.file;
       const auto size = fs::file_size(path); Write(path, std::string(size, 'x'));
       Check(!VerifyStillCurrent(verified), "same-inode rewrite accepted"); ++cases;
     }
     {
-      Fixture fixture; auto verified = fixture.Verify(); fs::rename(fixture.root / "tokenizers", fixture.root / "old-tokenizers"); fs::create_directory(fixture.root / "tokenizers");
+      Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8")); auto verified = fixture.Verify(); fs::rename(fixture.root / "tokenizers", fixture.root / "old-tokenizers"); fs::create_directory(fixture.root / "tokenizers");
       Check(!VerifyStillCurrent(verified), "parent directory replacement accepted"); ++cases;
     }
     {
-      int fd = -1; Fixture fixture;
+      int fd = -1; Fixture fixture(FindPackageSpec("siglip-so400m-i18n-full-int8"));
       { auto verified = fixture.Verify(); fd = verified.BorrowedFileDescriptor("hbm/" + fixture.spec.vision.file);
         auto moved = std::move(verified); Check(fcntl(fd, F_GETFD) >= 0 && VerifyStillCurrent(moved), "move lost ownership"); }
       Check(fcntl(fd, F_GETFD) == -1 && errno == EBADF, "verified descriptor leaked"); ++cases;

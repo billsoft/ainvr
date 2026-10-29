@@ -35,6 +35,15 @@ inline nlohmann::json ReadPrivateJson(const std::string& path) {
     return true;
   });
 }
+// Status only: callers can distinguish stale leases/capacity without exposing
+// an untrusted upstream error body, URL or credential in diagnostics.
+class ConfigHttpError final : public std::runtime_error {
+ public:
+  explicit ConfigHttpError(int status) : std::runtime_error("configuration_http_error"), status_(status) {}
+  int HttpStatus() const noexcept { return status_; }
+ private:
+  int status_;
+};
 class ConfigTransport {
  public:
   explicit ConfigTransport(const nlohmann::json& bootstrap)
@@ -69,12 +78,17 @@ class ConfigTransport {
       if (request.body.size() > 1024 * 1024) throw std::invalid_argument("configuration request too large");
     }
     std::string received;
-    request.response_handler = [](const auto& response) { return response.status == 200; };
+    int response_status = 0;
+    request.response_handler = [&](const auto& response) {
+      response_status = response.status;
+      return response.status == 200; // Do not read or propagate error bodies.
+    };
     request.content_receiver = [&](const char* data, size_t size, uint64_t, uint64_t) {
       if (size > 1024 * 1024 - received.size()) return false;
       received.append(data, size); return true;
     };
     const auto result = client_->send(request);
+    if (response_status != 0 && response_status != 200) throw ConfigHttpError(response_status);
     if (!result || result->status != 200) throw std::runtime_error("configuration center unavailable");
     return nlohmann::json::parse(received, [](int depth, auto, auto&) {
       if (depth > 32) throw std::invalid_argument("configuration response depth");

@@ -17,7 +17,10 @@ def extra_sources():
  return result
 
 def main():
- parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--candidate',type=Path,required=True);args=parser.parse_args();out=args.candidate.resolve(strict=True)
+ parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--candidate',type=Path,required=True);parser.add_argument('--profile',choices=['ptz','search'],default='ptz')
+ parser.add_argument('--reuse-validated-builds',action='store_true',help='Search only: reconfigure and rebuild existing tested caches with all release flags and artifact checks')
+ args=parser.parse_args();out=args.candidate.resolve(strict=True)
+ if args.reuse_validated_builds and args.profile!='search':raise RuntimeError('Validated search caches require the search profile')
  if not out.is_relative_to(ROOT/'out')or out.is_symlink():raise RuntimeError('Use a real candidate under out/')
  if json.loads((out/'status.json').read_text()).get('phase')!='built':raise RuntimeError('Base build must have succeeded')
  sources=json.loads((out/'source-manifest.json').read_text())
@@ -27,6 +30,29 @@ def main():
  artifacts=json.loads((out/'artifacts.json').read_text())
  for name,want in artifacts.items():
   if files(out/name)!=want:raise RuntimeError('Base artifacts changed: '+name)
+ if args.profile=='search':
+  status=json.loads((out/'status.json').read_text())
+  if status.get('releaseProfile')!='search' or status.get('searchComponents')is not False:raise RuntimeError('Use a fresh search-profile base build')
+  if any((out/n).exists()for n in ['search-ai','search-llm','search-native']):raise RuntimeError('Search extension already started; use a fresh base build')
+  from search_release_profile import prepare_components
+  (out/'status.json').write_text(json.dumps({'phase':'building-search','releaseProfile':'search','productionChanged':False})+'\n')
+  def search_run(cmd,cwd,label,timeout=300):
+   with(out/(label+'.log')).open('wb')as log:subprocess.run(cmd,cwd=cwd,env={**os.environ,'CARGO_NET_OFFLINE':'true'},stdout=log,stderr=log,timeout=timeout,check=True)
+  try:
+   builds={name:ROOT/'out/build'/('search-release-'+name)for name in ['ai-service','llm-service','search-service']}
+   if args.reuse_validated_builds:
+    builds={'ai-service':ROOT/'out/build/ai-api-compat','llm-service':ROOT/'out/llm-search-software/native','search-service':ROOT/'out/search-text-integration'}
+    if not all((build/'CMakeCache.txt').is_file() for build in builds.values()):raise RuntimeError('All tested caches must exist; no unchecked binary copy is permitted')
+   prepare_components(ROOT,out,search_run,builds)
+   for name,want in sources.items():
+    if sha(ROOT/name)!=want:raise RuntimeError('Source changed during search build: '+name)
+   for name in ['search-ai','search-llm','search-native']:artifacts[name]=files(out/name)
+   (out/'artifacts.json').write_text(json.dumps(artifacts,indent=2)+'\n')
+   (out/'status.json').write_text(json.dumps({'phase':'built','releaseProfile':'search','searchComponents':True,'productionChanged':False,'createdAt':time.time(),'physicalCameraAcceptance':False},indent=2)+'\n')
+   print(str(out));return
+  except BaseException:
+   (out/'status.json').write_text(json.dumps({'phase':'failed-search','releaseProfile':'search','productionChanged':False})+'\n');raise
+ if json.loads((out/'status.json').read_text()).get('releaseProfile')=='search':raise RuntimeError('Search candidate requires explicit --profile search')
  if any((out/n).exists()for n in ['ptz-ai','ptz-gb28181','ptz-alarm']):raise RuntimeError('PTZ extension already started; use a fresh base build')
  initial=extra_sources();(out/'status.json').write_text(json.dumps({'phase':'building-ptz','productionChanged':False})+'\n')
  env={**os.environ,'GOMAXPROCS':'2','GOTELEMETRY':'off','GOWORK':'off'}

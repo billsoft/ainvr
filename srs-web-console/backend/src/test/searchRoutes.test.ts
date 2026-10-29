@@ -154,3 +154,14 @@ it('feedback and cancellation are actor-scoped and validate bodies', async () =>
     expect((await app.inject({ url, method: 'POST', payload: { relevant: false } })).statusCode).toBe(404);
   } finally { await app.close(); }
 });
+
+it('returns live sampling reasons without revoking ERP historical query permission', async () => {
+  const app = Fastify(), worker = workerFixture();
+  const channels = [{ id, name: '全景历史', sampling_supported: false, sampling_reason: 'projection_unsupported' as const }];
+  await app.register(searchRoutes, { principal: async () => 'operator', channels: async () => channels, worker });
+  try {
+    expect((await app.inject('/search/channels')).json()).toEqual({ items: channels });
+    expect((await app.inject({ method: 'POST', url: '/search/text', payload: body })).statusCode).toBe(200);
+    expect(worker.query).toHaveBeenCalledWith({ ...body, verify: false }, 'operator');
+  } finally { await app.close(); }
+});

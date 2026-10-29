@@ -213,7 +213,10 @@ void main(){
   void Close(){
     if(context_.context!=EGL_NO_CONTEXT){
       if(eglBindAPI(EGL_OPENGL_ES_API)&&eglMakeCurrent(context_.display,context_.surface,context_.surface,context_.context)){
-        if(context_program_)glDeleteProgram(context_program_);glDeleteBuffers(5,buffers_);if(texture_)glDeleteTextures(1,&texture_);if(program_)glDeleteProgram(program_);
+        if(context_program_)glDeleteProgram(context_program_);
+        glDeleteBuffers(5,buffers_);
+        if(texture_)glDeleteTextures(1,&texture_);
+        if(program_)glDeleteProgram(program_);
       }
     }
     hw_gl_close(&context_);

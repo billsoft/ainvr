@@ -29,6 +29,7 @@
 #include "managed_worker.hpp"
 #include "../config/config.hpp"
 #include "../output/result.hpp"
+#include "../output/search_sampling_owner.hpp"
 #include "../analytics/frame_analytics.hpp"
 #include "../analytics/event_outbox.hpp"
 #include "../analytics/observation_journal.hpp"
@@ -42,6 +43,7 @@
 #include "../stream/reconnect.hpp"
 #include "../stream/source.hpp"
 #include "../utils/timing.hpp"
+#include "timing_observation.hpp"
 
 namespace ai_service::pipeline {
 
@@ -67,10 +69,14 @@ class ReusedChannelWorker : public ChannelWorker {
   void SetSearchProducerLeaseReader(config::SearchProducerLeaseReader reader) override {
     search_producer_reader_ = std::move(reader);
   }
+  void SetSearchSamplingSource(std::shared_ptr<output::SearchSamplingSource> source) override {
+    search_sampling_source_ = std::move(source);
+  }
   bool LicenseAllowed() const noexcept {
     if (license_revoked_.load()) return false;
     if (!CurrentLicenseAllowed()) {
       license_revoked_.store(true);
+      if (search_sampling_source_) search_sampling_source_->Reset();
       return false;
     }
     return !license_revoked_.load();
@@ -120,6 +126,7 @@ class ReusedChannelWorker : public ChannelWorker {
   std::atomic<uint64_t> event_stage_failures_{0};
   std::function<bool()> license_check_;
   config::SearchProducerLeaseReader search_producer_reader_;
+  std::shared_ptr<output::SearchSamplingSource> search_sampling_source_;
   // Once either worker observes revocation, both must finish this generation.
   // Only Start(), after joining the old threads, may clear the latch.
   mutable std::atomic<bool> license_revoked_{false};
@@ -133,6 +140,8 @@ class ReusedChannelWorker : public ChannelWorker {
     int64_t epoch = 0;
     int64_t pts_ns = -1;
     int64_t duration_ns = 0;
+    uint64_t search_sampling_token = 0; // Frozen before BPU dispatch, including pipelined frames.
+    std::optional<output::SearchObservationTicket> search_observation;
     double captured_mono = 0.0;
     double captured_wall = 0.0;
     int width = 0, height = 0;
@@ -152,8 +161,12 @@ class ReusedChannelWorker : public ChannelWorker {
   // 返回 (frame_or_nullopt, stream_gone)。stream_gone=true 时调用方
   // (CaptureLoop)必须立即退出循环,不能继续用旧的 stream 引用。
   std::pair<std::shared_ptr<stream::FrameRef>, bool> PullFrameSafe();
-  std::optional<CapturedFrame> PickNextFrame(int64_t last_consumed_seq, int* skipped);
+  std::optional<CapturedFrame> PickNextFrame(int64_t last_consumed_seq, int* skipped,bool* expired_observation);
   void InferOneFrame(CapturedFrame frame, ainvr::BpuImageResult prepared);
+  static TimingFrameIdentity TimingIdentity(const CapturedFrame& frame) {
+    return {frame.seq, frame.pts_ns, frame.captured_wall, frame.epoch, frame.stream_generation};
+  }
+  void RecordTiming(TimingStage stage, double milliseconds, TimingFrameIdentity frame) noexcept;
   std::unique_ptr<analytics::FrameAnalytics> analytics_;
   std::mutex analytics_reset_mutex_;
   std::string analytics_reset_generation_;
@@ -223,6 +236,7 @@ class ReusedChannelWorker : public ChannelWorker {
   int64_t frame_seq_ = 0;
 
   mutable std::mutex stats_mutex_;
+  TimingObservation timing_observation_; // API-only; never copied into a FrameResult.
   utils::TimingStats stats_preprocess_{200};
   utils::TimingStats stats_frame_map_{200};
   utils::TimingStats stats_map_context_{200};

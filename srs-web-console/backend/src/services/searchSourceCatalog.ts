@@ -12,6 +12,7 @@ const processorSchema = z.object({
     enabled: z.boolean().optional(), inference_fps: z.number().nonnegative().optional(),
     analytics: z.object({ enabled: z.boolean() }).optional(),
     model: z.object({ adapter: z.string().max(128) }).optional(),
+    snapshot: z.object({ projection_mode: z.enum(['none', 'erp_equirect']).optional() }).optional(),
     stream: z.object({ url: z.string().max(2048) }),
     publish: z.object({ enabled: z.boolean(), effective_target_url: z.string().max(2048).optional(),
       target_url: z.string().max(2048).nullable().optional() }),
@@ -24,9 +25,15 @@ export interface SearchSource {
   input_path: string; output_path: string;
   recording_channel_id: string; object: boolean; scene: boolean;
 }
+export interface SearchSourceChannel {
+  id: string; name: string;
+  /** Live sampling capability; never revokes historical query permission. */
+  sampling_supported?: boolean;
+  sampling_reason?: 'projection_unsupported' | null;
+}
 export interface SearchSourceCatalog {
   sources: SearchSource[];
-  channels: { id: string; name: string }[];
+  channels: SearchSourceChannel[];
   /** Non-secret source generation material included only in the revision hash. */
   identities: unknown[];
 }
@@ -65,9 +72,13 @@ export function buildSearchSourceCatalog(channels: Channel[], raw: unknown): Sea
       if (resolved.root.id === output.id || !z.string().uuid().safeParse(resolved.root.id).success) continue;
       const tracking = processor.config.analytics?.enabled === true && processor.config.model?.adapter !== 'locateanything_bpu' &&
         (processor.config.inference_fps === 0 || (processor.config.inference_fps ?? 0) >= 3);
+      // Same default as the AI config. This describes processing geometry,
+      // not a physical camera/lens calibration or a semantic quality claim.
+      const supported = (processor.config.snapshot?.projection_mode ?? 'none') === 'none';
       sources.push({ channel_id: output.id, input_stream_id: resolved.root.id, processor_id: processor.id,
-        input_path: inputPath, output_path: path, recording_channel_id: output.id, object: tracking, scene: true });
-      visible.push({ id: output.id, name: output.name });
+        input_path: inputPath, output_path: path, recording_channel_id: output.id, object: supported && tracking, scene: supported });
+      visible.push({ id: output.id, name: output.name, sampling_supported: supported,
+        sampling_reason: supported ? null : 'projection_unsupported' });
       identities.push([output.id, output.inputGeneration ?? null, resolved.root.id, resolved.root.inputGeneration ?? null,
         processor.id, processor.config, resolved.fingerprint]);
     } catch { /* One ambiguous mapping does not remove unrelated channels. */ }

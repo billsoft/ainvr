@@ -78,6 +78,10 @@ std::vector<int> Engine::Encode(const std::string& kind,const std::string& descr
   std::string suffix=template_.at("suffix"); Replace(suffix,"{prompt}",prompt); text+=suffix;
   auto ids=tokenizer_->Encode(text); if(ids.size()>1024)throw InputError("input_too_long","Complete image and text input exceeds 1024 tokens"); Positions(ids); return ids;
 }
+std::vector<int> Engine::EncodeSearch(const SearchRequest& request) {
+  (void)SearchDecisionIndices(manifest_.at("decision_vocabulary"));
+  return EncodeSearchInput(request, [&](const auto& prompt) { return tokenizer_->Encode(prompt); });
+}
 void Engine::Load() {
   if(head_)return;
   auto make=[&](const nlohmann::json& p){return std::make_unique<BpuProgram>(SafePath(root_,p.at("file")),p.at("profiles"),root_,pool_);};

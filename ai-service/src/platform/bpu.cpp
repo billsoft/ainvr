@@ -121,11 +121,26 @@ std::vector<std::vector<unsigned char>> BpuModel::Run(const std::vector<std::vec
     Check(hbUCPMemFlush(&t.sysMem, HB_SYS_MEM_CACHE_CLEAN), "clean input cache");
   }
   hbUCPTaskHandle_t task = nullptr;
-  Check(hbDNNInferV2(&task, outputs_.data(), inputs_.data(), model_), "create inference task");
+  // Some SDK failures still return a task. Until release succeeds, that task
+  // may retain references to every tensor and the packed model.
+  const auto release_failed_task = [&] {
+    if (task && hbUCPReleaseTask(task) != 0) {
+      inflight_ = task;
+      runtime_healthy.store(false);
+    }
+  };
+  int rc = hbDNNInferV2(&task, outputs_.data(), inputs_.data(), model_);
+  if (rc != 0) {
+    release_failed_task();
+    Check(rc, "create inference task");
+  }
   hbUCPSchedParam sched; HB_UCP_INITIALIZE_SCHED_PARAM(&sched);
   sched.backend = HB_UCP_BPU_CORE_ANY;
-  int rc = hbUCPSubmitTask(task, &sched);
-  if (rc != 0) { hbUCPReleaseTask(task); Check(rc, "submit inference"); }
+  rc = hbUCPSubmitTask(task, &sched);
+  if (rc != 0) {
+    release_failed_task();
+    Check(rc, "submit inference");
+  }
   inflight_=task;
   // The SDK timeout is in milliseconds. Only success proves completion.
   rc = hbUCPWaitTaskDone(task, 10000);

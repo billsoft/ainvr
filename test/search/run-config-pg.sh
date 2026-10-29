@@ -2,6 +2,19 @@
 # Isolated parameter-store tests only; never connects to the production PG.
 set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+tests=(src/test/searchRuntimePg.test.ts src/test/searchJobsPg.test.ts src/test/searchIndexShardsPg.test.ts src/test/searchDefaultMigrationPg.test.ts src/test/searchRefreshPg.test.ts src/test/searchIndexRoutes.test.ts)
+seed=true
+if (( $# )); then
+  (( $# <= 16 )) || { echo 'At most 16 isolated PG test files may be selected.' >&2; exit 64; }
+  tests=("$@");seed=false
+  for selected in "${tests[@]}"; do
+    [[ $selected =~ ^src/test/search[A-Za-z0-9]+Pg\.test\.ts$ && -f "$root/srs-web-console/backend/$selected" ]] || { echo 'Select existing search*Pg.test.ts files only.' >&2; exit 64; }
+  done
+fi
+mkdir -p "$root/test/results"
+exec 9>"$root/test/results/search-config-pg.lock"
+flock -n 9 || { echo 'Another isolated search PG test owns port 25439.' >&2; exit 1; }
+test -z "$(ss -H -ltn '( sport = :25439 )')" || { echo 'Isolated PG port is already occupied; no process was changed.' >&2; exit 1; }
 owner="ainvr-search-config-test-$$"
 container=''
 cleanup() {
@@ -21,4 +34,7 @@ for attempt in $(seq 1 30); do
 done
 if [[ "$ready" != true ]]; then echo 'Isolated PG did not become ready' >&2; exit 1; fi
 cd -- "$root/srs-web-console/backend"
-AINVR_SEARCH_TEST_PG=1 npm run test:run -- src/test/searchRuntimePg.test.ts src/test/searchJobsPg.test.ts
+AINVR_SEARCH_TEST_PG=1 npm run test:run -- "${tests[@]}"
+if [[ $seed == true ]]; then
+  AINVR_SEARCH_TEST_PG=1 /opt/ainvr/node-v24.20.0-linux-arm64/bin/node --test "$root/test/search/search-seed-migration-proof.test.mjs"
+fi

@@ -1,0 +1,33 @@
+# Include immediately AFTER include(cmake/bpu_images.cmake) in AI CMake.
+# Reuses the one existing image stack; this creates no model/runtime instance.
+include_guard(GLOBAL)
+if(NOT AINVR_S100P OR NOT TARGET ainvr_bpu_images)
+  return()
+endif()
+set(AINVR_AI_SEARCH_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../search-service")
+if(NOT TARGET ainvr_search_model_package)
+  add_library(ainvr_search_model_package "${AINVR_AI_SEARCH_ROOT}/src/model_package.cpp")
+  target_include_directories(ainvr_search_model_package PUBLIC "${AINVR_AI_SEARCH_ROOT}/src")
+  target_link_libraries(ainvr_search_model_package PUBLIC OpenSSL::Crypto nlohmann_json::nlohmann_json)
+  target_compile_options(ainvr_search_model_package PRIVATE -Wall -Wextra -Werror)
+endif()
+if(NOT TARGET ainvr_search_bpu_vision_contract)
+  include("${AINVR_AI_SEARCH_ROOT}/cmake/bpu_vision_encoder.cmake")
+endif()
+ainvr_add_search_bpu_vision_encoder(ainvr_bpu_images)
+option(AINVR_BUILD_SEARCH_VISION_PROBE "Build an explicitly invoked bounded vision BPU probe" OFF)
+if(AINVR_BUILD_SEARCH_VISION_PROBE)
+  add_executable(ainvr_search_vision_integration_probe "${CMAKE_CURRENT_LIST_DIR}/../../test/search/bpu_vision_integration_probe.cpp")
+  target_compile_definitions(ainvr_search_vision_integration_probe PRIVATE
+    AINVR_SEARCH_PROBE_RESULTS_ROOT="${CMAKE_CURRENT_LIST_DIR}/../../test/results")
+  target_link_libraries(ainvr_search_vision_integration_probe PRIVATE ainvr_search_bpu_vision_encoder ainvr_ai_core)
+  target_compile_options(ainvr_search_vision_integration_probe PRIVATE -idirafter /usr/hobot/include -Wall -Wextra -Werror)
+  set_target_properties(ainvr_search_vision_integration_probe PROPERTIES BUILD_RPATH /usr/hobot/lib)
+  # These modes return BEFORE HBM verification/loading, SDK/EGL or file reads.
+  # There is deliberately no CTest that passes --run-hardware.
+  if(BUILD_TESTING)
+    add_test(NAME search_vision_probe_help COMMAND ainvr_search_vision_integration_probe --help)
+    add_test(NAME search_vision_probe_software COMMAND ainvr_search_vision_integration_probe --software-self-test)
+    set_tests_properties(search_vision_probe_help search_vision_probe_software PROPERTIES TIMEOUT 15)
+  endif()
+endif()

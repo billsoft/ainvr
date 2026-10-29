@@ -31,6 +31,7 @@ int main() {
     fence.input_path = "/live/intermediate"; fence.output_path = "/live/result"; fence.source_epoch = 2;
     fence.stream_generation = 3; fence.view_reset_epoch = 5; fence.raw_width = 8; fence.raw_height = 4;
     fence.observation_width = 16; fence.observation_height = 8; fence.geometry = SearchFrameGeometryKind::FullFrameAxisScale; fence.owner_allowed = true;
+    fence.projection = SearchSourceProjection::RawPlanar;
     FrameResult result; result.channel_id = "processor"; result.stream_url = capture.worker_input_url; result.frame_width = 16; result.frame_height = 8;
     result.frame_pts_ns = capture.mapped_pts_ns; result.frame_index = capture.capture_sequence;
     result.timestamp = std::numeric_limits<double>::quiet_NaN(); // Inference completion is deliberately not the capture time.
@@ -70,6 +71,11 @@ int main() {
     Check(!invalid_ticket && invalid_ticket.error == SearchFrameAdmissionError::BudgetMissing, "moved-from reservation reused");
     Check(budget.Inspect().jobs == 1, "invalid ticket released another owner's reservation");
     accepted.frame.reset(); Check(budget.Inspect().jobs == 0, "frozen ownership leaked reservation");
+    for(auto projection:{SearchSourceProjection::Unverified,SearchSourceProjection::ERP}){
+      auto unverified=capture;unverified.fence.projection=projection;ticket=budget.TryAcquire(96);
+      auto unsupported=FreezeSearchFrame(*lease,*proposal.candidate,result,unverified,unverified.fence,raw,std::move(*ticket));
+      Check(!unsupported&&unsupported.error==SearchFrameAdmissionError::UnsupportedGeometry,"unverified panorama indexed as planar");
+    }
     auto too_small = budget.TryAcquire(95); auto refused = FreezeSearchFrame(*lease, *proposal.candidate, result, capture, fence, raw, std::move(*too_small));
     Check(!refused && budget.Inspect().jobs == 0, "insufficient reservation retained pixels");
     auto stale = fence; ++stale.view_reset_epoch; ticket = budget.TryAcquire(96);
@@ -78,10 +84,30 @@ int main() {
     auto lost = result; lost.model_extra["analytics"]["tracks"][0]["observation"] = "lost"; ticket = budget.TryAcquire(96);
     refused = FreezeSearchFrame(*lease, *proposal.candidate, lost, capture, fence, raw, std::move(*ticket));
     Check(!refused && refused.error == SearchFrameAdmissionError::ObjectNotEligible, "predicted/lost target became evidence");
+    {
+      auto probe=*proposal.candidate;probe.reason=SearchSamplingPolicy::Reason::ObjectProbe;probe.slot=2;
+      probe.probe_reference_fingerprint=std::string(64,'b');
+      ticket=budget.TryAcquire(96);auto work=FreezeSearchFrame(*lease,probe,result,capture,fence,raw,std::move(*ticket));
+      Check(bool(work)&&work.frame->Selection().probe_reference_fingerprint==probe.probe_reference_fingerprint,"object_probe_freeze_preserves_reference");work.frame.reset();
+      for(int invalid=0;invalid<4;++invalid){auto bad=probe;
+        if(invalid==0)bad.probe_reference_fingerprint.clear();
+        if(invalid==1)bad.slot=0;
+        if(invalid==2)bad.probe_threshold=std::numeric_limits<double>::quiet_NaN();
+        if(invalid==3)bad.reason=SearchSamplingPolicy::Reason::First;
+        ticket=budget.TryAcquire(96);work=FreezeSearchFrame(*lease,bad,result,capture,fence,raw,std::move(*ticket));
+        Check(!work&&work.error==SearchFrameAdmissionError::InvalidMetadata,"invalid_probe_scope_or_reason_frozen");
+      }
+    }
     auto scene_result = result; scene_result.detections.clear(); scene_result.model_extra["analytics"]["status"] = "detection_only";
     scene_result.model_extra["analytics"]["tracks"] = Json::array();
     SearchSamplingPolicy scene_policy; auto scene_frame = SearchSamplingPolicy::FrameFromResult(scene_result, input, 1250); scene_policy.BindSource(scene_frame->binding);
-    auto scene = scene_policy.ProposeScene(*scene_frame, {true, false, {}}); ticket = budget.TryAcquire(96);
+    auto scene = scene_policy.ProposeScene(*scene_frame, {true, false, {}});
+    {
+      auto probe=*scene.candidate;probe.reason=SearchSamplingPolicy::Reason::SceneProbe;probe.probe_reference_fingerprint=std::string(64,'c');
+      ticket=budget.TryAcquire(96);auto work=FreezeSearchFrame(*lease,probe,scene_result,capture,fence,raw,std::move(*ticket));
+      Check(bool(work)&&!work.frame->Selection().slot,"scene_probe_tracking_disabled_freeze");work.frame.reset();
+    }
+    ticket = budget.TryAcquire(96);
     auto scene_work = FreezeSearchFrame(*lease, *scene.candidate, scene_result, capture, fence, raw, std::move(*ticket));
     Check(bool(scene_work) && !scene_work.frame->SourceDetection() && !scene_work.frame->RawTargetBox(), "tracking-disabled scene depends on target");
     authority->Invalidate(); Check(!scene_work.frame->IsCurrent(fence), "revoked grant retained authority");

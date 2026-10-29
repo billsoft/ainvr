@@ -1,6 +1,7 @@
 #pragma once
 #include "bpu_program.hpp"
 #include "layout.hpp"
+#include "search_task.hpp"
 #include <tokenizers_cpp.h>
 
 namespace ainvr::llm {
@@ -9,6 +10,7 @@ class Engine {
   explicit Engine(const std::string& root);
   ~Engine();
   std::vector<int> Encode(const std::string& kind,const std::string& description);
+  std::vector<int> EncodeSearch(const SearchRequest& request);
   void Load();
   std::vector<float> Infer(const std::vector<int>& ids,const std::vector<float>& patches,
                            const std::function<void()>& before_submit = {});

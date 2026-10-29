@@ -72,4 +72,19 @@ describe('server-owned automatic apply', () => {
     expect(job.status).toBe('timeout'); expect(manager.busy).toBe(false);
     expect(signal?.aborted).toBe(true);
   });
+  it('supports a shorter per-operation deadline without changing the next default',async()=>{
+    const {manager}=setup([]);let signal:AbortSignal|undefined;
+    const short=manager.start(['search-service'],value=>{signal=value;return new Promise(()=>{});},{timeoutMs:1000});
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(short.status).toBe('timeout');expect(signal?.aborted).toBe(true);expect(manager.busy).toBe(false);
+    const next=manager.start(['backend'],()=>new Promise(()=>{}));
+    expect(next.deadline-next.startedAt).toBe(5000);await vi.advanceTimersByTimeAsync(5100);
+  });
+  it('external cancellation aborts the actual publish signal and late returns cannot revive it',async()=>{
+    const {manager}=setup([]),cancel=new AbortController();let received:AbortSignal|undefined,release!:(value:Awaited<ReturnType<typeof published>>)=>void;
+    const job=manager.start(['search-service'],value=>{received=value;return new Promise(resolve=>release=resolve);},{signal:cancel.signal});
+    cancel.abort();await vi.advanceTimersByTimeAsync(1);
+    expect(job.status).toBe('timeout');expect(received?.aborted).toBe(true);expect(manager.busy).toBe(false);
+    release(await published());await vi.advanceTimersByTimeAsync(1);expect(job.status).toBe('timeout');expect(job.version).toBeUndefined();
+  });
 });

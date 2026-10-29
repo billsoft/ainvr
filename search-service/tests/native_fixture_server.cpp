@@ -80,6 +80,16 @@ int main() {
          {"source_frame_index", std::to_string(n)}, {"frame_id", Id(300 + n)}, {"frame_width", 1920}, {"frame_height", 1080}}, jpeg, Now() + 3600000};
       history.Put(sample);
     }
+    // Additional views belong to the existing first object group. The query
+    // still has 26 grouped candidates (20+6), now backed by 28 sample rows.
+    for(int n=0;n<2;++n){const auto captured=at+(n==0?50:500);
+      Sample sample{{Id(2000+n),Id(1),"fixture_processor","fixture_session","track_0","fixture-pair-v1",captured,false,{0,1}},
+        {{"schema_version","1.0"},{"role","match"},{"source_input_id",Id(2)},{"output_channel_id",Id(1)},
+         {"input_path","/live/fixture_input"},{"output_path","/live/fixture_output"},{"recording_channel_id",Id(3)},
+         {"stream_session_id","fixture_session"},{"source_pts_ns",std::to_string(500000000LL+n*1000000000LL)},
+         {"source_frame_index",std::to_string(2000+n)},{"frame_id",Id(2300+n)},{"frame_width",1920},{"frame_height",1080}},jpeg,Now()+3600000};
+      history.Put(sample);
+    }
     const Scope scope{{Id(1)}, at, at + 25000, 60};
     history.PutCoverage(Id(20), "fixture-pair-v1", Id(1), at, at + 25000, false, "sampled", Now() + 3600000);
     history.PutCoverage(Id(21), "fixture-pair-v1", Id(1), at, at + 25000, true, "sampled", Now() + 3600000);
@@ -97,7 +107,7 @@ int main() {
       for (int n = 0; n < 200 && !server.is_running(); ++n) std::this_thread::sleep_for(std::chrono::milliseconds(5));
       if (!server.is_running()) throw std::runtime_error("fixture_start_failed");
       std::cout << Json{{"port", port}, {"from_ms", scope.from_ms}, {"to_ms", scope.to_ms}, {"channel_id", Id(1)},
-        {"source_input_id", Id(2)}, {"recording_channel_id", Id(3)}, {"model_version", encoder.ModelVersion()}, {"sample_count", 26},
+        {"source_input_id", Id(2)}, {"recording_channel_id", Id(3)}, {"model_version", encoder.ModelVersion()}, {"sample_count", 28},
         {"input_path", "/live/fixture_input"}, {"output_path", "/live/fixture_output"}}.dump() << std::endl;
       while (!stop_requested && server.is_running() && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));

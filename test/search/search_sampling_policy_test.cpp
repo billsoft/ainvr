@@ -224,9 +224,45 @@ void MetadataAndCadence() {
       "frame rate changed time-based sampling semantics");
   }
 }
+void AbandonUnknownScene(){
+  Policy policy;Check(policy.BindSource(Binding()),"abandoned_bind");
+  const auto frame=Frame(1000,1);const SearchSamplingScene scene{true,true,{}};
+  auto candidate=Proposed(policy.ProposeScene(frame,scene));
+  Check(!policy.Resolve(candidate.token,Policy::Outcome::Abandoned),"abandon_not_unknown_rejected");
+  Check(policy.Resolve(candidate.token,Policy::Outcome::Unknown),"abandon_unknown_mark");
+  Check(policy.Resolve(candidate.token,Policy::Outcome::Abandoned)&&policy.Usage().pending==0,"abandon_local_scene_metadata");
+  Check(policy.ProposeScene(frame,scene).status==Policy::Status::NotDue,"abandon_same_capture_reused");
+  const auto newer=Frame(1001,2);auto next=Proposed(policy.ProposeScene(newer,scene));
+  Check(next.token!=candidate.token&&next.frame.source_pts_ns>candidate.frame.source_pts_ns,"abandon_not_new_fact");
+  Check(!policy.Resolve(candidate.token,Policy::Outcome::Committed,Fingerprint(candidate.token)),"abandon_late_ack_mutated_new_fact");
+  Commit(policy,next);
+  const auto object_frame=Frame(2000,3);auto object=Proposed(policy.ProposeObject(object_frame,Object(object_frame)));
+  Check(policy.Resolve(object.token,Policy::Outcome::Unknown),"abandon_object_unknown");
+  Check(!policy.Resolve(object.token,Policy::Outcome::Abandoned)&&policy.Inspect(Binding(),"track-1")->pending==object.token,
+    "abandon_object_dropped_cas_slot_reservation");
+}
 int main() {
-  try {
+  try {AbandonUnknownScene();
     ObjectTransactions(); BindingAndTimelineFences(); SceneAndCapacity(); MetadataAndCadence();
+    {
+      Policy policy; policy.BindSource(Binding());
+      SearchSamplingFrame first{Binding(), 0, 0, 1790000000000LL, "active"};
+      const auto proposal = policy.ProposeObject(first, Object(first, "person", .5));
+      Check(bool(proposal.candidate), "timing test missing pending");
+      SearchSamplingConfig timing; timing.object_interval_ns = 2000000000LL;
+      timing.max_pending = 999; // Must not mutate capacity through a timing API.
+      Check(policy.UpdateTiming(timing), "valid timing update rejected");
+      Check(policy.Usage().pending == 1 && policy.Inspect(Binding(), "person")->pending == proposal.candidate->token,
+        "timing update cleared pending identity");
+      Commit(policy, *proposal.candidate);
+      Check(policy.Inspect(Binding(), "person")->Count() == 1, "timing update lost first ACK");
+      first.source_pts_ns = 1000000000LL; first.source_frame_index = 1;
+      Check(policy.ProposeObject(first, Object(first, "person", .8)).status == Policy::Status::NotDue,
+        "hot-updated interval ignored");
+      timing.scene_active_interval_ns = 0;
+      Check(!policy.UpdateTiming(timing) && policy.Inspect(Binding(), "person")->Count() == 1,
+        "invalid timing mutated committed slot");
+    }
     std::cout << "search sampling policy: " << checks << " checks passed; ACK-only slots, bounded replacements, independent scenes, lifecycle fences and 3/5/10/30 FPS\n";
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

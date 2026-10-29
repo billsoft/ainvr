@@ -380,6 +380,50 @@ TEST(SearchProducerGrant, WorkerReaderRetainsOnlyWeakAuthorityAndSurvivesClientD
   EXPECT_FALSE(recorder.SearchProducerReader());
 }
 
+TEST(SearchProducerGrant, OptionalModelPinIsAtomicStrictAndRevisionBound) {
+  auto legacy=ActiveProducerGrant();EXPECT_FALSE(ParseSearchProducerGrant(legacy).grant->expected_model);
+  auto document=legacy;const std::string hash(64,'c'),version="search-v1-"+hash;
+  document["model"]["expected_model_version"]=version;document["model"]["expected_package_sha256"]=hash;
+  const auto parsed=ParseSearchProducerGrant(document);ASSERT_TRUE(parsed.grant->expected_model);
+  EXPECT_EQ(parsed.grant->expected_model->model_version,version);EXPECT_EQ(parsed.grant->expected_model->package_sha256,hash);
+  EXPECT_EQ(parsed.grant->expected_model->package_id,parsed.grant->package_id);
+  EXPECT_NE(parsed.content_fingerprint,ParseSearchProducerGrant(legacy).content_fingerprint);
+  for(int invalid=0;invalid<9;++invalid){auto bad=document;
+    if(invalid==0)bad["model"].erase("expected_model_version");
+    if(invalid==1)bad["model"].erase("expected_package_sha256");
+    if(invalid==2)bad["model"]["expected_package_sha256"]=std::string(64,'d');
+    if(invalid==3)bad["model"]["expected_package_sha256"]=std::string(64,'C');
+    if(invalid==4)bad["model"]["expected_model_version"]="untrusted-model";
+    if(invalid==5)bad["model"]["expected_model_version"]=nullptr;
+    if(invalid==6)bad["model"]["expected_package_sha256"]=nullptr;
+    if(invalid==7)bad["model"]["unknown_pin"]=hash;
+    if(invalid==8)bad["model"]["expected_package_sha256"]=false;
+    EXPECT_THROW(ParseSearchProducerGrant(bad),std::invalid_argument);
+  }
+  auto inactive=InactiveProducerGrant("config_pending");inactive["model"]["expected_model_version"]=nullptr;
+  inactive["model"]["expected_package_sha256"]=nullptr;
+  EXPECT_THROW(ParseSearchProducerGrant(inactive),std::invalid_argument);
+  auto authority=std::make_shared<SearchProducerGrantAuthority>();authority->Start();
+  ASSERT_TRUE(authority->Install(ParseSearchProducerGrant(legacy),authority->Now()));auto old=authority->Read();ASSERT_TRUE(old);
+  EXPECT_FALSE(authority->Install(parsed,authority->Now()));EXPECT_FALSE(old->IsCurrent()); // same revision changed pin
+  document["revision"]=std::string(64,'d');ASSERT_TRUE(authority->Install(ParseSearchProducerGrant(document),authority->Now()));
+  auto fresh=authority->Read();ASSERT_TRUE(fresh);EXPECT_EQ(fresh->grant->expected_model->model_version,version);
+  ASSERT_TRUE(authority->Install(ParseSearchProducerGrant(InactiveProducerGrant("config_pending")),authority->Now()));
+  EXPECT_FALSE(authority->Read());EXPECT_FALSE(fresh->IsCurrent());
+}
+
+TEST(ConfigSearchProducer, CurrentModelPinComesFromOriginalAuthenticatedPoll) {
+  ProducerBff bff;auto document=ActiveProducerGrant();const std::string hash(64,'c');
+  document["model"]["expected_model_version"]="search-v1-"+hash;document["model"]["expected_package_sha256"]=hash;
+  bff.Set(document);bff.Start();
+  ConfigCenterClient client(bff.BaseUrl(),"ai-service","ai-config-only",[](const json&){return ApplyResult{true,false};},1);
+  client.Start();ASSERT_TRUE(Await([&]{const auto l=client.GetSearchProducerGrant();return l&&l->grant->expected_model.has_value();}));
+  const auto old=client.GetSearchProducerGrant();ASSERT_TRUE(old);EXPECT_EQ(old->grant->expected_model->package_sha256,hash);
+  document["model"]["expected_package_sha256"]=std::string(64,'d');document["model"]["expected_model_version"]="search-v1-"+std::string(64,'d');
+  bff.Set(document);ASSERT_TRUE(Await([&]{return !old->IsCurrent();}));EXPECT_FALSE(client.GetSearchProducerGrant());
+  client.Stop();EXPECT_EQ(bff.ReceivedToken(),"ai-config-only");
+}
+
 TEST(SearchProducerGrant, SharedAuthorityExpiryRenewalAndPersistentSameRevisionRejection) {
   std::atomic<int64_t> milliseconds{0};
   const auto clock = [&] { return std::chrono::steady_clock::time_point(std::chrono::milliseconds(milliseconds.load())); };

@@ -2,13 +2,14 @@ import {ReviewFrames} from './ReviewFrames'
 import {reviewLabel,reviewReason,referenceLabel,recoveryLabel,reviewStatusClass} from '@/features/alarmReview'
 import {useEffect,useRef,useState} from 'react'
 import {Link} from 'react-router-dom'
-import {Play,X} from 'lucide-react'
+import {Play,X,Search} from 'lucide-react'
 import {alarmEventService,type AlarmEvent,type AckDisposition,type AckItem} from '@/api/alarmEventService'
 import {behaviorNames,levelLook} from '@/features/alarmTriggers'
 import {describeAlarm,stageNote,type AlarmContext} from '@/features/alarmSentences'
 import {BehaviorEvidence} from './BehaviorEvidence'
 import {EvidenceThumb} from './EvidenceThumb'
 import {playbackHref,playbackRange} from '@/features/alarmNavigation'
+import {smartSearchHref} from '@/features/searchNavigation'
 
 const clock=(v:string)=>new Date(v).toLocaleTimeString('zh-CN',{hour12:false})
 export interface PendingAcknowledgement {items:AckItem[];note:string;disposition:AckDisposition;key:string}
@@ -68,6 +69,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
      <div className="rounded-base bg-surface-page px-3 py-2"><h3 className="text-xs text-ink-subtle">触发原因</h3><p className="text-sm leading-6 text-ink">{described?.sentence}</p></div>
      {showReviewFrames&&<ReviewFrames key={`${id}:${stage}`} alarm={value}/>}
      {showReviewFrames?<details className="text-sm"><summary className="cursor-pointer py-3">查看此阶段目标裁剪</summary>{selected?.behavior_event_ids?.[0]&&<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>}</details>:selected?.behavior_event_ids?.[0]?<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>:<p className="rounded-card bg-surface-page p-4 text-sm text-ink-subtle">此阶段没有截图。</p>}
+     {playbackRange(value)&&smartSearchHref(value.playback_stream_id,playbackRange(value)!.from,playbackRange(value)!.to)&&<Link className="btn-secondary !min-h-11" to={smartSearchHref(value.playback_stream_id,playbackRange(value)!.from,playbackRange(value)!.to)!}><Search size={16} aria-hidden="true"/>搜索同一摄像头与时间</Link>}
      {playbackHref(value)?<div className="space-y-1"><Link to={playbackHref(value)!} target="_blank" rel="noopener noreferrer" className="btn-primary !min-h-11"><Play size={16} aria-hidden="true"/>查看录像（{clock(new Date(playbackRange(value)!.from).toISOString())}–{clock(new Date(playbackRange(value)!.to).toISOString())}）</Link><p className="text-xs text-ink-subtle">打开本告警所属 AI 输出录像，从行为开始前 2 秒播放，保留当前告警列表。</p></div>:<p className="text-sm text-ink-subtle">无法确定本告警对应的 AI 输出通道或有效时间，请检查 AI 输出关联；不会跳转到输入通道。</p>}
     </div>
     <aside className="flex min-w-0 flex-col gap-3 border-line bg-surface-page/50 p-4 sm:p-5 md:border-l">

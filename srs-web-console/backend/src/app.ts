@@ -1,11 +1,23 @@
+import {SearchModelMigrationPlanArtifacts} from './services/searchModelMigrationPlanArtifacts.js';
+import {SearchModelMigrationCoordinator} from './services/searchModelMigrationCoordinator.js';
+import {SearchReencodeRunner} from './services/searchReencodeRunner.js';
+import {SearchReencodeAiClient} from './services/searchReencodeAi.js';
+import {setTimeout as migrationDelay} from 'node:timers/promises';
+import { searchIndexRoutes } from './routes/searchIndexRoutes.js';
+import { SearchIndexShards } from './store/searchIndexShards.js';
+import { SearchJobs } from './store/searchJobs.js';
 import { searchRoutes } from './routes/searchRoutes.js';
 import { searchRuntimeRoutes } from './routes/searchRuntimeRoutes.js';
 import { SearchConfigAdapter } from './store/searchConfigAdapter.js';
 import { SearchRuntimeStore } from './store/searchRuntimeStore.js';
-import { readAppliedSearchConnection, readAppliedSearchSettings, type SearchRuntimeDependencies } from './services/searchConnection.js';
+import { readAppliedSearchConnection, readAppliedSearchSettings, readAppliedSearchConfiguration, type SearchRuntimeDependencies } from './services/searchConnection.js';
 import { buildSearchSourceCatalog, readSearchAiProcessors } from './services/searchSourceCatalog.js';
-import { SearchNativeClient } from './services/searchNativeClient.js';
+import { SearchNativeClient, type NativeMigrationCapabilities } from './services/searchNativeClient.js';
+import { SearchModelMigrationArtifacts } from './services/searchModelMigrationArtifacts.js';
+import { prepareSearchModelMigrationActivation,type SearchModelMigrationContext } from './services/searchModelMigrationActivation.js';
 import { PersistentSearchWorker } from './services/persistentSearchWorker.js';
+import { SearchVerifyRunner } from './services/searchVerifyRunner.js';
+import { SearchVerifyLlmClient } from './services/searchVerifyLlm.js';
 import { createSearchRecordingAvailability } from './services/searchRecordingAvailability.js';
 import { osHelperConfigFromEnv, storageRequest } from './services/osHelperClient.js';
 // Fastify 应用构建（可复用，测试用 fastify.inject 不启端口）
@@ -83,6 +95,17 @@ import { ConsoleSessions, RememberedDevices } from './services/consoleSessions.j
 import { createProxyIdentity, clientIdentity } from './services/proxyIdentity.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// New model transitions remain opt-in while settled-H0/incremental proof is
+// pending. This gate never disables base search or durable publication recovery.
+export function searchModelMigrationAdmission(
+  enabled: string | undefined,
+  native: NativeMigrationCapabilities,
+  ai: { implemented: boolean },
+): boolean {
+  return enabled === '1' && native.implemented && native.source_ingestion_gate
+    && native.target_write && native.artifacts && ai.implemented;
+}
 
 export interface BuildAppOptions {
   /** Capability injection for isolated API tests. Runtime uses live components. */
@@ -225,7 +248,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/alarm-evidence\/[a-f0-9]{64}(?:\/image)?$/.test(pathname))return;
     if (boundService === 'search-service' &&
       ((req.method === 'GET' && pathname === '/api/internal/search/runtime-config') ||
-       (req.method === 'POST' && pathname === '/api/internal/search/runtime-state'))) return;
+       (req.method === 'POST' && ['/api/internal/search/runtime-state', '/api/internal/search/index-jobs','/api/internal/search/model-migrations'].includes(pathname)))) return;
     if (boundService === 'ai-service' && req.method === 'GET' && pathname === '/api/internal/search/producer-config') return;
     if (boundService && url.startsWith('/api/v1/config/')) {
       (req as any).boundService = boundService;
@@ -262,7 +285,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const pathname = url.split('?')[0];
     if (resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'search-service' &&
       ((req.method === 'GET' && pathname === '/api/internal/search/runtime-config') ||
-       (req.method === 'POST' && pathname === '/api/internal/search/runtime-state'))) return;
+       (req.method === 'POST' && ['/api/internal/search/runtime-state', '/api/internal/search/index-jobs','/api/internal/search/model-migrations'].includes(pathname)))) return;
     if (resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'ai-service' &&
       req.method === 'GET' && pathname === '/api/internal/search/producer-config') return;
     if (licenseGate.isExempt(url, req.method)) return;
@@ -483,6 +506,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     let searchVolumesPending: Promise<unknown> | null = null;
     const searchDependencies: SearchRuntimeDependencies | null = pgStore ? {
       store: pgStore, sourceCatalog: searchCatalog,
+      modelAuthority:()=>searchRuntime!.modelAuthority(),
+      ingestionGate:current=>searchJobs!.ingestionGate(current),
       volumes: async () => {
         const helper = osHelperConfigFromEnv();
         if (!helper) throw new Error('storage_unavailable');
@@ -497,18 +522,85 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     } : null;
     // Search is a same-host native service, bound exclusively to loopback.
     const searchHost = process.env.SEARCH_SERVICE_HOST ?? '127.0.0.1';
+    const searchManagementConnection=async()=>{
+      const token=[...serviceTokens].find(([,service])=>service==='search-service')?.[0];
+      return token&&['127.0.0.1','localhost','host.docker.internal'].includes(searchHost)
+        ? {baseUrl:`http://${searchHost}:8400`,apiToken:token,timeoutMs:3000}:null;
+    };
     await instance.register(searchRuntimeRoutes, {
       dependencies: searchDependencies, runtime: searchRuntime, principal: alarmPrincipal,
       internalPrincipal: async req => resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'search-service',
       producerPrincipal: async req => resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'ai-service',
-      managementConnection: async () => {
-        const token = [...serviceTokens].find(([, service]) => service === 'search-service')?.[0];
-        return token && ['127.0.0.1', 'localhost', 'host.docker.internal'].includes(searchHost)
-          ? { baseUrl: `http://${searchHost}:8400`, apiToken: token, timeoutMs: 3000 } : null;
+      managementConnection: searchManagementConnection,
+    });
+    const searchJobs = pgStore ? new SearchJobs(pgStore.pool) : null;
+    await instance.register(searchIndexRoutes, {
+      principal: async req => resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'search-service',
+      jobs: searchJobs,
+      migrationContext:async()=>migrationAuthorityContext(),
+      shards: pgStore ? new SearchIndexShards(pgStore.pool) : null,
+      context: async () => {
+        if (!searchDependencies || !searchRuntime) return null;
+        const applied = await readAppliedSearchConfiguration(searchDependencies, searchRuntime);
+        if (!applied?.settings.enabled || !applied.index_directory.ready || !applied.index_directory.generation || !applied.settings.model.package_id) return null;
+        const authority=await searchRuntime.modelAuthority(),pin=authority.active_model_pin;
+        if(!pin||pin.package_id!==applied.settings.model.package_id)return null;
+        return { revision: applied.revision, storageGeneration: applied.index_directory.generation,modelVersion:pin.model_version,
+          packageId: applied.settings.model.package_id, channels: applied.sources.map(source => source.channel_id),
+          retentionDays: applied.settings.limits.retention_days };
       },
     });
     const searchNative = new SearchNativeClient(() => searchDependencies && searchRuntime
       ? readAppliedSearchConnection(searchDependencies, searchRuntime, searchHost) : Promise.resolve(null));
+    const searchManagement=new SearchNativeClient(searchManagementConnection);
+    const migrationArtifacts=pgStore?new SearchModelMigrationArtifacts(pgStore.pool,(job,after,limit)=>searchManagement.migrationArtifactPage(job,after,limit)):null;
+    const migrationPlanArtifacts=migrationArtifacts?new SearchModelMigrationPlanArtifacts(migrationArtifacts):null;
+    const migrationAi=new SearchReencodeAiClient(async()=>{
+      const settings=await settingsStore.read(),apiToken=await resolveAiApiKey(settings,pgStore);
+      return apiToken?{baseUrl:settings.aiService.baseUrl||aiServiceBaseUrl,apiToken,timeoutMs:30000}:null;
+    });
+    let migrationAvailable=false;
+    let migrationCoordinator:SearchModelMigrationCoordinator|null=null;
+    const migrationStop=new AbortController();let migrationLoop:Promise<void>|null=null;
+    const migrationAuthorityContext=async():Promise<Omit<SearchModelMigrationContext,'extent'>|null>=>{
+      if(!searchDependencies||!searchRuntime)return null;
+      const applied=await readAppliedSearchConfiguration(searchDependencies,searchRuntime);
+      if(!applied||!applied.settings.model.package_id||!applied.index_directory.generation)return null;
+      const authority=await searchRuntime.modelAuthority();
+      const source=authority.active_model_pin??await searchRuntime.legacySourceModel(applied.settings.model.package_id);
+      const channels=[...new Set(applied.sources.map(value=>value.channel_id))];
+      if(!source||!channels.length)return null;
+      return {revision:applied.revision,storage_generation:applied.index_directory.generation,desired_version:applied.desired_version,source,channels};
+    };
+    const migrationContext=async():Promise<SearchModelMigrationContext|null>=>{
+      const current=await migrationAuthorityContext();if(!current)return null;
+      return {...current,extent:await searchNative.migrationExtent(current.source.model_version,current.channels)};
+    };
+    const migrationRunner=searchJobs&&migrationArtifacts?new SearchReencodeRunner({jobs:searchJobs,artifacts:migrationArtifacts,ai:migrationAi,context:migrationAuthorityContext,
+      native:{verifyMigrationModel:packageId=>searchManagement.verifyMigrationModel(packageId),
+        scanMigration:(model,scope,after,through,limit)=>searchNative.scanMigration(model,scope,after,through,limit),
+        migrationImage:(sample,scope)=>searchNative.migrationImage(sample,scope),
+        migrationWriteTarget:(proof,source,target,vector)=>searchManagement.migrationWriteTarget(proof,source,target,vector),
+        migrationTargetReceipt:(proof,source,target)=>searchManagement.migrationTargetReceipt(proof,source,target),
+        migrationArtifacts:(proof,action)=>searchManagement.migrationArtifacts(proof,action)},
+    }):null;
+    if(searchJobs&&migrationRunner&&migrationPlanArtifacts){
+      // One coordinator drains the existing PG queue. There is no independent
+      // job store, reencode queue or extra model owner. Unsupported Native
+      // ingress capability permits only durable publication recovery.
+      instance.addHook('onReady',async()=>{migrationLoop=(async()=>{
+        while(!migrationStop.signal.aborted){
+          try{
+            const [native,ai]=await Promise.all([searchManagement.migrationCapabilities(),migrationAi.capabilities(migrationStop.signal)]);
+            migrationAvailable=searchModelMigrationAdmission(process.env.AINVR_SEARCH_MODEL_MIGRATIONS_ENABLED,native,ai);
+          }catch{migrationAvailable=false;}
+          if(migrationStop.signal.aborted)break;
+          try{await migrationCoordinator?.step(migrationStop.signal,!migrationAvailable);}catch{/* Existing durable lease is retried, never reported complete. */}
+          try{await migrationDelay(1000,undefined,{signal:migrationStop.signal});}catch{break;}
+        }
+      })();});
+      instance.addHook('onClose',async()=>{migrationStop.abort();await migrationLoop;});
+    }
     const nativeSearchStatus = searchNative.status.bind(searchNative);
     searchNative.status = async () => {
       if (!pgStore || !searchRuntime) return { ready: false, reason: 'config_pending', model_version: null };
@@ -516,19 +608,23 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       if (!applied) return { ready: false, reason: 'config_pending', model_version: null };
       return !applied.enabled ? { ready: false, reason: 'disabled', model_version: null } : nativeSearchStatus();
     };
+    const searchVerify = searchJobs ? new SearchVerifyRunner({ jobs: searchJobs, native: searchNative, channels: searchChannels,
+      enabled: async () => !!(searchDependencies && searchRuntime && await readAppliedSearchConnection(searchDependencies, searchRuntime, searchHost)),
+      llm: new SearchVerifyLlmClient(() => readAppliedLlmConnection(pgStore, process.env.LLM_SERVICE_HOST ?? '127.0.0.1', 'search-verify')),
+    }) : null;
+    if (searchVerify) {
+      instance.addHook('onReady', async () => { searchVerify.start(); });
+      instance.addHook('onClose', async () => { await searchVerify.stop(); });
+    }
     const searchWorker = new PersistentSearchWorker({
       native: searchNative, channels: searchChannels,
+      verificationPublished: () => searchVerify?.wake(), verificationCancel: (id, actor) => searchVerify?.cancel(id, actor) ?? Promise.resolve(),
+      verificationAvailability: () => searchVerify?.currentAvailability() ?? { available: false, reason: 'task_unavailable' },
       queryConcurrency: async () => pgStore ? (await readAppliedSearchSettings(pgStore))?.limits.query_concurrency ?? 2 : 2,
       sessionTtlSeconds: async () => pgStore ? (await readAppliedSearchSettings(pgStore))?.limits.search_ttl_s ?? 3600 : 3600,
-      coverageKinds: async channelId => {
-        if (!pgStore) return ['scene'];
-        const applied = await readAppliedSearchSettings(pgStore), source = (await searchCatalog()).sources.find(value => value.channel_id === channelId);
-        if (!applied || !source) throw new Error('source_catalog_unavailable');
-        const kinds: ('object' | 'scene')[] = [];
-        if (applied.sampling.object && source.object) kinds.push('object');
-        if (applied.sampling.scene) kinds.push('scene');
-        return kinds;
-      },
+      // Current sampling capabilities are not evidence of the policy that was
+      // active during a historical query. Keep conservative coverage defaults
+      // until interval-specific policy evidence can establish narrower kinds.
       recordingAvailability: createSearchRecordingAvailability(async () => {
         const token = [...serviceTokens].find(([, service]) => service === 'recorder')?.[0];
         if (!token) return null;
@@ -601,6 +697,20 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         serviceTokens,
         readBackendSettings: () => settingsStore.read(),
         aiServiceBaseUrl,
+        searchMigrations:searchJobs&&migrationArtifacts?{
+          principal:alarmPrincipal,
+          internalPrincipal:async req=>resolveServiceByToken(serviceTokens,req.headers['x-service-token'])==='search-service',
+          jobs:searchJobs,context:migrationContext,internalContext:migrationAuthorityContext,native:{
+            verifyMigrationModel:packageId=>searchManagement.verifyMigrationModel(packageId),
+            migrationWatermark:(model,scope)=>searchNative.migrationWatermark(model,scope),
+          },artifacts:migrationArtifacts,planArtifacts:migrationPlanArtifacts!,
+          executionAvailable:()=>migrationAvailable,
+          onPlanApplyReady:bindings=>{
+            if(searchJobs&&migrationRunner&&migrationPlanArtifacts)migrationCoordinator=new SearchModelMigrationCoordinator({jobs:searchJobs,child:migrationRunner,artifacts:migrationPlanArtifacts,
+              context:migrationAuthorityContext,publish:bindings.publish,restore:bindings.restore});
+          },
+          prepareActivation:prepareSearchModelMigrationActivation,activationStore:pgStore,
+        }:undefined,
       });
     }
   }, { prefix: '/api' });

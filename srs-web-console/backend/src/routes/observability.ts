@@ -7,7 +7,7 @@ import { operationalLog } from '../services/operationalLog.js';
 const Settings = z.object({ fileMiB:z.number().int().min(1).max(50), files:z.number().int().min(1).max(5),
   historyHours:z.number().int().min(1).max(168), level:z.enum(['DEBUG','INFO','WARN','ERROR']),
   repeatSeconds:z.number().int().min(10).max(300) }).strict();
-const Query = z.object({ source:z.enum(['host','frontend','backend','srs','postgres','mongodb','ai-service','recorder','alarm-service','llm-service','gb28181','gb-media','helper']).optional(),
+const Query = z.object({ source:z.enum(['host','frontend','backend','srs','postgres','mongodb','ai-service','recorder','alarm-service','llm-service','search-service','onvif','gb28181','gb-media','helper']).optional(),
   level:z.enum(['DEBUG','INFO','WARN','ERROR']).optional(), q:z.string().max(200).optional(),
   cursor:z.string().max(16000).regex(/^[A-Za-z0-9_=-]+$/).optional(),
   start:z.coerce.number().int().min(0).optional(), end:z.coerce.number().int().min(0).optional(),

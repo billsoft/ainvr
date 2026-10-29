@@ -23,10 +23,18 @@ inline nlohmann::json NormalizeSettings(const nlohmann::json& s,int version) {
   auto integer=[&](const char* name,int lo,int hi){auto v=schedule.at(name);if(!v.is_number_integer()||v.get<int>()<lo||v.get<int>()>hi)throw std::invalid_argument("invalid scheduling setting");return v.get<int>();};
   double temperature=s.at("tasks").at("alarm-review-zh-v1").at("calibration_temperature").get<double>();
   if(!std::isfinite(temperature)||temperature<.05||temperature>10||s.at("tasks").at("alarm-review-zh-v1").at("aspect_policy")!="reject")throw std::invalid_argument("invalid task settings");
+  bool search_enabled = true;
+  if (s.at("tasks").contains("search-verify-zh-v1")) {
+    const auto& task = s.at("tasks").at("search-verify-zh-v1");
+    if (!task.is_object() || task.size() != 3 || !task.at("enabled").is_boolean() ||
+        task.at("aspect_policy") != "letterbox" || task.at("decision_policy") != "abc-visible-v1")
+      throw std::invalid_argument("invalid search task settings");
+    search_enabled = task.at("enabled").get<bool>();
+  }
   if(schedule.at("prefill_profile")!="s256"||s.at("model").at("load_policy")!="resident")throw std::invalid_argument("unsupported profile or loading policy");
   return {{"config_version",version},{"enabled",s.at("enabled").get<bool>()},
     {"package_root","/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-4b-review-v3"},{"reservation_root","/run/ainvr"},
-    {"api_keys",callers},{"admin_key",admin},{"calibration_temperature",temperature},
+    {"api_keys",callers},{"admin_key",admin},{"calibration_temperature",temperature},{"search_verify_enabled",search_enabled},
     {"queue_size",integer("queue_size",1,32)},{"queue_timeout_s",integer("queue_timeout_s",1,300)},
     {"exec_timeout_s",integer("exec_timeout_s",1,120)},
     {"submit_time_share_cap_percent",integer("submit_time_share_cap_percent",5,90)}};

@@ -77,7 +77,7 @@ describe('native search transport', () => {
     for (const value of variants) await expect(fixture(value).client.match('人', scope, 'pair-v1')).rejects.toMatchObject({ code: 'invalid_response' });
   });
   it('does not retry busy or model-unready compute and never leaks upstream error text', async () => {
-    for (const [status, error, code] of [[400, 'query_too_long', 'query_too_long'], [400, 'query_unrepresentable', 'query_unrepresentable'], [400, 'query_invalid_utf8', 'query_invalid_utf8'], [400, 'query_too_large', 'query_too_large'], [400, 'private secret', 'unavailable'], [429, 'private text', 'busy'], [429, 'search_capacity', 'capacity'], [503, 'model_pending', 'model_pending'], [401, 'token=secret', 'unavailable']] as const) {
+    for (const [status, error, code] of [[400, 'query_too_long', 'query_too_long'], [400, 'query_unrepresentable', 'query_unrepresentable'], [400, 'query_invalid_utf8', 'query_invalid_utf8'], [400, 'query_too_large', 'query_too_large'], [400, 'private secret', 'unavailable'], [429, 'private text', 'busy'], [429, 'search_capacity', 'capacity'], [503, 'model_pending', 'model_pending'], [401, 'token=secret', 'scope_denied']] as const) {
       const { client, request } = fixture({ error }, status);
       await expect(client.match('人', scope, 'pair-v1')).rejects.toMatchObject({ code, message: code });
       expect(request).toHaveBeenCalledTimes(1);
@@ -169,4 +169,35 @@ describe('native search transport', () => {
     expect(JSON.parse(request.mock.calls[0][1]?.body as string)).toEqual({ id: sessionId, actor: 'operator', sample_id: sample.id, frame_id: sample.evidence.frame_id });
     expect(await fixture({ error: 'not_found' }, 404).client.searchImage(sessionId, 'operator', sample.id, sample.evidence.frame_id)).toBeNull();
   });
+});
+
+it('transports grouped refs and validates frozen multiframe reads without granting new image identity', async () => {
+  const fingerprint='c'.repeat(64), refs=[{sample_id:sample.id,fingerprint},{sample_id:'00000000-0000-4000-8000-000000000008',fingerprint:'d'.repeat(64)}];
+  const matched=await fixture({...page,items:[{...sample,fingerprint,similarity:.9,evidence_refs:refs}]}).client.match('person',scope,'pair-v1');
+  expect(matched.items[0]!.evidence_refs).toEqual(refs);
+  await expect(fixture({...page,items:[{...sample,fingerprint,similarity:.9,evidence_refs:[refs[1]]}]}).client.match('person',scope,'pair-v1')).rejects.toMatchObject({code:'invalid_response'});
+  const frames=[{id:sample.evidence.frame_id,captured_ms:at,role:'match'},{id:refs[1]!.sample_id,captured_ms:at-20,role:'before'}];
+  const value={...session,scope:{...session.scope,from_ms:at-50,to_ms:at+50},items:[{...sample,fingerprint,similarity:.9,feedback:false,frames,started_ms:at-20,ended_ms:at}]};
+  const read=await fixture(value).client.readSearch(sessionId,'operator');
+  expect(read!.items[0]!.frames).toEqual(frames);expect(read!.items[0]!.started_ms).toBe(at-20);
+  for(const patch of [{frames:[frames[1]]},{frames:[frames[0],frames[0]]},{started_ms:at+1},{ended_ms:at-1},
+    {frames:[frames[0],{...frames[1],captured_ms:at-100}]},{kind:'scene'}])
+    await expect(fixture({...value,items:[{...value.items[0],...patch}]}).client.readSearch(sessionId,'operator')).rejects.toMatchObject({code:'invalid_response'});
+  const publish=fixture({published:true});await publish.client.publishSearch(sessionId,'operator',session.version,'partial',[{sample_id:sample.id,similarity:.9,fingerprint,evidence_refs:refs}]);
+  expect(JSON.parse(publish.request.mock.calls[0]![1]!.body as string).items[0].evidence_refs).toEqual(refs);
+  await expect(publish.client.publishSearch(sessionId,'operator',session.version,'partial',[{sample_id:sample.id,similarity:.9,fingerprint,evidence_refs:[{sample_id:sample.id,fingerprint:'f'.repeat(64)}]}])).rejects.toMatchObject({code:'invalid_response'});
+  expect(publish.request).toHaveBeenCalledTimes(1);
+});
+
+it.each([401, 403])('preserves upstream authorization rejection %s rather than treating it as an unavailable coverage read', async status => {
+  await expect(fixture({ error: 'unauthorized' }, status).client.coverage(scope, 'pair-v1')).rejects.toMatchObject({ code: 'scope_denied' });
+  await expect(fixture({ error: 'unauthorized' }, status).client.status()).rejects.toMatchObject({ code: 'scope_denied' });
+});
+it('accepts only bounded normalized per-frame boxes from persisted evidence', async () => {
+  const value = { ...session, items: [{ ...session.items[0], frames: [{ id: other, captured_ms: at, role: 'match', bbox: [0.2, 0.3, 0.4, 0.5] }], started_ms: at, ended_ms: at }] };
+  expect((await fixture(value).client.readSearch(sessionId, 'operator'))!.items[0]!.frames![0]!.bbox).toEqual([0.2, 0.3, 0.4, 0.5]);
+  for (const bbox of [[-0.1, 0, 1, 1], [0.5, 0, 0.6, 1], [0, 0, 0, 1], [0, 0, 1]]) {
+    const invalid = structuredClone(value); invalid.items[0]!.frames[0]!.bbox = bbox;
+    await expect(fixture(invalid).client.readSearch(sessionId, 'operator')).rejects.toMatchObject({ code: 'invalid_response' });
+  }
 });

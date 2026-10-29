@@ -70,13 +70,46 @@ function fixture(options: Partial<PersistentSearchOptions> = {}) {
 }
 afterEach(() => vi.useRealTimers());
 describe('persistent search business adapter', () => {
+  it('wakes background verification only after shortlist publication and never waits for model work', async () => {
+    const published = vi.fn(() => undefined), f = fixture({ verificationPublished: published });
+    await f.worker.query(query, 'operator'); expect(published).toHaveBeenCalledTimes(1);
+    expect(f.sessions.get(f.key('operator', requestId))!.published).toBe(true);
+    published.mockImplementationOnce(() => { throw Error('optional wake failure'); });
+    await expect(f.worker.query(query, 'operator')).resolves.toMatchObject({ search_id: requestId });
+  });
+  it('keeps cancellation authoritative when optional remote cancellation fails and projects only actual uncalibrated state', async () => {
+    const cancel = vi.fn(async () => { throw Error('LLM disconnected'); }), f = fixture({ verificationCancel: cancel });
+    await f.worker.query(query, 'operator');
+    f.sessions.get(f.key('operator', requestId))!.items[0]!.verification = { state: 'match', profile_fp: 'c'.repeat(64), request_id: 'original-request', cached: true, reason: 'visible_evidence' };
+    const page = await f.worker.page(requestId, undefined, 'operator');
+    expect(page!.items[0]!.verification).toEqual({ state: 'match', validated: false, cached: true, reason: 'visible_evidence' });
+    expect(page!.items[1]!.verification).toEqual({ state: 'candidate' });
+    await f.worker.cancel(requestId, 'operator'); expect(cancel).toHaveBeenCalledWith(requestId, 'operator'); expect(f.cancelled.has(f.key('operator', requestId))).toBe(true);
+  });
+  it('reports unavailable task metadata only for the first five slots and keeps later pages as candidates', async () => {
+    const f = fixture({ verificationAvailability: () => ({ available: false, reason: 'task_unavailable' }) });
+    await f.worker.query(query, 'operator'); const session = f.sessions.get(f.key('operator', requestId))!;
+    session.items = Array.from({ length: 30 }, (_, n) => sample(n + 1));
+    const first = (await f.worker.page(requestId, undefined, 'operator'))!;
+    expect(first.items.slice(0, 5).every(item => item.verification.state === 'unavailable' && item.verification.reason === 'task_unavailable')).toBe(true);
+    expect(first.items.slice(5).every(item => item.verification.state === 'candidate')).toBe(true);
+    expect((await f.worker.page(requestId, 'v1.20', 'operator'))!.items.every(item => item.verification.state === 'candidate')).toBe(true);
+  });
+  it('a cached reference never bypasses revoked channel access for results or images', async () => {
+    const f = fixture(); await f.worker.query(query, 'operator');
+    f.sessions.get(f.key('operator', requestId))!.items[0]!.verification = { state: 'match', profile_fp: 'c'.repeat(64), request_id: 'original-cache-request', cached: true, reason: 'visible_evidence' };
+    f.channels.mockResolvedValue([]);
+    await expect(f.worker.page(requestId, undefined, 'operator')).rejects.toMatchObject({ statusCode: 403 });
+    await expect(f.worker.image(requestId, id(101), id(201), 'operator')).rejects.toMatchObject({ statusCode: 403 });
+    expect(f.native.searchImage).not.toHaveBeenCalled();
+  });
   it('maps the authoritative sample provenance and time without guessing an input recording channel', async () => {
     const f = fixture(); const page = await f.worker.query(query, 'operator');
     expect(page.search_id).toBe(requestId); expect(page.model_version).toBe('pair-v1'); expect(page.coverage).toBe('sampled');
     expect(page.items[0]).toMatchObject({ channel_id: channel, channel_name: '后门AI输出', source_input_id: inputChannel,
       processor_id: 'processor', output_channel_id: channel, recording: { channel_id: recordingChannel, state: 'pending' },
       started_at: new Date(at + 1).toISOString(), ended_at: new Date(at + 1).toISOString(),
-      frames: [{ id: id(201), captured_at: new Date(at + 1).toISOString(), role: 'match' }], verification: { state: 'unavailable' } });
+      frames: [{ id: id(201), captured_at: new Date(at + 1).toISOString(), role: 'match' }], verification: { state: 'candidate' } });
     expect(f.native.publishSearch).toHaveBeenCalledWith(requestId, 'operator', version, 'sampled', initial.map(i => ({ sample_id: i.id, similarity: i.similarity })));
     expect(f.native.match).toHaveBeenCalledTimes(1);
   });
@@ -109,12 +142,52 @@ describe('persistent search business adapter', () => {
     vi.mocked(f.native.coverage).mockResolvedValue([coverage(false), coverage(true)]);
     expect((await f.worker.coverage(otherScope, 'operator')).state).toBe('partial');
   });
-  it('honors the configured coverage policy while keeping an incomplete native projection partial', async () => {
+  it('honors a proven historical policy while keeping an incomplete native projection partial', async () => {
     const f = fixture({ coverageKinds: async () => ['object'] });
     vi.mocked(f.native.coverage).mockResolvedValue([coverage(false)]);
     expect((await f.worker.coverage(scope, 'operator')).state).toBe('sampled');
     vi.mocked(f.native.match).mockResolvedValue({ model_version: 'pair-v1', partial: true, items: initial });
     expect((await f.worker.query(query, 'operator')).coverage).toBe('partial');
+  });
+  it('does not infer historical coverage or revoke history access from current sampling capabilities', async () => {
+    const f = fixture({ channels: async () => [
+      { id: channel, name: 'Historical output', sampling_supported: false, sampling_reason: 'projection_unsupported' },
+      { id: recordingChannel, name: 'Recording' },
+    ] });
+    // A currently unsupported channel may have historical object samples. Scene
+    // coverage alone cannot prove that the old object branch was fully sampled.
+    vi.mocked(f.native.coverage).mockResolvedValue([coverage(true)]);
+    expect((await f.worker.coverage(scope, 'operator')).state).toBe('partial');
+    const page = await f.worker.query(query, 'operator');
+    expect(page.coverage).toBe('partial'); expect(page.items).toHaveLength(3);
+    expect(f.native.publishSearch).toHaveBeenCalledWith(requestId, 'operator', version, 'partial', expect.any(Array));
+    vi.mocked(f.native.coverage).mockResolvedValue([coverage(false), coverage(true)]);
+    expect((await f.worker.coverage(scope, 'operator')).state).toBe('sampled');
+  });
+  it.each([[], null])('keeps an unknown historical policy %j queryable without promoting coverage', async policy => {
+    const f = fixture({ coverageKinds: async () => policy });
+    expect((await f.worker.coverage(scope, 'operator')).state).toBe('unknown');
+    const page = await f.worker.query(query, 'operator');
+    expect(page.coverage).toBe('unknown'); expect(page.items).toHaveLength(3);
+    expect(f.native.match).toHaveBeenCalledTimes(1);
+    vi.mocked(f.native.coverage).mockResolvedValue([]);
+    expect((await f.worker.coverage(scope, 'operator')).state).toBe('unknown');
+  });
+  it('keeps a known historical gap partial even when another selected source has unknown policy', async () => {
+    const f = fixture({ coverageKinds: async source => source === channel ? [] : ['scene'] });
+    const combined = { ...scope, channel_ids: [channel, inputChannel] };
+    expect((await f.worker.coverage(combined, 'operator')).state).toBe('partial');
+    vi.mocked(f.native.coverage).mockResolvedValue([coverage(false), coverage(true), { ...coverage(true), channel: inputChannel }]);
+    expect((await f.worker.coverage(combined, 'operator')).state).toBe('unknown');
+  });
+  it('passes the historical interval to a proven policy provider and rejects malformed policy', async () => {
+    const policy = vi.fn<NonNullable<PersistentSearchOptions['coverageKinds']>>(async () => ['object']);
+    const f = fixture({ coverageKinds: policy });
+    vi.mocked(f.native.coverage).mockResolvedValue([coverage(false)]);
+    expect((await f.worker.coverage(scope, 'operator')).state).toBe('sampled');
+    expect(policy).toHaveBeenCalledWith(channel, 'operator', scope);
+    policy.mockResolvedValue(['scene', 'scene']);
+    await expect(f.worker.coverage(scope, 'operator')).rejects.toMatchObject({ code: 'search_unavailable', statusCode: 503 });
   });
   it('preserves explicit immutable slot offsets when an earlier sample disappears', async () => {
     const f = fixture(); await f.worker.query(query, 'operator');
@@ -326,4 +399,60 @@ describe('persistent search business adapter', () => {
       hits.map(item => ({ sample_id: item.id, similarity: item.similarity, fingerprint: item.fingerprint })));
   });
 
+});
+
+it('projects frozen group evidence and verifies every related-image access against current permissions', async () => {
+  const availability=vi.fn(async()=> 'available' as const), f=fixture({recordingAvailability:availability});await f.worker.query(query,'operator');
+  const session=f.sessions.get(f.key('operator',requestId))!, item=session.items[0]!;
+  item.frames=[{id:item.evidence.frame_id,captured_ms:item.captured_ms,role:'match'},{id:id(900),captured_ms:at,role:'before'},{id:id(901),captured_ms:at+50,role:'after'}];
+  item.started_ms=at;item.ended_ms=at+50;
+  const page=await f.worker.page(requestId,undefined,'operator');
+  expect(page!.items[0]!.frames.map(frame=>frame.id)).toEqual([item.evidence.frame_id,id(900),id(901)]);
+  expect(page!.items[0]!.started_at).toBe(new Date(at).toISOString());expect(page!.items[0]!.ended_at).toBe(new Date(at+50).toISOString());
+  expect(availability).toHaveBeenCalledWith(expect.objectContaining({from:new Date(at).toISOString(),to:new Date(at+50).toISOString()}));
+  expect(await f.worker.image(requestId,item.id,id(900),'operator')).toEqual(Buffer.from([255,216,255,217]));
+  expect(f.native.searchImage).toHaveBeenLastCalledWith(requestId,'operator',item.id,id(900));
+  const count=vi.mocked(f.native.searchImage).mock.calls.length;
+  expect(await f.worker.image(requestId,item.id,id(999),'operator')).toBeNull();expect(f.native.searchImage).toHaveBeenCalledTimes(count);
+  f.channels.mockResolvedValue([]);
+  await expect(f.worker.image(requestId,item.id,id(900),'operator')).rejects.toMatchObject({statusCode:403});
+  expect(f.native.searchImage).toHaveBeenCalledTimes(count);
+});
+
+
+describe('coverage degradation and per-frame display geometry', () => {
+  it.each(['unavailable', 'invalid_response', 'storage_unavailable', 'busy'] as const)('keeps candidates when only coverage returns %s', async code => {
+    const f = fixture(); vi.mocked(f.native.coverage).mockRejectedValue(new SearchNativeError(code));
+    const page = await f.worker.query(query, 'operator');
+    expect(page.items).toHaveLength(3); expect(page.coverage).toBe('unknown');
+    expect(await f.worker.coverage(scope, 'operator')).toMatchObject({ state: 'unknown', ranges: [] });
+  });
+  it('never degrades an upstream scope rejection or local revocation into unknown coverage', async () => {
+    const f = fixture(); vi.mocked(f.native.coverage).mockRejectedValue(new SearchNativeError('scope_denied'));
+    await expect(f.worker.query(query, 'operator')).rejects.toMatchObject({ statusCode: 403 });
+    await expect(f.worker.coverage(scope, 'operator')).rejects.toMatchObject({ statusCode: 403 });
+    vi.mocked(f.native.coverage).mockImplementation(async () => { f.channels.mockResolvedValue([]); throw new SearchNativeError('unavailable'); });
+    await expect(f.worker.coverage(scope, 'operator')).rejects.toMatchObject({ statusCode: 403 });
+  });
+  it('projects a distinct box for each frame and never applies an object box to a scene', async () => {
+    const f = fixture(); await f.worker.query(query, 'operator');
+    const session = f.sessions.get(f.key('operator', requestId))!;
+    session.items[0]!.frames = [
+      { id: id(201), captured_ms: at + 1, role: 'match', bbox: [0.1, 0.2, 0.3, 0.4] },
+      { id: id(202), captured_ms: at + 2, role: 'after', bbox: [0.2, 0.3, 0.2, 0.1] },
+    ];
+    session.items[0]!.started_ms = at + 1; session.items[0]!.ended_ms = at + 2;
+    session.items[1]!.kind = 'scene'; session.items[1]!.frames = [{ id: id(202), captured_ms: at + 2, role: 'match', bbox: [0, 0, 1, 1] }];
+    const page = await f.worker.page(requestId, undefined, 'operator');
+    expect(page!.items[0]!.frames.map(frame => frame.bbox)).toEqual([[0.1, 0.2, 0.3, 0.4], [0.2, 0.3, 0.2, 0.1]]);
+    expect(page!.items[1]!.frames[0]!.bbox).toBeUndefined();
+  });
+});
+
+it('never hides an overlapping pending interval or gap under a sampled interval', async () => {
+  for (const state of ['gap', 'pending'] as const) {
+    const f = fixture(); vi.mocked(f.native.coverage).mockResolvedValue([coverage(false), coverage(true), coverage(false, at + 20, at + 30, state)]);
+    expect((await f.worker.coverage(scope, 'operator')).state).toBe('partial');
+    expect((await f.worker.query(query, 'operator')).coverage).toBe('partial');
+  }
 });

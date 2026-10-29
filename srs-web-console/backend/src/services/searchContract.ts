@@ -42,10 +42,13 @@ export const searchCoverageSchema = z.object({
 });
 export type SearchCoverage = z.infer<typeof searchCoverageSchema>;
 const timestamp = z.string().datetime({ offset: true });
+export const searchBoundingBoxSchema = z.tuple([z.number().finite().min(0).max(1), z.number().finite().min(0).max(1), z.number().finite().positive().max(1), z.number().finite().positive().max(1)])
+  .refine(([x, y, w, h]) => x + w <= 1.000001 && y + h <= 1.000001, 'invalid_search_bbox');
 export const searchFrameSchema = z.object({
   id: z.string().uuid(),
   captured_at: timestamp,
   role: z.enum(['match', 'before', 'after', 'context']),
+  bbox: searchBoundingBoxSchema.optional(),
 }).strict();
 export const searchResultSchema = z.object({
   id: z.string().uuid(), channel_id: z.string().uuid(), channel_name: z.string().min(1).max(256),
@@ -53,9 +56,10 @@ export const searchResultSchema = z.object({
   output_channel_id: z.string().uuid().nullable(),
   kind: z.enum(['object', 'scene']),
   started_at: timestamp, ended_at: timestamp,
-  frames: z.array(searchFrameSchema).min(1).max(8),
+  frames: z.array(searchFrameSchema).min(1).max(3),
   recording: z.object({ channel_id: z.string().uuid().nullable(), state: z.enum(['available', 'missing', 'pending']) }).strict(),
-  verification: z.object({ state: z.enum(['candidate', 'queued', 'running', 'match', 'mismatch', 'uncertain', 'unavailable']) }).strict(),
+  verification: z.object({ state: z.enum(['candidate', 'queued', 'running', 'match', 'mismatch', 'uncertain', 'unavailable']),
+    validated: z.literal(false).optional(), cached: z.boolean().optional(), reason: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/).nullable().optional() }).strict(),
   feedback: z.enum(['relevant', 'irrelevant']).nullable(),
 }).strict().superRefine((result, ctx) => {
   const from = Date.parse(result.started_at), to = Date.parse(result.ended_at);

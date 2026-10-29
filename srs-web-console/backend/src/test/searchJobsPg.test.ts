@@ -11,7 +11,8 @@ async function isolated(test: (store: SearchJobs, pool: Pool) => Promise<void>) 
   await admin.query(`CREATE SCHEMA ${schema}`);
   const pool = new Pool({ ...connection, options: `-c search_path=${schema}` });
   try {
-    await pool.query(readFileSync(new URL('../store/migrations/017_search.sql', import.meta.url), 'utf8'));
+    for (const name of ['017_search.sql', '019_search_shard_publication.sql', '021_search_refresh_gc.sql'])
+      await pool.query(readFileSync(new URL('../store/migrations/' + name, import.meta.url), 'utf8'));
     await test(new SearchJobs(pool), pool);
   } finally { await pool.end(); await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end(); }
 }
@@ -48,4 +49,38 @@ it.skipIf(!enabled)('admission has a hard per-principal bound and expired rows a
   await pool.query("UPDATE search_jobs SET created_at=now()-interval '2 days',expires_at=now()-interval '1 day'");
   await store.enqueue('a', randomUUID(), 'verify', {});
   expect(Number((await pool.query('SELECT count(*) AS n FROM search_jobs')).rows[0].n)).toBe(1);
+}));
+
+it.skipIf(!enabled)('a scoped claimant cannot take another principal indexing job', async () => isolated(async store => {
+  const other = await store.enqueue('operator', randomUUID(), 'index', {});
+  const own = await store.enqueue('internal-search-index', randomUUID(), 'index', {});
+  const worker = randomUUID();
+  expect((await store.claim(worker, 'index', 30000, 'internal-search-index'))!.id).toBe(own.id);
+  expect(await store.claim(worker, 'index', 30000, 'internal-search-index')).toBeNull();
+  expect((await store.get(other.id, 'operator'))!.state).toBe('pending');
+}));
+
+it.skipIf(!enabled)('verification claims rotate among actors without changing FIFO within each actor',async()=>isolated(async store=>{
+  const a1=await store.enqueue('a',randomUUID(),'verify',{}),a2=await store.enqueue('a',randomUUID(),'verify',{});
+  const b=await store.enqueue('b',randomUUID(),'verify',{}),c=await store.enqueue('c',randomUUID(),'verify',{});
+  const recent:string[]=[];
+  for(const expected of [a1,b,c,a2]){
+    const job=await store.claim(randomUUID(),'verify',30000,undefined,undefined,recent);expect(job!.id).toBe(expected.id);
+    recent.splice(0,recent.length,job!.actor,...recent.filter(actor=>actor!==job!.actor));
+    expect(await store.finish(job!.id,job!.lease_owner!,job!.generation,{resultRef:'done'})).toBe(true);
+  }
+}));
+it.skipIf(!enabled)('legacy verification recovery is generation fenced, actor scoped and rejects other failure outcomes',async()=>isolated(async(store,pool)=>{
+  const job=await store.enqueue('a',randomUUID(),'verify',{}),lease=(await store.claim(randomUUID(),'verify'))!;
+  await store.finish(job.id,lease.lease_owner!,lease.generation,{errorCode:'profile_changed'});
+  expect(await store.retryUnsubmittedVerification(job.id,'other',lease.generation)).toBeNull();
+  expect(await store.retryUnsubmittedVerification(job.id,'a',lease.generation-1)).toBeNull();
+  const restored=await store.retryUnsubmittedVerification(job.id,'a',lease.generation);
+  expect(restored).toMatchObject({id:job.id,state:'pending',attempts:0,generation:lease.generation+1});
+  expect(await store.retryUnsubmittedVerification(job.id,'a',lease.generation)).toBeNull();
+  const next=(await store.claim(randomUUID(),'verify'))!;
+  expect(await store.finish(job.id,lease.lease_owner!,lease.generation,{resultRef:'old'})).toBe(false);
+  await store.finish(job.id,next.lease_owner!,next.generation,{errorCode:'inference_failed'});
+  expect(await store.retryUnsubmittedVerification(job.id,'a',next.generation)).toBeNull();
+  expect((await pool.query('SELECT count(*)::int AS n FROM search_jobs')).rows[0].n).toBe(1);
 }));

@@ -70,6 +70,13 @@ class ArchiveExecutor {
     return result;
   }
 
+  // Exclusively owned executors only, from a control/non-worker thread. A
+  // future can become ready before its callable/captures are destroyed. Join
+  // the worker before releasing an owner retained by those captures, otherwise
+  // its destructor could run on that worker and attempt to join itself.
+  // Do not use this to shut down the shared process-wide archive executor.
+  void DrainAndShutdown() { Shutdown(); }
+
  private:
   // Caller holds mutex_. Both admission modes use exactly the same queue and
   // packaged-task exception handling; no parallel executor is introduced.

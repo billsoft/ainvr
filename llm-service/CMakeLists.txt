@@ -73,3 +73,26 @@ add_executable(ainvr_llm_reservation_probe tests/reservation_probe.cpp)
 target_include_directories(ainvr_llm_reservation_probe PRIVATE src)
 target_link_libraries(ainvr_llm_reservation_probe PRIVATE nlohmann_json::nlohmann_json)
 add_test(NAME llm_residency_lock COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_residency_lock.py $<TARGET_FILE:ainvr_llm_reservation_probe>)
+
+# Pure request/template/scheduling checks. No model load, SDK link or BPU run.
+add_executable(ainvr_llm_search_task_test tests/search_task_test.cpp)
+target_include_directories(ainvr_llm_search_task_test PRIVATE src)
+target_link_libraries(ainvr_llm_search_task_test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto Threads::Threads)
+target_compile_options(ainvr_llm_search_task_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME llm_search_task COMMAND ainvr_llm_search_task_test)
+set_tests_properties(llm_search_task PROPERTIES TIMEOUT 15)
+
+add_executable(ainvr_llm_search_configuration_test tests/search_configuration_test.cpp)
+target_include_directories(ainvr_llm_search_configuration_test PRIVATE src)
+target_link_libraries(ainvr_llm_search_configuration_test PRIVATE nlohmann_json::nlohmann_json PkgConfig::HTTP Threads::Threads)
+target_compile_options(ainvr_llm_search_configuration_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME llm_search_configuration COMMAND ainvr_llm_search_configuration_test)
+set_tests_properties(llm_search_configuration PROPERTIES TIMEOUT 15)
+
+# Manual token-capacity probe, software only; the tokenizer fixture is explicit.
+add_executable(ainvr_llm_search_tokenizer_probe tests/search_tokenizer_probe.cpp)
+target_include_directories(ainvr_llm_search_tokenizer_probe PRIVATE src)
+target_link_libraries(ainvr_llm_search_tokenizer_probe PRIVATE tokenizers_cpp nlohmann_json::nlohmann_json OpenSSL::Crypto Threads::Threads)
+target_compile_options(ainvr_llm_search_tokenizer_probe PRIVATE -Wall -Wextra -Werror)
+
+include(cmake/search_bpu_smoke.cmake)

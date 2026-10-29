@@ -2,9 +2,9 @@
 """Coordinated PTZ release. Backups only on mounted SSD, max three per service.
 Never resets customer configuration, changes SRS or restarts recording/ingest.
 """
-import argparse,ctypes,fcntl,hashlib,json,os,re,shutil,subprocess,time,urllib.request,uuid
+import argparse,ctypes,fcntl,hashlib,json,os,re,shutil,subprocess,time,urllib.request,uuid,sys
 from pathlib import Path
-from release_common import validate as validate_console,files,ready as backend_ready
+from release_common import validate as validate_console,files,ready as backend_ready,atomic_bytes
 from ptz_rollback_guard import preflight as ptz_preflight
 ROOT=Path(__file__).resolve().parents[1]
 NODE='/opt/ainvr/node-v24.20.0-linux-arm64/bin/node'
@@ -17,7 +17,7 @@ SERVICES=['ai-service','onvif','gb28181','alarm-service','backend','web']
 def run(args,timeout=60):return subprocess.run([str(a)for a in args],capture_output=True,text=True,check=True,timeout=timeout).stdout.strip()
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def save(p,value):
- temp=p.with_name(p.name+'.new');temp.write_text(json.dumps(value,indent=2)+'\n');temp.chmod(0o600);os.replace(temp,p)
+ atomic_bytes(p,(json.dumps(value,indent=2)+'\n').encode(),0o600)
 def require_ssd():
  if not SSD.is_mount()or SSD.stat().st_dev==ROOT.stat().st_dev:raise RuntimeError('Mounted external SSD is required; no eMMC backup fallback')
  if BACKUPS.is_symlink():raise RuntimeError('Backup root must not be a symlink')
@@ -261,9 +261,21 @@ def apply(candidate):
  return {'applied':True,'rollback':str(paths['backend']),'backups':'SSD only, at most 3 per service','configurationPreserved':True,'mediaServicesUnchanged':True}
 
 def main():
- p=argparse.ArgumentParser(description=__doc__);mode=p.add_mutually_exclusive_group(required=True);mode.add_argument('--check',type=Path);mode.add_argument('--apply',type=Path);mode.add_argument('--rollback',type=Path);a=p.parse_args()
- if a.check:print(json.dumps({'verified':True,'candidate':str(validate(a.check)),'productionChanged':False}));return
+ p=argparse.ArgumentParser(description=__doc__);mode=p.add_mutually_exclusive_group(required=True);mode.add_argument('--check',type=Path);mode.add_argument('--apply',type=Path);mode.add_argument('--rollback',type=Path);p.add_argument('--profile',choices=['ptz','search'],default='ptz');a=p.parse_args()
+ # One publisher/lock and SSD transaction mechanism. The default profile and
+ # existing ainvr-ptz-v1 records retain their original CLI and wire format.
+ from search_release_profile import plan as search_plan,apply as search_apply,rollback as search_rollback,FORMAT as SEARCH_FORMAT
+ search=a.profile=='search'
+ if a.rollback:
+  recorded=json.loads((a.rollback/'deployment.json').read_text()).get('format')
+  if recorded==SEARCH_FORMAT:search=True
+  elif search:raise RuntimeError('Rollback profile does not match transaction')
+ publisher=sys.modules[__name__]
+ if a.check:
+  print(json.dumps(search_plan(publisher,a.check)if search else {'verified':True,'candidate':str(validate(a.check)),'productionChanged':False}));return
  if os.geteuid()!=0:raise RuntimeError('Board administrator required')
  with Path('/run/lock/ainvr-ptz-deploy.lock').open('w')as lock:
-  fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);print(json.dumps(apply(a.apply)if a.apply else rollback(a.rollback)))
+  fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  result=(search_apply(publisher,a.apply)if a.apply else search_rollback(publisher,a.rollback))if search else(apply(a.apply)if a.apply else rollback(a.rollback))
+  print(json.dumps(result))
 if __name__=='__main__':main()

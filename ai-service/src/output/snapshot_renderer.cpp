@@ -54,14 +54,25 @@ std::optional<EncodedSnapshot> SnapshotRenderer::RenderOriginal(const Nv12Frame&
   if(!cfg.enabled)return std::nullopt;
   if(cfg.jpeg_quality<1||cfg.jpeg_quality>100)throw std::invalid_argument("Invalid snapshot JPEG quality");
   auto plan=PlanSnapshot(bbox,frame.width,frame.height,cfg,square);if(!plan)return std::nullopt;
-  auto t=SnapshotTransform(*plan,bt709,full_range);EncodedSnapshot result;result.plan=*plan;
+  return RenderPlanned(frame,*plan,cfg.jpeg_quality,bt709,full_range);
+}
+EncodedSnapshot SnapshotRenderer::RenderPlanned(const Nv12Frame& frame,const SnapshotPlan& plan,
+    int jpeg_quality,bool bt709,bool full_range){
+  if(jpeg_quality<1||jpeg_quality>100||plan.width<=0||plan.height<=0||plan.width>8192||plan.height>8192||
+      (plan.perspective ?
+        (!std::isfinite(plan.yaw)||!std::isfinite(plan.pitch)||!std::isfinite(plan.horizontal_fov)||
+         !(plan.horizontal_fov>0&&plan.horizontal_fov<3.14159265358979323846)) :
+        (!std::all_of(plan.source_rectangle.begin(),plan.source_rectangle.end(),[](double x){return std::isfinite(x);})||
+         plan.source_rectangle[2]<=0||plan.source_rectangle[3]<=0)))
+    throw std::invalid_argument("Invalid explicit snapshot plan");
+  auto t=SnapshotTransform(plan,bt709,full_range);EncodedSnapshot result;result.plan=plan;
   const bool aligned=t.width>=18&&t.height>=18&&t.width%2==0&&t.height%2==0;
   if(policy_==SnapshotEncodingPolicy::HardwareOnly && !aligned)
     throw std::runtime_error("snapshot_hardware_dimensions_unsupported");
   if(hardware_&&aligned){
     auto image=images_.RunJpegNv12(frame,t);result.render_backend=image.backend;result.fallback_reasons=image.fallback_reasons;
     try{
-      std::array<int,3> key{t.width,t.height,cfg.jpeg_quality};
+      std::array<int,3> key{t.width,t.height,jpeg_quality};
       if(!jpeg_||jpeg_config_!=key){jpeg_.reset();jpeg_=std::make_unique<JpegEncoder>(key[0],key[1],key[2]);jpeg_config_=key;}
       result.jpeg=jpeg_->EncodeFullRangeNv12(image.jpeg_nv12);result.encoder_backend="jpu";return result;
     }catch(const std::runtime_error& e){jpeg_.reset();
@@ -70,6 +81,6 @@ std::optional<EncodedSnapshot> SnapshotRenderer::RenderOriginal(const Nv12Frame&
   }else result.fallback_reasons.push_back(hardware_?"JPU requires even dimensions at least 18; preserve crop with CPU JPEG":"Dedicated hardware disabled");
   auto image=images_.RunNv12(frame,t);result.render_backend=image.backend;
   result.fallback_reasons.insert(result.fallback_reasons.end(),image.fallback_reasons.begin(),image.fallback_reasons.end());
-  result.jpeg=EncodeCpu(image.chw,t.width,t.height,cfg.jpeg_quality);result.encoder_backend="cpu-libjpeg";return result;
+  result.jpeg=EncodeCpu(image.chw,t.width,t.height,jpeg_quality);result.encoder_backend="cpu-libjpeg";return result;
 }
 }  // namespace ainvr
