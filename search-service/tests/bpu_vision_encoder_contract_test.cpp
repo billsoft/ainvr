@@ -54,6 +54,22 @@ int main() {
     package.files_verified = false; Reject([&] { BpuVisionReservationBytes(package); }); package.files_verified = true;
     package.spec = &altered; Reject([&] { BpuVisionReservationBytes(package); }); package.spec = &spec;
     package.model_version = "unverified"; Reject([&] { BpuVisionReservationBytes(package); });
+    const auto& so = FindPackageSpec("siglip-so400m-i18n-full-int8");
+    auto soDescription = Description();
+    soDescription["model"] = "pooler_output";
+    soDescription["inputs"][0]["name"] = "_input_0";
+    soDescription["outputs"][0] = {{"name","_output_0"},{"shape",{1,1,1152}},
+      {"dtype_id",HB_DNN_TENSOR_TYPE_F32},{"byte_strides",{4608,4608,4}},
+      {"aligned_bytes",4608},{"quantization",NONE}};
+    ValidateBpuVisionDescription(soDescription,so); ++checks;
+    Reject([&] { ValidateBpuVisionDescription(soDescription,spec); });
+    auto badSo = soDescription; badSo["model"] = "last_hidden_state";
+    Reject([&] { ValidateBpuVisionDescription(badSo,so); });
+    std::vector<std::vector<float>> soVector(1,std::vector<float>(1152,1));
+    Check(NormalizeBpuVisionEmbedding(soVector,so).size()==1152,"so400m dimensions lost");
+    package.spec=&so; package.model_version="search-v1-"+std::string(64,'a');
+    package.artifacts={{"hbm/"+so.vision.file,"cba12c5063090254bcd0e65f580f9eebd04cef336e7b643682b93041ddb9b71a",550198056}};
+    Check(BpuVisionReservationBytes(package)>=537ULL*1024*1024,"so400m memory underreserved");
     ValidateBpuVisionLoadOptions({}); ++checks;
     BpuVisionLoadOptions options; options.headroom_bytes = 63ULL<<20; Reject([&] { ValidateBpuVisionLoadOptions(options); });
     options = {}; options.total_bytes = 12288ULL<<20; ValidateBpuVisionLoadOptions(options); ++checks;

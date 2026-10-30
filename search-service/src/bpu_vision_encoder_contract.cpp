@@ -8,14 +8,17 @@ namespace ainvr::search {
 namespace {
 [[noreturn]] void Invalid() { throw std::runtime_error("search_vision_model_contract_invalid"); }
 void Spec(const PackageSpec& spec) {
-  if (spec.id != "siglip2-base-full-int8" || spec.pruned || spec.family != "siglip2-base-patch16-256" ||
-      spec.dimensions != 768 || spec.vision.file != "siglip2-base-patch16-256-vision-o2.hbm" ||
-      spec.vision.program != "siglip2_base_vision" || spec.vision.input.name != "pixel_values" ||
-      spec.vision.input.dtype != "F32" || spec.vision.input.shape != std::vector<int64_t>{1,3,256,256} ||
-      spec.vision.output.name != "image_embedding" || spec.vision.output.dtype != "F32" ||
-      spec.vision.output.shape != std::vector<int64_t>{1,768} ||
-      spec.input_spec_version.rfind("image-area-rgb-u8-round-before-normalize-mean127.5-div127.5-squash256-l2-v1;",0) != 0)
-    Invalid();
+  const bool siglip2 = spec.id == "siglip2-base-full-int8";
+  const bool so400m = spec.id == "siglip-so400m-i18n-full-int8";
+  if ((!siglip2 && !so400m) || spec.pruned) Invalid();
+  const auto& expected = FindPackageSpec(spec.id);
+  if (spec.family != expected.family || spec.dimensions != expected.dimensions ||
+      spec.vision.file != expected.vision.file || spec.vision.program != expected.vision.program ||
+      spec.vision.input.name != expected.vision.input.name || spec.vision.input.dtype != "F32" ||
+      spec.vision.input.shape != expected.vision.input.shape ||
+      spec.vision.output.name != expected.vision.output.name || spec.vision.output.dtype != "F32" ||
+      spec.vision.output.shape != expected.vision.output.shape ||
+      spec.input_spec_version != expected.input_spec_version) Invalid();
 }
 void Tensor(const nlohmann::json& tensor, const TensorSpec& spec, size_t maximum) {
   for (const auto* field : {"dtype_id","quantization","aligned_bytes"}) if (!tensor.at(field).is_number_integer()) Invalid();
@@ -45,17 +48,19 @@ void ValidateBpuVisionLoadOptions(const BpuVisionLoadOptions& options) {
     throw std::runtime_error("invalid_search_vision_resource_policy");
 }
 uint64_t BpuVisionReservationBytes(const VerifiedPackage& package) {
-  if (!package.files_verified || !package.spec || package.spec != &FindPackageSpec("siglip2-base-full-int8") ||
+  if (!package.files_verified || !package.spec || package.spec != &FindPackageSpec(package.spec->id) ||
       !std::regex_match(package.model_version,std::regex("search-v1-[a-f0-9]{64}")))
     throw std::runtime_error("search_vision_package_unverified");
   Spec(*package.spec);
+  const bool so400m = package.spec->id == "siglip-so400m-i18n-full-int8";
+  const auto expected_hash = so400m ? kSo400mVisionMeasuredSha256 : kSiglip2BaseVisionMeasuredSha256;
   size_t matches = 0;
   for (const auto& artifact : package.artifacts) if (artifact.relative_path == "hbm/" + package.spec->vision.file) {
-    if (artifact.sha256 != kSiglip2BaseVisionMeasuredSha256) throw std::runtime_error("search_vision_resource_profile_unverified");
+    if (artifact.sha256 != expected_hash) throw std::runtime_error("search_vision_resource_profile_unverified");
     ++matches;
   }
   if (matches != 1) throw std::runtime_error("search_vision_resource_profile_unverified");
-  return kSiglip2BaseVisionReservationBytes;
+  return so400m ? kSo400mVisionReservationBytes : kSiglip2BaseVisionReservationBytes;
 }
 void ValidateBpuVisionDescription(const nlohmann::json& description, const PackageSpec& spec) {
   try {

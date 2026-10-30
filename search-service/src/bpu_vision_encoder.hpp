@@ -1,4 +1,4 @@
-// AINVR. Verified SigLIP2 vision adapter; no runtime instance is created here.
+// AINVR. Verified paired-model vision adapter; no runtime instance is created here.
 #pragma once
 #include "model_package.hpp"
 #include "../../ai-service/src/output/snapshot_transform.hpp"
@@ -11,6 +11,11 @@ namespace ainvr::search {
 inline constexpr uint64_t kSiglip2BaseVisionReservationBytes = 103ULL * 1024 * 1024;
 inline constexpr const char* kSiglip2BaseVisionMeasuredSha256 =
     "595b9b64f3bf7968949b3442f418c4cb5774d0dddcdcc04421cca330b1c99443";
+// Pinned official pooler HBM measured at 537 MiB; reserve 576 MiB,
+// separately from the existing allocation headroom probe.
+inline constexpr uint64_t kSo400mVisionReservationBytes = 576ULL * 1024 * 1024;
+inline constexpr const char* kSo400mVisionMeasuredSha256 =
+    "cba12c5063090254bcd0e65f580f9eebd04cef336e7b643682b93041ddb9b71a";
 struct BpuVisionLoadOptions {
   std::string reservation_directory = "/run/ainvr";
   uint64_t total_bytes = UINT64_MAX;  // optional cap; the real budget is read from the SDK (ReadBpuIonBudgetBytes)

@@ -22,6 +22,13 @@ using namespace ai_service;
 using namespace ai_service::output;
 using namespace ai_service::config;
 namespace {
+std::string TestPackage() {
+ const auto* value=std::getenv("AINVR_SEARCH_TEST_PACKAGE");
+ const std::string id=value?value:"siglip2-base-full-int8";
+ if(id!="siglip2-base-full-int8"&&id!="siglip-so400m-i18n-full-int8")throw std::runtime_error("unsupported_test_package");
+ return id;
+}
+
 constexpr const char* kInput="00000000-0000-4000-8000-000000000001";
 constexpr const char* kOutput="00000000-0000-4000-8000-000000000002";
 constexpr const char* kProcessor="search-bpu-fixture";
@@ -91,7 +98,7 @@ Json ManagedAccess(const fs::path& path){
  Require(key.size()>=32&&key.size()<=512&&std::all_of(key.begin(),key.end(),[](unsigned char c){return c>32&&c<127;}),"integration_access_console_key_invalid");
  const auto parsed=ParseSearchProducerGrant(document.at("producer"));
  Require(bool(parsed.grant)&&parsed.grant->endpoint=="http://127.0.0.1:8400"&&document.at("revision")==parsed.grant->revision&&
-   parsed.grant->package_id==ainvr::search::DefaultPackageId()&&parsed.grant->sources.size()==1,"integration_access_grant_invalid");
+   parsed.grant->package_id==TestPackage()&&parsed.grant->sources.size()==1,"integration_access_grant_invalid");
  const auto source=parsed.grant->sources.find(kProcessor);
  Require(source!=parsed.grant->sources.end()&&source->second.channel_id==kOutput&&source->second.input_stream_id==kInput&&
    source->second.recording_channel_id==kOutput&&source->second.object&&source->second.scene,"integration_access_source_invalid");
@@ -122,7 +129,7 @@ struct Fixture {
  std::optional<fs::path> managed_access;std::string console_key=std::string(48,'c');int desired_version=0;
  Fixture(const fs::path& input,bool bt709,bool full_range,std::optional<fs::path> access={}):managed_access(std::move(access)){
   Json document={{"enabled",true},{"reason",nullptr},{"endpoint","http://127.0.0.1:8400"},{"api_token",std::string(48,'p')},
-   {"revision",std::string(64,'a')},{"model",{{"package_id",ainvr::search::DefaultPackageId()}}},{"valid_for_ms",30000},
+   {"revision",std::string(64,'a')},{"model",{{"package_id",TestPackage()}}},{"valid_for_ms",30000},
    {"limits",{{"producer_queue",1},{"producer_bytes",33554432},{"image_max_bytes",8388608},{"retention_days",1}}},
    {"sampling",{{"mode","all"},{"channel_ids",Json::array()},{"object",true},{"scene",true},{"object_interval_ms",1000},
     {"scene_active_interval_ms",10000},{"scene_static_interval_ms",60000},{"scene_change_min_interval_ms",3000},{"track_slots",8}}},

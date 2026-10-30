@@ -14,6 +14,14 @@
 #include <thread>
 #include <unistd.h>
 namespace {
+std::string TestPackage() {
+  const auto* value=std::getenv("AINVR_SEARCH_TEST_PACKAGE");
+  const std::string id=value?value:"siglip2-base-full-int8";
+  if(id!="siglip2-base-full-int8"&&id!="siglip-so400m-i18n-full-int8")
+    throw std::runtime_error("unsupported_test_package");
+  return id;
+}
+
 using namespace ainvr::search;
 using Json=nlohmann::json;
 using Clock=std::chrono::steady_clock;
@@ -69,10 +77,10 @@ int Run(const std::string& database){
  budget.retention_ms=30LL*86400000;budget.max_coverage=64;budget.max_searches=64;
  HistoryMongo history(uri,database,budget);history.Initialize();
  if(history.Usage().at("samples")!=0)throw std::runtime_error("fixture_database_not_empty");
- auto package=VerifyPackage("siglip2-base-full-int8");
+ auto package=VerifyPackage(TestPackage());
  const std::string verified_version=package.model_version;
  auto encoder=BpuTextEncoder::Load(std::move(package));
- if(encoder->ModelVersion()!=verified_version||encoder->Dimensions()!=768||!encoder->Healthy())
+ if(encoder->ModelVersion()!=verified_version||encoder->Dimensions()!=FindPackageSpec(TestPackage()).dimensions||!encoder->Healthy())
   throw std::runtime_error("fixture_encoder_contract_failed");
  auto engine=std::make_unique<MatchEngine>(history,*encoder,64);
  const int64_t at=Now();const Scope scope{{output},at-30000,at+120000,64};
@@ -90,7 +98,7 @@ int Run(const std::string& database){
   if(!server.bind_to_port("127.0.0.1",8400))throw std::runtime_error("fixture_bind_8400_failed");
   Listener listener(server);
   std::cout<<"AINVR_BPU_SEARCH_READY "<<Json{{"ready",true},{"pid",getpid()},{"port",8400},{"database",database},
-   {"package_id","siglip2-base-full-int8"},{"model_version",verified_version},{"channel_id",output},
+   {"package_id",TestPackage()},{"model_version",verified_version},{"channel_id",output},
    {"source_input_id",input},{"recording_channel_id",output},{"processor_id",processor},
    {"input_path",input_path},{"output_path",output_path},{"from_ms",scope.from_ms},{"to_ms",scope.to_ms},
    {"capacity",64},{"real_text_encoder",true},{"production_accuracy_verified",false}}.dump()<<'\n'<<std::flush;
@@ -119,5 +127,10 @@ int main(int argc,char** argv){
  }
  std::signal(SIGTERM,Stop);std::signal(SIGINT,Stop);
  try{return Run(argv[3]);}
- catch(...){std::cerr<<"bpu_search_server_failed\n";return 1;}
+ catch(const std::exception& e){
+  const std::string code=e.what();
+  const bool safe=!code.empty()&&code.size()<160&&std::all_of(code.begin(),code.end(),[](unsigned char c){return (c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_';});
+  std::cerr<<"bpu_search_server_failed: "<<(safe?code:"non_public_exception")<<"\n";return 1;
+ }
+ catch(...){std::cerr<<"bpu_search_server_failed: unknown\n";return 1;}
 }

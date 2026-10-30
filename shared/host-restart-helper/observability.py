@@ -32,6 +32,51 @@ UNITS = {'ai-service': 'ai-service.service', 'recorder': 'ainvr-recorder.service
 CONTAINERS = {'frontend': 'frontend', 'backend': 'backend', 'srs': 'srs', 'postgres': 'postgres'}
 
 
+
+def parse_ion_heap(text):
+    total = re.search(r'^\s*\w+\s+heap total size\s+(\d+)\s*$', text, re.M)
+    used = re.search(r'^\s*total\s+(\d+)\s*$', text, re.M)
+    if not total or not used or 'allocations (info is from last known client):' not in text:
+        raise ValueError('Incomplete ION statistics')
+    total, used = int(total[1]), int(used[1])
+    rows = text.split('allocations (info is from last known client):', 1)[1]
+    bpu = sum(int(v) for v in re.findall(r'^\s*\S+\s+\d+\s+\d+\s+bpu\s+(\d+)\s+', rows, re.M))
+    if not 0 <= bpu <= used <= total or total == 0:
+        raise ValueError('Inconsistent ION statistics')
+    return dict(bpuMemoryBytes=bpu, ionMemoryBytes=used, ionMemoryTotalBytes=total)
+
+
+
+def parse_ion_memory(text):
+    # all_heap_info contains each heap once. Do not also read individual heaps.
+    blocks = re.split(r'^the heap id is \d+\s*$', text, flags=re.M)
+    result = dict(bpuMemoryBytes=0, ionMemoryBytes=0, ionMemoryTotalBytes=0)
+    count = 0
+    for block in blocks:
+        header = re.search(r'^\s*(\w+)\s+heap total size\s+(\d+)\s*$', block, re.M)
+        if not header:
+            if 'allocations (' in block or 'heap total size' in block:
+                raise ValueError('Incomplete ION heap')
+            continue
+        # Dynamic system heaps have no reserved capacity; exclude them from this pool.
+        if header[1] in ('system', 'system_contig') and int(header[2]) == 0:
+            continue
+        values = parse_ion_heap(block)
+        for key in result:
+            result[key] += values[key]
+        count += 1
+    if not count:
+        raise ValueError('No ION reserved heaps')
+    return result
+
+
+def ion_memory():
+    try:
+        return parse_ion_memory(Path('/sys/kernel/debug/ion/heaps/all_heap_info').read_text())
+    except (OSError, ValueError):
+        return dict(bpuMemoryBytes=None, ionMemoryBytes=None, ionMemoryTotalBytes=None)
+
+
 def deployment_units():
     if os.environ.get('AINVR_DEPLOYMENT_MODE') == 'native':
         return {**UNITS, 'ai-service': 'ainvr-ai.service',
@@ -529,6 +574,7 @@ class Observer:
         host = {'cpuPercent':percent,'memoryBytes':mem['MemTotal']-mem['MemAvailable'],
                 'memoryTotalBytes':mem['MemTotal'],'gpuPercent':gpu,'bpuPercent':self.bpu_sampler.mean(),'cores':os.cpu_count(),
                 'swapBytes':mem['SwapTotal']-mem['SwapFree']}
+        host.update(ion_memory())
         disk = shutil.disk_usage(ROOT)
         host.update(diskUsedBytes=disk.used, diskTotalBytes=disk.total)
         network = []

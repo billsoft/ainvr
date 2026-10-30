@@ -4,6 +4,7 @@
 #include "../../search-service/src/model_package.hpp"
 #include "search_frame_fixture.hpp"
 #include <atomic>
+#include <cstdlib>
 #include <condition_variable>
 #include <iostream>
 #include <mutex>
@@ -15,12 +16,12 @@ using namespace search_test;
 using Json = nlohmann::json;
 using Receipt = SearchSamplingReceipt;
 namespace {
-const std::string input_spec =
-  "image-area-rgb-u8-round-before-normalize-mean127.5-div127.5-squash256-l2-v1;"
-  "source-yuv-matrix-range-from-frame-metadata;"
-  "text-gemma-lower-unicode13-icu70-ageguard-sp-dummy0-eos1-pad0-embedding256000-s64x64-strict63";
-// An opaque fixture generation, not a claim to have loaded a hardware package.
-const SearchEmbeddingSpace space{"siglip2-base-full-int8", "search-v1-" + std::string(64, 'a'), input_spec};
+const std::string package_id = std::getenv("AINVR_SEARCH_TEST_PACKAGE") ?
+  std::getenv("AINVR_SEARCH_TEST_PACKAGE") : "siglip2-base-full-int8";
+const auto& package_spec = ainvr::search::FindPackageSpec(package_id);
+const size_t dimensions = package_spec.dimensions;
+const std::string input_spec = package_spec.input_spec_version;
+const SearchEmbeddingSpace space{package_id, "search-v1-" + std::string(64, 'a'), input_spec};
 void DrainWorkerCompletion() {
   struct GateState {
     std::mutex mutex; std::condition_variable cv;
@@ -72,7 +73,7 @@ class Hardware final : public SearchHardwareSession {
     ++state_->prepares; state_->Event("prepare");
     if (state_->preparing) state_->preparing();
     ainvr::SnapshotPlan plan; plan.width = plan.height = 18; plan.source_rectangle = {0,0,8,4};
-    std::vector<float> embedding(768); embedding[0] = 1;
+    std::vector<float> embedding(dimensions); embedding[0] = 1;
     return {plan, {255,216,255,217}, std::move(embedding), "gles", "jpu", "gles"};
   }
  private:
@@ -114,7 +115,7 @@ class Transport final : public SearchProducerHttpTransport {
     if (object) Check(body.at("expected_fingerprint") == expected_previous && body.at("slot") == expected_slot && body.at("slot") == query.at("slot") &&
       body.at("replacement_token") == query.at("replacement_token"), "slot/CAS token changed");
     const auto& e = written_sample.at("evidence");
-    Check(written_sample.at("vector").size() == 768 && written_sample.at("model_version") == space.model_version, "wrong embedding space");
+    Check(written_sample.at("vector").size() == dimensions && written_sample.at("model_version") == space.model_version, "wrong embedding space");
     Check(e.at("input_spec_version") == input_spec, "full image/text preprocessing contract was shortened");
     Check(e.at("source_input_id") == "00000000-0000-4000-8000-000000000001" &&
       e.at("output_channel_id") == "00000000-0000-4000-8000-000000000002" &&
@@ -190,7 +191,7 @@ struct Case {
 int main() { try {
   DrainWorkerCompletion();
   const auto& spec = ainvr::search::FindPackageSpec(space.package_id);
-  Check(spec.dimensions == 768 && spec.input_spec_version == input_spec && input_spec.size() > 128, "fixture drifted from real full SigLIP2 contract");
+  Check(spec.dimensions == dimensions && spec.input_spec_version == input_spec && input_spec.size() > 128, "fixture drifted from real selected full vocabulary contract");
   // A grant can retain history/source permission while every live sampling
   // kind is unsupported (e.g. ERP). That must not load a vision model.
   for (int mask : {0, 1, 2, -1}) {
@@ -255,7 +256,7 @@ int main() { try {
     c.Stop();
   }
   for(bool scene:{false,true})for(bool changed:{false,true}){
-    Case c(scene);c.Probe(scene);std::vector<float> baseline(768,0);baseline[changed?1:0]=1;
+    Case c(scene);c.Probe(scene);std::vector<float> baseline(dimensions,0);baseline[changed?1:0]=1;
     const auto prepared=c.port->PrepareProbe(*c.frame,space,c.lease,baseline,c.Current());
     Check(prepared.distance.has_value(),"probe_did_not_compare_real_fixture_descriptor");
     if(!changed){
@@ -264,7 +265,7 @@ int main() { try {
     }else{
       Check(prepared.result==SearchSamplingProbePreparation::Result::Write&&prepared.operation&&*prepared.distance>=.25,"changed_probe_not_prepared");
       c.transport->frozen_query=prepared.operation->ReceiptQuery();c.transport->fingerprint=Json::parse(c.transport->frozen_query).at("request_fingerprint");
-      Check(prepared.operation->Descriptor().size()==768,"operation_descriptor_borrow_lost");
+      Check(prepared.operation->Descriptor().size()==dimensions,"operation_descriptor_borrow_lost");
       Check(prepared.operation->Submit(c.Current()).result==Receipt::Result::Committed,"changed_probe_write_failed");
       const auto audit=c.transport->written_sample.at("evidence").at("appearance");
       Check(audit.at("metric")==kSearchAppearanceMetric&&audit.at("reference_fingerprint")==std::string(64,'e')&&
@@ -273,10 +274,10 @@ int main() { try {
     c.Stop();
   }
   for(int invalid=0;invalid<7;++invalid){
-    Case c(false);c.Probe(false);std::vector<float> baseline(768,1);
+    Case c(false);c.Probe(false);std::vector<float> baseline(dimensions,1);
     if(invalid==0)baseline.clear();
     if(invalid==1)baseline.assign(2,1);
-    if(invalid==2)baseline.assign(768,0);
+    if(invalid==2)baseline.assign(dimensions,0);
     if(invalid==3)baseline[0]=std::numeric_limits<float>::quiet_NaN();
     if(invalid==4)c.current=false;
     if(invalid==5)c.state->preparing=[&]{c.current=false;};

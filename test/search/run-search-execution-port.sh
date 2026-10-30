@@ -19,3 +19,5 @@ g++ "${flags[@]}" $(pkg-config --cflags libmongoc-1.0 cpp-httplib) \
   search-service/src/model_package.cpp search-service/src/sample_contract.cpp \
   $(pkg-config --libs cpp-httplib libbson-1.0) -lcrypto -o "$binary"
 ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 timeout 30 "$binary"
+
+AINVR_SEARCH_TEST_PACKAGE=siglip-so400m-i18n-full-int8 ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 timeout 30 "$binary"

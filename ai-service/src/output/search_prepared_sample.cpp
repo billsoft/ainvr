@@ -1,5 +1,6 @@
 #include "output/search_prepared_sample.hpp"
 #include "output/search_sampling_metrics.hpp"
+#include "../../../search-service/src/model_package.hpp"
 #include <algorithm>
 #include <cmath>
 namespace ai_service::output {
@@ -11,6 +12,9 @@ bool FiniteBox(const std::array<double,4>& box) {
 std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const FrozenSearchFrame& frame,
     const SearchEmbeddingSpace& space,const config::SearchProducerLease& lease,SearchHardwareProduct product,
     std::optional<SearchAppearanceAudit> appearance) {
+  const auto& spec = ainvr::search::FindPackageSpec(space.package_id);
+  if (spec.pruned || spec.input_spec_version != space.input_spec_version)
+    throw std::runtime_error("search_prepared_model_contract_invalid");
   const auto& selection=frame.Selection(); const auto& source=frame.Source(); const auto& geometry=frame.Geometry();
   const auto& identity=selection.frame;
   if(!lease.IsCurrent()||!lease.grant||lease.grant->package_id!=space.package_id||
@@ -20,7 +24,7 @@ std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const Froz
       product.render_backend.find("cpu")!=std::string::npos||product.render_backend.empty()||
       product.jpeg.size()<4||product.jpeg.size()>size_t(lease.grant->limits.image_max_bytes)||
       product.jpeg.front()!=255||product.jpeg[1]!=216||product.jpeg[product.jpeg.size()-2]!=255||product.jpeg.back()!=217||
-      product.embedding.size()!=768||identity.captured_ms<0||space.model_version.empty()||space.input_spec_version.empty())
+      product.embedding.size()!=spec.dimensions||identity.captured_ms<0||space.model_version.empty()||space.input_spec_version.empty())
     throw std::runtime_error("search_prepared_sample_invalid");
   const auto permitted=lease.grant->sources.find(source.processor_id);
   if(permitted==lease.grant->sources.end()||permitted->second.processor_id!=source.processor_id||permitted->second.channel_id!=source.channel_id||
@@ -37,7 +41,7 @@ std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const Froz
   record.id=ainvr::search::SearchSampleStorageUuid({source.input_stream_id,source.channel_id,source.processor_id,
     identity.binding.stream_session_id,space.model_version,selection.track_id,selection.slot,
     static_cast<uint64_t>(identity.source_pts_ns),static_cast<uint64_t>(identity.source_frame_index)});
-  record.vector=ainvr::search::NormalizeVector(std::move(product.embedding),768);
+  record.vector=ainvr::search::NormalizeVector(std::move(product.embedding),spec.dimensions);
   const int64_t days=lease.grant->limits.retention_days;
   if(days<1||days>365||record.captured_ms>INT64_MAX-days*86400000)throw std::runtime_error("search_prepared_expiry_invalid");
   sample->expires_ms=record.captured_ms+days*86400000;sample->track_slot=selection.slot;sample->jpeg=std::move(product.jpeg);

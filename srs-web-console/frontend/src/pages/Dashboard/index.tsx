@@ -233,6 +233,11 @@ export default function DashboardPage(){
                 <Sparkline points={m.sparkPoints} color={m.color} scale={m.scale} width={80} height={28}/>
               </div>
               <p className="mt-2 text-lg font-semibold tabular-nums">{mainValue}</p>
+              {m.kind==='bpu'&&<div className="mt-3 space-y-1 border-t border-slate-100 pt-2 text-xs text-slate-500">
+                <p>BPU 内存 <strong className="font-medium text-slate-800 tabular-nums">{bytes(snap?.host.bpuMemoryBytes)}</strong></p>
+                <p>ION 共享池 · 已用 / 总量 <span className="tabular-nums">{bytes(snap?.host.ionMemoryBytes)} / {bytes(snap?.host.ionMemoryTotalBytes)}</span></p>
+                <p className="text-[11px] text-slate-400">最新采样 · ION 由 BPU 与视频硬件共享，BPU 内存为其中标记为 BPU 的分配。</p>
+              </div>}
               <div className="mt-2 flex items-center gap-2">
                 <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full" style={{width:`${Math.min(100,Math.max(0,ratio))}%`,background:m.color}}/></div>
                 {showAvg?<span className="text-[11px] text-slate-400 tabular-nums">平均 · {m.stats!.samples}点</span>:<span className="text-[11px] text-slate-400">瞬时</span>}
