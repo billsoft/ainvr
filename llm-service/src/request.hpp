@@ -41,8 +41,8 @@ inline std::array<int,2> JpegDimensions(const std::vector<uint8_t>& b,bool lette
       if(len!=17||b[i+2]!=8||b[i+7]!=3||b[i+9]!=0x22||b[i+12]!=0x11||b[i+15]!=0x11)
         throw std::invalid_argument("only baseline 8-bit 4:2:0 JPEG is enabled");
       int h=(b[i+3]<<8)|b[i+4],w=(b[i+5]<<8)|b[i+6];
-      if(w<(letterbox?16:64)||h<(letterbox?16:64)||w>8192||h>4096||(!letterbox&&w!=2*h)||w%2||h%2)
-        throw std::invalid_argument("image must be 2:1, even dimensions, within 8192x4096");
+      if(w<(letterbox?16:64)||h<(letterbox?16:64)||w>8192||h>4096||(!letterbox&&(w!=2*h||w%2||h%2)))
+        throw std::invalid_argument("image must fit 8192x4096; strict input requires even 2:1 dimensions");
       return {w,h};
     }
     if(marker>=0xc1&&marker<=0xcf&&marker!=0xc4&&marker!=0xc8&&marker!=0xcc)

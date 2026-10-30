@@ -45,6 +45,9 @@ class GlesPreprocessor {
   // region sampling and byte packing execute on Mali, including odd-size ROIs.
   std::vector<uint8_t> RunNv12Rgba(const std::vector<uint8_t>& nv12,int width,int height,
                                   const ImageTransform& transform, uint64_t immutable_source_tag=0);
+  // The same GPU sampler for packed RGBA8, including odd visible JPEG extents.
+  std::vector<uint8_t> RunRgbaRgba(const std::vector<uint8_t>& rgba,int width,int height,
+                                  const ImageTransform& transform);
   // A nonzero tag identifies immutable pixels uniquely across this process.
   // Zero always uploads. Cached textures retain no host pixels or decoder lease.
   // Full-range BT.601 NV12 for JPEG. Overrides model normalization/channel order.

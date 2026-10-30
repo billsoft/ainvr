@@ -27,7 +27,7 @@ const llmSettings = () => ({ enabled: false, listen: { host: '127.0.0.1', port: 
   model: { package_id: 'qwen3vl-4b-review-v3', load_policy: 'resident', ion_reserve_mb: 512 },
   tasks: { 'alarm-review-zh-v1': { calibration_temperature: 1, aspect_policy: 'reject' } },
   scheduling: { queue_size: 8, queue_timeout_s: 30, exec_timeout_s: 10, submit_time_share_cap_percent: 40, prefill_profile: 's256' }, logging: { record_requests: false } });
-it('saving LLM configuration provisions only the new encrypted caller inside the existing publish transaction', async () => {
+it('saving LLM configuration never provisions a search caller: the model is reserved for alarm review', async () => {
   const f = await setup(), config = llmSettings();
   f.store.listServiceStates = async () => [{ serviceName: 'llm-service', desiredVersion: 8, appliedVersion: 8, status: 'applied' }];
   f.client.query.mockImplementation(async (sql: string, args?: any[]) => {
@@ -39,94 +39,13 @@ it('saving LLM configuration provisions only the new encrypted caller inside the
     const persisted = f.queries.find(q => q.sql.startsWith('INSERT INTO config_documents'));
     expect(persisted).toBeDefined(); const saved = JSON.parse(persisted.args[3]);
     expect(saved.enabled).toBe(false); expect(saved.admin_key).toBe(config.admin_key); expect(saved.model).toEqual(config.model);
-    expect(saved.scheduling).toEqual(config.scheduling); expect(saved.api_keys[0]).toEqual(config.api_keys[0]);
-    expect(saved.api_keys[1]).toMatchObject({ name: 'search-verify', scope: 'inference' });
-    expect(saved.api_keys[1].key).toMatch(/^\$\{secret:llm-service\//); expect(f.store.encryptSecret).toHaveBeenCalledTimes(1);
+    expect(saved.scheduling).toEqual(config.scheduling);
+    expect(saved.api_keys).toEqual(config.api_keys);
+    expect(saved.api_keys.some((k: { name: string }) => k.name === 'search-verify')).toBe(false);
+    expect(f.store.encryptSecret).not.toHaveBeenCalled();
     expect(f.publish.mock.calls[0]![2].services).toEqual(['llm-service']);
   } finally { await f.app.close(); }
 });
-it('an older LLM editor cannot rotate a hidden search caller or reset its disabled task', async () => {
-  const f = await setup(), config = { ...llmSettings(), api_keys: [...llmSettings().api_keys,
-    { name: 'search-verify', scope: 'inference', key: '${secret:llm-service/search/existing}' }],
-    tasks: { ...llmSettings().tasks, 'search-verify-zh-v1': { enabled: false, aspect_policy: 'letterbox', decision_policy: 'abc-visible-v1' } } };
-  f.store.listServiceStates = async () => [{ serviceName: 'llm-service', desiredVersion: 8, appliedVersion: 8, status: 'applied' }];
-  f.client.query.mockImplementation(async (sql: string, args?: any[]) => {
-    f.queries.push({ sql, args }); return { rows: sql.startsWith('SELECT config') ? [{ config, updated_at: '2026-10-07T01:00:00.000Z' }] : [] };
-  });
-  try {
-    await f.app.inject({ method: 'POST', url: '/v1/config/apply', payload: { changes: [{ service: 'llm-service', group: 'system', name: 'settings', config: llmSettings() }] } });
-    await new Promise(resolve => setTimeout(resolve, 20));
-    const saved = JSON.parse(f.queries.find(q => q.sql.startsWith('INSERT INTO config_documents')).args[3]);
-    expect(saved.api_keys[1].key).toBe(config.api_keys[1]!.key); expect(saved.tasks['search-verify-zh-v1'].enabled).toBe(false);
-    expect(f.store.encryptSecret).not.toHaveBeenCalled(); expect(f.queries.some(q => q.sql.startsWith('INSERT INTO config_secrets'))).toBe(false);
-  } finally { await f.app.close(); }
-});
-describe('automatic save endpoint', () => {
-  it.each([null, '2026-10-06T01:00:00.000Z'])('rejects stale document version %s before any write', async expectedUpdatedAt => {
-    const { app, queries } = await setup();
-    const response = await app.inject({ method: 'POST', url: '/v1/config/apply', payload: {
-      changes: [{ service: 'recorder', group: 'system', name: 'settings', expectedUpdatedAt, config: { files: { segmentSeconds: 90 } } }],
-    } });
-    await new Promise(resolve => setTimeout(resolve, 10));
-    const status = await app.inject({ method: 'GET', url: `/v1/config/apply?id=${response.json().data.id}` });
-    expect(status.json().data.status).toBe('failed');
-    expect(status.json().data.stage).toContain('配置已被其他操作更新');
-    expect(queries.some(q => q.sql.startsWith('INSERT'))).toBe(false);
-    await app.close();
-  });
-  it('accepts the version the editor actually read', async () => {
-    const { app, queries } = await setup();
-    await app.inject({ method: 'POST', url: '/v1/config/apply', payload: {
-      changes: [{ service: 'recorder', group: 'system', name: 'settings', expectedUpdatedAt: '2026-10-07T01:00:00.000Z', config: { files: { segmentSeconds: 90 } } }],
-    } });
-    await new Promise(resolve => setTimeout(resolve, 10));
-    expect(queries.some(q => q.sql.startsWith('INSERT'))).toBe(true);
-    await app.close();
-  });
-  it('encrypts both Mongo credentials in the same save transaction', async () => {
-    const { app, store, queries } = await setup();
-    const response = await app.inject({ method: 'POST', url: '/v1/config/apply', payload: {
-      changes: [{ service: 'ai-service', group: 'system', name: 'settings', config: { snapshot_store: { mongo_uri: 'mongodb://writer:test@host/db', mongo_readonly_password: 'readonly-test' } } }],
-    } });
-    expect(response.statusCode).toBe(202);
-    await new Promise(resolve => setTimeout(resolve, 10));
-    expect(store.encryptSecret).toHaveBeenCalledWith('mongodb://writer:test@host/db');
-    expect(store.encryptSecret).toHaveBeenCalledWith('readonly-test');
-    const written = JSON.parse(queries.find(q => q.sql.startsWith('INSERT INTO config_documents')).args[3]);
-    expect(written.snapshot_store.mongo_uri).toMatch(/^\$\{secret:ai-service\/snapshot_store\.mongo_uri\/[a-f0-9-]{36}\}$/);
-    expect(written.snapshot_store.mongo_readonly_password).toMatch(/^\$\{secret:ai-service\/snapshot_store\.mongo_readonly_password\/[a-f0-9-]{36}\}$/);
-    await app.close();
-  });
-  it('forbids service credentials from starting or inspecting admin jobs', async () => {
-    const { app, publish } = await setup('recorder');
-    for (const method of ['GET', 'POST'] as const) {
-      expect((await app.inject({ method, url: '/v1/config/apply' })).statusCode).toBe(403);
-    }
-    expect(publish).not.toHaveBeenCalled(); await app.close();
-  });
-  it('rejects malformed and password-hash changes without writes', async () => {
-    const { app, publish } = await setup();
-    for (const changes of [[], [{ service: 'backend', group: 'system', name: 'settings', config: { adminPasswordHash: 'bad' } }]]) {
-      expect((await app.inject({ method: 'POST', url: '/v1/config/apply', payload: { changes } })).statusCode).toBe(400);
-    }
-    expect(publish).not.toHaveBeenCalled(); await app.close();
-  });
-  it('merges fresh document, scopes services, encrypts SMB password in the transaction', async () => {
-    const { app, queries, publish, store } = await setup();
-    const response = await app.inject({ method: 'POST', url: '/v1/config/apply', payload: {
-      changes: [{ service: 'recorder', group: 'system', name: 'settings', config: { storage: { kind: 'smb', smb: { password: 'test-only' } } } }],
-    } });
-    expect(response.statusCode).toBe(202);
-    await new Promise(resolve => setTimeout(resolve, 10));
-    expect(publish.mock.calls[0]?.[2].services).toEqual(['recorder']);
-    expect(store.encryptSecret).toHaveBeenCalledWith('test-only');
-    const written = JSON.parse(queries.find(q => q.sql.startsWith('INSERT INTO config_documents')).args[3]);
-    expect(written.channelSchedules).toEqual({ keep: true });
-    expect(written.storage.smb.password).toBe('${secret:recorder/storage.smb.password}');
-    expect(response.body).not.toContain('test-only'); await app.close();
-  });
-});
-
 it('first partial backend save preserves deployed values and migrates only the legacy credential', async () => {
   const runtime = { ...DEFAULT_SETTINGS, srsApiHost: '127.0.0.1:21985', adminPasswordHash: 'private-password-hash',
     aiService: { baseUrl: 'http://127.0.0.1:8000', pollIntervalMs: 6000, apiKey: 'private-legacy-key' } };

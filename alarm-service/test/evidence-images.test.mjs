@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {MongoClient} from 'mongodb';
 import {randomUUID,createHash} from 'node:crypto';
 import {mkdtemp,writeFile,readdir,rm} from 'node:fs/promises';
-import {EvidenceImages} from '../src/evidence-images.mjs';
+import {EvidenceImages,bytesPipeline} from '../src/evidence-images.mjs';
 import {EvidenceVault} from '../src/evidence-vault.mjs';
 import {ReviewContext,contextKey} from '../src/review-context.mjs';
 import {AlarmRepository} from '../src/repository.mjs';
@@ -69,4 +69,14 @@ test('clear racing with a pending image insert cannot resurrect evidence',{skip:
  };
  await assert.rejects(images.put('context','racing',jpeg,{maxBytes:10000,retentionMs:10000}),/cleared/);
  assert.equal(await images.rows.countDocuments({}),0);
+}));
+test('pool byte statistics use a covered index (no document fetch) so a full pool cannot time out',{skip:!enabled},()=>fixture(async db=>{
+ const images=new EvidenceImages(db);await images.initialize();
+ const indexes=await images.rows.indexes();
+ assert.ok(indexes.some(i=>JSON.stringify(i.key)==='{"pool":1,"bytes":1}'),'missing {pool,bytes} index');
+ for(let i=0;i<5;i++)await images.rows.insertOne({_id:'context:'+i,pool:'context',key:String(i),data:Buffer.alloc(2048),bytes:2048,sha256:'x',created_at:new Date(),occurred_at:'x',expires_at:new Date(Date.now()+1e6)});
+ const plan=await images.rows.aggregate(bytesPipeline('context')).explain('executionStats');
+ const text=JSON.stringify(plan);
+ assert.equal(Number(/"totalDocsExamined":(\d+)/.exec(text)[1]),0,'pool byte sum must not fetch documents');
+ assert.equal(await images.bytes('context'),5*2048);
 }));

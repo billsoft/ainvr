@@ -1,3 +1,4 @@
+import { aiReferenceEnabled } from './aiReference'
 import { useEffect, useRef, useState } from 'react'
 import { CalendarDays, Search, RefreshCw } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
@@ -12,7 +13,7 @@ import { SearchResults } from './SearchResults'
 const button = 'min-h-11 rounded-base border border-line bg-surface px-4 text-sm hover:bg-primary-50 disabled:opacity-50'
 type LoadedPage = { cursor: string | null; ids: string[] }
 const waiting = (item: SearchPageResult['items'][number]) =>
-  ['queued', 'running'].includes(item.verification.state) || item.recording.state === 'pending'
+  (aiReferenceEnabled() && ['queued', 'running'].includes(item.verification.state)) || item.recording.state === 'pending'
 function coverageAfter(current: SearchPageResult['coverage'], next: SearchPageResult['coverage']) {
   if (current === 'partial' || next === 'partial') return 'partial'
   return current === 'unknown' || next === 'unknown' ? 'unknown' : 'sampled'
@@ -37,7 +38,7 @@ export default function SearchPage() {
   const loadedPages = useRef<LoadedPage[]>([])
   const currentData = useRef<SearchPageResult | null>(null)
   const staleResults = useRef(new Set<string>())
-  const needsUpdate = (item: SearchPageResult['items'][number], index: number) => !staleResults.current.has(item.id) && (waiting(item) || (index < 5 && item.verification.state === 'candidate'))
+  const needsUpdate = (item: SearchPageResult['items'][number], index: number) => !staleResults.current.has(item.id) && (waiting(item) || (aiReferenceEnabled() && index < 5 && item.verification.state === 'candidate'))
   useEffect(() => { currentData.current = data }, [data])
   function stop() {
     epoch.current++
@@ -104,7 +105,7 @@ export default function SearchPage() {
     active.current = { id, abort }
     setSearching(true); setQueryError(''); setDescriptionError(false); setRefreshError(''); setEvidenceNotice(false); setAccessError(''); setData(null); setSubmitted(query.trim())
     try {
-      const next = await searchService.query({ query: query.trim(), request_id: id, verify: true,
+      const next = await searchService.query({ query: query.trim(), request_id: id, verify: aiReferenceEnabled(),
         scope: { channel_ids: selected, from: from!.toISOString(), to: new Date(to!.getTime() + 1000).toISOString() } }, abort.signal)
       if (epoch.current === own) {
         loadedPages.current = [{ cursor: null, ids: next.items.map(i => i.id) }]

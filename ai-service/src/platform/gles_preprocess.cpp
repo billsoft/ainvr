@@ -224,6 +224,10 @@ std::vector<uint8_t> GlesPreprocessor::RunNv12Rgba(const std::vector<uint8_t>& p
   auto t=transform;t.mean={0,0,0};t.divisor={1,1,1};t.bgr=false;
   std::vector<uint8_t> rgba;RunImpl(pixels,w,h,t,true,nullptr,false,&rgba,immutable_source_tag);return rgba;
 }
+std::vector<uint8_t> GlesPreprocessor::RunRgbaRgba(const std::vector<uint8_t>& pixels,int w,int h,const ImageTransform& transform){
+  auto t=transform;t.mean={0,0,0};t.divisor={1,1,1};t.bgr=false;
+  std::vector<uint8_t> rgba;RunImpl(pixels,w,h,t,false,nullptr,false,&rgba);return rgba;
+}
 std::vector<uint8_t> GlesPreprocessor::RunJpegNv12(const std::vector<uint8_t>& pixels,int w,int h,const ImageTransform& transform){
   if(transform.width%2||transform.height%2)throw std::invalid_argument("JPEG NV12 needs even dimensions");
   auto t=transform;t.mean={0,0,0};t.divisor={1,1,1};t.bgr=false;

@@ -22,6 +22,7 @@ test('recording recovery queues only verified complete proof, preserves manual d
   const row=make();await repo.events.insertOne(row);let calls=0;
   context.recoverEvidence=async()=>{calls++;return {data:jpeg,provenance:{kind:'recording_exact_sei_v1',segment_id:'test'}}};
   await context.recoverOne();const done=await repo.events.findOne({alarm_id:row.alarm_id});assert.equal(done.review.state,'queued');assert.equal(done.review.context_state,'ready');assert.ok(calls>=2);assert.ok(done.review.frames.every(f=>f.storage==='mongodb'&&f.provenance));assert.equal(done.handling.state,'unacknowledged');
+  assert.equal(done.review.recovery.state,'completed');assert.equal(done.review.recovery.method,'recording_exact_sei_v1');assert.equal(done.review.recovery.reason,null);
   const human=make();await repo.events.insertOne(human);context.recoverEvidence=async()=>{await repo.events.updateOne({alarm_id:human.alarm_id},{$set:{'handling.state':'acknowledged','handling.reviewed_by_kind':'human'},$inc:{'handling.revision':1}});return {data:jpeg,provenance:{kind:'recording_exact_sei_v1'}}};await context.recoverOne();assert.equal((await repo.events.findOne({alarm_id:human.alarm_id})).handling.reviewed_by_kind,'human');
   const cleared=make();await repo.events.insertOne(cleared);context.recoverEvidence=async()=>{await repo.clearAll('test','clear');return {data:jpeg}};await context.recoverOne();assert.equal(await repo.events.countDocuments({}),0);assert.equal(await context.images.rows.countDocuments({}),0);
  }finally{await db.dropDatabase();await client.close();}

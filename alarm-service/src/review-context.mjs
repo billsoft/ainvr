@@ -1,4 +1,8 @@
 import {EvidenceImages} from './evidence-images.mjs';
+import {retainedTarget} from './retained-target.mjs';
+import {selectVisualEvidence,missingVisual} from './review-visual-evidence.mjs';
+import {isStorageBusy} from './review-storage.mjs';
+import {recordingFailureReason} from './recording-evidence.mjs';
 import {compactProof} from './compact-evidence.mjs';
 import {readFile,mkdir,writeFile,rename,stat,unlink,readdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
@@ -64,7 +68,7 @@ export function jpegDimensions(data){
  throw Error('unsupported_image');
 }
 export class ReviewContext {
- constructor(repository,root){this.repository=repository;this.images=repository.db?new EvidenceImages(repository.db):null;this.root=resolve(root);if(!this.root.startsWith('/mnt/ainvr-ssd/'))throw Error('SSD context required');this.lastPolicy=0;this.lastMaintenance=0;this.closing=false;this.inFlight=null;}
+ constructor(repository,root,{clock=()=>Date.now()}={}){this.clock=clock;this.lastError=null;this.repository=repository;this.images=repository.db?new EvidenceImages(repository.db):null;this.root=resolve(root);if(!this.root.startsWith('/mnt/ainvr-ssd/'))throw Error('SSD context required');this.lastPolicy=0;this.lastMaintenance=0;this.closing=false;this.inFlight=null;}
  async initialize(){await this.images?.initialize();for(const dir of ['pinned','candidates'])await mkdir(join(this.root,dir),{recursive:true,mode:0o700});}
  async publish(){
   if(Date.now()-this.lastPolicy<1000)return;this.lastPolicy=Date.now();
@@ -99,31 +103,71 @@ export class ReviewContext {
  }
  async step(){
   await this.publish();await this.processCaptureJobs();
-  const rows=await this.repository.events.find({'handling.state':'unacknowledged','review.state':'queued','review.context_state':{$exists:false}}).sort({occurred_at:1}).limit(100).toArray();
+  const now=this.clock();
+  const rows=await this.repository.events.find({'handling.state':'unacknowledged','review.state':'queued','review.context_state':{$exists:false},$or:[{'review.context_next_at':{$exists:false}},{'review.context_next_at':{$lte:now}}]}).sort({occurred_at:1}).limit(100).toArray();
   for(const row of rows){
-   const proof=reviewSamples(row),fence={alarm_id:row.alarm_id,'review.generation':row.review.generation,'review.context_state':{$exists:false}};
-   if(!proof.ok){await this.repository.events.updateOne(fence,{$set:{'review.state':'uncertain','review.reason':proof.reason,'review.context_state':'incomplete'}});continue;}
-   const started=row.review.context_started_at??Date.now();
-   if(row.review.context_started_at==null)await this.repository.events.updateOne(fence,{$set:{'review.context_started_at':started}});
+   const fence={alarm_id:row.alarm_id,'review.generation':row.review.generation,'review.context_state':{$exists:false},'handling.state':'unacknowledged','handling.revision':row.handling.revision};
+   const started=row.review.context_started_at??now;
    try{
-    const frames=[];for(const s of proof.samples){const {key,data}=await this.image(row,s);frames.push({...s,key,content_sha256:hash(data),...(this.images?{storage:'mongodb'}:{})});}
-    await this.repository.events.updateOne(fence,{$set:{'review.context_state':'ready','review.frames':frames}});
-   }catch{
-    if(Date.now()-started>30000)await this.repository.events.updateOne(fence,{$set:{'review.state':'uncertain','review.reason':'missing_context','review.context_state':'incomplete'}});
+    const proof=reviewSamples(row);
+    if(!proof.ok){await this.repository.events.updateOne(fence,{$set:{'review.state':'uncertain','review.reason':proof.reason,'review.context_state':'incomplete'},$inc:{version:1}});continue;}
+    if(row.review.context_started_at==null)await this.repository.events.updateOne(fence,{$set:{'review.context_started_at':started}});
+    await this.ready(row,fence,await this.prepareInputs(row,proof));
+    this.lastError=null;
+   }catch(error){
+    // A busy database is not evidence that the source image never existed.
+    let patch;
+    if(missingVisual(error)){
+     if(now-started<=30000)continue;
+     patch={'review.state':'uncertain','review.reason':'missing_context','review.context_state':'incomplete'};
+    }else if(['evidence_identity_mismatch','evidence_integrity_mismatch','insufficient_target_pixels','unsupported_image','incomplete_trajectory','missing_label'].includes(error.message)){
+     patch={'review.state':'uncertain','review.reason':error.message,'review.context_state':'incomplete'};
+    }else if(isStorageBusy(error)){
+     const retries=Math.min(20,Math.max(0,Number.isSafeInteger(row.review.context_storage_retries)?row.review.context_storage_retries:0)+1);
+     patch={'review.reason':'storage_busy','review.context_storage_retries':retries,'review.context_next_at':now+Math.min(300000,5000*2**Math.min(retries-1,6))};
+    }else{
+     const attempts=Math.min(3,Math.max(0,Number.isSafeInteger(row.review.context_failures)?row.review.context_failures:0)+1);
+     patch={'review.reason':attempts>=3?'evidence_preparation_failed':'evidence_preparation_retry','review.context_failures':attempts,
+      ...(attempts>=3?{'review.state':'failed','review.context_state':'incomplete'}:{'review.context_next_at':now+1000*2**(attempts-1)})};
+    }
+    this.lastError=patch['review.reason'];
+    // Do not persist exception text: a driver/tool error can contain paths or credentials.
+    await this.repository.events.updateOne(fence,{$set:patch,$inc:{version:1}});
    }
   }
   // Preserve expiring source frames before scanning and pruning SSD pools.
   await this.maintain();
  }
  tick(){if(this.inFlight)return this.inFlight;if(this.closing)return Promise.resolve();this.inFlight=this.step().finally(()=>{this.inFlight=null});return this.inFlight;}
+ async prepareInputs(row,proof=reviewSamples(row)){
+  return selectVisualEvidence(row,proof,{image:s=>this.image(row,s),retained:()=>retainedTarget(this.repository.evidenceVault,row)});
+ }
+ async ready(row,fence,plan,requeue=false){
+  const frames=[];
+  for(const item of plan.items){
+   this.validateRetained(item.data,[]);
+   if(item.source_kind==='retained_target')await this.images.put('context',item.key,item.data,this.imagePolicy(row));
+   frames.push({...item.sample,key:item.key,content_sha256:hash(item.data),...(this.images?{storage:'mongodb'}:{}),source_kind:item.source_kind,
+    ...(item.source_kind==='retained_target'?{width:item.width,height:item.height,crop_event_id:item.event_id}:{})});
+  }
+  return this.repository.events.updateOne(fence,{$set:{'review.context_state':'ready','review.reason':null,'review.context_next_at':0,'review.frames':frames,
+   'review.evidence_mode':plan.mode,'review.missing_frame_ids':plan.missing_frame_ids,'review.visual_recovery_version':1,
+   ...(requeue?{'review.state':'queued','review.reason':null,'review.attempt':0,'review.next_attempt_at':0,'review.recovery.state':'visual_completed','review.recovery.method':'retained_evidence','review.recovery.reason':null,'review.recovery.completed_at':new Date().toISOString()}:{})},
+   ...(requeue?{$inc:{version:1}}:{})});
+ }
  async recoverOne(){
-  if(!this.recoverEvidence||!this.images)return;
+  if(!this.images)return;
   const now=Date.now();
-  const row=await this.repository.events.findOneAndUpdate({'handling.state':'unacknowledged','review.policy.enabled':true,'review.reason':'missing_context','review.context_state':'incomplete',occurred_at:{$gte:new Date(now-86400000).toISOString()},'review.recovery.attempt':{$not:{$gte:6}},$or:[{'review.recovery.next_at':{$exists:false}},{'review.recovery.next_at':{$lte:now}}]},{$set:{'review.recovery.state':'running','review.recovery.next_at':now+300000},$inc:{'review.recovery.attempt':1}},{sort:{occurred_at:-1},returnDocument:'after'});
+  const row=await this.repository.events.findOneAndUpdate({'handling.state':'unacknowledged','review.policy.enabled':true,'review.reason':'missing_context','review.context_state':'incomplete',occurred_at:{$gte:new Date(now-7*86400000).toISOString()},$and:[{$or:[{'review.recovery.attempt':{$not:{$gte:6}}},{'review.visual_recovery_version':{$ne:1}}]},{$or:[{'review.recovery.next_at':{$exists:false}},{'review.recovery.next_at':{$lte:now}}]}]},{$set:{'review.recovery.state':'running','review.recovery.next_at':now+300000},$inc:{'review.recovery.attempt':1}},{sort:{occurred_at:-1},returnDocument:'after'});
   if(!row)return;
   const fence={alarm_id:row.alarm_id,'review.generation':row.review.generation,'handling.revision':row.handling.revision,'handling.state':'unacknowledged','review.context_state':'incomplete'};
   try{
    const proof=reviewSamples(row);if(!proof.ok)throw Error('incomplete_trajectory');
+   try{
+    const plan=await this.prepareInputs(row,proof);await this.ready(row,fence,plan,true);
+    return;
+   }catch(error){if(!missingVisual(error))throw error;}
+   if(row.review.recovery.attempt>6||!this.recoverEvidence)throw Error('recording_evidence_unavailable');
    const frames=[];
    for(const sample of proof.samples){
     if(!await this.repository.events.findOne(fence,{projection:{alarm_id:1}}))return;
@@ -136,15 +180,20 @@ export class ReviewContext {
     }
     frames.push({...sample,key:image.key,content_sha256:hash(image.data),storage:'mongodb',...(provenance?{provenance}:{})});
    }
-   await this.repository.events.updateOne(fence,{$set:{'review.frames':frames,'review.context_state':'ready','review.state':'queued','review.reason':null,'review.attempt':0,'review.next_attempt_at':0,'review.recovery.state':'completed','review.recovery.completed_at':new Date().toISOString()},$inc:{version:1}});
-  }catch(error){await this.repository.events.updateOne(fence,{$set:{'review.recovery.state':row.review.recovery.attempt>=6?'unavailable':'queued','review.recovery.reason':error.message==='incomplete_trajectory'?'incomplete_trajectory':'recording_evidence_unavailable','review.recovery.next_at':Date.now()+Math.min(300000,30000*2**row.review.recovery.attempt)},$inc:{version:1}});}
+   await this.repository.events.updateOne(fence,{$set:{'review.frames':frames,'review.context_state':'ready','review.state':'queued','review.reason':null,'review.attempt':0,'review.next_attempt_at':0,'review.recovery.state':'completed','review.recovery.method':'recording_exact_sei_v1','review.recovery.reason':null,'review.recovery.completed_at':new Date().toISOString()},$inc:{version:1}});
+  }catch(error){
+   if(isStorageBusy(error)){
+    await this.repository.events.updateOne(fence,{$set:{'review.recovery.state':'queued','review.recovery.reason':'storage_busy','review.recovery.next_at':Date.now()+30000},$inc:{'review.recovery.attempt':-1,version:1}});return;
+   }
+   await this.repository.events.updateOne(fence,{$set:{'review.visual_recovery_version':1,'review.recovery.state':row.review.recovery.attempt>=6?'unavailable':'queued','review.recovery.reason':error.message==='incomplete_trajectory'?'incomplete_trajectory':recordingFailureReason(error),'review.recovery.next_at':Date.now()+Math.min(300000,30000*2**row.review.recovery.attempt)},$inc:{version:1}});
+  }
  }
- run(){const recovery=async()=>{if(this.closing)return;this.recoveryFlight=this.recoverOne().catch(()=>{});await this.recoveryFlight;if(!this.closing)this.recoveryTimer=setTimeout(recovery,10000);};void recovery();const work=async()=>{try{await this.tick()}catch{}if(!this.closing)this.timer=setTimeout(work,1000)};void work();}
+ run(){const recovery=async()=>{if(this.closing)return;this.recoveryFlight=this.recoverOne().catch(()=>{});await this.recoveryFlight;if(!this.closing)this.recoveryTimer=setTimeout(recovery,10000);};void recovery();const work=async()=>{try{await this.tick()}catch(error){this.lastError=isStorageBusy(error)?'storage_busy':'evidence_preparation_failed'}if(!this.closing)this.timer=setTimeout(work,1000)};void work();}
  async close(){this.closing=true;clearTimeout(this.timer);clearTimeout(this.recoveryTimer);await Promise.allSettled([this.inFlight,this.recoveryFlight]);}
  async status(){
   let cache=null;try{cache=JSON.parse(await readFile(join(this.root,'cache-status.json'),'utf8'));}catch{}
   const rows=this.repository.captureJobs?await this.repository.captureJobs.aggregate([{$group:{_id:'$state',count:{$sum:1}}}],{maxTimeMS:2000}).toArray():[];
-  return {capture_counts:Object.fromEntries(rows.map(r=>[r._id,r.count])),cache,retention_days:this.policy?.retention_days??7,max_bytes:this.policy?.max_bytes??1024**3};
+  return {capture_counts:Object.fromEntries(rows.map(r=>[r._id,r.count])),cache,last_error:this.lastError,retention_days:this.policy?.retention_days??7,max_bytes:this.policy?.max_bytes??1024**3};
  }
  async savePrepared(row,sample,image){
   if(!['target-crop-v1','context-marked-v1'].includes(image.layout)||typeof image.jpeg_base64!=='string'||image.jpeg_base64.length>2*1024*1024)throw Error('invalid_model_result');

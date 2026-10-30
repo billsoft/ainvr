@@ -116,18 +116,21 @@ void SingleQueueScheduling() {
   using Kind=ReviewTask;const auto now=TaskIdentity::Clock::time_point{}+std::chrono::seconds(100);
   std::deque<std::shared_ptr<FakeJob>> queue;
   auto alarm=Job(Kind::Alarm,"alarm","a"),search=Job(Kind::Search,"search","s");
-  Check(AdmitTask(queue,std::shared_ptr<FakeJob>{},*search,8)==TaskAdmission::Accepted);queue.push_back(search);
-  Check(AdmitTask(queue,std::shared_ptr<FakeJob>{},*search,8)==TaskAdmission::Duplicate);
-  auto other=Job(Kind::Search,"other","s");Check(AdmitTask(queue,std::shared_ptr<FakeJob>{},*other,8)==TaskAdmission::SearchBusy);
-  Check(AdmitTask(queue,std::shared_ptr<FakeJob>{},*alarm,8)==TaskAdmission::Accepted);queue.push_back(alarm);
-  Check(TakeTask(queue,false,now)==alarm); // Alarm wins a normal FIFO search.
+  // The large model is reserved for alarm review: search work is never admitted and never outranks an alarm.
+  static_assert(!kSearchVerificationEnabled);
+  Check(AdmitTask(queue,std::shared_ptr<FakeJob>{},*search,8)==TaskAdmission::SearchDisabled);
+  auto other=Job(Kind::Search,"other","s");Check(AdmitTask(queue,std::shared_ptr<FakeJob>{},*other,8)==TaskAdmission::SearchDisabled);
+  Check(AdmitTask(queue,search,*search,8)==TaskAdmission::SearchDisabled);
+  Check(AdmitTask(queue,std::shared_ptr<FakeJob>{},*alarm,8)==TaskAdmission::Accepted);
+  queue={search,alarm};
+  Check(TakeTask(queue,false,now)==alarm); // Alarm first.
   Check(TakeTask(queue,false,now)==search);Check(!TakeTask(queue,false,now));
-  queue={Job(Kind::Search,"search","s",6),alarm};auto aged=queue.front();
-  Check(TakeTask(queue,false,now)==aged); // Search cannot starve indefinitely.
-  queue.push_back(Job(Kind::Search,"search","new",8));
-  Check(TakeTask(queue,true,now)==alarm); // Nor can aged searches starve alarms.
-  queue.clear();Check(AdmitTask(queue,search,*other,8)==TaskAdmission::SearchBusy);
-  Check(AdmitTask(queue,search,*search,8)==TaskAdmission::Duplicate);
+  auto aged=Job(Kind::Search,"search","old",60);   // waited far longer than the old 5 s anti-starvation limit
+  queue={aged,alarm};
+  Check(TakeTask(queue,false,now)==alarm); // Still the alarm: no search aging rule remains.
+  queue={aged,Job(Kind::Alarm,"alarm","b")};auto second=queue.back();
+  Check(TakeTask(queue,true,now)==second);
+  queue.clear();
   queue={alarm,search};int preempted=0;
   Check(PreemptQueuedSearch(queue,2,[&](const auto& job){Check(job==search);++preempted;}));
   Check(preempted==1&&search->canceled&&queue.size()==1&&queue.front()==alarm);

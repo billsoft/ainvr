@@ -4,6 +4,7 @@
 #include "../analytics/event_evidence.hpp"
 // Copyright AINVR. Original channel business with S100P hardware adapters.
 #include "reused_channel_worker.hpp"
+#include "../stream/evidence_geometry.hpp"
 #include "../output/review_frame_cache.hpp"
 #include "../output/search_sampling_metrics.hpp"
 
@@ -1205,6 +1206,11 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     if (frame.epoch != stream_epoch_.load()) return;
     if (analytics_reset_epoch_.load()!=view_reset_epoch) return;
     if (!LicenseAllowed()) return;
+    // Per-frame decoded pixels and observation coordinates share the full frame.
+    // This proof permits exact SEI recovery at a smaller encoded extent, never a crop.
+    const auto recording_geometry=sei::RecordingEvidenceGeometry(result.frame_width,result.frame_height,
+      frame.width,frame.height,result.frame_index);
+    if(!recording_geometry.is_null())result.model_extra["recording_evidence_geometry"]=recording_geometry;
     result_buffer_.Append(result);
     StampSei(result, frame.stream_generation);
     // Binding is metadata-only and fenced under the existing publication lock.
@@ -1275,7 +1281,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
       search_source->EndFrame(search_token,result,*search_capture,objects_complete,complete(scene_offer));
     } catch (...) { /* Sampling refusal must not interrupt existing business. */ }
   }
-  if (LicenseAllowed() && output::SharedReviewFrameCache().Enabled(channel_id_) && result.model_extra.contains("analytics")) {
+  if (LicenseAllowed() && output::HasReviewVisualTarget(result) && output::SharedReviewFrameCache().Enabled(channel_id_) && result.model_extra.contains("analytics")) {
     ScopedTimingObservation timer([this, timing_identity](double ms) {
       RecordTiming(TimingStage::ReviewFrameOffer, ms, timing_identity);
     });
@@ -1290,7 +1296,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
         t.letterbox=false;t.yuv_bt709=owned->bt709;t.yuv_full_range=owned->full_range;
         auto rgba=converter->RunNv12Rgba(src.pixels,src.width,src.height,t);
         cv::Mat image(t.height,t.width,CV_8UC4);std::memcpy(image.data,rgba.data(),rgba.size());return image;
-      });
+      },frame.ref->nv12.pixels.size());
   }
   if (snapshot_sink_ && LicenseAllowed()) {
     utils::Timer snapshot_timer;

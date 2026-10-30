@@ -1,4 +1,4 @@
-import {reviewLabel,referenceLabel,recoveryLabel,reviewStatusClass} from '@/features/alarmReview'
+import {reviewLabel,referenceLabel,recoveryLabel,reviewStatusClass,preparationLabel} from '@/features/alarmReview'
 import {Check,ChevronRight,Flag,ImageOff} from 'lucide-react'
 import type {AlarmEvent,AckDisposition} from '@/api/alarmEventService'
 import {behaviorNames,levelLook} from '@/features/alarmTriggers'
@@ -30,6 +30,7 @@ export function AlarmRow({alarm,trigger,channelName,onHandle,onOpen}:Props){
     {live&&<span className="shrink-0 text-xs text-success-700">进行中</span>}
    </header>
    <p className={`mt-1 inline-flex rounded border px-2 py-0.5 text-xs font-medium ${reviewStatusClass(alarm)}`}>{reviewLabel(alarm)}{alarm.handling.state==='acknowledged'?` · ${alarm.handling.disposition==='false_positive'?'误报':'确认'}`:''}</p>
+   {alarm.handling.state==='unacknowledged'&&preparationLabel(alarm.review)&&<p role="status" className="mt-1 text-xs text-amber-700">{preparationLabel(alarm.review)}</p>}
    {recoveryLabel(alarm.review)&&<p className="mt-1 text-xs text-ink-subtle">{recoveryLabel(alarm.review)}</p>}
       {alarm.review?.reference&&<p className="mt-1 text-xs text-ink-subtle">{referenceLabel(alarm.review.reference)}</p>}
    <p className="mt-1 truncate text-sm text-ink" title={described.sentence}>{described.sentence}</p>

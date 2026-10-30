@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { SearchEvidenceImage } from './SearchEvidenceImage'
 import { searchImagePath, searchService, type SearchPageResult, type SearchResult } from '@/api/searchService'
 import { evidencePlaybackHref } from '@/features/playbackNavigation'
+import { aiReferenceEnabled } from './aiReference'
 
 const action = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-base border border-line px-3 text-sm hover:bg-primary-50 disabled:opacity-50'
 const labels: Record<SearchResult['verification']['state'], string> = {
@@ -49,6 +50,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
   const [rankedIds, setRankedIds] = useState<string[] | null>(null)
   const ranks = new Map((rankedIds ?? []).map((id, n) => [id, n]))
   const items = rankedIds ? [...data.items].sort((a, b) => (ranks.get(a.id) ?? Infinity) - (ranks.get(b.id) ?? Infinity)) : data.items
+  const aiOn = aiReferenceEnabled()
   const hasReview = items.some(i => ['match', 'mismatch', 'uncertain', 'unavailable'].includes(i.verification.state))
   const gesture = useRef<{ x: number; y: number; at: number } | null>(null)
   function reorder() {
@@ -109,8 +111,9 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
       第 {items.findIndex(i => i.id === error.id) + 1} 条候选的反馈未保存：{error.message}
       <button type="button" className={`${action} ml-2`} onClick={() => open(error.id)}>返回该候选重试</button>
     </div>}
-    <p className="text-xs text-ink-subtle">本次搜索仅对前 5 条候选进行 AI 参考分析；其余候选尚未复核。参考分析未标定，不是概率，不会隐藏候选或代替人工判断。</p>
-    {hasReview && <div className="flex flex-wrap items-center gap-2 text-sm text-ink-subtle"><span>复核已更新，候选顺序保持稳定。</span><button type="button" className={action} onClick={reorder}>按复核状态重排已加载候选</button><span className="text-xs">仅调整已加载候选；新加载结果追加到末尾。</span></div>}
+    {!aiOn && <p role="status" className="text-xs text-ink-subtle">AI 参考分析已暂停，让大模型优先处理告警审核；请人工核对候选与录像。</p>}
+    {aiOn && <p className="text-xs text-ink-subtle">本次搜索仅对前 5 条候选进行 AI 参考分析；其余候选尚未复核。参考分析未标定，不是概率，不会隐藏候选或代替人工判断。</p>}
+    {aiOn && hasReview && <div className="flex flex-wrap items-center gap-2 text-sm text-ink-subtle"><span>复核已更新，候选顺序保持稳定。</span><button type="button" className={action} onClick={reorder}>按复核状态重排已加载候选</button><span className="text-xs">仅调整已加载候选；新加载结果追加到末尾。</span></div>}
     {readOnlyReason && <p role="status" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{readOnlyReason}</p>}
     <div className={selected ? 'grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.9fr)]' : ''}>
       <div className={`grid items-start gap-3 ${selected ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'}`}>
@@ -124,7 +127,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
             <div className="space-y-1 p-3">
               <p className="truncate text-sm font-medium">{item.channel_name}</p>
               <p className="text-xs text-ink-subtle">{stamp(cover.captured_at)} · {item.kind === 'scene' ? '场景候选' : '目标候选'}</p>
-              <Verification value={item.verification} stopped={!!readOnlyReason} />
+              {aiOn && <Verification value={item.verification} stopped={!!readOnlyReason} />}
             </div>
           </button>
         })}
@@ -135,7 +138,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
           if (e.key === 'Escape') { e.stopPropagation(); close() }
           else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); adjacent(e.key === 'ArrowLeft' ? -1 : 1) }
         }}>
-        <div className="flex items-start justify-between gap-2"><div className="min-w-0"><h3 className="break-words font-semibold">{selected.channel_name}</h3><div className="mt-1"><Verification value={selected.verification} detail stopped={!!readOnlyReason} /></div></div>
+        <div className="flex items-start justify-between gap-2"><div className="min-w-0"><h3 className="break-words font-semibold">{selected.channel_name}</h3>{aiOn && <div className="mt-1"><Verification value={selected.verification} detail stopped={!!readOnlyReason} /></div>}</div>
           <button type="button" className={`${action} shrink-0`} aria-label="关闭详情" onClick={close}><X size={18} /></button></div>
         <div className="flex items-center justify-between gap-2" aria-label="切换候选" style={{ touchAction: 'pan-y pinch-zoom' }}
           onTouchStart={e => { gesture.current = e.touches.length === 1 ? { x: e.touches[0]!.clientX, y: e.touches[0]!.clientY, at: Date.now() } : null }}
@@ -159,7 +162,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
           {selected.frames.map(f => <button type="button" key={f.id} aria-pressed={frame.id === f.id}
             onClick={() => setFrameId(f.id)} className={`${action} ${frame.id === f.id ? 'border-primary bg-primary-50 text-primary' : ''}`}>{frameLabels[f.role]} {new Date(f.captured_at).toLocaleTimeString('zh-CN', { hour12: false })}</button>)}
         </div>
-        <p className="text-xs text-ink-subtle">{selected.kind === 'scene' ? '匹配画面区域：整幅场景截图，未定位精确目标；请结合录像核实。' : '候选来自同一会话的目标证据；相似不代表身份一致。'} AI 参考仅针对命中帧；其他关键时刻是离散采样，连续过程以录像为准；不改变告警审核结论。</p>
+        <p className="text-xs text-ink-subtle">{selected.kind === 'scene' ? '匹配画面区域：整幅场景截图，未定位精确目标；请结合录像核实。' : '候选来自同一会话的目标证据；相似不代表身份一致。'} {aiOn ? 'AI 参考仅针对命中帧；' : ''}其他关键时刻是离散采样，连续过程以录像为准；不改变告警审核结论。</p>
         {readOnlyReason ? null : replay ? <><Link to={replay} target="_blank" rel="noopener noreferrer" className={`${action} w-full border-primary bg-primary text-white hover:bg-primary`}><Play size={17} />播放前后录像</Link>
           <p className="text-xs text-ink-subtle">在新页面播放，保留当前搜索结果。</p></>
           : <p role="status" className="rounded-base bg-surface-page p-3 text-sm text-ink-subtle">{selected.recording.state === 'pending' ? '录像状态待确认；仍可查看保存的证据图片。' : '对应录像不可用，仍可查看保存的证据图片。'}</p>}

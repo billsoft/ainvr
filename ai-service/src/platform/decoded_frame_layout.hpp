@@ -12,8 +12,9 @@ struct DecodedNv12Layout {
   bool luma_present=false,chroma_present=false,nv12=false;
   int display_width=0,display_height=0,jpeg_decode_result=0;
 };
-struct VisibleNv12Layout { int width,height,luma_stride,chroma_stride; };
-inline VisibleNv12Layout ValidateDecodedNv12Layout(Codec codec,const DecodedNv12Layout& input,int maximum_width,int maximum_height){
+struct VisibleNv12Layout { int width,height,luma_stride,chroma_stride,visible_width,visible_height; };
+inline VisibleNv12Layout ValidateDecodedNv12Layout(Codec codec,const DecodedNv12Layout& input,int maximum_width,int maximum_height,
+    JpegOutputLayout jpeg_layout=JpegOutputLayout::StrictVisible){
   const bool jpeg=codec==Codec::Jpeg||codec==Codec::Mjpeg;
   if(jpeg&&input.jpeg_decode_result!=1)
     throw std::runtime_error("JPEG decoder reported damaged or unsupported image");
@@ -22,7 +23,8 @@ inline VisibleNv12Layout ValidateDecodedNv12Layout(Codec codec,const DecodedNv12
   const int height=jpeg?input.display_height:input.buffer_height;
   const int ys=input.luma_stride>0?input.luma_stride:input.buffer_width;
   const int uvs=input.chroma_stride>0?input.chroma_stride:ys;
-  if(width<=0||height<=0||width%2||height%2||width>maximum_width||height>maximum_height||
+  const bool padded=jpeg&&jpeg_layout==JpegOutputLayout::EvenPaddedSurface;
+  if(width<=0||height<=0||(!padded&&(width%2||height%2))||width>maximum_width||height>maximum_height||
       ys<width||uvs<width||!input.luma_present||!input.chroma_present)invalid();
   if(jpeg){
     // SDK JPEG outputs can pad their allocation independently of the visible
@@ -38,6 +40,9 @@ inline VisibleNv12Layout ValidateDecodedNv12Layout(Codec codec,const DecodedNv12
   // The video branch intentionally retains its established allocation-size,
   // stride-fallback and max-resolution contract. Its existing POC checks and
   // session/frame timestamp semantics remain in VpuDecoder::Receive.
-  return {width,height,ys,uvs};
+  const int surface_width=padded?(width+1)/2*2:width,surface_height=padded?(height+1)/2*2:height;
+  if(surface_width>maximum_width||surface_height>maximum_height||
+      (jpeg&&(surface_width>input.buffer_width||surface_height>input.buffer_height)))invalid();
+  return {surface_width,surface_height,ys,uvs,width,height};
 }
 } // namespace ainvr

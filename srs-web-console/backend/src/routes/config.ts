@@ -11,7 +11,6 @@ import { ConfigRoutesOptions, resolveSecretRefs, sanitizeImportDocSecrets, rejec
 export type { ConfigRoutesOptions } from './configPolicy.js';
 import { registerConfigTransferRoutes } from './configTransferRoutes.js';
 import { prepareSearchSettings } from '../store/searchConfigAdapter.js';
-import { prepareSearchVerifyLlmConfiguration } from '../services/searchVerifyConfiguration.js';
 import { assertSearchModelSelectionChange } from '../services/searchModelSelectionGuard.js';
 import { searchModelMigrationRoutes } from './searchModelMigrationRoutes.js';
 import {prepareSearchModelMigrationPlanActivation,prepareSearchModelMigrationPlanRestore} from '../services/searchModelMigrationActivation.js';
@@ -125,7 +124,6 @@ export async function configRoutes(fastify: FastifyInstance, opts: ConfigRoutesO
             // caller is provisioned in this same save transaction and never
             // rotates because an older browser omitted its hidden entry.
             config.tasks = { ...(baseline.tasks ?? {}), ...(change.config.tasks ?? {}) };
-            config = (await prepareSearchVerifyLlmConfiguration(pgStore, client, config, baseline)).settings;
           }
           if (change.service === 'backend') {
             delete config.adminPasswordHash;

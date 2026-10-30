@@ -82,13 +82,21 @@ class QwenReviewImagePipeline final {
     Check();return output;
   }
 
-  std::vector<float> RunNv12(const std::vector<uint8_t>& nv12,int width,int height,bool bt709,bool full_range,bool letterbox=false) {
+  std::vector<float> RunNv12(const std::vector<uint8_t>& nv12,int width,int height,bool bt709,bool full_range,bool letterbox=false,int visible_width=0,int visible_height=0) {
     if(owner_!=std::this_thread::get_id())throw std::logic_error("Qwen review GPU thread mismatch");
     if(width<1 || height<1 || width>8192 || height>8192 || width%2 || height%2 || nv12.size()!=size_t(width)*height*3/2)
       throw std::invalid_argument("Qwen review NV12 dimensions/storage invalid");
     // Keep the established hardware color conversion at source resolution.
     // Resizing is performed only by the independent Pillow-compatible pass.
     if(!color_)color_=std::make_unique<GlesPreprocessor>();
+    if(HasVisibleCrop(width,height,visible_width,visible_height)){
+      auto rgba=VisibleRgba(nv12,width,height,visible_width,visible_height,bt709,full_range);
+      if(letterbox&&visible_width!=2*visible_height){
+        ImageTransform fit;fit.width=896;fit.height=448;fit.letterbox=true;
+        return RunRgba(color_->RunRgbaRgba(rgba,visible_width,visible_height,fit),896,448);
+      }
+      return RunRgba(rgba,visible_width,visible_height);
+    }
     ImageTransform t;t.width=width;t.height=height;t.letterbox=false;t.nearest=true;
     t.yuv_bt709=bt709;t.yuv_full_range=full_range;
     if(letterbox&&width!=2*height){
@@ -98,15 +106,19 @@ class QwenReviewImagePipeline final {
     return RunRgba(color_->RunNv12Rgba(nv12,width,height,t),width,height);
   }
 
-  std::pair<std::vector<float>,std::vector<uint8_t>> RunTarget(const std::vector<uint8_t>& nv12,int width,int height,const std::array<float,4>& box){
+  std::pair<std::vector<float>,std::vector<uint8_t>> RunTarget(const std::vector<uint8_t>& nv12,int width,int height,const std::array<float,4>& box,int visible_width=0,int visible_height=0){
     if(!color_)color_=std::make_unique<GlesPreprocessor>();
-    const float cx=(box[0]+box[2])*width/2,cy=(box[1]+box[3])*height/2;
-    float w=(box[2]-box[0])*width*1.5f,h=(box[3]-box[1])*height*1.5f;
+    const bool visible=HasVisibleCrop(width,height,visible_width,visible_height);
+    std::vector<uint8_t> original;
+    if(visible)original=VisibleRgba(nv12,width,height,visible_width,visible_height,false,true);
+    const int crop_width=visible?visible_width:width,crop_height=visible?visible_height:height;
+    const float cx=(box[0]+box[2])*crop_width/2,cy=(box[1]+box[3])*crop_height/2;
+    float w=(box[2]-box[0])*crop_width*1.5f,h=(box[3]-box[1])*crop_height*1.5f;
     w=std::max(w,2*h);h=w/2;
     ImageTransform crop;crop.width=896;crop.height=448;crop.letterbox=false;crop.yuv_bt709=false;crop.yuv_full_range=true;
     crop.source_region=std::array<float,4>{cx-w/2,cy-h/2,w,h};
     crop.source_region_padding=true; // Never fabricate stretched image-edge content.
-    auto rgba=color_->RunNv12Rgba(nv12,width,height,crop);
+    auto rgba=visible?color_->RunRgbaRgba(original,crop_width,crop_height,crop):color_->RunNv12Rgba(nv12,width,height,crop);
     ImageTransform jpeg;jpeg.width=896;jpeg.height=448;jpeg.letterbox=false;
     auto encoded=color_->RunRgbaJpegNv12(rgba,896,448,jpeg);
     if(!jpeg_)jpeg_=std::make_unique<JpegEncoder>(896,448,90);
@@ -115,12 +127,17 @@ class QwenReviewImagePipeline final {
   }
   // Context-only annotation. Neural input remains the untouched target crop.
   std::vector<uint8_t> RunContext(const std::vector<uint8_t>& nv12,int width,int height,
-      const std::array<float,4>& target,const std::vector<std::array<float,2>>& region,float approach){
+      const std::array<float,4>& target,const std::vector<std::array<float,2>>& region,float approach,int visible_width=0,int visible_height=0){
     if(owner_!=std::this_thread::get_id())throw std::logic_error("Context GPU thread mismatch");
     if(region.size()>32)throw std::invalid_argument("Context polygon too large");
     if(!color_)color_=std::make_unique<GlesPreprocessor>();
     ImageTransform t;t.width=896;t.height=448;t.letterbox=true;t.yuv_bt709=false;t.yuv_full_range=true;
-    auto rgba=color_->RunNv12Rgba(nv12,width,height,t);
+    std::vector<uint8_t> rgba;
+    if(HasVisibleCrop(width,height,visible_width,visible_height)){
+      const auto original=VisibleRgba(nv12,width,height,visible_width,visible_height,false,true);
+      rgba=color_->RunRgbaRgba(original,visible_width,visible_height,t);
+      width=visible_width;height=visible_height;
+    }else rgba=color_->RunNv12Rgba(nv12,width,height,t);
     Binding saved;Activate();
     if(!context_program_){
       const char* source=R"GLSL(#version 310 es
@@ -167,6 +184,22 @@ void main(){
     ImageTransform j;j.width=896;j.height=448;j.letterbox=false;auto pixels=color_->RunRgbaJpegNv12(rgba,896,448,j);if(!jpeg_)jpeg_=std::make_unique<JpegEncoder>(896,448,90);return jpeg_->EncodeFullRangeNv12(pixels);
   }
  private:
+  static bool HasVisibleCrop(int width,int height,int visible_width,int visible_height){
+    if(!visible_width&&!visible_height)return false;
+    if(visible_width<1||visible_height<1||width!=(visible_width+1)/2*2||height!=(visible_height+1)/2*2)
+      throw std::invalid_argument("JPEG visible extent does not match its even NV12 surface");
+    return width!=visible_width||height!=visible_height;
+  }
+  std::vector<uint8_t> VisibleRgba(const std::vector<uint8_t>& nv12,int width,int height,int visible_width,int visible_height,bool bt709,bool full_range){
+    // The first GPU pass removes only MCU/even-surface padding. The next
+    // sampler therefore sees the original visible boundary, including odd
+    // pixels, and target expansion outside it uses the established padding.
+    if(!color_)color_=std::make_unique<GlesPreprocessor>();
+    ImageTransform crop;crop.width=visible_width;crop.height=visible_height;crop.letterbox=false;crop.nearest=true;
+    crop.yuv_bt709=bt709;crop.yuv_full_range=full_range;
+    crop.source_region=std::array<float,4>{0,0,float(visible_width),float(visible_height)};
+    return color_->RunNv12Rgba(nv12,width,height,crop);
+  }
   std::unique_ptr<JpegEncoder> jpeg_;
   GLuint context_program_=0;
   struct Binding {

@@ -16,8 +16,6 @@ import { SearchNativeClient, type NativeMigrationCapabilities } from './services
 import { SearchModelMigrationArtifacts } from './services/searchModelMigrationArtifacts.js';
 import { prepareSearchModelMigrationActivation,type SearchModelMigrationContext } from './services/searchModelMigrationActivation.js';
 import { PersistentSearchWorker } from './services/persistentSearchWorker.js';
-import { SearchVerifyRunner } from './services/searchVerifyRunner.js';
-import { SearchVerifyLlmClient } from './services/searchVerifyLlm.js';
 import { createSearchRecordingAvailability } from './services/searchRecordingAvailability.js';
 import { osHelperConfigFromEnv, storageRequest } from './services/osHelperClient.js';
 // Fastify 应用构建（可复用，测试用 fastify.inject 不启端口）
@@ -608,18 +606,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       if (!applied) return { ready: false, reason: 'config_pending', model_version: null };
       return !applied.enabled ? { ready: false, reason: 'disabled', model_version: null } : nativeSearchStatus();
     };
-    const searchVerify = searchJobs ? new SearchVerifyRunner({ jobs: searchJobs, native: searchNative, channels: searchChannels,
-      enabled: async () => !!(searchDependencies && searchRuntime && await readAppliedSearchConnection(searchDependencies, searchRuntime, searchHost)),
-      llm: new SearchVerifyLlmClient(() => readAppliedLlmConnection(pgStore, process.env.LLM_SERVICE_HOST ?? '127.0.0.1', 'search-verify')),
-    }) : null;
-    if (searchVerify) {
-      instance.addHook('onReady', async () => { searchVerify.start(); });
-      instance.addHook('onClose', async () => { await searchVerify.stop(); });
-    }
+    // Search never calls the large model: it is reserved for alarm review.
     const searchWorker = new PersistentSearchWorker({
       native: searchNative, channels: searchChannels,
-      verificationPublished: () => searchVerify?.wake(), verificationCancel: (id, actor) => searchVerify?.cancel(id, actor) ?? Promise.resolve(),
-      verificationAvailability: () => searchVerify?.currentAvailability() ?? { available: false, reason: 'task_unavailable' },
       queryConcurrency: async () => pgStore ? (await readAppliedSearchSettings(pgStore))?.limits.query_concurrency ?? 2 : 2,
       sessionTtlSeconds: async () => pgStore ? (await readAppliedSearchSettings(pgStore))?.limits.search_ttl_s ?? 3600 : 3600,
       // Current sampling capabilities are not evidence of the policy that was

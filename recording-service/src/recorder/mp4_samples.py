@@ -25,6 +25,8 @@ class Mp4Error(ValueError):
 class VideoInfo:
     codec: str          # 'h264' / 'hevc'
     length_size: int    # NAL 长度前缀字节数（1/2/4）
+    width: int | None = None   # VisualSampleEntry display extent; not a guessed SQL value
+    height: int | None = None
 
 
 @dataclass
@@ -114,12 +116,14 @@ def _parse_moov(moov: bytes):
                 raise Mp4Error('unsupported video sample entry')
             # VisualSampleEntry：6 保留 + 2 索引 + 70 字节固定字段，之后才是子盒子
             sub_start = entry[0] + 78
+            width, height = struct.unpack_from('>HH', moov, entry[0] + 24)
+            extent = (width, height) if 0 < width <= 8192 and 0 < height <= 8192 else (None, None)
             avcc = _find(moov, sub_start, entry[1], b'avcC')
             hvcc = _find(moov, sub_start, entry[1], b'hvcC')
             if avcc is not None:
-                video = (track_id, timescale, VideoInfo('h264', (moov[avcc[0] + 4] & 3) + 1))
+                video = (track_id, timescale, VideoInfo('h264', (moov[avcc[0] + 4] & 3) + 1, *extent))
             elif hvcc is not None:
-                video = (track_id, timescale, VideoInfo('hevc', (moov[hvcc[0] + 21] & 3) + 1))
+                video = (track_id, timescale, VideoInfo('hevc', (moov[hvcc[0] + 21] & 3) + 1, *extent))
             else:
                 raise Mp4Error('no avcC/hvcC')
     if video is None:

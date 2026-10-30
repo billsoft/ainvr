@@ -17,7 +17,9 @@ struct TaskIdentity {
   Clock::time_point queued = Clock::now();
   std::atomic<bool> canceled{false};
 };
-enum class TaskAdmission { Accepted, Duplicate, SearchBusy, Full };
+// The large model is reserved for alarm review. Search verification is permanently off in this build.
+inline constexpr bool kSearchVerificationEnabled = false;
+enum class TaskAdmission { Accepted, Duplicate, SearchBusy, SearchDisabled, Full };
 // Only one search handler may decode/copy a bounded JPEG body at a time.
 // The existing inference queue still owns the only retained job payload.
 class SearchParsingPermit {
@@ -39,6 +41,7 @@ class SearchParsingPermit {
 template<class Job> TaskAdmission AdmitTask(const std::deque<std::shared_ptr<Job>>& queue,
     const std::shared_ptr<Job>& active, const Job& proposed, size_t capacity) {
   if (proposed.task == ReviewTask::Search) {
+    if (!kSearchVerificationEnabled) return TaskAdmission::SearchDisabled;
     auto same = [&](const auto& job) { return job && job->task == ReviewTask::Search &&
       job->caller == proposed.caller && job->request_id == proposed.request_id; };
     if (same(active) || std::any_of(queue.begin(), queue.end(), same)) return TaskAdmission::Duplicate;
@@ -52,9 +55,10 @@ template<class Job> std::shared_ptr<Job> TakeTask(std::deque<std::shared_ptr<Job
   if (queue.empty()) return {};
   const auto alarm = std::find_if(queue.begin(), queue.end(), [](const auto& job) { return job->task == ReviewTask::Alarm; });
   const auto search = std::find_if(queue.begin(), queue.end(), [](const auto& job) { return job->task == ReviewTask::Search; });
+  (void)previous_search; (void)now;
+  // Alarms are strictly first; anything else only runs when no alarm is waiting.
   auto chosen = alarm;
-  if (alarm == queue.end() || (!previous_search && search != queue.end() && now - (*search)->queued >= std::chrono::seconds(5)))
-    chosen = search;
+  if (alarm == queue.end()) chosen = search != queue.end() ? search : queue.begin();
   auto job = *chosen; queue.erase(chosen); return job;
 }
 struct TaskCancellation { size_t queued = 0; bool active = false; };

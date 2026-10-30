@@ -537,11 +537,15 @@ def create_app(store: ConfigStore, data_dir: str, guard_factory=build_guard) -> 
             raise HTTPException(422, 'invalid_evidence_request') from None
         # Only current storage and completed segments; the SEI identity selects the AI output.
         output_id = channels.recording_channel_for_processor(body['channel_id'])
+        if output_id is None or channels.confirmed_kind(output_id) != 'ai':
+            raise HTTPException(404, 'recording_channel_unavailable')
         candidates = await index.run(lambda: [dict(r) for r in index.conn.execute(
-            "SELECT id,channel_id,width,height FROM active_segments WHERE complete=1 AND COALESCE(sei_reason,'') <> 'source' AND (? IS NULL OR channel_id=?) AND width=? AND height=? AND start_ts < ? AND end_ts > ? ORDER BY start_ts DESC LIMIT 9",
-            (output_id, output_id, body['width'], body['height'], at + 120000, at - 120000)).fetchall()])
+            "SELECT id,channel_id,width,height FROM active_segments WHERE complete=1 AND COALESCE(sei_reason,'') <> 'source' AND channel_id=? AND start_ts < ? AND end_ts > ? ORDER BY start_ts DESC LIMIT 9",
+            (output_id, at + 120000, at - 120000)).fetchall()])
         if len(candidates) > 8:
             raise HTTPException(503, 'recovery_search_capacity')
+        if not candidates:
+            raise HTTPException(404, 'recording_not_found')
         from contextlib import ExitStack
         generation = storage_mgr.io.generation
         with ExitStack() as readers:

@@ -6,14 +6,19 @@
 #include <vector>
 namespace ainvr {
 enum class Codec { H264, H265, Jpeg, Mjpeg };
+// Opt-in only for JPEG consumers which explicitly crop visible pixels on GPU.
+// Ordinary video and strict JPEG callers retain their previous even contract.
+enum class JpegOutputLayout { StrictVisible, EvenPaddedSurface };
 struct Nv12Frame {
   int width=0,height=0;
   uint64_t pts=0; // Caller-defined timestamp units, passed through SDK unchanged.
   std::vector<uint8_t> pixels; // Packed Y then interleaved UV; explicit copy.
+  int visible_width=0,visible_height=0; // Exact JPEG display dimensions, never MCU allocation.
 };
 class VpuDecoder {
  public:
-  VpuDecoder(Codec codec,int maximum_width,int maximum_height);
+  VpuDecoder(Codec codec,int maximum_width,int maximum_height,
+             JpegOutputLayout jpeg_layout=JpegOutputLayout::StrictVisible);
   ~VpuDecoder();
   VpuDecoder(const VpuDecoder&)=delete;
   VpuDecoder& operator=(const VpuDecoder&)=delete;

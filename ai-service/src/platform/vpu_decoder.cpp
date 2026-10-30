@@ -29,6 +29,7 @@ struct VpuDecoder::State {
   AVCodecContext* parser_context=nullptr;
   PictureTokens pending;
   Codec codec=Codec::H264;
+  JpegOutputLayout jpeg_layout=JpegOutputLayout::StrictVisible;
   bool initialized=false,started=false,finished=false,failed=false;int max_width=0,max_height=0;
   int output_fd=-1;
   ~State(){if(output_fd>=0)hb_mm_mc_close_fd(&context,output_fd);
@@ -56,9 +57,10 @@ struct VpuDecoder::State {
     Check(hb_mm_mc_queue_input_buffer(&context,&in,timeout),"submit compressed buffer");finished=eos;return true;
   }
 };
-VpuDecoder::VpuDecoder(Codec codec,int width,int height):state_(std::make_unique<State>()){
+VpuDecoder::VpuDecoder(Codec codec,int width,int height,JpegOutputLayout jpeg_layout):state_(std::make_unique<State>()){
   if(width<=0||height<=0||width%2||height%2||width>8192||height>8192)throw std::invalid_argument("Invalid maximum decode dimensions");
-  auto& s=*state_;s.codec=codec;s.max_width=width;s.max_height=height;auto& c=s.context;auto& p=c.video_dec_params;
+  if(jpeg_layout!=JpegOutputLayout::StrictVisible&&codec!=Codec::Jpeg&&codec!=Codec::Mjpeg)throw std::invalid_argument("Padded visible layout requires JPEG");
+  auto& s=*state_;s.codec=codec;s.jpeg_layout=jpeg_layout;s.max_width=width;s.max_height=height;auto& c=s.context;auto& p=c.video_dec_params;
   c.encoder=false;p.feed_mode=MC_FEEDING_MODE_FRAME_SIZE;p.pix_fmt=MC_PIXEL_FORMAT_NV12;
   p.bitstream_buf_size=(uint64_t(width)*height*3/2+1023)&~uint64_t(1023);p.bitstream_buf_count=4;p.frame_buf_count=6;
   switch(codec){
@@ -127,9 +129,10 @@ std::optional<Nv12Frame> VpuDecoder::Receive(int timeout){
     const auto& jpeg=info.jpeg_frame_info;
     allocation.display_width=jpeg.display_width;allocation.display_height=jpeg.display_height;allocation.jpeg_decode_result=jpeg.decode_result;
   }
-  const auto visible=ValidateDecodedNv12Layout(s.codec,allocation,s.max_width,s.max_height);
+  const auto visible=ValidateDecodedNv12Layout(s.codec,allocation,s.max_width,s.max_height,s.jpeg_layout);
   const int w=visible.width,h=visible.height,ys=visible.luma_stride,uvs=visible.chroma_stride;
   Nv12Frame frame;frame.width=w;frame.height=h;frame.pts=v.pts;
+  frame.visible_width=visible.visible_width;frame.visible_height=visible.visible_height;
   if(s.parser){
     const auto& metadata=info.video_frame_info;
     if((metadata.decode_result!=1&&metadata.decode_result!=0x10)||metadata.frame_display_index<0||metadata.err_mb_in_frame_decoded>0)

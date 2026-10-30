@@ -165,3 +165,13 @@ it('returns live sampling reasons without revoking ERP historical query permissi
     expect(worker.query).toHaveBeenCalledWith({ ...body, verify: false }, 'operator');
   } finally { await app.close(); }
 });
+
+it('never lets a client request model verification: the large model is reserved for alarm review', async () => {
+  const worker = workerFixture();
+  const { app } = await fixture(true, worker);
+  try {
+    const res = await app.inject({ url: '/search/text', method: 'POST', payload: { ...body, verify: true } });
+    expect(res.statusCode).toBe(200);
+    expect(worker.query).toHaveBeenCalledWith(expect.objectContaining({ verify: false }), 'operator');
+  } finally { await app.close(); }
+});

@@ -67,7 +67,7 @@ struct Service {
     if(!desired&&(state=="unloaded"||state=="fault")){
       state="unloaded";last_error.clear();configuration.Commit(config.at("config_version").get<int>());
     }
-    if(!config.value("search_verify_enabled",true)) {
+    if(!ainvr::llm::kSearchVerificationEnabled) {
       if(active_job&&active_job->task==ainvr::llm::ReviewTask::Search)active_job->canceled=true;
       for(auto it=queue.begin();it!=queue.end();) {
         if((*it)->task!=ainvr::llm::ReviewTask::Search){++it;continue;}
@@ -99,7 +99,7 @@ struct Service {
   }
   Json SearchProfile() {
     std::lock_guard<std::mutex> lock(mutex);
-    const bool enabled=config.value("enabled",false)&&config.value("search_verify_enabled",true);
+    const bool enabled=config.value("enabled",false)&&ainvr::llm::kSearchVerificationEnabled;
     return ainvr::llm::SearchProfileMetadata(enabled,desired,state=="ready",search_supported,package_hash);
   }
   Json Status() {
@@ -111,7 +111,7 @@ struct Service {
             {"latency_ms",{{"p50",percentile(.5)},{"p95",percentile(.95)},{"samples",times.size()},{"window","last_256_completed"}}},
             {"submit_time_share",{{"window_s",10},{"cap_percent",config.value("submit_time_share_cap_percent",90)}}},
             {"ready",state=="ready"},{"model",state},{"config_version",configuration.committed()},{"package_id","qwen3vl-4b-review-v3"},
-            {"tasks",{{"search-verify-zh-v1",{{"enabled",config.value("search_verify_enabled",true)},
+            {"tasks",{{"search-verify-zh-v1",{{"enabled",ainvr::llm::kSearchVerificationEnabled},
               {"template_sha256",ainvr::llm::SearchTemplateHash()},{"preprocessing_version",ainvr::llm::kSearchPreprocessing},{"validated",false}}}}},
             {"queue",{{"length",queue.size()},{"capacity",config.value("queue_size",8)}}},
             {"requests",{{"ok",ok},{"failed",failed},{"by_caller",callers}}},{"last_error",last_error}};
@@ -177,12 +177,16 @@ struct Service {
           result["timing_ms"]={{"queue",std::chrono::duration<double,std::milli>(start-job->queued).count()},
             {"preprocess",0},{"total",std::chrono::duration<double,std::milli>(Clock::now()-start).count()}};
         } else {
-          ainvr::VpuDecoder jpeg(ainvr::Codec::Jpeg,input.width,input.height);
+          const bool padded_jpeg=input.letterbox;
+          const int decode_width=padded_jpeg?(input.width+63)/64*64:input.width;
+          const int decode_height=padded_jpeg?(input.height+63)/64*64:input.height;
+          ainvr::VpuDecoder jpeg(ainvr::Codec::Jpeg,decode_width,decode_height,padded_jpeg?ainvr::JpegOutputLayout::EvenPaddedSurface:ainvr::JpegOutputLayout::StrictVisible);
           if(!jpeg.Submit(input.jpeg,1,1000))throw std::runtime_error("image_submit_timeout");
           auto frame=jpeg.Receive(3000);if(!frame)throw std::runtime_error("image_decode_timeout");
+          if(frame->visible_width!=input.width||frame->visible_height!=input.height)throw std::runtime_error("image_visible_geometry_mismatch");
           std::vector<float> patches;std::vector<uint8_t> actualImage;
-          if(alarm&&alarm->target){auto preparedImage=image->RunTarget(frame->pixels,frame->width,frame->height,*alarm->target);patches=std::move(preparedImage.first);actualImage=std::move(preparedImage.second);}
-          else patches=image->RunNv12(frame->pixels,frame->width,frame->height,false,true,input.letterbox);
+          if(alarm&&alarm->target){auto preparedImage=image->RunTarget(frame->pixels,frame->width,frame->height,*alarm->target,input.width,input.height);patches=std::move(preparedImage.first);actualImage=std::move(preparedImage.second);}
+          else patches=image->RunNv12(frame->pixels,frame->width,frame->height,false,true,input.letterbox,input.width,input.height);
           auto prepared=Clock::now();
           auto logits=engine->Infer(ids,patches,[&]{
             while(true){
@@ -204,7 +208,7 @@ struct Service {
             if(!actualImage.empty()){
               std::string encoded(4*((actualImage.size()+2)/3),'\0');EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),actualImage.data(),int(actualImage.size()));
               result["prepared_image"]={{"layout","target-crop-v1"},{"jpeg_base64",encoded},{"width",896},{"height",448},{"target",*alarm->target},{"expansion",1.5}};
-              const auto marked=image->RunContext(frame->pixels,frame->width,frame->height,*alarm->target,alarm->region,alarm->approach);
+              const auto marked=image->RunContext(frame->pixels,frame->width,frame->height,*alarm->target,alarm->region,alarm->approach,input.width,input.height);
               std::string context64(4*((marked.size()+2)/3),'\0');EVP_EncodeBlock(reinterpret_cast<unsigned char*>(context64.data()),marked.data(),int(marked.size()));
               result["context_image"]={{"layout","context-marked-v1"},{"jpeg_base64",context64},{"width",896},{"height",448},{"target",*alarm->target},{"region",alarm->region},{"approach_width_fraction",alarm->approach},{"fit","letterbox"}};
             }
@@ -356,7 +360,7 @@ int main(int argc,char** argv) {
           for(const auto& caller:service.config.value("api_keys",Json::array()))if(Authorized(req,caller.at("key")))job->caller=caller.at("name").template get<std::string>();
           if(job->caller.empty()){Error(res,401,"unauthorized","Caller key was revoked");return;}
           if(service.state!="ready"||!service.desired){Error(res,503,"model_not_loaded","Model is not ready");return;}
-          if(!service.config.value("search_verify_enabled",true)){Error(res,503,"task_disabled","Search verification is disabled");return;}
+          if(!ainvr::llm::kSearchVerificationEnabled){Error(res,410,"task_disabled","The model is reserved for alarm review");return;}
           if(!service.search_supported){Error(res,503,"search_profile_unavailable","Search decision vocabulary is unavailable");return;}
           job->queue_timeout=service.config.value("queue_timeout_s",30);job->execution_timeout=service.config.value("exec_timeout_s",10);
           const auto admission=ainvr::llm::AdmitTask(service.queue,service.active_job,*job,service.config.value("queue_size",8u));

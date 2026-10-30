@@ -33,6 +33,13 @@ export async function llmProxyRoutes(app:FastifyInstance,options:Options){
   });
   app.post('/internal/alarm-review',{bodyLimit:12*1024*1024+16384},async(req,reply)=>{
     if(!await options.internalPrincipal?.(req))return reply.code(403).send({error:{code:'unauthorized'}});
+    // Coordinates and detector claims cannot substitute for visual category evidence.
+    // The model remains authoritative for JPEG decoding and its own input contract.
+    const body=req.body as {image?:{jpeg_base64?:unknown};alarm?:{kind?:unknown;description?:unknown}}|null;
+    if(!body||typeof body.image?.jpeg_base64!=='string'||body.image.jpeg_base64.length<8||
+      typeof body.alarm?.kind!=='string'||!body.alarm.kind.trim()||body.alarm.kind.length>128||
+      typeof body.alarm.description!=='string'||!body.alarm.description.trim()||Buffer.byteLength(body.alarm.description)>8192)
+      return reply.code(422).send({error:{code:'invalid_alarm_evidence',message:'审核需要真实图片和目标类别；文字或坐标不能代替图片'}});
     try{
       const c=await options.reviewConnection?.();if(!c?.inference)return reply.code(503).send({error:{code:'review_not_configured'}});
       const target=new URL('/v1/ainvr/tasks/alarm-review-zh-v1',c.baseUrl);

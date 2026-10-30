@@ -6,9 +6,12 @@ import type { SearchPageResult } from '@/api/searchService'
 import { searchService } from '@/api/searchService'
 import { formatRangeFull } from '@/utils/timeRange'
 vi.mock('@/api/searchService', async original => ({ ...await original<typeof import('@/api/searchService')>(), searchService: { coverage: vi.fn(), status: vi.fn(), channels: vi.fn(), query: vi.fn(), page: vi.fn(), detail: vi.fn(), cancel: vi.fn(), feedback: vi.fn() } }))
+const flags=vi.hoisted(()=>({aiReference:true}))
+vi.mock('@/pages/Search/aiReference',()=>({aiReferenceEnabled:()=>flags.aiReference}))
 vi.mock('@/components/common/AuthImage', () => ({ AuthImage: ({ alt }: { alt: string }) => <div role="img" aria-label={alt} /> }))
 beforeEach(() => {
   vi.resetAllMocks()
+  flags.aiReference = true
   vi.mocked(searchService.coverage).mockImplementation(async scope => ({ scope, state: 'unknown', ranges: [] }))
   vi.mocked(searchService.cancel).mockResolvedValue({ cancelled: true })
   vi.mocked(searchService.feedback).mockResolvedValue({ relevant: true })
@@ -576,3 +579,19 @@ it('reorders only loaded candidates explicitly, preserves selection and appends 
   fireEvent.touchEnd(strip, { touches: [], changedTouches: [{ clientX: 250, clientY: 20 }] });
   expect(screen.getByRole('complementary')).toHaveTextContent('3 / 3');
 });
+
+it('pauses AI reference analysis so the model stays free for alarm review', async () => {
+  flags.aiReference = false
+  vi.mocked(searchService.query).mockImplementation(async input => result(input.request_id))
+  await ready()
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  fireEvent.click(await screen.findByRole('button', { name: '查看第 1 条候选：后门' }))
+  expect(searchService.query).toHaveBeenCalledWith(expect.objectContaining({ verify: false }), expect.anything())
+  expect(screen.queryByText(/AI 参考：/)).not.toBeInTheDocument()
+  expect(screen.queryByText('候选，尚未复核')).not.toBeInTheDocument()
+  expect(screen.queryByText(/AI 参考仅针对命中帧/)).not.toBeInTheDocument()
+  expect(screen.getByText(/AI 参考分析已暂停/)).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /按复核状态重排/ })).not.toBeInTheDocument()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  expect(searchService.page).not.toHaveBeenCalled()
+})

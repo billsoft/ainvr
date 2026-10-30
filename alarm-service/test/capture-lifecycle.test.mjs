@@ -27,7 +27,7 @@ test('old video timestamps do not prematurely fail new capture; delayed image re
  const repo={events:{find:()=>({sort:()=>({limit:()=>({toArray:async()=>[event]})})}),updateOne:async(f,u)=>{for(const [k,v] of Object.entries(u.$set))event.review[k.slice(7)]=v;}}};
  const context=new ReviewContext(repo,'/mnt/ainvr-ssd/unit-test-no-writes');
  context.publish=async()=>{};context.processCaptureJobs=async()=>order.push('capture');context.maintain=async()=>order.push('maintenance');
- context.image=async()=>{order.push('image');if(!available)throw Error('pending');return {key:'exact',data:Buffer.from('test')};};
+ context.image=async()=>{order.push('image');if(!available)throw Error('pending');return {key:'exact',data:Buffer.from('ffd8ffc0001108000a001403012200021101031101ffd9','hex')};};
  await context.step();assert.equal(event.review.state,'queued');assert.ok(event.review.context_started_at>Date.parse(event.last_seen_at));assert.equal(order[0],'capture');assert.equal(order.at(-1),'maintenance');
  available=true;await context.step();assert.equal(event.review.context_state,'ready');assert.equal(event.review.frames.length,reviewSamples(event).samples.length);
 });

@@ -19,6 +19,14 @@ int main(){try{
     Check(ValidateDecodedNv12Layout(codec,b,80,320).width==80);
     auto padding=d;padding.buffer_height=336;padding.total_bytes=112*336*3/2;padding.plane_bytes={112*336,112*168};
     Check(ValidateDecodedNv12Layout(codec,padding,104,320).height==320);
+    // Default callers remain strict. An explicit JPEG-only consumer receives
+    // a minimally even NV12 surface plus the original odd visible extent.
+    auto odd=d;odd.display_width=103;odd.display_height=319;
+    const auto padded=ValidateDecodedNv12Layout(codec,odd,104,320,JpegOutputLayout::EvenPaddedSurface);
+    Check(padded.width==104&&padded.height==320&&padded.visible_width==103&&padded.visible_height==319);
+    Reject([&]{ValidateDecodedNv12Layout(codec,odd,104,320);});
+    Reject([&]{ValidateDecodedNv12Layout(codec,odd,103,320,JpegOutputLayout::EvenPaddedSurface);});
+    Reject([&]{ValidateDecodedNv12Layout(codec,odd,104,319,JpegOutputLayout::EvenPaddedSurface);});
     for(int issue=0;issue<20;++issue){
       auto bad=d;
       switch(issue){
@@ -50,6 +58,8 @@ int main(){try{
     video.display_width=video.display_height=0;video.nv12=false;video.total_bytes=0;video.plane_bytes={};
     const auto out=ValidateDecodedNv12Layout(codec,video,112,320);
     Check(out.width==112&&out.height==320&&out.luma_stride==112&&out.chroma_stride==112);
+    auto odd=video;odd.buffer_width=111;
+    Reject([&]{ValidateDecodedNv12Layout(codec,odd,112,320,JpegOutputLayout::EvenPaddedSurface);});
   }
   std::cout<<checks<<" decoded NV12 layout checks passed; no hardware/CPU image processing\n";
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

@@ -1,11 +1,15 @@
 // One bounded JPEG per Mongo document; no replica-set/transaction requirement.
 import {createHash} from 'node:crypto';
 const sha=data=>createHash('sha256').update(data).digest('hex');
+// Pool byte sum. With the {pool,bytes} index below it is answered from the index alone (no JPEG fetch),
+// so a full 1 GB pool no longer needs seconds of document reads on every put.
+export const bytesPipeline=pool=>[{$match:{pool}},{$group:{_id:null,bytes:{$sum:'$bytes'}}}];
 export class EvidenceImages {
  constructor(db,{clock=()=>Date.now()}={}){this.rows=db.collection('alarm_evidence_images');this.clearState=db.collection('alarm_history_clear');this.clock=clock;}
  async initialize(){
   await this.rows.createIndex({expires_at:1},{expireAfterSeconds:0});
   await this.rows.createIndex({pool:1,created_at:1});
+  await this.rows.createIndex({pool:1,bytes:1});
   await this.rows.createIndex({occurred_at:1});
  }
  id(pool,key){if(!['crop','context','candidate','reference'].includes(pool)||typeof key!=='string'||!/^[a-zA-Z0-9_.-]{1,200}$/.test(key))throw Error('invalid_evidence_key');return `${pool}:${key}`;}
@@ -17,7 +21,7 @@ export class EvidenceImages {
   if(!Buffer.isBuffer(data)||data.length!==row.bytes||sha(data)!==row.sha256)throw Error('evidence_integrity_mismatch');
   return data;
  }
- async bytes(pool){const r=await this.rows.aggregate([{$match:{pool}},{$group:{_id:null,bytes:{$sum:'$bytes'}}}],{maxTimeMS:3000}).toArray();return r[0]?.bytes??0;}
+ async bytes(pool){const r=await this.rows.aggregate(bytesPipeline(pool),{maxTimeMS:3000}).toArray();return r[0]?.bytes??0;}
  async prune(pool,maxBytes,maxAge){
   this.id(pool,'check');
   await this.rows.deleteMany({pool,$or:[{expires_at:{$lte:new Date(this.clock())}},{created_at:{$lte:new Date(this.clock()-maxAge)}}]});

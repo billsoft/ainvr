@@ -77,7 +77,8 @@ export async function searchRoutes(app: FastifyInstance, options: Options) {
   app.get('/search/status', async () => options.worker?.status() ?? { ready: false, reason: 'model_pending', model_version: null });
   app.get('/search/channels', async r => ({ items: await options.channels(actor(r)) }));
   app.post('/search/text', { bodyLimit: 16 * 1024 }, async request => {
-    const input = searchQuerySchema.parse(request.body);
+    // The large model is reserved for alarm review: a client can never request model verification.
+    const input = { ...searchQuerySchema.parse(request.body), verify: false };
     await authorize(input.scope, actor(request));
     if (!(await worker().status()).ready) throw new SearchRouteError('search_not_ready', 503, '搜索模型与索引尚未就绪，当前不能搜索录像');
     const page = await checkedPage(await worker().query(input, actor(request)), actor(request), input.scope);
