@@ -65,7 +65,7 @@ std::vector<float> EncodeReferenceInput(const std::vector<float>& input, const s
     held->package = ainvr::search::VerifyPackage("siglip2-base-full-int8");
     if (held->package.model_version != expected_model || !ainvr::BpuRuntimeHealthy())
       throw std::runtime_error("probe_reference_model_changed");
-    ainvr::IonPolicy policy; policy.pool_bytes = ainvr::ReadBpuReservedPoolBytes();
+    ainvr::IonPolicy policy; policy.pool_bytes = ainvr::ReadBpuIonBudgetBytes();
     held->reservation = std::make_unique<ainvr::BpuCoexistReservation>("/run/ainvr","search-service",
       ainvr::search::BpuVisionReservationBytes(held->package),policy);
     if (!ainvr::search::VerifyStillCurrent(held->package)) throw std::runtime_error("probe_reference_model_changed");

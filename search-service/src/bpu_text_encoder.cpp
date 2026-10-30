@@ -13,7 +13,6 @@
 namespace ainvr::search {
 namespace {
 constexpr uint64_t kMinimumHeadroom = 64ULL * 1024 * 1024;
-constexpr uint64_t kMaximumS100Pool = 7680ULL * 1024 * 1024;
 std::string TokenizerBytes(const VerifiedPackage& package) {
   const auto relative = "tokenizers/" + package.spec->tokenizer;
   size_t length = 0;
@@ -69,7 +68,7 @@ BpuTextEncoder::~BpuTextEncoder() {
 std::unique_ptr<BpuTextEncoder> BpuTextEncoder::Load(VerifiedPackage package,
                                                   const BpuTextLoadOptions& options) {
   const auto bytes = BpuTextReservationBytes(package);
-  if (options.headroom_bytes < kMinimumHeadroom || options.total_bytes > kMaximumS100Pool ||
+  if (options.headroom_bytes < kMinimumHeadroom ||
       options.reservation_directory.empty() || options.reservation_directory.front() != '/' ||
       options.reservation_directory.size() > 4096 ||
       options.reservation_directory.find_first_of("\r\n\0", 0, 3) != std::string::npos)
@@ -77,8 +76,8 @@ std::unique_ptr<BpuTextEncoder> BpuTextEncoder::Load(VerifiedPackage package,
   if (!ainvr::BpuRuntimeHealthy()) throw std::runtime_error("search_bpu_runtime_fault");
   auto impl = std::make_unique<Impl>();
   impl->package = std::move(package);
-  const auto actual_pool = ainvr::ReadBpuReservedPoolBytes();
-  const auto total = std::min(actual_pool, options.total_bytes);
+  const auto actual_budget = ainvr::ReadBpuIonBudgetBytes();
+  const auto total = std::min(actual_budget, options.total_bytes);
   // No BPU constructor, SDK model load, or DMA allocation may precede this.
   ainvr::IonPolicy policy;
   policy.pool_bytes = total;

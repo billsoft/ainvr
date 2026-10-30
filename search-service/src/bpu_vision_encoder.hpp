@@ -2,6 +2,7 @@
 #pragma once
 #include "model_package.hpp"
 #include "../../ai-service/src/output/snapshot_transform.hpp"
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -12,7 +13,7 @@ inline constexpr const char* kSiglip2BaseVisionMeasuredSha256 =
     "595b9b64f3bf7968949b3442f418c4cb5774d0dddcdcc04421cca330b1c99443";
 struct BpuVisionLoadOptions {
   std::string reservation_directory = "/run/ainvr";
-  uint64_t total_bytes = 7680ULL * 1024 * 1024;
+  uint64_t total_bytes = UINT64_MAX;  // optional cap; the real budget is read from the SDK (ReadBpuIonBudgetBytes)
   uint64_t headroom_bytes = 256ULL * 1024 * 1024;
 };
 // Pure contracts: no SDK calls, allocations on devices, files or EGL contexts.

@@ -168,7 +168,7 @@ int main(int argc,char** argv){
    WriteNew(report,{{"interface_passed",false},{"smoke_only",true},{"accuracy_validated",false},{"model_loaded",false},
     {"error_code","smoke_requires_valid_visible_sample"},{"samples",rejected}});return 1;
   }
-  Current(deadline,deadline);const uint64_t headroom=256ULL*1024*1024,pool=ainvr::ReadBpuReservedPoolBytes();
+  Current(deadline,deadline);const uint64_t headroom=256ULL*1024*1024,pool=ainvr::ReadBpuIonBudgetBytes();
   const auto need=engine->manifest().at("resources").at("ion_bytes_measured").get<uint64_t>();
   resource_context={{"pool_bytes",pool},{"need_bytes",need},{"headroom_bytes",headroom}};
   reservation=std::make_unique<Reservation>("/run/ainvr",need,headroom,pool);

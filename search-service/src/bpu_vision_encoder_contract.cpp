@@ -38,7 +38,7 @@ void Tensor(const nlohmann::json& tensor, const TensorSpec& spec, size_t maximum
 }
 }  // namespace
 void ValidateBpuVisionLoadOptions(const BpuVisionLoadOptions& options) {
-  if (options.headroom_bytes < 64ULL*1024*1024 || options.total_bytes > 7680ULL*1024*1024 ||
+  if (options.headroom_bytes < 64ULL*1024*1024 ||
       options.total_bytes < options.headroom_bytes || options.reservation_directory.empty() ||
       options.reservation_directory.front() != '/' || options.reservation_directory.size() > 4096 ||
       options.reservation_directory.find_first_of("\r\n\0",0,3) != std::string::npos)

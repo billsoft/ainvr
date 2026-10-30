@@ -137,7 +137,7 @@ struct Service {
       if(!engine) {
         try {
           auto next=std::make_unique<ainvr::llm::Engine>(settings.at("package_root"));
-          const uint64_t total=ainvr::ReadBpuReservedPoolBytes();
+          const uint64_t total=ainvr::ReadBpuIonBudgetBytes();
           // Default margin 256 MiB; it is also the size of the post-load allocation probe below.
           const uint64_t min_free=uint64_t(settings.value("min_free_mib",256))*1024*1024;
           reservation=std::make_unique<ainvr::llm::Reservation>(settings.value("reservation_root",std::string("/run/ainvr")),

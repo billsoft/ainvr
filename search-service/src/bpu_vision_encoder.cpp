@@ -32,7 +32,7 @@ std::unique_ptr<BpuVisionEncoder> BpuVisionEncoder::Load(VerifiedPackage package
   const auto bytes = BpuVisionReservationBytes(package);
   if (!ainvr::BpuRuntimeHealthy()) throw std::runtime_error("search_bpu_runtime_fault");
   auto impl = std::make_unique<Impl>(); impl->package = std::move(package);
-  ainvr::IonPolicy policy; policy.pool_bytes = std::min(ainvr::ReadBpuReservedPoolBytes(),options.total_bytes);
+  ainvr::IonPolicy policy; policy.pool_bytes = std::min(ainvr::ReadBpuIonBudgetBytes(),options.total_bytes);
   policy.min_free = options.headroom_bytes;
   // Must precede BpuImageRunner, BpuModel, SDK and DMA allocations.
   impl->reservation = std::make_unique<ainvr::BpuCoexistReservation>(options.reservation_directory,"search-service",bytes,policy);

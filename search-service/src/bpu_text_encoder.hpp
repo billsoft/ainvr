@@ -21,7 +21,7 @@ inline constexpr const char* kSiglip2BaseTextMeasuredSha256 =
 struct BpuTextLoadOptions {
   // Deployment-controlled only. Never accept a directory/budget from HTTP.
   std::string reservation_directory = "/run/ainvr";
-  uint64_t total_bytes = 7680ULL * 1024 * 1024;
+  uint64_t total_bytes = UINT64_MAX;  // optional cap; the real budget is read from the SDK (ReadBpuIonBudgetBytes)
   uint64_t headroom_bytes = 256ULL * 1024 * 1024;
 };
 

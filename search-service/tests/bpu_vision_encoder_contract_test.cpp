@@ -56,7 +56,7 @@ int main() {
     package.model_version = "unverified"; Reject([&] { BpuVisionReservationBytes(package); });
     ValidateBpuVisionLoadOptions({}); ++checks;
     BpuVisionLoadOptions options; options.headroom_bytes = 63ULL<<20; Reject([&] { ValidateBpuVisionLoadOptions(options); });
-    options = {}; options.total_bytes = 7681ULL<<20; Reject([&] { ValidateBpuVisionLoadOptions(options); });
+    options = {}; options.total_bytes = 12288ULL<<20; ValidateBpuVisionLoadOptions(options); ++checks;
     options = {}; options.total_bytes = 0; Reject([&] { ValidateBpuVisionLoadOptions(options); });
     for (const auto& directory : {std::string("relative"),std::string("/run/\nsecret"),std::string("/run/\0secret",12)}) {
       options = {}; options.reservation_directory = directory; Reject([&] { ValidateBpuVisionLoadOptions(options); });

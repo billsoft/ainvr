@@ -44,7 +44,7 @@
 namespace ainvr {
 
 struct IonPolicy {
-  uint64_t pool_bytes = 0;                           // ReadBpuReservedPoolBytes(), capped by the caller
+  uint64_t pool_bytes = 0;                           // ReadBpuIonBudgetBytes() (pool + carveout), optionally capped by the caller
   uint64_t other_floor = 256ULL << 20;               // minimum allowance for unmanaged ION users (ai-service, ...)
   uint64_t other_growth = 128ULL << 20;              // headroom added on top of their measured holding
   uint64_t min_free = 256ULL << 20;                  // must stay free after admission; also the post-load probe size
