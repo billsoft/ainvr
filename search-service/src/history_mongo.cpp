@@ -168,8 +168,11 @@ Json SearchRequestJson(const SearchSessionRequest& request) {
   if (request.query.empty() || request.query.size() > 1024 || request.model.empty() || request.model.size() > 128)
     throw std::invalid_argument("invalid_search_request");
   const std::vector<std::string> channels(request.scope.channels.begin(), request.scope.channels.end());
-  return {{"id", request.id}, {"actor", request.actor}, {"query", request.query}, {"model", request.model},
+  if(request.min_similarity && (!std::isfinite(*request.min_similarity) || *request.min_similarity < -1 || *request.min_similarity > 1)) throw std::invalid_argument("invalid_search_min_similarity");
+  Json result = {{"id", request.id}, {"actor", request.actor}, {"query", request.query}, {"model", request.model},
     {"channels", channels}, {"from", request.scope.from_ms}, {"to", request.scope.to_ms}, {"verify", request.verify}};
+  if(request.min_similarity) result["min_similarity"] = *request.min_similarity;
+  return result;
 }
 SearchSessionRequest ReadSearchRequest(const bson_t* doc) {
   const auto row = ToJson(doc); const auto& value = row.at("request");
@@ -179,6 +182,7 @@ SearchSessionRequest ReadSearchRequest(const bson_t* doc) {
   request.scope.channels = value.at("channels").get<std::set<std::string>>();
   request.scope.from_ms = value.at("from"); request.scope.to_ms = value.at("to"); request.verify = value.at("verify");
   request.expires_ms = DateValue(doc, "expires_at");
+  if(value.contains("min_similarity")) request.min_similarity = value.at("min_similarity").get<double>();
   if (SearchRequestJson(request) != value || Text(doc, "_id") != SearchKey(request.id, request.actor))
     throw std::runtime_error("search_session_identity");
   return request;
@@ -1482,6 +1486,7 @@ bool HistoryMongo::PublishSearch(const std::string& id, const std::string& actor
       throw std::invalid_argument("invalid_search_candidate_generation");
     if (!std::isfinite(candidate.similarity) || candidate.similarity < -1.00001 || candidate.similarity > 1.00001 || !ids.insert(candidate.sample_id).second)
       throw std::invalid_argument("invalid_search_candidate");
+    if(request.min_similarity && candidate.similarity < *request.min_similarity) throw std::invalid_argument("search_candidate_below_minimum");
     candidate_ids.push_back(candidate.sample_id);
     if(candidate.evidence_refs.size()>3)throw std::invalid_argument("search_evidence_capacity");
     if(!candidate.evidence_refs.empty()&&candidate.fingerprint.empty())throw std::invalid_argument("search_match_ref_missing");

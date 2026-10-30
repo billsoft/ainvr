@@ -535,10 +535,13 @@ void HttpService::Register(httplib::Server& server) {
     Send(response, {{"deleted", true}});
   }));
   server.Post("/v1/searches/begin", Handle([this](const auto& request, auto& response) {
-    const Json body = Body(request); Keys(body, {"id", "actor", "query", "scope", "model_version", "verify", "expires_ms"});
+    const Json body = Body(request);
+    if(body.contains("min_similarity")) Keys(body, {"id", "actor", "query", "scope", "model_version", "verify", "expires_ms", "min_similarity"});
+    else Keys(body, {"id", "actor", "query", "scope", "model_version", "verify", "expires_ms"});
     SearchSessionRequest input;
     input.id = Uuid(body.at("id")); input.actor = Text(body.at("actor"), 128); input.query = Text(body.at("query"), 1024, true);
     input.scope = ReadScope(body.at("scope")); input.model = Text(body.at("model_version"), 128);
+    if(body.contains("min_similarity")) input.min_similarity = body.at("min_similarity").get<double>();
     input.verify = body.at("verify").get<bool>(); input.expires_ms = Integer(body.at("expires_ms"));
     const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     if (input.expires_ms > now + access_.search_ttl_s * 1000) throw std::invalid_argument("request_retention");
@@ -580,10 +583,12 @@ void HttpService::Register(httplib::Server& server) {
     }
     const auto& q = page->request;
     const std::vector<std::string> channels(q.scope.channels.begin(), q.scope.channels.end());
-    Send(response, {{"search_id", q.id}, {"version", page->version}, {"query", q.query}, {"model_version", q.model},
+    Json result = {{"search_id", q.id}, {"version", page->version}, {"query", q.query}, {"model_version", q.model},
       {"verify", q.verify}, {"expires_ms", q.expires_ms}, {"published", page->published}, {"coverage", page->coverage},
       {"scope", {{"channel_ids", channels}, {"from_ms", q.scope.from_ms}, {"to_ms", q.scope.to_ms}, {"limit", 60}}},
-      {"items", items}, {"next_offset", page->next_offset ? Json(*page->next_offset) : Json(nullptr)}});
+      {"items", items}, {"next_offset", page->next_offset ? Json(*page->next_offset) : Json(nullptr)}};
+    if(q.min_similarity) result["min_similarity"] = *q.min_similarity;
+    Send(response, result);
   }));
   server.Post("/v1/searches/verification", Handle([this](const auto& request, auto& response) {
     Send(response, history_->SearchVerification(Body(request)));

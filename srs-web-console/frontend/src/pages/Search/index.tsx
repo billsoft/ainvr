@@ -23,6 +23,8 @@ export default function SearchPage() {
   const [inherited] = useState(() => searchEntryScope(entryParams))
   const [inheritedVisible, setInheritedVisible] = useState(!!inherited)
   const [query, setQuery] = useState('')
+  const [minimum, setMinimum] = useState('0.07')
+  const validMinimum = minimum === '' || (Number.isFinite(Number(minimum)) && Number(minimum) >= 0 && Number(minimum) <= 0.2)
   const [data, setData] = useState<SearchPageResult | null>(null)
   const [submitted, setSubmitted] = useState('')
   const [searching, setSearching] = useState(false)
@@ -92,7 +94,7 @@ export default function SearchPage() {
   const selectionAtLimit = selected.length >= 100
   const validRange = !!from && !!to && to.getTime() >= from.getTime() && to.getTime() + 1000 - from.getTime() <= 31 * 86400000
   async function run() {
-    if (loading || error || !status?.ready || !validRange || !query.trim() || !selected.length || selected.length > 100) return
+    if (!validMinimum || loading || error || !status?.ready || !validRange || !query.trim() || !selected.length || selected.length > 100) return
     let id: string
     try { id = newOperationId('uuid') }
     catch (e) {
@@ -105,7 +107,7 @@ export default function SearchPage() {
     active.current = { id, abort }
     setSearching(true); setQueryError(''); setDescriptionError(false); setRefreshError(''); setEvidenceNotice(false); setAccessError(''); setData(null); setSubmitted(query.trim())
     try {
-      const next = await searchService.query({ query: query.trim(), request_id: id, verify: aiReferenceEnabled(),
+      const next = await searchService.query({ ...(minimum === '' ? {} : { min_similarity: Number(minimum) }), query: query.trim(), request_id: id, verify: aiReferenceEnabled(),
         scope: { channel_ids: selected, from: from!.toISOString(), to: new Date(to!.getTime() + 1000).toISOString() } }, abort.signal)
       if (epoch.current === own) {
         loadedPages.current = [{ cursor: null, ids: next.items.map(i => i.id) }]
@@ -265,10 +267,23 @@ export default function SearchPage() {
           : error ? <p className="text-sm text-ink-subtle">暂时无法读取摄像头列表，请恢复服务后重新检查。</p>
           : !visible.length && <p className="text-sm text-ink-subtle">{channels.length ? '没有匹配的摄像头' : '暂无可搜索的 AI 输出通道，请先配置 AI 通道。'}</p>}
       </fieldset></>}
+      <div className="max-w-xl space-y-1">
+        <label htmlFor="search-minimum" className="text-sm font-medium text-ink">最低相似度</label>
+        <div className="flex flex-wrap items-center gap-3">
+          <input type="range" aria-label="拖动最低相似度" aria-describedby="search-minimum-hint" min="0" max="0.2" step="0.005" value={minimum === '' ? 0 : Number(minimum) || 0} disabled={searching}
+            onChange={e => setMinimum(Number(e.target.value).toFixed(3))} className="h-11 min-w-32 flex-1 cursor-pointer accent-primary focus-visible:outline-primary" />
+          <input id="search-minimum" type="number" inputMode="decimal" min="0" max="0.2" step="0.005" placeholder="不限" value={minimum} disabled={searching}
+            onChange={e => setMinimum(e.target.value)} aria-invalid={!validMinimum} aria-describedby="search-minimum-hint"
+            className="h-11 w-24 rounded-base border border-line bg-surface px-3 text-sm tabular-nums focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
+          <button type="button" disabled={searching} className={button} onClick={() => setMinimum('')}>不限</button>
+        </div>
+        <p id="search-minimum-hint" className="text-xs text-ink-subtle">数值越高，结果越少；不是置信度或概率。0.07 为试用起点，可拖动或输入，点击“搜索录像”生效。</p>
+        {!validMinimum && <p role="alert" className="text-xs text-red-700">请输入 0 到 0.20 之间的数值，或选择不限。</p>}
+      </div>
       <p id="search-description-hint" className="text-xs text-ink-subtle">时间与位置以所选条件为准；描述中的“昨晚”等条件不会自动生效。</p>
             {selected.length > 100 && <p role="alert" className="text-sm text-red-600">单次最多选择 100 个通道，请缩小范围。</p>}
       <div className="flex gap-2">
-        <button type="submit" disabled={loading || !status?.ready || !validRange || !query.trim() || !selected.length || selected.length > 100 || searching} className="inline-flex min-h-11 items-center gap-2 rounded-base bg-primary px-5 text-white disabled:opacity-50"><Search size={18} />{searching ? '正在搜索…' : '搜索录像'}</button>
+        <button type="submit" disabled={!validMinimum || loading || !status?.ready || !validRange || !query.trim() || !selected.length || selected.length > 100 || searching} className="inline-flex min-h-11 items-center gap-2 rounded-base bg-primary px-5 text-white disabled:opacity-50"><Search size={18} />{searching ? '正在搜索…' : '搜索录像'}</button>
         {searching && <button type="button" className={button} onClick={stop}>取消搜索</button>}
       </div>
     </form>

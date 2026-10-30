@@ -37,6 +37,10 @@ function Verification({ value, detail = false, stopped = false }: { value: Searc
     </>}
   </div>
 }
+export function SearchSimilarity({ value }: { value?: number }) {
+  const valid = typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1.00001
+  return <p className="text-xs tabular-nums text-ink-subtle" title="图文向量的余弦相似度，不是概率或已确认匹配；仅用于辅助比较本次候选。">{valid ? `相似度 ${value.toFixed(4)}` : '相似度暂不可用'}</p>
+}
 const frameLabels = { match: '命中时刻', before: '较早采样', after: '较晚采样', context: '其他关键时刻' }
 function stamp(value: string) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
 export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyReason, onAccessDenied }: {
@@ -103,9 +107,10 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
       <h2 className="font-semibold text-ink">已加载 {data.items.length} 条候选</h2>
       <span className="text-xs text-ink-subtle">{coverage}</span>
     </div>
+    <p className="text-xs text-ink-subtle">按图文相似度返回最多 60 条候选，不代表均符合描述。分数不是概率；第一名也可能不匹配。{data.min_similarity === undefined ? '本次不限最低相似度。' : `本次最低相似度 ${data.min_similarity.toFixed(3).replace(/0$/, '')}，低于门槛的候选不显示。`}</p>
     {!data.items.length && <div className="rounded-xl border border-line bg-surface p-6">
-      <h3 className="font-medium">{data.next_cursor ? '本批候选证据已过期或不可用' : '所选范围内暂未找到相关候选'}</h3>
-      <p className="mt-2 text-sm text-ink-subtle">{data.next_cursor ? '可继续加载后续候选。' : '可扩大时间或摄像头范围，或改用更具体的外观描述。'}{coverage}</p>
+      <h3 className="font-medium">{data.next_cursor ? '本批候选证据已过期或不可用' : data.min_similarity === undefined ? '所选范围内暂未找到相关候选' : '所选范围内，没有候选达到当前相似度要求'}</h3>
+      <p className="mt-2 text-sm text-ink-subtle">{data.next_cursor ? '可继续加载后续候选。' : '可降低最低相似度后重新搜索，扩大时间或摄像头范围，或改用更具体的外观描述。'}{coverage}</p>
     </div>}
     {error && error.id !== selectedId && <div role="alert" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
       第 {items.findIndex(i => i.id === error.id) + 1} 条候选的反馈未保存：{error.message}
@@ -127,6 +132,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
             <div className="space-y-1 p-3">
               <p className="truncate text-sm font-medium">{item.channel_name}</p>
               <p className="text-xs text-ink-subtle">{stamp(cover.captured_at)} · {item.kind === 'scene' ? '场景候选' : '目标候选'}</p>
+              <SearchSimilarity value={item.similarity} />
               {aiOn && <Verification value={item.verification} stopped={!!readOnlyReason} />}
             </div>
           </button>
@@ -157,6 +163,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
         <p className="text-xs text-ink-subtle">可在上方切换区左右滑动；图片区域保留缩放与平移手势。</p>
         {readOnlyReason ? <p className="rounded-base bg-surface-page p-4 text-sm text-ink-subtle">证据暂不可访问，请重新搜索。</p> : <SearchEvidenceImage bbox={selected.kind === 'object' ? frame.bbox : undefined} key={frame.id} path={searchImagePath(data.search_id, selected.id, frame.id)} alt={`${frameLabels[frame.role]} ${stamp(frame.captured_at)}`}
           className="flex min-h-40 w-full items-center justify-center rounded-base bg-black/90 [&_img]:h-auto [&_img]:max-h-[55vh] [&_img]:w-auto [&_img]:max-w-full [&>div]:min-h-40" />}
+        <SearchSimilarity value={selected.similarity} />
         <p className="text-sm text-ink-subtle">{frameLabels[frame.role]} · {stamp(frame.captured_at)}</p>
         <div className="flex flex-wrap gap-2" aria-label="关键时刻">
           {selected.frames.map(f => <button type="button" key={f.id} aria-pressed={frame.id === f.id}

@@ -595,3 +595,29 @@ it('pauses AI reference analysis so the model stays free for alarm review', asyn
   await new Promise(resolve => setTimeout(resolve, 50))
   expect(searchService.page).not.toHaveBeenCalled()
 })
+
+it('keeps slider and numeric minimum in sync and submits a frozen search condition', async () => {
+  await ready();
+  const slider = screen.getByRole('slider', { name: '拖动最低相似度' });
+  const numeric = screen.getByRole('spinbutton', { name: '最低相似度' });
+  expect(numeric).toHaveValue(0.07);
+  expect(slider).toHaveAttribute('max', '0.2');
+  expect(slider).toHaveAttribute('step', '0.005');
+  fireEvent.change(slider, { target: { value: '0.075' } });
+  expect(numeric).toHaveValue(0.075);
+  fireEvent.change(slider, { target: { value: '0.15' } });
+  expect(numeric).toHaveValue(0.15);
+  fireEvent.change(numeric, { target: { value: '0.2' } });
+  expect(slider).toHaveValue('0.2');
+  fireEvent.change(screen.getByRole('textbox', { name: '想找什么？' }), { target: { value: '白色衣服' } });
+  vi.mocked(searchService.query).mockResolvedValue({ ...result('minimum-search'), min_similarity: 0.2, items: [] });
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }));
+  await screen.findByText('所选范围内，没有候选达到当前相似度要求');
+  expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.2);
+  fireEvent.click(screen.getByRole('button', { name: '不限' }));
+  expect(numeric).toHaveValue(null);
+  expect(screen.getByText(/本次最低相似度 0.20/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }));
+  await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(searchService.query).mock.calls[1]![0].min_similarity).toBeUndefined();
+});

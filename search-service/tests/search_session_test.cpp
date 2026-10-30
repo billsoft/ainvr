@@ -46,6 +46,15 @@ int main() {
     auto history = std::make_unique<HistoryMongo>(uri, database); history->Initialize();
     for (int n = 10; n < 16; ++n) history->Put(Make(n, at + n));
     SearchSessionRequest request{Id(40), "operator", "背黑色双肩包的人", "pair-v1", {{channel}, at, at + 100, 60}, true, Now() + 3600000};
+    auto threshold = request; threshold.id = Id(400); threshold.min_similarity = 0.8;
+    const auto threshold_version = history->BeginSearch(threshold);
+    auto changed_threshold = threshold; changed_threshold.min_similarity = 0.7;
+    Reject([&] { history->BeginSearch(changed_threshold); });
+    Reject([&] { history->PublishSearch(threshold.id, threshold.actor, threshold_version, {{Id(10), 0.79}}, "sampled"); });
+    history->PublishSearch(threshold.id, threshold.actor, threshold_version, {{Id(10), 0.8}}, "sampled");
+    auto reopened = std::make_unique<HistoryMongo>(uri, database);
+    auto threshold_page = reopened->ReadSearch(threshold.id, threshold.actor);
+    Check(threshold_page && threshold_page->request.min_similarity == 0.8 && threshold_page->items.size() == 1, "minimum lost after reopen");
     const auto version = history->BeginSearch(request);
     Check(history->BeginSearch(request) == version, "duplicate query changed generation");
     auto changed = request; changed.query = "different"; Reject([&] { history->BeginSearch(changed); });

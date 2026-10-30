@@ -42,7 +42,7 @@ function fixture(options: Partial<PersistentSearchOptions> = {}) {
       const old = sessions.get(k);
       if (old) return old.version;
       sessions.set(k, { search_id: input.request_id, version, query: input.query, model_version: model,
-        verify: input.verify, scope: structuredClone(input.scope), expires_ms: expires, published: false, coverage: 'unknown', items: [], next_offset: null });
+        min_similarity: input.min_similarity, verify: input.verify, scope: structuredClone(input.scope), expires_ms: expires, published: false, coverage: 'unknown', items: [], next_offset: null });
       return version;
     }),
     publishSearch: vi.fn(async (id, actor, revision, state, candidates) => {
@@ -455,4 +455,30 @@ it('never hides an overlapping pending interval or gap under a sampled interval'
     expect((await f.worker.coverage(scope, 'operator')).state).toBe('partial');
     expect((await f.worker.query(query, 'operator')).coverage).toBe('partial');
   }
+});
+
+it('preserves raw cosine similarity through query, page and detail without treating it as confidence', async () => {
+  const f = fixture();
+  f.native.match = async () => ({ model_version: 'pair-v1', partial: false, items: [{ ...sample(1), similarity: 0.13 }, { ...sample(2), similarity: -0.08 }] });
+  const first = await f.worker.query(query, 'operator');
+  expect(first.items.map(i => i.similarity)).toEqual([0.13, -0.08]);
+  expect((await f.worker.page(requestId, undefined, 'operator'))!.items[0]!.similarity).toBe(0.13);
+  expect((await f.worker.result(requestId, id(101), 'operator'))!.item.similarity).toBe(0.13);
+});
+
+it('filters before snapshot pagination and binds the minimum to the request identity', async () => {
+  const f = fixture();
+  const first = await f.worker.query({ ...query, min_similarity: 0.98 }, 'operator');
+  expect(first.items.map(i => i.similarity)).toEqual([0.99, 0.98]);
+  expect(first.min_similarity).toBe(0.98);
+  expect((await f.worker.page(requestId, undefined, 'operator'))!.items).toHaveLength(2);
+  expect(await f.worker.result(requestId, id(103), 'operator')).toBeNull();
+  await expect(f.worker.query({ ...query, min_similarity: 0.97 }, 'operator')).rejects.toMatchObject({ code: 'search_conflict' });
+});
+it('returns a genuine empty snapshot when every score is below the minimum', async () => {
+  const f = fixture();
+  const page = await f.worker.query({ ...query, min_similarity: 1 }, 'operator');
+  expect(page.items).toEqual([]); expect(page.next_cursor).toBeNull();
+  for (const min_similarity of [NaN, Infinity, -1.01, 1.01])
+    await expect(f.worker.query({ ...query, min_similarity }, 'operator')).rejects.toBeDefined();
 });

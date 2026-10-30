@@ -153,7 +153,7 @@ export class PersistentSearchWorker implements SearchWorker {
       this.activeQueryActors.add(actor); admitted = true;
       await this.authorize(input.scope, actor);
       let snapshot = await this.options.native.readSearch(input.request_id, actor);
-      if (snapshot && (snapshot.query !== input.query || snapshot.verify !== input.verify || !sameSearchScope(snapshot.scope, input.scope)))
+      if (snapshot && (snapshot.min_similarity !== input.min_similarity || snapshot.query !== input.query || snapshot.verify !== input.verify || !sameSearchScope(snapshot.scope, input.scope)))
         throw new PersistentSearchError('search_conflict', 409, '这次搜索的条件已改变，请重新搜索');
       if (snapshot?.published) { if (snapshot.verify) this.wakeVerification(); return await this.project(snapshot, actor); }
       const status = await this.status();
@@ -172,7 +172,7 @@ export class PersistentSearchWorker implements SearchWorker {
         // published after loss of a channel grant.
         await this.authorize(input.scope, actor);
         await this.options.native.publishSearch(input.request_id, actor, version, coverage,
-          hits.items.map(item => ({ sample_id: item.id, similarity: item.similarity, ...(item.fingerprint ? { fingerprint: item.fingerprint } : {}), ...(item.evidence_refs ? { evidence_refs: item.evidence_refs } : {}) })));
+          hits.items.filter(item => input.min_similarity === undefined || item.similarity >= input.min_similarity).map(item => ({ sample_id: item.id, similarity: item.similarity, ...(item.fingerprint ? { fingerprint: item.fingerprint } : {}), ...(item.evidence_refs ? { evidence_refs: item.evidence_refs } : {}) })));
       }
       const page = await this.options.native.readSearch(input.request_id, actor);
       if (!page) throw expired();
@@ -207,6 +207,7 @@ export class PersistentSearchWorker implements SearchWorker {
     const availability = this.options.verificationAvailability?.();
     const unavailable = snapshot.verify && ordinal < 5 && availability?.available === false;
     return projection(searchResultSchema, {
+      similarity: sample.similarity,
       id: sample.id, channel_id: sample.channel_id, channel_name: visible.get(sample.channel_id),
       source_input_id: sample.evidence.source_input_id, processor_id: sample.processor_id || null,
       output_channel_id: sample.evidence.output_channel_id, kind: sample.kind,
@@ -233,7 +234,7 @@ export class PersistentSearchWorker implements SearchWorker {
     for (const [index, sample] of snapshot.items.entries()) items.push(await this.resultProjection(sample, snapshot, actor, visible, signal, offset + index));
     const current = await this.authorize(snapshot.scope, actor);
     if (items.some(item => item.recording.channel_id && !current.has(item.recording.channel_id))) throw noAccess();
-    return projection(searchPageSchema, { search_id: snapshot.search_id, scope: snapshot.scope, model_version: snapshot.model_version,
+    return projection(searchPageSchema, { min_similarity: snapshot.min_similarity, search_id: snapshot.search_id, scope: snapshot.scope, model_version: snapshot.model_version,
       coverage: snapshot.coverage, items, next_cursor: snapshot.next_offset === null ? null : `v1.${snapshot.next_offset}` });
   }
   async page(id: string, cursor: string | undefined, actor: string): Promise<SearchPage | null> {

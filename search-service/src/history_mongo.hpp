@@ -43,6 +43,7 @@ struct SearchSessionRequest {
   Scope scope;
   bool verify = false;
   int64_t expires_ms = 0;
+  std::optional<double> min_similarity = std::nullopt;
 };
 struct SearchSessionEvidenceRef { std::string sample_id, fingerprint; };
 struct SearchSessionCandidate { std::string sample_id; double similarity; std::string fingerprint{}; std::vector<SearchSessionEvidenceRef> evidence_refs{}; };

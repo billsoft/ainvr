@@ -69,6 +69,7 @@ const rangeSchema = z.object({
 export type NativeCoverageRange = z.infer<typeof rangeSchema>;
 export interface NativeSearchSession {
   search_id: string; version: string; query: string; model_version: string;
+  min_similarity?: number;
   verify: boolean; expires_ms: number; published: boolean;
   coverage: 'unknown' | 'partial' | 'sampled'; scope: SearchScope;
   items: (NativeSample & { similarity: number; feedback: boolean | null; verification?: SearchVerificationView; frames?: z.infer<typeof nativeFramesSchema>; started_ms?: number; ended_ms?: number })[];
@@ -78,6 +79,7 @@ const actorSchema = z.string().min(1).max(128).refine(value => !/[\u0000-\u001f\
 const versionSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const nativeSessionSchema = z.object({
   search_id: identity, version: versionSchema, query: z.string().min(1).max(1024), model_version: model,
+  min_similarity: z.number().finite().min(-1).max(1).optional(),
   verify: z.boolean(), expires_ms: integer, published: z.boolean(), coverage: z.enum(['unknown', 'partial', 'sampled']),
   scope: z.object({ channel_ids: z.array(identity).min(1).max(100), from_ms: integer, to_ms: integer, limit: z.literal(60) }).strict(),
   items: z.array(z.object({ similarity: z.number().finite().min(-1.00001).max(1.00001), feedback: z.boolean().nullable(), verification: searchVerificationViewSchema.optional() }).passthrough()).max(60),
@@ -351,7 +353,7 @@ export class SearchNativeClient {
     try {
       return z.object({ version: versionSchema }).strict().parse(await this.json('/v1/searches/begin', {
         id: query.request_id, actor, query: query.query, scope: nativeScope(query.scope), model_version: modelVersion,
-        verify: query.verify, expires_ms: expiresMs,
+        verify: query.verify, expires_ms: expiresMs, ...(query.min_similarity === undefined ? {} : { min_similarity: query.min_similarity }),
       })).version;
     } catch (error) { if (error instanceof SearchNativeError) throw error; throw new SearchNativeError('invalid_response'); }
   }

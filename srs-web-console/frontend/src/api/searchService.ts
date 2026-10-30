@@ -19,6 +19,8 @@ export type SearchBoundingBox = [number, number, number, number]
 export interface SearchFrame { id: string; captured_at: string; role: 'match' | 'before' | 'after' | 'context'; bbox?: SearchBoundingBox }
 export interface SearchCoverage { state: 'unknown' | 'partial' | 'sampled'; scope: SearchScope; ranges: { channel_id: string; from: string; to: string; kind: 'object' | 'scene'; state: 'sampled' | 'pending' | 'gap' }[] }
 export interface SearchResult {
+  /** Raw cosine similarity, not confidence; absent on older servers. */
+  similarity?: number
   id: string; channel_id: string; channel_name: string
   source_input_id: string; processor_id: string | null; output_channel_id: string | null
   kind: 'object' | 'scene'; started_at: string; ended_at: string; frames: SearchFrame[]
@@ -27,10 +29,11 @@ export interface SearchResult {
   feedback: 'relevant' | 'irrelevant' | null
 }
 export interface SearchPageResult {
+  min_similarity?: number
   search_id: string; scope: SearchScope; model_version: string
   coverage: 'unknown' | 'partial' | 'sampled'; items: SearchResult[]; next_cursor: string | null
 }
-export interface SearchQuery { query: string; scope: SearchScope; verify: boolean; request_id: string }
+export interface SearchQuery { min_similarity?: number; query: string; scope: SearchScope; verify: boolean; request_id: string }
 const root = (id: string) => `/search/${encodeURIComponent(id)}`
 const item = (id: string, result: string) => `${root(id)}/results/${encodeURIComponent(result)}`
 export const searchImagePath = (id: string, result: string, frame: string) => `${item(id, result)}/images/${encodeURIComponent(frame)}`
