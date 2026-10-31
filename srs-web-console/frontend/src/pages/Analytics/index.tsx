@@ -15,6 +15,8 @@ import { WeekHourPanel } from './WeekHourPanel'
 import { DwellPanel } from './DwellPanel'
 import type { HeatVariant } from './RegionHeatPanel'
 import { zoneKey, type MapReading, type ZoneInfo } from './plan/planModel'
+import { AnalyticsSubjectSwitch } from './AnalyticsSubjectSwitch'
+import AlarmAnalyticsPage from './AlarmAnalyticsPage'
 
 const button = 'btn-secondary !min-h-7 !px-2.5 !py-1 text-xs aria-pressed:border-primary aria-pressed:bg-primary-50 aria-pressed:text-primary [@media(pointer:coarse)]:!min-h-11'
 const tabs = [['overview','总览'],['flow','客流'],['heat','热区'],['week','规律']] as const
@@ -47,6 +49,10 @@ function Kpi({ label, value, children }: { label: string; value: ReactNode; chil
   </div>
 }
 export default function AnalyticsPage() {
+  const [params]=useSearchParams()
+  return params.get('subject')==='alarms'?<AlarmAnalyticsPage/>:<FlowAnalyticsPage/>
+}
+function FlowAnalyticsPage() {
   const [params,setParams]=useSearchParams()
   const tab=tabs.find(t=>t[0]===params.get('tab'))?.[0] ?? 'overview'
   const preset=(presets.find(p=>p[0]===params.get('range'))?.[0] ?? 'today') as Preset
@@ -215,6 +221,7 @@ export default function AnalyticsPage() {
   return <main className="alarm-workspace flex min-h-0 flex-col gap-2 overflow-auto lg:h-full lg:overflow-hidden">
     <header aria-label="统计筛选与操作" className="flex shrink-0 flex-wrap items-center gap-2">
       <h1 className="text-lg font-semibold leading-7 text-ink">统计分析</h1>
+      <AnalyticsSubjectSwitch locations={locations} disabled={counters===null&&!configError}/>
       <details className="relative">
         <summary className={button + ' cursor-pointer list-none [&::-webkit-details-marker]:hidden'}>计数器 {counterIds.length}/{counters?.length ?? 0}<ChevronDown size={14} aria-hidden="true" /></summary>
         <div className="ui-panel absolute left-0 top-full z-30 mt-1 max-h-72 w-72 overflow-auto p-1.5 shadow-lg">

@@ -25,7 +25,7 @@ export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxy
         return reply.code(503).send({error: {code: 'invalid_principal', message: '无法确定操作身份'}});
       const query = req.query as Record<string, unknown>;
       if (Object.keys(query).some(k => !queryKeys.includes(k)) ||
-          Object.values(query).some(v => typeof v !== 'string' || v.length > 4096))
+          Object.entries(query).some(([k,v]) => typeof v !== 'string' || v.length > (k === 'analytics' ? 8192 : 4096)))
         return reply.code(400).send({error: {code: 'invalid_query', message: '查询参数无效'}});
       const key = req.headers['idempotency-key'];
       if (mutation && (typeof key !== 'string' || !/^[a-zA-Z0-9_:.-]{1,128}$/.test(key)))
@@ -59,9 +59,10 @@ export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxy
   app.get('/alarms/behavior-statistics', forward(() => '/v1/behavior-statistics', ['from','to','channel_id','zone_id','label_id','event_type','bucket','timezone','rule_id','trigger_id','group_by']));
   app.get('/alarms/behavior-events', forward(() => '/v1/behavior-events', ['from','to','channel_id','zone_id','label_id','event_type','limit','cursor','rule_id','trigger_id']));
   app.get('/alarms/behavior-events/:id', forward(req => `/v1/behavior-events/${encodeURIComponent((req.params as {id:string}).id)}`));
-  app.get('/alarms/events', forward(() => '/v1/events', ['status', 'channel_id', 'review', 'disposition', 'limit', 'cursor', 'from', 'to', 'zone_id', 'behavior', 'locations']));
+  app.get('/alarms/events', forward(() => '/v1/events', ['status', 'channel_id', 'review', 'disposition', 'limit', 'cursor', 'from', 'to', 'zone_id', 'behavior', 'locations', 'analytics']));
   app.get('/alarms/events/summary', forward(() => '/v1/events/summary'));
   app.post('/alarms/events/statistics', forward(() => '/v1/events/statistics'));
+  app.post('/alarms/events/analytics', {bodyLimit:16384}, forward(() => '/v1/events/analytics'));
   app.post('/flow/dwell', forward(() => '/v1/flow/dwell'));
   app.post('/flow/heat', forward(() => '/v1/flow/heat'));
   app.get('/alarms/events/:id', forward(idPath()));

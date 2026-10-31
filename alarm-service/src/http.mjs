@@ -11,9 +11,9 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
   if(consumer&&(!producerToken||producerToken.length<32||tokenEquals(apiToken,producerToken)))throw Error('Independent producer credential required');
   const app=Fastify({logger:false,bodyLimit:1024*1024});
   app.setErrorHandler((error,req,reply)=>{
-    const status=error instanceof DomainError?error.status:error.statusCode===400?400:503;
-    reply.code(status).send({error:{code:error instanceof DomainError?error.code:status===400?'invalid_request':'service_unavailable',
-      message:error instanceof DomainError?error.message:status===400?'Invalid request':'Service unavailable',retryable:status===503},request_id:req.id});
+    const status=error instanceof DomainError?error.status:error.statusCode===400?400:error.statusCode===413?413:503;
+    reply.code(status).send({error:{code:error instanceof DomainError?error.code:status===400?'invalid_request':status===413?'request_too_large':'service_unavailable',
+      message:error instanceof DomainError?error.message:status===400?'Invalid request':status===413?'Request too large':'Service unavailable',retryable:status===503},request_id:req.id});
   });
   app.addHook('onRequest',async(req,reply)=>{
     // Loopback-only supervisor probes expose a Boolean, never business data.
@@ -89,9 +89,14 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
     const data=await repository.evidenceVault.image(req.params.id,req.query.variant??'processed');
     return reply.header('Cache-Control','private, no-store').type('image/jpeg').send(data);
   });
-  app.get('/v1/events',async req=>repository.list({...req.query,limit:req.query.limit===undefined?50:Number(req.query.limit)}));
+  app.get('/v1/events',async req=>{
+    const allowed=new Set(['status','channel_id','review','disposition','from','to','zone_id','behavior','locations','analytics','limit','cursor']);
+    if(Object.keys(req.query).some(k=>!allowed.has(k)))fail('invalid_query','Unsupported alarm filter');
+    return repository.list({...req.query,limit:req.query.limit===undefined?50:Number(req.query.limit)});
+  });
   app.get('/v1/events/summary',async()=>repository.pendingSummary());
   app.post('/v1/events/statistics',async req=>repository.statistics(req.body));
+  app.post('/v1/events/analytics',{bodyLimit:16384},async req=>repository.analytics(req.body));
   app.post('/v1/events/purge',async req=>{
     if(!req.body||Object.keys(req.body).length!==1||req.body.scope!=='all')fail('invalid_request','Explicit all scope required');
     const who=actor(req),key=identity(req.headers['idempotency-key'],'Idempotency-Key');

@@ -40,7 +40,7 @@ export default function AlarmListPage(){
  const rangeTouched=useRef(false)
  const clearScope=()=>{
   const params=new URLSearchParams(location.search)
-  for(const key of ['from','to','locations','status'])params.delete(key)
+  for(const key of ['from','to','locations','status','analytics_scope'])params.delete(key)
   setStatus('pending');setChannel('');setRange('all');setLevel('');setReview('');rangeTouched.current=false
   navigate({pathname:location.pathname,search:params.toString()? `?${params}` : ''})
  }
@@ -65,7 +65,7 @@ export default function AlarmListPage(){
  useEffect(()=>{let active=true;const poll=()=>{if(document.hidden)return;void alarmEventService.summary().then(r=>{if(active){setReference(r.reference??null);setAutomaticReview(r.automatic_review?.mode==='confirm_only')}}).catch(()=>{if(active){setReference(null);setAutomaticReview(false)}})};poll();const timer=setInterval(poll,15000);return()=>{active=false;clearInterval(timer)}},[])
  const [today,setToday]=useState<Record<string,number>|null>(null)
  const filters=useMemo<AlarmFilters>(()=>({...(review?{disposition:review}:{}),...(level?{behavior:level}:{}),
-  ...(scope.kind==='valid'?{from:scope.from,to:scope.to,locations:scope.locations}:{...(channel?{channel_id:channel}:{}),...(rangeFrom(range)?{from:rangeFrom(range)}:{})})}),[channel,level,range,review,scope])
+  ...(scope.kind==='valid'?(scope.analytics?{analytics:JSON.stringify(scope.analytics)}:{from:scope.from,to:scope.to,locations:scope.locations}):{...(channel?{channel_id:channel}:{}),...(rangeFrom(range)?{from:rangeFrom(range)}:{})})}),[channel,level,range,review,scope])
  const live=useRef(true)
  useEffect(()=>{live.current=true;return()=>{live.current=false}},[])
  useEffect(()=>{
@@ -200,7 +200,7 @@ export default function AlarmListPage(){
  }
  const groups=[...rows.reduce((map,a)=>{const zone=a.stages?.at(-1)?.zone_id??'frame';const key=JSON.stringify([a.channel_id,zone,Math.floor(Date.parse(a.occurred_at)/60000)]);map.set(key,[...(map.get(key)??[]),a]);return map},new Map<string,AlarmEvent[]>()).entries()]
  const pending=rows.filter(r=>r.handling.state!=='acknowledged')
- const askBulk=()=>setBulk({phase:'asking',items:pending.slice(0,200).map(r=>({alarm_id:r.alarm_id,expected_handling_revision:r.handling.revision})),key:newAlarmOperationId(),scope:scope.kind==='valid'?`统计范围 · ${scope.locations.length} 个位置 · ${scope.from} 至 ${scope.to}`:`${channel?channelName(channel):'全部通道'} · ${triggerBehaviors.find(b=>b.id===level)?.name??'全部级别'} · ${range==='all'?'全部时间':range==='today'?'今天':'近7天'}`})
+ const askBulk=()=>setBulk({phase:'asking',items:pending.slice(0,200).map(r=>({alarm_id:r.alarm_id,expected_handling_revision:r.handling.revision})),key:newAlarmOperationId(),scope:scope.kind==='valid'?`统计范围 · ${scope.locations.length ? scope.locations.length + ' 个位置' : '全部位置'} · ${scope.from} 至 ${scope.to}`:`${channel?channelName(channel):'全部通道'} · ${triggerBehaviors.find(b=>b.id===level)?.name??'全部级别'} · ${range==='all'?'全部时间':range==='today'?'今天':'近7天'}`})
  const confirmAll=async()=>{
   if(!bulk||bulk.phase==='working')return
   const batch=bulk;setBulk({...batch,phase:'working'})
@@ -231,9 +231,18 @@ export default function AlarmListPage(){
    <PtzProtectionNotice/>
    <div className="space-y-3 px-4 pb-3 pt-4 md:px-6">
     {scope.kind!=='none'&&<div role={scope.kind==='invalid'?'alert':'status'} className="rounded-panel border border-line bg-surface p-3 text-sm">
-     {scope.kind==='valid'?<>统计范围：{scope.from} 至 {scope.to}（结束时间不含），{scope.locations.length} 个位置。通道和时间已固定，可按处理状态、结论和级别继续筛选。</>:<>统计范围无效或不完整，无法读取告警。请返回统计页重新打开，或清除范围。</>}
+    {scope.kind==='valid'?<>统计范围：{scope.from} 至 {scope.to}（结束时间不含），{scope.locations.length?`${scope.locations.length} 个位置`:'全部位置（含未关联）'}。{scope.analytics?'保留统计页的触发器、主类型、审核及规律条件；下方筛选在此范围内继续缩小。':'通道和时间已固定，可按处理状态、结论和级别继续筛选。'}</>:<>统计范围无效或不完整，无法读取告警。请返回统计页重新打开，或清除范围。</>}
      <button type="button" onClick={clearScope} className="btn-secondary ml-3 !min-h-11">清除统计范围</button>
-     {scope.kind==='valid'&&<details className="mt-2"><summary className="min-h-11 cursor-pointer">查看统计位置</summary><ul>{scope.locations.map((pair,index)=><li key={index}>{channelName(pair.channel_id)} · {pair.zone_id}</li>)}</ul></details>}
+     {scope.kind==='valid'&&scope.analytics&&<p className="mt-2 break-words text-xs text-ink-subtle">固定统计条件：{[
+      scope.analytics.audit&&({pending:'待审核',human_confirmed:'人工确认',human_false_positive:'人工判为误报',ai_reviewed:'AI 已审核',unknown:'审核主体/结论未知'}[scope.analytics.audit]),
+      scope.analytics.trigger_id&&`触发器 ${triggers.find(t=>t.trigger_id===scope.analytics?.trigger_id)?.name??scope.analytics.trigger_id}`,
+      scope.analytics.primary_type&&`最高阶段 ${triggerBehaviors.find(b=>b.id===scope.analytics?.primary_type)?.name??scope.analytics.primary_type}`,
+      scope.analytics.weekday!==undefined&&['周一','周二','周三','周四','周五','周六','周日'][scope.analytics.weekday],
+      scope.analytics.hour!==undefined&&`${scope.analytics.hour}:00—${scope.analytics.hour+1}:00`,
+      scope.analytics.association==='unassociated'&&'未关联热区',
+      scope.analytics.timezone,
+     ].filter(Boolean).join(' · ')}。处理状态“全部”表示这些固定条件内的全部记录。</p>}
+     {scope.kind==='valid'&&scope.locations.length>0&&<details className="mt-2"><summary className="min-h-11 cursor-pointer">查看统计位置</summary><ul>{scope.locations.map((pair,index)=><li key={index}>{channelName(pair.channel_id)} · {pair.zone_id}</li>)}</ul></details>}
     </div>}
     <div className="flex flex-wrap items-center gap-3">
      <div role="group" aria-label="处理状态" className="flex gap-1 rounded-base border border-line bg-surface p-1">{([['pending','未审核'],['human','已人工审核'],['ai','已 AI 审核'],['all','全部']] as const).map(([id,label])=>

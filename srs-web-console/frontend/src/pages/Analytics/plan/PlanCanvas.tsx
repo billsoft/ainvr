@@ -10,10 +10,10 @@ export type PlanTool = 'select' | 'room' | 'line' | 'label'
 export interface PlanCanvasProps {
   plan: Plan | null
   zones: ZoneInfo[]
-  /** Values from one explicitly chosen counter and direction; absent means unknown. */
   /** Count-derived display field, independent of the editable placement outlines. */
   heat?: number[][]
   heatMin?: number
+  heatPalette?: 'flow' | 'alarm'
   /** Source-coordinate inset in a planned display box, never a ground projection. */
   sourceHeat?: {zoneKey:string;variant:HeatVariant}|null
   selectedKey: string | null
@@ -117,7 +117,8 @@ export function PlanCanvas(props: PlanCanvasProps) {
             const value = heat[y]![x] ?? 0
             if (!Number.isFinite(value) || value <= .06 || value < (props.heatMin ?? 0)) continue
             const t = Math.min(1, value)
-            context.fillStyle = `hsla(${Math.round(220 * (1 - t))},90%,50%,${(.12 + .58 * t).toFixed(3)})`
+            const hue=props.heatPalette==='alarm'?45*(1-t):220*(1-t)
+            context.fillStyle = `hsla(${Math.round(hue)},90%,50%,${(.12 + .58 * t).toFixed(3)})`
             context.fillRect(x * cw, y * ch, cw + .5, ch + .5)
           }
         }} />

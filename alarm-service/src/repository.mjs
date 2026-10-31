@@ -5,6 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {FlowStatistics} from './flow-statistics.mjs';
 import {DwellQuery} from './dwell-query.mjs';
 import {RegionHeatQuery} from './region-heat-query.mjs';
+import {normalizeAnalytics,analyticsFilter,queryAlarmAnalytics} from './alarm-analytics.mjs';
 import {BehaviorEvents} from './behavior-events.mjs';
 import {RuleSnapshots} from './rule-snapshots.mjs';
 import {stageRank} from './episodes.mjs';
@@ -203,7 +204,8 @@ export class AlarmRepository {
     const counts=items=>Object.fromEntries((items??[]).map(item=>[item._id,item.count]));
     return {total:row?.total?.[0]?.count??0,as_of,handling:counts(row?.handling),review:counts(row?.review),association:{unassociated:row?.unassociated?.[0]?.count??0}};
   }
-  async list({status='pending',channel_id,review,disposition,from,to,zone_id,behavior,locations,limit=50,cursor}={}) {
+  async analytics(input){return queryAlarmAnalytics(this,input)}
+  async list({status='pending',channel_id,review,disposition,from,to,zone_id,behavior,locations,analytics,limit=50,cursor}={}) {
     if(!['pending','all','acknowledged','human','ai'].includes(status))fail('invalid_filter','status');
     if(!Number.isInteger(limit)||limit<1||limit>200)fail('invalid_limit','limit');
     if(disposition&&!['handled','false_positive'].includes(disposition))fail('invalid_filter','disposition');
@@ -215,8 +217,10 @@ export class AlarmRepository {
     if((from!==undefined&&(!Number.isFinite(start)||typeof from!=='string'))||(to!==undefined&&(!Number.isFinite(end)||typeof to!=='string'))||(start!==null&&end!==null&&end<=start))fail('invalid_time_range','Invalid alarm time range');
     if(locations!==undefined&&(channel_id!==undefined||zone_id!==undefined))fail('invalid_filter','locations cannot be combined with channel_id or zone_id');
     const pairs=locations===undefined?null:locationPairs(locations);
+    const analyticsScope=analytics===undefined?null:normalizeAnalytics(analytics);
     const filters=[status,disposition??null,channel_id??null,review??null,from??null,to??null,zone_id??null,behavior??null];
     if(pairs)filters.push(pairs);
+    if(analyticsScope)filters.push({analytics:analyticsScope});
     const signature=digest(filters);
     let page={as_of:this.clock()};
     if(cursor) {
@@ -232,7 +236,7 @@ export class AlarmRepository {
     if(from!==undefined||to!==undefined)query.occurred_at={...(start!==null?{$gte:new Date(start).toISOString()}:{}),...(end!==null?{$lt:new Date(end).toISOString()}:{})};
     if(status==='pending')Object.assign(query,pendingFilter());
     if(status==='acknowledged')query['handling.state']='acknowledged';
-    if(status==='human')Object.assign(query,{'handling.state':'acknowledged','handling.reviewed_by_kind':{$ne:'ai'}});
+    if(status==='human')Object.assign(query,{'handling.state':'acknowledged','handling.reviewed_by_kind':analyticsScope?'human':{$ne:'ai'}});
     if(status==='ai')Object.assign(query,{'handling.state':'acknowledged','handling.reviewed_by_kind':'ai'});
     if(disposition){
       if(status==='pending')return {items:[],next_cursor:null,as_of:page.as_of};
@@ -240,15 +244,22 @@ export class AlarmRepository {
     }
     if(review)query['review.state']=review;
     if(page.alarm_id)query.$or=[{occurred_at:{$lt:page.occurred_at}},{occurred_at:page.occurred_at,alarm_id:{$lt:page.alarm_id}}];
-    const rows=await this.events.find(query,{projection:{_id:0,operations:0,logs:0,'rule.snapshot':0,analysis_evidence:0,model_snapshot:0}})
+    // Additional list controls intersect the analytical scope; they can never replace it.
+    const rows=analyticsScope?await this.events.aggregate([
+      {$match:{$and:[query,analyticsFilter(analyticsScope,page.as_of)]}},
+      {$sort:{occurred_at:-1,alarm_id:-1}},{$limit:limit+1},
+      {$set:{rule:{$mergeObjects:['$rule',{snapshot:{zone_id:{$ifNull:['$rule.snapshot.zone_id',null]}}}]}}},
+      {$project:{_id:0,operations:0,logs:0,analysis_evidence:0,model_snapshot:0}}
+    ],{maxTimeMS:5000,allowDiskUse:false}).toArray():await this.events.find(query,{projection:{_id:0,operations:0,logs:0,'rule.snapshot':0,analysis_evidence:0,model_snapshot:0}})
       .sort({occurred_at:-1,alarm_id:-1}).limit(limit+1).toArray();
     const more=rows.length>limit;const items=rows.slice(0,limit),last=items.at(-1);
     return {items,next_cursor:more?Buffer.from(JSON.stringify({signature,as_of:page.as_of,occurred_at:last.occurred_at,alarm_id:last.alarm_id})).toString('base64url'):null,as_of:page.as_of};
   }
-  async listRules(channel_id) {
-    const snapshot=await this.ruleSnapshots.current();
+  async listRules(channel_id,{limit=1000,maxTimeMS}={}) {
+    const displayFields=['id','trigger_id','channel_id','zone_id','zone_name','name','behavior','alarm_enabled'];
+    const snapshot=maxTimeMS?await this.ruleSnapshots.collection.findOne({_id:'active'},{maxTimeMS,projection:Object.fromEntries(displayFields.map(k=>['rules.'+k,1]))}):await this.ruleSnapshots.current();
     if(snapshot)return snapshot.rules.filter(rule=>!channel_id||rule.channel_id===channel_id);
-    return (await this.rules.find(channel_id?{channel_id}:{}).limit(1000).toArray()).map(withoutInternal);
+    return (await this.rules.find(channel_id?{channel_id}:{},maxTimeMS?{maxTimeMS,projection:Object.fromEntries(displayFields.map(k=>[k,1]))}:{}).limit(limit).toArray()).map(withoutInternal);
   }
   async saveRule(input,expected,actor) {
     if(await this.ruleSnapshots.current())fail('configuration_managed','Rules are managed by the PostgreSQL configuration authority',409);

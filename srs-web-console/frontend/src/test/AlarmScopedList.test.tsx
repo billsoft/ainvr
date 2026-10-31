@@ -20,6 +20,16 @@ const alarm=(id:string,channel='a',zone='x',at='2026-10-01T12:00:00Z'):AlarmEven
 function ChangeUrl(){const navigate=useNavigate();return <button onClick={()=>navigate('/alarms?status=all&from=bad&to=bad&locations=bad')}>invalid link</button>}
 beforeEach(()=>{vi.clearAllMocks();vi.mocked(alarmEventService.list).mockResolvedValue({items:[],next_cursor:null,as_of:'now'})})
 afterEach(()=>vi.useRealTimers())
+it('forwards the complete analytics scope to server pagination and clears it explicitly',async()=>{
+ const analytics={from,to,timezone:'Asia/Shanghai',bucket:'hour',trigger_id:'door',audit:'pending',weekday:3,hour:20}
+ render(<MemoryRouter initialEntries={['/alarms?'+new URLSearchParams({status:'all',analytics_scope:JSON.stringify(analytics)})]}><AlarmListPage/></MemoryRouter>)
+ await waitFor(()=>expect(alarmEventService.list).toHaveBeenCalledWith('all',undefined,{analytics:JSON.stringify(analytics)}))
+ expect(screen.getByText(/保留统计页的触发器/)).toHaveTextContent('全部位置')
+ fireEvent.click(screen.getByRole('button',{name:'已人工审核'}))
+ await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('human',undefined,{analytics:JSON.stringify(analytics)}))
+ fireEvent.click(screen.getByRole('button',{name:'清除统计范围'}))
+ await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith(expect.any(String),undefined,expect.not.objectContaining({analytics:JSON.stringify(analytics)})))
+})
 it('loads the fixed pair scope and keeps it while status and conclusion refine results',async()=>{
  render(<MemoryRouter initialEntries={[url]}><AlarmListPage/></MemoryRouter>)
  await waitFor(()=>expect(alarmEventService.list).toHaveBeenCalledWith('all',undefined,{from,to,locations}))

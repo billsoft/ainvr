@@ -12,10 +12,10 @@ import { loadDraft, readImage, saveDraft } from './planStorage'
 
 const seg = 'btn-secondary !px-2.5 !py-1 text-xs aria-pressed:border-primary aria-pressed:bg-primary-50 aria-pressed:text-primary'
 const field = 'form-input !w-24 !py-1 text-xs'
-interface Props { zones: ZoneInfo[]; counters: { id: string; name: string }[]; counts: Record<string, number>; countLabel?: string; sourceHeat?:PlanCanvasProps['sourceHeat']; onClose: () => void; server?: { draft: PlanDraft; save: (draft: PlanDraft) => Promise<void>; reload: () => Promise<PlanDraft> } }
+interface Props { context?: 'flow' | 'alarm'; zones: ZoneInfo[]; counters: { id: string; name: string }[]; counts: Record<string, number>; countLabel?: string; sourceHeat?:PlanCanvasProps['sourceHeat']; onClose: () => void; server?: { draft: PlanDraft; save: (draft: PlanDraft) => Promise<void>; reload: () => Promise<PlanDraft> } }
 
 /** 平面图编辑：导入底图、画房间/线/文字、把热区摆到平面图上。一个热区可以出现在多张平面图上。 */
-export function FloorPlanEditor({ zones, counters, counts, countLabel, onClose, server, sourceHeat }: Props) {
+export function FloorPlanEditor({ context = 'flow', zones, counters, counts, countLabel, onClose, server, sourceHeat }: Props) {
   const [initial, setInitial] = useState(() => loadDraft())
   const [draft, setDraft] = useState<PlanDraft>(() => server ? (server.draft.plans.length ? server.draft : addPlan(emptyDraft(), '', zones)) : initial.draft.plans.length ? initial.draft : addPlan(emptyDraft(), '', zones))
   const [saving, setSaving] = useState(false)
@@ -23,7 +23,7 @@ export function FloorPlanEditor({ zones, counters, counts, countLabel, onClose, 
   const { requestDiscard, dialog: discardDialog } = useDiscardConfirmation()
   const [confirmation, setConfirmation] = useState<{ kind: 'import'; plans: Plan[] } | { kind: 'delete'; id: string; name: string } | null>(null)
   const [dirty, setDirty] = useState(false), [notice, setNotice] = useState(initial.status === 'invalid' ? '本机草稿无法读取，已忽略' : ''), [error, setError] = useState('')
-  const [mode, setMode] = useState<'counter' | 'zone'>('counter'), [tool, setTool] = useState<PlanTool>('select')
+  const [mode, setMode] = useState<'counter' | 'zone'>(context === 'alarm' ? 'zone' : 'counter'), [tool, setTool] = useState<PlanTool>('select')
   const [selectedKey, setSelectedKey] = useState<string | null>(null), [selectedShape, setSelectedShape] = useState<string | null>(null)
   const file = useRef<HTMLInputElement>(null)
   const dialog = useRef<HTMLDivElement>(null)
@@ -111,12 +111,12 @@ export function FloorPlanEditor({ zones, counters, counts, countLabel, onClose, 
     {(notice || error) && <p role={error ? 'alert' : 'status'} className={`px-4 py-1.5 text-sm ${error ? 'bg-danger-50 text-danger-700' : 'bg-amber-50 text-ink'}`}>{error || notice}</p>}
     <div className={`grid min-h-0 flex-1 gap-3 p-3 ${preview ? 'lg:grid-cols-1' : 'lg:grid-cols-[18rem_minmax(0,1fr)_16rem]'}`}>
       {!preview && <aside className="ui-panel flex min-h-0 flex-col gap-2 overflow-hidden p-3">
-        <div role="group" aria-label="列表方式" className="flex gap-1">{([['counter', '按计数器'], ['zone', '按热区']] as const).map(([id, name]) => <button key={id} type="button" aria-pressed={mode === id} className={seg} onClick={() => setMode(id)}>{name}</button>)}</div>
+        {context === 'flow' ? <div role="group" aria-label="列表方式" className="flex gap-1">{([['counter', '按计数器'], ['zone', '按热区']] as const).map(([id, name]) => <button key={id} type="button" aria-pressed={mode === id} className={seg} onClick={() => setMode(id)}>{name}</button>)}</div> : <h3 className="text-sm font-semibold">告警位置</h3>}
         <nav aria-label="热区列表" className="min-h-0 flex-1 overflow-auto">
           {!zones.length && <p className="p-2 text-sm text-ink-subtle">还没有热区。先到实时监看的布防里画热区。</p>}
           {mode === 'counter' ? groups.map(g => <section key={g.id ?? 'loose'} className="mb-2"><h3 className="px-2 py-1 text-xs font-semibold text-ink-subtle">{g.name}</h3>
             <ul>{g.zones.map(z => row(z, false))}{!g.zones.length && <li className="px-2 text-xs text-ink-faint">还没有选用到热区</li>}</ul></section>)
-            : <ul>{[...zones].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')).map(z => row(z, true))}</ul>}
+            : <ul>{[...zones].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')).map(z => row(z, context === 'flow'))}</ul>}
         </nav>
         {unresolved.length > 0 && <section aria-label="未读取引用" className="max-h-40 overflow-auto border-t border-line pt-2 text-xs">
           <h3 className="font-semibold">失效/未读取引用 {unresolved.length} 个</h3>
@@ -135,9 +135,9 @@ export function FloorPlanEditor({ zones, counters, counts, countLabel, onClose, 
           <input ref={file} type="file" accept="image/*" aria-label="导入平面图图片" className="hidden" onChange={e => void importImage(e.target.files?.[0])} />
           {plan?.image && <button type="button" className="btn-secondary !px-2.5 !py-1 text-xs" onClick={() => editPlan(p => setImage(p, null))}>移除底图</button>}
           </>}
-          <p className="ml-auto text-xs text-ink-subtle">{preview ? sourceHeat?'当前草稿预览 · 居中自动适配 · 真实画面网格独立嵌入规划框，非地面投影；保存后才更新布局。':'当前草稿预览 · 居中自动适配 · 计数热力图为独立叠加层，保存后才会更新页面布局。' : '在平面图上拖动只改摆放位置，不影响计数和检测范围；要改检测范围到布防里改。'}</p>
+          <p className="ml-auto text-xs text-ink-subtle">{preview ? sourceHeat?'当前草稿预览 · 居中自动适配 · 真实画面网格独立嵌入规划框，非地面投影；保存后才更新布局。':'当前草稿预览 · 居中自动适配 · 数量热力图为独立叠加层，保存后才会更新页面布局。' : '在平面图上拖动只改摆放位置，不影响计数和检测范围；要改检测范围到布防里改。'}</p>
         </div>
-        {plan ? <PlanCanvas plan={plan} zones={zones} selectedKey={selectedKey} selectedShapeId={selectedShape} tool={tool} readOnly={preview} heat={sourceHeat?undefined:previewHeat} sourceHeat={preview?sourceHeat:null}
+        {plan ? <PlanCanvas plan={plan} zones={zones} selectedKey={selectedKey} selectedShapeId={selectedShape} tool={tool} readOnly={preview} heat={sourceHeat?undefined:previewHeat} heatPalette={context} sourceHeat={preview?sourceHeat:null}
             onSelectZone={setSelectedKey} onSelectShape={setSelectedShape}
             onChangeZone={(key, p) => editPlan(pl => setPlacement(pl, key, p))} onChangeShape={(id, patch) => editPlan(pl => updateShape(pl, id, patch))}
             onCreateShape={create} />
@@ -148,14 +148,14 @@ export function FloorPlanEditor({ zones, counters, counts, countLabel, onClose, 
       {!preview && <aside className="ui-panel min-h-0 space-y-3 overflow-auto p-3 text-sm">
         {zone ? <section aria-label="热区属性" className="space-y-2">
           <h3 className="text-sm font-semibold text-ink">{zone.name}</h3>
-          <p className="text-xs text-ink-subtle">所属计数器：{zone.counters.length ? zone.counters.map(c => c.name).join('、') : '未关联'}</p>
+          {context === 'flow' && <p className="text-xs text-ink-subtle">所属计数器：{zone.counters.length ? zone.counters.map(c => c.name).join('、') : '未关联'}</p>}
           <p className="text-xs text-ink-subtle">出现在 {plansOfZone(draft, zone.key).length} 张平面图</p>
           {placement ? <>
             <div className="grid grid-cols-2 gap-2">{([['x', 'X 位置'], ['y', 'Y 位置'], ['w', '宽度'], ['h', '高度']] as const).map(([k, label]) =>
               <label key={k} className="flex flex-col gap-0.5 text-xs text-ink-subtle">{label}<input type="number" aria-label={label} value={Math.round(placement[k])} className={field} onChange={e => { const v = Number(e.target.value); if (Number.isFinite(v)) setPl({ [k]: v }) }} /></label>)}</div>
             <button type="button" className="btn-secondary !px-2.5 !py-1 text-xs" onClick={() => editPlan(p => unplaceZone(p, zone.key))}>从本平面图移除</button>
           </> : <button type="button" className="btn-primary !px-2.5 !py-1 text-xs" onClick={() => editPlan(p => placeZone(p, zones, zone.key))}>加入本平面图</button>}
-          <p className="rounded-base border border-line bg-surface-page p-2 text-xs text-ink-subtle">名称、形状和关联的计数器在布防里改。</p>
+          <p className="rounded-base border border-line bg-surface-page p-2 text-xs text-ink-subtle">{context === 'flow' ? '名称、形状和关联的计数器在布防里改。' : '热区名称、检测形状和关联触发器在布防里改；这里仅保存展示位置。'}</p>
           <Link to="/monitor" className="btn-secondary !px-2.5 !py-1 text-xs">在布防中修改形状和名称</Link>
           <p className="text-[11px] text-ink-faint">到实时监看，点对应通道的“布防”。</p>
         </section> : shape ? <section aria-label="图形属性" className="space-y-2">
