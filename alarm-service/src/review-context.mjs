@@ -55,17 +55,31 @@ export function reviewSamples(row){
    direction:matched.direction,first_seq:matched.analysis_evidence.first_seq,trigger_seq:matched.analysis_evidence.trigger_seq}};
 }
 export function jpegDimensions(data){
+ const no=()=>{throw Error('unsupported_image')};
+ if(!Buffer.isBuffer(data)||data.length<4||data[0]!==255||data[1]!==216)no();
  let p=2;
- while(p+4<=data.length){
-  if(data[p++]!==255)throw Error('missing_context');
-  while(data[p]===255)p++;const marker=data[p++];
-  if(marker===0xda||marker===0xd9)break;
+ while(p<data.length){
+  if(data[p++]!==255)no();
+  while(p<data.length&&data[p]===255)p++;
+  if(p>=data.length)no();
+  const marker=data[p++];
+  if(marker===0||marker===0xd8||marker===0xda||marker===0xd9)no();
   if(marker===0x01||(marker>=0xd0&&marker<=0xd7))continue;
-  const length=data.readUInt16BE(p);if(length<2||p+length>data.length)break;
-  if(marker===0xc0&&length>=8)return {width:data.readUInt16BE(p+5),height:data.readUInt16BE(p+3)};
+  if(p+2>data.length)no();
+  const length=data.readUInt16BE(p);
+  if(length<2||length>data.length-p)no();
+  // Only baseline JPEG is supported by this preparation path. This is a
+  // bounded header parser, not a decoder or proof of entropy-stream validity.
+  if(marker===0xc0){
+   if(length<8||data[p+2]!==8)no();
+   const height=data.readUInt16BE(p+3),width=data.readUInt16BE(p+5),components=data[p+7];
+   if(!width||!height||!components||length!==8+3*components)no();
+   return {width,height};
+  }
+  if(marker>=0xc1&&marker<=0xcf&&![0xc4,0xc8,0xcc].includes(marker))no();
   p+=length;
  }
- throw Error('unsupported_image');
+ no();
 }
 export class ReviewContext {
  constructor(repository,root,{clock=()=>Date.now()}={}){this.clock=clock;this.lastError=null;this.repository=repository;this.images=repository.db?new EvidenceImages(repository.db):null;this.root=resolve(root);if(!this.root.startsWith('/mnt/ainvr-ssd/'))throw Error('SSD context required');this.lastPolicy=0;this.lastMaintenance=0;this.closing=false;this.inFlight=null;}
@@ -140,13 +154,65 @@ export class ReviewContext {
  }
  tick(){if(this.inFlight)return this.inFlight;if(this.closing)return Promise.resolve();this.inFlight=this.step().finally(()=>{this.inFlight=null});return this.inFlight;}
  async prepareInputs(row,proof=reviewSamples(row)){
-  return selectVisualEvidence(row,proof,{image:s=>this.image(row,s),retained:()=>retainedTarget(this.repository.evidenceVault,row)});
+  return selectVisualEvidence(row,proof,{image:s=>this.image(row,s),retained:()=>this.retainedInput(row,proof)});
+ }
+ async retainedInput(row,proof){
+  const trigger=proof.samples.find(s=>s.frame_id===row.frame_id);
+  const refs=(row.review?.frames??[]).filter(f=>f.source_kind==='retained_target');
+  if(refs.length){
+   const ref=refs.find(f=>f.frame_id===row.frame_id);
+   const eventId=row.review?.evidence_id??row.behavior_event_ids?.[0];
+   if(!trigger||!ref||refs.length!==1||!eventId||!row.behavior_event_ids?.includes(eventId)||ref.crop_event_id!==eventId||
+    ['frame_id','seq','source_pts_ns','source_frame_index','track_id','label_id'].some(k=>ref[k]==null||ref[k]!==trigger[k])||
+    ['x','y','w','h'].some(k=>!Number.isFinite(ref.bbox?.[k])||ref.bbox[k]!==trigger.bbox?.[k])||
+    ref.source_pts_ns!==row.source_pts_ns||ref.source_frame_index!==row.analysis_evidence?.source_frame_index||
+    ref.track_id!==row.track_ids?.[0]||ref.label_id!==row.analysis_evidence?.track?.label_id)
+    throw Error('evidence_identity_mismatch');
+   if(!/^[a-f0-9]{64}$/.test(ref.key??'')||ref.content_sha256!==ref.key)throw Error('evidence_integrity_mismatch');
+   let data;
+   try{data=this.images?await this.images.get('context',ref.key):await readFile(join(this.root,'pinned',ref.key+'.jpg'));}
+   catch(error){if(!missingVisual(error))throw error;}
+   if(data){
+    if(ref.width<32||ref.height<32)throw Error('insufficient_target_pixels');
+    this.validateRetained(data,[ref]);this.validateGeometry(data,ref);
+    return {data,width:ref.width,height:ref.height,event_id:eventId,sha256:ref.key};
+   }
+  }
+  const crop=await retainedTarget(this.repository.evidenceVault,row);
+  this.validateRetained(crop.data,[]);this.validateGeometry(crop.data,crop);
+  return crop;
+ }
+ validateGeometry(data,expected,fullFrame=false){
+  const actual=jpegDimensions(data);
+  if(!Number.isInteger(expected?.width)||!Number.isInteger(expected?.height)||expected.width<=0||expected.height<=0)
+   throw Error('evidence_identity_mismatch');
+  if(fullFrame){
+   // ReviewFrameCache uses the complete frame, no letterbox/crop. Resolution
+   // can change without changing normalized coordinates. Its GLES renderer
+   // caps the longest edge at 1280 and floors each axis to an even integer
+   // (minimum 32): allow only that exact documented rounding, not a broad
+   // aspect tolerance that could conceal a crop or letterbox transform.
+   const scale=Math.min(1,1280/Math.max(expected.width,expected.height));
+   const rounded=n=>Math.max(32,Math.floor(n*scale/2)*2);
+   if(actual.width*expected.height!==actual.height*expected.width&&
+    !(actual.width===rounded(expected.width)&&actual.height===rounded(expected.height)))
+    throw Error('evidence_identity_mismatch');
+  }else if(actual.width!==expected.width||actual.height!==expected.height)throw Error('evidence_identity_mismatch');
+  return actual;
  }
  async ready(row,fence,plan,requeue=false){
   const frames=[];
   for(const item of plan.items){
    this.validateRetained(item.data,[]);
-   if(item.source_kind==='retained_target')await this.images.put('context',item.key,item.data,this.imagePolicy(row));
+   if(item.source_kind==='retained_target')this.validateGeometry(item.data,item);
+   if(item.source_kind==='retained_target'){
+    if(!/^[a-f0-9]{64}$/.test(item.key??'')||item.key!==hash(item.data))throw Error('evidence_integrity_mismatch');
+    if(this.images)await this.images.put('context',item.key,item.data,this.imagePolicy(row));
+    else {
+     const path=join(this.root,'pinned',item.key+'.jpg');
+     await writeFile(path+'.tmp',item.data,{mode:0o600});await rename(path+'.tmp',path);
+    }
+   }
    frames.push({...item.sample,key:item.key,content_sha256:hash(item.data),...(this.images?{storage:'mongodb'}:{}),source_kind:item.source_kind,
     ...(item.source_kind==='retained_target'?{width:item.width,height:item.height,crop_event_id:item.event_id}:{})});
   }
@@ -173,7 +239,7 @@ export class ReviewContext {
     if(!await this.repository.events.findOne(fence,{projection:{alarm_id:1}}))return;
     let image,provenance=(row.review.recovery?.frames??[]).find(f=>f.key===contextKey(row,sample))?.provenance;
     try{image=await this.image(row,sample);}catch{
-     const recovered=await this.recoverEvidence(row,sample);this.validateRetained(recovered.data,[]);
+     const recovered=await this.recoverEvidence(row,sample);this.validateRetained(recovered.data,[]);this.validateGeometry(recovered.data,row.analysis_evidence?.source,true);
      const key=contextKey(row,sample);await this.images.put('context',key,recovered.data,this.imagePolicy(row));
      image={key,data:recovered.data};provenance=recovered.provenance;
      await this.repository.events.updateOne(fence,{$push:{'review.recovery.frames':{key,provenance}}});
@@ -195,22 +261,22 @@ export class ReviewContext {
   const rows=this.repository.captureJobs?await this.repository.captureJobs.aggregate([{$group:{_id:'$state',count:{$sum:1}}}],{maxTimeMS:2000}).toArray():[];
   return {capture_counts:Object.fromEntries(rows.map(r=>[r._id,r.count])),cache,last_error:this.lastError,retention_days:this.policy?.retention_days??7,max_bytes:this.policy?.max_bytes??1024**3};
  }
- async savePrepared(row,sample,image){
+ async savePrepared(row,sample,image,{secondary=false}={}){
   if(!['target-crop-v1','context-marked-v1'].includes(image.layout)||typeof image.jpeg_base64!=='string'||image.jpeg_base64.length>2*1024*1024)throw Error('invalid_model_result');
   const data=Buffer.from(image.jpeg_base64,'base64');jpegDimensions(data);
   const key=hash(data),path=join(this.root,'pinned',key+'.jpg');
   if(this.images)await this.images.put('context',key,data,this.imagePolicy(row));
   else {await writeFile(path+'.tmp',data,{mode:0o600});await rename(path+'.tmp',path);}
   const meta={frame_id:sample.frame_id,key,...(this.images?{storage:'mongodb',content_sha256:key}:{}),layout:image.layout,target:image.target,width:image.width,height:image.height,...(image.layout==='target-crop-v1'?{expansion:image.expansion}:{region:image.region,approach_width_fraction:image.approach_width_fraction,fit:image.fit})};
-  const field=image.layout==='context-marked-v1'?'review.context_frames':'review.prepared_frames';
+  const field=secondary?'review.secondary_frames':image.layout==='context-marked-v1'?'review.context_frames':'review.prepared_frames';
   await this.repository.events.updateOne({alarm_id:row.alarm_id,'review.generation':row.review.generation},{$addToSet:{[field]:meta}});
   return meta;
  }
  async retained(alarmId,key){
   if(!/^[a-f0-9]{64}$/.test(key))throw Error('missing_context');
-  const row=await this.repository.events.findOne({alarm_id:alarmId,$or:[{'review.frames.key':key},{'review.prepared_frames.key':key},{'review.context_frames.key':key}]});if(!row)throw Error('missing_context');
+  const row=await this.repository.events.findOne({alarm_id:alarmId,$or:[{'review.frames.key':key},{'review.prepared_frames.key':key},{'review.context_frames.key':key},{'review.secondary_frames.key':key}]});if(!row)throw Error('missing_context');
   let data=this.images?await this.images.get('context',key):null;
-  const refs=['frames','prepared_frames','context_frames'].flatMap(field=>row.review?.[field]??[]).filter(f=>f.key===key);
+  const refs=['frames','prepared_frames','context_frames','secondary_frames'].flatMap(field=>row.review?.[field]??[]).filter(f=>f.key===key);
   if(!data){
    if(refs.some(f=>f.storage==='mongodb'))throw Error('missing_context');
    data=await readFile(join(this.root,'pinned',key+'.jpg'));
@@ -223,7 +289,7 @@ export class ReviewContext {
  imagePolicy(row,candidate=false){return {maxBytes:candidate?(this.policy?.candidate_max_bytes??128*1024**2):(this.policy?.max_bytes??1024**3),retentionMs:candidate?86400000:(this.policy?.retention_days??7)*86400000,occurredAt:row.occurred_at??row.sample?.captured_at};}
  validateRetained(data,refs){if(data.length>8*1024**2||refs.some(f=>(f.content_sha256??(f.layout?f.key:null))&&(f.content_sha256??f.key)!==hash(data)))throw Error('evidence_integrity_mismatch');jpegDimensions(data);}
  async markMongo(row,key){
-  for(const field of ['frames','prepared_frames','context_frames'])if(row.review?.[field]?.some(f=>f.key===key))
+  for(const field of ['frames','prepared_frames','context_frames','secondary_frames'])if(row.review?.[field]?.some(f=>f.key===key))
    await this.repository.events.updateOne({alarm_id:row.alarm_id,'review.generation':row.review.generation},{$set:{[`review.${field}.$[frame].storage`]:'mongodb'}},{arrayFilters:[{'frame.key':key}]});
  }
  async mongoImage(row,sample,candidate){
@@ -242,12 +308,12 @@ export class ReviewContext {
     for(const [k,v] of Object.entries({channel_id:row.channel_id,stream_session_id:row.stream_session_id,source_pts_ns:sample.source_pts_ns,source_frame_index:sample.source_frame_index,frame_width:row.analysis_evidence.source.width,frame_height:row.analysis_evidence.source.height}))if(meta[k]!==v)throw Error('missing_context');
     data=await readFile(join(raw,key+'.jpg'));
    }
-   this.validateRetained(data,known?[known]:[]);
+   this.validateRetained(data,known?[known]:[]);this.validateGeometry(data,row.analysis_evidence?.source,true);
    await this.images.put(pool,key,data,this.imagePolicy(row,candidate));
    if(!candidate)await this.markMongo(row,key);
   }
   this.validateRetained(data,(row.review?.frames??[]).filter(f=>f.key===key));
-  return {key,data,...jpegDimensions(data)};
+  return {key,data,...this.validateGeometry(data,row.analysis_evidence?.source,true)};
  }
  async image(row,sample,candidate=false){
   if(this.images)return this.mongoImage(row,sample,candidate);
@@ -263,12 +329,12 @@ export class ReviewContext {
    for(const [k,v] of Object.entries({channel_id:row.channel_id,stream_session_id:row.stream_session_id,source_pts_ns:sample.source_pts_ns,source_frame_index:sample.source_frame_index,frame_width:row.analysis_evidence.source.width,frame_height:row.analysis_evidence.source.height}))if(meta[k]!==v)throw Error('missing_context');
    data=await readFile(join(raw,key+'.jpg'));if(data.length>8*1024*1024)throw Error('missing_context');
    }
-   jpegDimensions(data);
+   this.validateGeometry(data,row.analysis_evidence?.source,true);
    if(candidate){const limit=this.policy?.candidate_max_bytes??128*1024**2;if(data.length>limit)throw Error('missing_context');await this.prunePool('candidates',limit-data.length,24*3600000);}
    await writeFile(dest+'.tmp',data,{mode:0o600});await rename(dest+'.tmp',dest);
   }
   const expected=row.review?.frames?.find(f=>f.key===key)?.content_sha256;
   if(expected&&hash(data)!==expected)throw Error('evidence_integrity_mismatch');
-  if(data.length<4||data.length>8*1024*1024||data[0]!==255||data[1]!==216)throw Error('missing_context');return {key,data,...jpegDimensions(data)};
+  if(data.length<4||data.length>8*1024*1024||data[0]!==255||data[1]!==216)throw Error('missing_context');return {key,data,...this.validateGeometry(data,row.analysis_evidence?.source,true)};
  }
 }

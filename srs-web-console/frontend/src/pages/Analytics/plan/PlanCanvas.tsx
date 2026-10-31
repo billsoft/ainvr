@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Group, Image as KImage, Layer, Line, Rect, Shape, Stage, Text, Transformer } from 'react-konva'
 import { useElementSize } from '../TrendChart'
 import { PLAN_H, PLAN_W, planViewport, type NewShape, type Placement, type Plan, type PlanShape, type ZoneInfo } from './planModel'
+import { layoutMapLabels, type MapAnnotation } from './mapLabels'
 import type { HeatVariant } from '../RegionHeatPanel'
 
 export type PlanTool = 'select' | 'room' | 'line' | 'label'
@@ -12,6 +13,7 @@ export interface PlanCanvasProps {
   zones: ZoneInfo[]
   /** Count-derived display field, independent of the editable placement outlines. */
   heat?: number[][]
+  annotations?: Record<string, MapAnnotation>
   heatMin?: number
   heatPalette?: 'flow' | 'alarm'
   /** Source-coordinate inset in a planned display box, never a ground projection. */
@@ -53,6 +55,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
   const byKey = useMemo(() => new Map(zones.map(z => [z.key, z])), [zones])
   const fit = plan?.image ? Math.min(PLAN_W / plan.image.w, PLAN_H / plan.image.h) : 1
   const nameSize = readOnly ? Math.max(22, 10 / scale) : 22
+  const labels = useMemo(() => readOnly && props.annotations ? layoutMapLabels(plan?.placements ?? {}, Object.keys(props.annotations), viewport, w, h, selectedKey) : [], [readOnly, props.annotations, plan, viewport, w, h, selectedKey])
   const valueSize = readOnly ? Math.max(20, 10 / scale) : 20
 
   // 选中的热区或房间显示缩放手柄。
@@ -143,7 +146,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
             onDragEnd={e => props.onChangeZone?.(key, { ...pl, x: Math.round(e.target.x()), y: Math.round(e.target.y()) })}
             onTransformEnd={e => props.onChangeZone?.(key, resized(e.target, pl))}>
             <Rect name="placement-outline" width={pl.w} height={pl.h} cornerRadius={8} fill="transparent" stroke={on ? '#1677ff' : missing ? '#b45309' : '#64748b'} strokeWidth={readOnly ? on ? 1.5 : 1 : on ? 5 : 2.5} strokeScaleEnabled={!readOnly} dash={on && !missing ? undefined : [10, 7]} />
-            <Text text={z?.name ?? '失效/未读取引用'} x={10} y={8} width={Math.max(10, pl.w - 20)} fontSize={nameSize} fill="#0f172a" ellipsis wrap="none" listening={false} />
+            {!(readOnly && props.annotations?.[key]) && <Text text={z?.name ?? '失效/未读取引用'} x={10} y={8} width={Math.max(10, pl.w - 20)} fontSize={nameSize} fill="#0f172a" ellipsis wrap="none" listening={false} />}
             {missing && <Text text={key} x={10} y={Math.max(36, 8 + nameSize + 3 / scale)} fontSize={valueSize} fill="#0f172a" listening={false} />}
           </Group>
         })}
@@ -154,5 +157,13 @@ export function PlanCanvas(props: PlanCanvasProps) {
           boundBoxFunc={(oldBox, next) => next.width < 40 * scale || next.height < 30 * scale ? oldBox : next} />}
       </Layer>
     </Stage>
+    {labels.length > 0 && <div className="pointer-events-none absolute inset-0" aria-label="热区数据标签">
+      <svg className="absolute inset-0 h-full w-full" aria-hidden="true">{labels.map(l=><line key={l.key} x1={l.anchorX} y1={l.anchorY} x2={l.x+l.w/2} y2={l.y+l.h/2} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />)}</svg>
+      {labels.map(l => <button key={l.key} type="button" aria-pressed={selectedKey===l.key} aria-label={`${byKey.get(l.key)?.name ?? l.key}：${props.annotations![l.key]!.detail}`} title={props.annotations![l.key]!.detail}
+        className={`pointer-events-auto absolute overflow-hidden border bg-white/95 text-left shadow-sm backdrop-blur-sm transition-colors hover:border-primary focus-visible:outline-primary ${selectedKey===l.key?'border-primary ring-1 ring-primary':'border-slate-200'} ${l.compact?'rounded-full text-center text-[10px]':'rounded-lg px-2.5 py-1.5'}`}
+        style={{left:l.x,top:l.y,width:l.w,height:l.h}} onClick={()=>props.onSelectZone(selectedKey===l.key?null:l.key)}>
+        {l.compact?l.ordinal:<><span className="block truncate text-xs font-medium text-ink">{byKey.get(l.key)?.name ?? l.key}</span><span className="block truncate text-[11px] tabular-nums text-ink-subtle">{props.annotations![l.key]!.summary}</span></>}
+      </button>)}
+    </div>}
   </div>
 }

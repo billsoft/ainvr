@@ -1,12 +1,13 @@
 // Operator authorization is a deployment decision, not an accuracy certificate.
-// Keep it separate from signed model validation; it can only confirm alarms.
+// Keep it separate from signed model validation; dual decisions require an explicit bounded secondary policy.
 import {open} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {REVIEW_PROMPT_VERSION} from './review-prompt.mjs';
+import {SECONDARY_REVIEW_VERSION} from './review-secondary.mjs';
 
 export function parseAuthorization(value){
- if(value?.schema!=='ainvr.review-authorization.v1'||value.enabled!==true||value.mode!=='confirm_only'||
+ if(value?.schema!=='ainvr.review-authorization.v1'||value.enabled!==true||!['confirm_only','confirm_or_reject'].includes(value.mode)||
   !/^[a-f0-9]{64}$/.test(value.model_sha256??'')||value.layout!=='target-crop-v1'||
   value.prompt_template!=='alarm-review-zh-v1'||value.caller_template!==REVIEW_PROMPT_VERSION||
   !Array.isArray(value.labels)||!value.labels.length||value.labels.length>100||
@@ -15,9 +16,12 @@ export function parseAuthorization(value){
   (value.minimum_frame_score!==undefined&&(!Number.isFinite(value.minimum_frame_score)||value.minimum_frame_score<.95||value.minimum_frame_score>value.approve_above))||
   typeof value.authorized_by!=='string'||!value.authorized_by.trim()||
   !Number.isFinite(Date.parse(value.authorized_at)))return null;
+ if(value.mode==='confirm_or_reject'&&(value.secondary?.version!==SECONDARY_REVIEW_VERSION||
+  value.labels.some(label=>label!=='person')||!Number.isFinite(value.secondary.confirm_above)||value.secondary.confirm_above<.99||value.secondary.confirm_above>1||
+  !Number.isFinite(value.secondary.reject_below)||value.secondary.reject_below<0||value.secondary.reject_below>.01))return null;
  const policy={schema:value.schema,mode:value.mode,model_sha256:value.model_sha256,layout:value.layout,
   prompt_template:value.prompt_template,caller_template:value.caller_template,labels:[...value.labels].sort(),
-  approve_above:value.approve_above,minimum_frame_score:value.minimum_frame_score??value.approve_above,authorized_by:value.authorized_by,authorized_at:value.authorized_at};
+  approve_above:value.approve_above,minimum_frame_score:value.minimum_frame_score??value.approve_above,authorized_by:value.authorized_by,authorized_at:value.authorized_at,...(value.mode==='confirm_or_reject'?{secondary:{version:SECONDARY_REVIEW_VERSION,confirm_above:value.secondary.confirm_above,reject_below:value.secondary.reject_below}}:{})};
  return {...policy,id:createHash('sha256').update(JSON.stringify(policy)).digest('hex')};
 }
 export async function reviewAuthorization(){
@@ -37,10 +41,17 @@ export function authorizedResult(policy,result){
 
 // Required frames must all support the class; one strong frame cannot outvote a
 // contradictory frame. One-frame evidence still needs the stronger threshold.
-export function authorizedScores(policy,scores,rule){
- if(!policy||!Array.isArray(scores)||!scores.length||scores.some(v=>!Number.isFinite(v)||v<0||v>1)||
-  !Number.isFinite(rule?.approve_above))return false;
+export function confirmationAssessment(policy,scores,rule){
+ const valid=Array.isArray(scores)&&scores.length>0&&scores.every(v=>Number.isFinite(v)&&v>=0&&v<=1);
+ const base={version:1,outcome:'not_authorized',minimum_frame_score:null,strong_frame_score:null,
+  frame_scores:valid?[...scores]:[],failed_frame_indices:[]};
+ if(!policy||!valid||!Number.isFinite(rule?.approve_above))return base;
  const strong=Math.max(policy.approve_above,rule.approve_above);
  const floor=Math.max(policy.minimum_frame_score??policy.approve_above,rule.approve_above);
- return scores.every(v=>v>=floor)&&scores.some(v=>v>=strong);
+ const failed=scores.flatMap((v,i)=>v<floor?[i]:[]);
+ return {...base,minimum_frame_score:floor,strong_frame_score:strong,failed_frame_indices:failed,
+  outcome:failed.length?'frame_below_threshold':scores.some(v=>v>=strong)?'confirmed':'no_strong_frame'};
+}
+export function authorizedScores(policy,scores,rule){
+ return confirmationAssessment(policy,scores,rule).outcome==='confirmed';
 }

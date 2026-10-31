@@ -23,8 +23,14 @@ export function SearchCoveragePanel({ scope, channels, onDenied }: { scope: Sear
     }).finally(() => { if (!abort.signal.aborted) setLoading(false) })
     return () => abort.abort()
   }, [scope, retry, onDenied])
-  return <details className="rounded-base border border-line bg-surface p-3">
-    <summary className="min-h-11 cursor-pointer py-2 text-sm font-medium">采样覆盖 · {loading ? '正在确认' : data?.state === 'sampled' ? '所选范围已采样' : data?.state === 'partial' ? '所选范围部分分析' : '所选范围尚未确认'}</summary>
+  return <details className={`group w-full min-w-0 max-w-full overflow-hidden rounded-lg border ${data?.state === 'partial' ? 'border-amber-200 bg-amber-50/50' : 'border-line bg-surface'}`}>
+    <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-3 text-xs text-ink-subtle [&::-webkit-details-marker]:hidden">
+      <span aria-hidden className="shrink-0 text-ink-faint transition-transform group-open:rotate-90">▸</span>
+      <span className="shrink-0 font-medium text-ink">采样覆盖</span>
+      <span className={`min-w-0 truncate ${data?.state === 'partial' ? 'text-amber-800' : ''}`}>{loading ? '正在确认' : data?.state === 'sampled' ? '所选范围已采样' : data?.state === 'partial' ? '所选范围部分分析 · 结果可能不完整' : '所选范围尚未确认'}</span>
+      <span className="ml-auto shrink-0 text-ink-faint">详情</span>
+    </summary>
+    <div className="max-h-80 overflow-y-auto border-t border-line px-3 py-3">
     <p className="mb-3 text-xs text-ink-subtle">目标与场景分别列出已记录区间；未列出的时段尚未确认。采样不代表分析了每一瞬间，缺口不能直接判断为无录像。</p>
     {!loading && (!data || data.state === 'unknown') && <p role="status" className="text-sm text-ink-subtle">覆盖情况暂未确认；已返回的候选仍可核对。<button type="button" className="ml-2 min-h-11 text-primary" onClick={() => setRetry(n => n + 1)}>重新确认覆盖</button></p>}
     {scope.channel_ids.map(id => <section key={id} className="mt-2 border-t border-line pt-2">
@@ -34,5 +40,6 @@ export function SearchCoveragePanel({ scope, channels, onDenied }: { scope: Sear
         return <details key={kind} className="ml-2"><summary className="min-h-11 cursor-pointer py-2 text-sm">{kind === 'object' ? '目标' : '场景'} · {rows.length ? `${rows.length} 个记录区间` : '覆盖未确认'}</summary><Intervals rows={rows} /></details>
       })}
     </section>)}
+    </div>
   </details>
 }

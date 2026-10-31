@@ -105,3 +105,296 @@ human confirmation and 54 still awaiting analysis (including one running). No
 analyzed alarm remained deferred for manual_review_required. The real production
 case a8b4ad2d... was freshly re-inferred at scores 0.999915 / 0.989573 and then
 automatically confirmed under minimum_frame_score 0.95, proving the updated path.
+
+
+## 2026-10-31：人工待审原因与取证稳定性
+
+真实记录 eaf79e894c79963f564b0f5c7d8075678fd3244b26c52e94900e2fb04b8e4b1e：发生于北京时间2026-10-30 10:39:59。两张关键帧均有原图和模型输入，missing_frame_ids为空，geometry_verified为true，production_evaluator_transition_v2复核通过。进入前与进入后分数分别0.7285974636292093、0.9999739953455818。现行授权逐帧最低0.95且至少一帧0.99，因此第一帧未满足条件，保留未审核；这不是缺图或轨迹缺失。模型分数是未校准二分类分数，不是准确率。
+
+内置浏览器实际查看：原画面中进入前目标位于上边缘，头部已经不完整；模型输入也如此。这是可能的识别困难，不能只凭一个样本认定根因或宣称模型准确率。前端确认/标记误报按钮可用，不以AI不确定为禁用条件。此次未替用户判定或改写该记录。
+
+- 新复核持久化auto_confirmation诊断：当次有效逐帧门槛、强帧门槛、按输入顺序的分数、未达标帧序号和授权状态。决策与诊断共享同一函数，保留原确认阈值与人工并发优先语义。
+- 历史记录仅展示原有分数、角色和规则门槛；没有保存的授权门槛不伪造、不用当前配置冒充历史策略。模型返回的schema、哈希和分数先验证，再保存其图像。
+- 取证改进验证范围、测试和发布结果记录于test/results/review-diagnosis-20261031，前端实际截图保存于本机Downloads/ainvr-review-diagnosis-20261031。
+
+### 提升确认能力的下一阶段门槛
+
+先用已有留存帧与原图构造独立评估样本，覆盖截边、遮挡、小目标、多人、畸变、反光/海报、进入/接近/穿过四类行为及负样本。按摄像头和轨迹划分训练/验证来源，防止相邻帧泄漏；同时统计误确认、漏确认、人工保留率及BPU延迟，不以自动确认率单指标优化。
+
+可以在现有同目标观测链路内补充一张更清晰的支持帧，记录截边、目标像素和原始时间/帧身份，不能删除越界前后必须保留的过程证据，也不能无限重复同图直到得到高分。若采用跨帧目标类别联合判定，必须明确跟踪连续性与反证规则，不能靠简单最大值或平均值覆盖相矛盾帧。需要更改裁剪/提示词/模型输入协议时，单独验证并更新绑定版本；保留旧记录展示，不引入新推理技术栈或CPU图像回退。
+
+带热区的全景图目前供人工核对，模型输入仍为目标特写。若增加全景辅助复核，应保留特写与几何证明，限定全景模型为辅助来源；单帧不能验证持续时长和真实穿越。真实证据不足必须继续留痕并提供人工处理，而不是阻止规则告警产生。
+
+
+本轮稳定性实现：全帧接受等比例缩放及既有1280长边、偶数轴取整契约，拒绝不兼容比例；目标裁剪必须匹配已记录尺寸与同目标/帧/事件/框/哈希身份。已固化的触发裁剪在原始归档过期后仍可复用，缺字节才回退取原图，存储异常或身份损坏不冒充缺图。JPEG头解析使用有界访问，畸形或不支持的渐进式JPEG明确失败，不增加CPU解码回退。模型协议、布局版本与历史记录兼容。
+
+验证：告警全量364项中302通过、62跳过（子代理运行记录；没有保存完整stdout）。早期独立 Mongo 专项 `mongo-isolated-ready.log` 为 13 项；后续整合 Mongo 专项为 18 项（主任务更正口径，不能将早期 13 项当作后续总数）；真实两帧1280×720取证对1920×1080来源通过只读几何和哈希校验，告警仍未处理。前端205文件1547测试通过。首次Mongo测试使用生产服务账号时因测试库权限不足未通过；随后改为仅监听127.0.0.1的独立临时Mongo完成验证，临时实例已清理。构建、发布和页面验收见同证据目录最终记录。
+
+最终发布 20261031T104556Z-review-diagnosis：仅告警服务重启，其他运行服务PID与配置不变；web、alarm-service的SSD回滚各3份。真实页面诊断展开、原图/标注图/模型输入切换已验证，1366、1180、1920宽截图已保存；详情保持可滚动，人工动作可用。浏览器未捕获error。原记录handling.revision仍为0、未审核，未改写历史分数。代码未提交；独立review-ready.patch排除既有地图和智能搜索工作。
+
+
+## 2026-10-31：双重目标复核设计（部署前设计记录）
+
+本节记录新增 `confirm_or_reject` 授权模式的当前代码契约；前文是原有
+`confirm_only` 策略、历史验证与发布记录，予以保留，不表示本节已发布。
+本次双重复核部署仍待进行，不修改线上授权、不重启服务、不改写历史告警。
+以下分数是有限实样的模型输出，不是校准概率、准确率认证或跨场景可靠性证明。
+操作授权与签名模型资格认证仍是两个独立契约，不生成或冒充准确率证书。
+
+### 输入选择与实样负对照
+
+- 新版本仅支持 `person`，`secondary.version = expanded-target-v1`。
+  第一遍仍用既有 `target-crop-v1` 特写与原提示词；第一遍已满足自动确认时
+  不增加第二、第三遍。行为几何、越界和持续时间仍由规则引擎证明，图片只核对同一个目标类别。
+- 第二遍不是全景推理：`expandedTarget` 围绕原检测框中心扩大 1.5 倍，再裁限于
+  原图边界，不重新居中，交给现有 GPU `target-crop-v1` 预处理。
+  既有 GPU 随后还会扩大 1.5 倍，因此未受边界限制时总体范围最高为原框的
+  2.25 倍。保留同一真实帧与目标身份，不加入 CPU 图像处理或模型推理回退。
+  提示词要求只判断中央指定目标，不能用周围其他人代替；截边或遮挡可利用可见身体线索。
+- 带绿框全景方案已被负对照否定：空角落目标的特写人员分数约 `0.000025`，
+  标记全景却约 `0.9992`，模型借用了画面中其他人员。绿框不能保证模型绑定目标，
+  因此不采用全景辅助推理，也不据此宣称全景复核可靠。
+- 改用有界扩大目标裁剪后，两张实际正例分数分别为 `0.999997434`、
+  `0.999998969`；空角落负对照的人员分数为 `0.000043758`。
+  这些结果支持本次输入选择，不构成独立准确率验证；低人员分数本身也不能证明明确非人员。
+
+### 实际决策门槛（以当前代码为准）
+
+以下定义 `P` 为第一遍各必需帧人员分数，`E` 为对应扩大裁剪人员分数，
+`N` 为第三遍明确非人员证据分数；`R` 为当次规则快照，`A` 为有效操作授权。
+所有分数须有限且在 `[0,1]` 内，必需帧为 1–4 张，不取平均或多数票，
+不反复重试同图直到高分。任何不确定都不等于误报。
+
+1. 原有主审门槛保持不变：每张 `P >= max(A.minimum_frame_score ?? A.approve_above,
+   R.approve_above)`，且至少一张 `P >= max(A.approve_above, R.approve_above)`。
+   结果继续存入 `review.auto_confirmation`，第二遍不得篡改第一遍未通过的事实。
+2. 仅当主审未自动确认、授权仍有效且模式为 `confirm_or_reject` 时考虑第二遍。
+   必须不是 limited/confirm-only 取证模式，输入数量与规则证明的必需帧相同，
+   每张都为 `full_frame` 来源，且按顺序逐一匹配 `frame_id`。
+   缺帧或只有留存目标图的降级取证不能自动判误报，继续显示有限证据警告。
+3. 正向补充复核的候选条件：全部 `P > max(0.5, R.reject_below)`，至少一张
+   `P >= max(0.99, R.approve_above, A.approve_above)`。
+   自动确认还要求全部 `E >= max(0.99, A.secondary.confirm_above,
+   R.approve_above, A.approve_above)`。不允许第二遍高分覆盖第一遍明确反证。
+4. 负向候选要求全部 `P <= min(0.05, R.reject_below)`；第二遍全部
+   `E <= min(0.01, A.secondary.reject_below, R.reject_below)` 才运行第三遍。
+   第三遍使用第二遍实际保存的同目标扩大裁剪，以 `fit: strict` 核验，
+   不换成全景，也不改变正向路径。
+5. 自动误报还必须每张 `N >= max(0.99, 1 - A.secondary.reject_below)`，
+   且第三遍与前两遍帧数一致、分数有效。更严格的授权会提高该门槛，不能固定理解为仅 0.99。
+   第三遍提示词明确要求有充分清晰证据认定中央目标不是人员；昏暗、模糊、遮挡、太小、
+   局部无法确定或可能是人员均回答否，不借用周围目标。实样暗角落明确非人员分数约
+   `0.888`，未达门槛，必须保留人工审核；低人员分数不能替代此项证据。
+   不满足时记录 `insufficient_non_target_evidence`，前端显示“无法清晰排除人员，保留人工审核”。
+
+授权解析要求 `secondary.version` 匹配、全部标签为 `person`，
+`secondary.confirm_above` 在 `[0.99,1]`、`secondary.reject_below` 在 `[0,0.01]`。
+其他既有模型 SHA256、布局、模型/调用提示词、授权人及时间、root 文件所有权与写权限检查
+继续生效。代码中的独立已签名资格路径不因本次操作授权被认证或替换；上述是新增操作授权双复核路径。
+
+### 并发、审计与前端契约
+
+worker 只领取未人工处理且未标记误报的告警；每次第二/第三遍前检查包含
+`alarm_id`、`review.generation`、运行 token、运行状态、`handling.state` 与
+`handling.revision` 的 fence。最终数据库更新仍原子使用同一 fence，人工处理、
+证据代际变化或任务替换优先，旧推理不得覆盖。模型/schema、返回裁剪目标与授权契约须通过校验；
+第二遍模型哈希须与第一遍一致，第三遍也校验 schema、模型哈希和模型提示词版本。
+
+授权在第一遍后、每次额外调用前及最终写入前重新读取并比较指纹。
+调用前及最终读取若发现撤销或替换授权，则停止操作授权自动判定，第二遍记录
+`authorization_changed`，保留人工处理。授权文件读取不在 Mongo 更新事务或原子条件内：
+最终授权读取与数据库提交之间仍有时间窗口，不能声称“授权撤销与写入原子互斥”。
+原子 fence 保护的是人工处理、handling revision、证据 generation 和运行 token；
+授权仅在明确调用检查点生效。已经提交完成的历史决定不被追溯撤销，人工之后仍可独立改判。
+自动决定留存 `operator_authorized_dual_review`、授权指纹与策略、模型身份、
+证据代际、帧身份及各遍分数，明确 `accuracy_validated: false`。
+
+- 第一遍预处理图仍在 `review.prepared_frames`；第二遍实际预处理图在
+  `review.secondary_frames`，由既有留存图片端点读取。
+  `review.secondary.frames` 保存 `{frame_id,key,score}` 并可附带准备目标与输入摘要；
+  前端同时匹配 ID 与 key，缺失显示未记录，不用其他图或当前配置补造历史输入。
+- `review.secondary` 留存状态、结果、原因、阈值、当次准确提示词、模型和完成时间。
+  仅负向第三遍增加可选 `non_target_evidence = {frame_scores,prompt,frame_ids,model?}`；
+  明确非人员证据分数与人员目标分数分开展示，均不是概率。
+- UI 使用“特写 + 扩大范围复核”“扩大范围复核输入”和“AI复核结果”，
+  不称最终人工结论；分数按角色或关键帧序号展示，不把存储 key 当作主要标签。
+  双模式横幅说明可自动确认或判为误报，不确定/证据不足/不可用保留人工，
+  并明确模型准确率尚未全面验证；原 `confirm_only` 行为保留。
+
+本节仅文档同步。有限正负样本、功能测试或构建通过均不能替代独立准确率评估。
+双复核发布、线上授权变更及部署后验收仍待执行；本次未部署。
+
+
+### 双复核部署与实际结果（2026-10-31 20:02，北京时间）
+
+以上“待部署/未部署”为部署前设计时点记录；本段记录其后的实际发布，保留历史说明。
+部署标识为 `20261031T120133337394Z-review-dual`，发布记录见
+`test/results/review-dual-20261031/publication.json`，阶段为 `published`。
+发布使用 release-copy：将 `alarm-service/src` 的候选文件复制到现有活动 release 的
+`/home/sunrise/ainvr/deploy/s100p/alarm-service/release-review-auto-20261029T141031Z/src`，
+将 `out/review-dual/frontend` 构建复制到 `srs-web-console/frontend/dist`；
+不是直接让服务运行工作树，也没有因本次 stamp 切换到同名新 release 目录。
+活动 release 和目标路径以 `publication-manifest.json` 为证。
+回滚包在 SSD 的 `ainvr-rollback/alarm-service/` 和 `ainvr-rollback/web/` 对应标识目录。
+
+验证证据均位于同一目录：`alarm-full.log` 记录 395 项中 333 通过、62 跳过、0 失败；
+跳过不计作通过。`frontend-full.log` 记录 206 文件、1562 项通过。
+最新增量后的 `frontend-final-focused.log` 为 16 项通过；`validation.json` 记录
+告警全量、最终前端专项、TypeScript 检查与构建退出码均为 0。
+前端全量和最终增量专项是不同快照的检查，不把专项数量累加到全量统计。
+
+最终只读 `actual-result.json` 观测时间为 `2026-10-31T12:02:14.720Z`。
+真实告警 `eaf79e894c79963f564b0f5c7d8075678fd3244b26c52e94900e2fb04b8e4b1e`
+已在北京时间 20:02:13.818 自动确认：version 5，handling revision 1，
+state `acknowledged`，disposition `handled`，reviewed_by_kind `ai`，
+审计 actor `ai-review`，decision_basis `operator_authorized_dual_review`。
+第一遍分数仍为 `0.7285974636292093` / `0.9999739953455818`，
+第二遍 `expanded-target-v1` 为 `0.9999974342683555` / `0.999998968835269`，
+结果 `confirmed`；未把原主审未满足门槛改称主审成功。必需帧与审核帧逐一对应，
+`all_keyframes`、missing_frame_ids 为空，授权仍明确 `accuracy_validated: false`。
+该正向路径不需要第三遍明确非人员证据，审计中的对应分数为 null。
+
+此次观测 `global_unreviewed_count = 0`，口径为 handling 未审核且 disposition 非误报，
+不是永久零积压承诺。主任务另通过浏览器确认待审核为 0、服务健康 13/13；
+此处标明为主任务的页面验收结果，不冒充本次文档整理重新执行的 UI 验收。
+这些事实验证本次功能发布与真实案例，不构成独立准确率认证。此次文档与补丁整理不部署、
+不修改源代码、不提交 Git。
+
+
+### 后续加固整理：负向门槛展示与发布边界
+
+前端诊断的三道门槛均针对每一张必需帧，而不是对均值或单张最强帧：
+主审人员分数不高于 `min(0.05, R.reject_below)`，扩大范围人员分数不高于
+`min(0.01, A.secondary.reject_below, R.reject_below)`，且明确非人员证据分数
+不低于 `max(0.99, 1 - A.secondary.reject_below)`。第二遍记载的 `reject_below`
+已合并规则和授权门槛，前端不得把显示的 0.01 解释为单独充分条件。
+负向路径还要求规则几何证明有效、全部必需的真实 full-frame 输入按 frame_id 顺序对应、
+非 limited 模式，以及各遍有效分数逐帧对应且帧数一致。目标图降级或缺少必需帧不可自动误报；
+昏暗不清晰、第三遍证据不足仍保留人工。历史缺少当次规则/授权阈值时前端标记未记录，
+不能借用当前配置还原旧门槛。
+
+前端已为可选 `decision_path` 提供“特写主审确认”“扩大范围复核确认”
+“明确非人员证据核验后判为误报”的兼容展示；这是可消费字段的前端能力，
+不表示旧记录已经补写路径，也不由授权 mode 或 decision_basis 推断旧记录实际走过哪一遍。
+后端显式路径与缓存加固已在下节按实际源码记录，仍与部署状态分开。
+本轮后续加固的发布证据见本文末段；不能沿用 20:02 的历史发布结果冒充本轮结果。UI 验收由主任务另外执行。
+审计 CLI/离线评估按已确认实现整合在本文；原草稿移到忽略的证据目录保存，不保留第二份 canonical 设计文档。
+
+
+### 已确认源码：显式路径与重试检查点
+
+已读取 `alarm-service/src/review-worker.mjs` 与 `review-checkpoint.mjs`。
+`review.decision_path` 与当次审计同步保存：主审满足确认门槛为
+`primary_confirmation`，扩大裁剪补充确认是 `expanded_confirmation`，
+明确非人员三道门槛通过为 `explicit_non_target`；未自动处理为 null。
+独立已验证资格路径确认映射 primary_confirmation，其负向处理当前为 null，
+不能冒称走过新增的三遍负向流程。`decision_basis` 是策略来源，授权 mode 是配置能力，
+三者不是同一个维度；当前读到的 worker 仍使用既有 basis 字符串，不把拟议的
+`operator_authorized_primary_review` 宣称已持久化。旧记录不回填推断路径。
+
+`ReviewCheckpoint` 只在操作授权指纹及已知模型 SHA256 均有效时复用。
+没有操作授权提供独立包身份的资格路径不复用。每次重试的第一张 primary 必须实际调用，
+通过返回模型哈希验证后才允许后续命中；没有模型状态端点，不能声称缓存前独立查询了运行模型。
+key 绑定告警、证据 generation、handling revision、规则/策略/模型快照、完整证据、
+输入帧及来源、取证模式/缺帧清单、提示词版本与授权，并对 stage、frame_id、
+实际请求体（含图像与准备参数）取摘要。输入、提示词、授权、模型、证据或规则变化不复用旧结果。
+
+检查点保存有效完整模型响应及其摘要，包括准确 prepared/context JPEG；校验成功后、
+图片落存前先持久化，以便存储重试恢复同一审计图片。命中时重新检查响应摘要、模型哈希，
+并执行该阶段校验，不因命中跳过 schema、分数或目标框校验。调用与命中前都查 fence 和完整授权摘要。
+fence 现还绑定 `review.policy`、完整 rule、analysis_evidence，以及原始 `review.frames` 与 `review.evidence_id`（原来不存在时要求仍不存在），防止同代际快照或原始证据身份被替换后覆盖。
+最终写入仍原子使用数据库 fence；文件授权检查仍是调用前/提交前检查，不是原子撤销事务。
+
+每告警最多 12 个阶段/帧条目，检查点的 JSON 字节数和 BSON 大小均不超过 1 MiB。
+加入条目后若超限，从最旧条目开始驱逐直到满足全部限制；单个响应过大也可驱逐自身，
+保留本次已验证结果继续正常复核，仅降低后续复用率，不因图片较大转为人工或中止判断。
+模型变化清理检查点；不匹配授权模型、模板或布局的有效资格结果关闭本次复用并清理检查点，
+不把操作授权当作该资格结果的身份保证。活动检查发现授权变化时保留 `authorization_changed`
+原因、清空 checkpoint 与 token、释放 lease，按现有次数上限进入 queued 或 failed，
+而不是覆盖成笼统模型不可用。
+完成复核写入时删除 checkpoint，不把响应图像 blob 永久附在已完成告警中；失败/存储重试可保留
+受限检查点，旧绑定在初始化时替换。这是单告警中断重试恢复，不是跨告警缓存或无限重跑。
+`test/results/review-hardening-20261031/checkpoint-focused.log` 当前记录 38 项通过、0 跳过；
+此为当时的专项快照，不替代后续全量、部署或准确率认证。本轮前端全量日志 `frontend-full.log` 已完成：206 文件、1569 项通过；这是本轮检查结果，不覆盖前文旧发布快照的 1562 项统计。
+
+### 只读抽检与离线评估 CLI（无新 UI/API）
+
+已确认 `alarm-service/scripts/review-audit-sample.mjs` SHA256 为
+`f73e834d231add4a287ca2e0a6bdee8cca2adbb7aba0ca842fab2617709cdfed`。
+下列契约来自对应任务草稿及源码复核，不引入自动处理、服务或定时任务。
+
+#### Scope and implementation
+
+`alarm-service/scripts/review-audit-sample.mjs` has two explicit operator commands: `sample` and `evaluate`. It reuses bootstrap/config-center GETs and the existing Mongo `alarms` collection. It creates no database, collection, service, schedule, index, or production verdict. It never calls a model. Output is an exclusive-create private JSON file in an operator-selected existing directory on mounted `/mnt/ainvr-ssd`, outside the repository. Existing files are never overwritten. No credentials or full configuration are exported.
+
+#### Random audit population
+
+The operator supplies UTC start/end; occurrence time uses `[start,end)`. Candidates include original AI false-positive audit entries even if a human subsequently overrides handling. Current AI false positives without retained original AI audit entries are counted and explicitly excluded, rather than silently treated as validated original decisions. Deleted/expired records and audit entries lost to retention cannot be recovered. Records without an identifiable original AI false-positive audit are outside the auditable population.
+
+The Mongo query has `maxTimeMS=10000`, batch size 100, and a `cap+1` limit. The hard population cap is 10,000 candidates and the serialized read budget is 32 MiB; either overflow aborts without exporting a truncated population. Sample size is at most 1,000. The CLI may also be wrapped in a wall-clock `timeout`. Reads of a live collection are not a transactional historical snapshot.
+
+A fresh 32-byte random seed is generated unless the operator supplies a 64-character hex seed. HMAC-SHA256(seed, alarm_id) ranks the entire eligible population; lowest k distinct IDs are selected. This is uniform pseudorandom selection within that population (hash ties are negligible and use alarm ID order), never a recent-prefix sample. Manifest includes seed, N, requested/actual k, k/N, excluded IDs/reasons, selected IDs/ranks, and a digest of sorted eligible population IDs. Reproduction requires the same eligible population; a changing database cannot be reconstructed from the seed alone. The private manifest deliberately retains the seed for auditability.
+
+Each selected record retains the original AI audit/provenance, current handling, subsequent retained audit entries, model/gate identifiers where available, review metadata, and the existing authenticated alarm-detail API path. Missing provenance remains null; it is not fabricated. Human review uses the existing Alarm Center and alarm ID; no new UI deep-link contract is invented. Manifest contains no image bytes. An auditor should independently label the target and behavior using existing evidence, record provenance, and use the normal human decision flow; this tool itself cannot acknowledge alarms.
+
+#### Offline labeled evaluation
+
+`evaluate` reads at most 32 MiB / 10,000 JSONL records. Each line requires `alarm_id`, `predicted_disposition` (`handled` or `false_positive`), a gold label when available (`person`, `non_person`, `unclear`, or null; absent is counted as unlabeled), `model_sha256` (64 lowercase hex), and a nonempty `gate_version`. Dataset ID and label provenance are required CLI inputs. The input digest and distinct model/gate profiles are reported. Fields are supplied provenance, not cryptographic attestation of execution.
+
+A dismissed gold person is a false dismissal. Each profile reports all four gold/prediction confusion counts, missing/unclear label counts, false dismissals among labeled real people, and real-person share among labeled dismissals. Each rate has a Wilson 95% interval. Zero observed errors still has a nonzero upper risk bound. `insufficient_labels` is true below 30 adjudicated labels or when either gold class is absent; passing this minimal warning threshold never qualifies a model.
+
+An AI-dismissal-only sample cannot measure overall recall/specificity or deployment accuracy. A representative dataset must also cover supported/uncertain outcomes, lighting, occlusion, camera/channel/time diversity, and independently labeled real people/nonpeople. Use separated training/calibration/evaluation populations and human adjudication; repeated tracks/episodes require cluster-aware analysis beyond these binomial intervals. Selective labeling and correlated observations invalidate naive confidence interpretations. The CLI never declares representativeness or independence verified, and never fabricates qualification, gold labels, or acceptance thresholds.
+
+#### Runnable examples
+
+Create the audit directory explicitly on the mounted SSD, then from repository root:
+
+```sh
+timeout 45s node alarm-service/scripts/review-audit-sample.mjs sample --start 2026-10-30T00:00:00Z --end 2026-11-01T00:00:00Z --sample-size 20 --cap 10000 --output /mnt/ainvr-ssd/ainvr-review-audits/20261031-sample.json
+node alarm-service/scripts/review-audit-sample.mjs evaluate --input /mnt/ainvr-ssd/ainvr-review-audits/labels.jsonl --dataset-id independent-review-set --label-provenance 'Human adjudication record ID' --output /mnt/ainvr-ssd/ainvr-review-audits/evaluation.json
+node --test alarm-service/test/review-audit-sample.test.mjs
+```
+
+Example JSONL (illustrative labels only, never a production judgment):
+
+```json
+{"alarm_id":"example","predicted_disposition":"false_positive","gold":"person","model_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","gate_version":"expanded-target-v1+non-target-proof-v1"}
+```
+
+
+实际只读抽样输出为 SSD 上
+`/mnt/ainvr-ssd/ainvr-review-audits/20261031-ai-false-positive-sample.json`，
+schema `ainvr.review-audit-sample.v1`、read_only true，区间
+`[2026-10-30T00:00:00Z, 2026-11-01T00:00:00Z)`，requested k=20，
+候选数 0、可审计总体 N=0、实际 k=0。这只是该时间窗与保留审计口径内无可抽样记录，
+不是零误报率、负向准确率验证或零风险证明；不能把 N=0 作为通过抽检。
+未生成虚构标签或评估准确率。原草稿完整保存于忽略路径
+`test/results/review-hardening-20261031/audit-design-draft.md`，canonical 设计只保留本文。
+
+
+### 加固最终发布记录（2026-10-31 20:44，北京时间）
+
+本轮实际发布 stamp 为 `20261031T124439971074Z-review-dual`，发布开始于北京时间
+20:44:39；虽证据目录名为 `review-hardening-20261031`，helper 保留旧 `review-dual`
+后缀，不能据目录名另造一个 `review-hardening` stamp。最终证据为
+`test/results/review-hardening-20261031/{ready,publication,actual-result}.json`。
+`publication.json` 的 phase 为 published，SSD 中 alarm-service/web 回滚目录使用同一实际 stamp。
+本次仍通过 release-copy 发布到活动 release 和 web 目录，不直接运行未提交工作树。
+
+`alarm-full.log` 最终为 427 项：365 通过、62 跳过、0 失败，含审计 CLI；
+`frontend-full.log` 为 206 文件、1569 项通过。`ready.json` 记录 validated true、
+frontend_full 1569，告警全量、TypeScript 与 build 退出码均为 0。
+独立审查发现的原始证据交换 fence 阻断问题已用 frames/evidence_id 替换回归测试覆盖，
+主任务确认阻断项关闭；缓存命中不允许越过最终证据身份和人工处理 fence。
+测试通过与跳过分开统计，不作为准确率证书。
+
+最终只读结果观测时间 `2026-10-31T12:44:48.110Z`：同一真实告警仍为 version 5、
+handling revision 1、AI acknowledged/handled，原确认时间仍是 20:02:13.818，
+basis 为 operator_authorized_dual_review；global_unreviewed_count 为 0。
+这是加固发布后验证旧决定未被重写，不是再次推理或补写 decision_path 的证据。
+主任务浏览器验收已完成：三道负向门槛文案、扩大范围复核图片均可查看，人工改判动作可用，
+历史记录未被重写；页面显示待审核 0、健康服务 13/13。截图证据为
+`test/results/review-hardening-20261031/ui-verified.png`。这是主任务的页面验收结果，
+不冒充文档整理另行运行浏览器测试。测试使用的独立 Mongo 容器已在测试完成后清理，
+未将测试实例当作生产服务。
+本次整理只更新 canonical 文档和生成独立待提交补丁，不部署、不提交。

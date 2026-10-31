@@ -15,7 +15,8 @@ function passage(xs,behavior='region_traverse',change=()=>{},overrides={}){
 test('recording recovery queues only verified complete proof, preserves manual decisions and cleared alarms',{skip:!process.env.AINVR_REVIEW_TEST_MONGO_URI},async()=>{
  const client=new MongoClient(process.env.AINVR_REVIEW_TEST_MONGO_URI);await client.connect();const db=client.db('ainvr_recovery_test_'+randomUUID().replaceAll('-',''));
  const repo=new AlarmRepository(db),context=new ReviewContext(repo,'/mnt/ainvr-ssd/test-recovery-unused');
- const jpeg=Buffer.from('ffd8ffc0001108000a001403012200021101031101ffd9','hex');
+ // Baseline header with all three component descriptors and exact source dimensions.
+ const jpeg=Buffer.from('ffd8ffc00011080438078003012200021101031101ffd9','hex');
  const make=()=>{const [event]=passage([.2,.4,.5,.8]);return {...event,alarm_id:randomUUID(),occurred_at:new Date().toISOString(),ingested_at:new Date().toISOString(),handling:{state:'unacknowledged',revision:0},review:{generation:1,policy,state:'uncertain',reason:'missing_context',context_state:'incomplete'}};};
  context.image=async()=>{throw Error('missing_context')};
  try{

@@ -11,7 +11,11 @@ import {RuleSnapshots} from './rule-snapshots.mjs';
 import {stageRank} from './episodes.mjs';
 import {acknowledge, digest, fail, identity, validateRule} from './domain.mjs';
 
-const withoutInternal=d=>{if(!d)return null;const {_id,operations,...publicDoc}=d;return publicDoc;};
+// review.checkpoint (raw model responses kept for retry reuse) and the worker
+// lease token are internal; clients never receive them.
+const withoutInternal=d=>{if(!d)return null;const {_id,operations,...publicDoc}=d;
+  if(publicDoc.review&&typeof publicDoc.review==='object'){const {checkpoint,token,...review}=publicDoc.review;publicDoc.review=review;}
+  return publicDoc;};
 const pendingFilter=()=>({'handling.state':'unacknowledged','handling.disposition':{$ne:'false_positive'}});
 const zoneFilter=zone_id=>({$or:[{'rule.snapshot.zone_id':zone_id},{'stages.zone_id':zone_id}]});
 const locationPairs=value=>{
@@ -249,8 +253,8 @@ export class AlarmRepository {
       {$match:{$and:[query,analyticsFilter(analyticsScope,page.as_of)]}},
       {$sort:{occurred_at:-1,alarm_id:-1}},{$limit:limit+1},
       {$set:{rule:{$mergeObjects:['$rule',{snapshot:{zone_id:{$ifNull:['$rule.snapshot.zone_id',null]}}}]}}},
-      {$project:{_id:0,operations:0,logs:0,analysis_evidence:0,model_snapshot:0}}
-    ],{maxTimeMS:5000,allowDiskUse:false}).toArray():await this.events.find(query,{projection:{_id:0,operations:0,logs:0,'rule.snapshot':0,analysis_evidence:0,model_snapshot:0}})
+      {$project:{_id:0,operations:0,logs:0,analysis_evidence:0,model_snapshot:0,'review.checkpoint':0,'review.token':0}}
+    ],{maxTimeMS:5000,allowDiskUse:false}).toArray():await this.events.find(query,{projection:{_id:0,operations:0,logs:0,'rule.snapshot':0,analysis_evidence:0,model_snapshot:0,'review.checkpoint':0,'review.token':0}})
       .sort({occurred_at:-1,alarm_id:-1}).limit(limit+1).toArray();
     const more=rows.length>limit;const items=rows.slice(0,limit),last=items.at(-1);
     return {items,next_cursor:more?Buffer.from(JSON.stringify({signature,as_of:page.as_of,occurred_at:last.occurred_at,alarm_id:last.alarm_id})).toString('base64url'):null,as_of:page.as_of};

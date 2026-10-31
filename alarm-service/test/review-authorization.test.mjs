@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {MongoClient} from 'mongodb';
 import {randomUUID} from 'node:crypto';
-import {parseAuthorization,authorizedResult,authorizedScores} from '../src/review-authorization.mjs';
+import {parseAuthorization,authorizedResult,authorizedScores,confirmationAssessment} from '../src/review-authorization.mjs';
 import {REVIEW_PROMPT_VERSION} from '../src/review-prompt.mjs';
 import {ReviewWorker} from '../src/review-worker.mjs';
 const config={schema:'ainvr.review-authorization.v1',enabled:true,mode:'confirm_only',model_sha256:'a'.repeat(64),layout:'target-crop-v1',prompt_template:'alarm-review-zh-v1',caller_template:REVIEW_PROMPT_VERSION,labels:['person'],approve_above:.99,authorized_by:'test operator',authorized_at:'2026-10-26T00:00:00Z'};
@@ -54,4 +54,17 @@ test('multi-frame confirmation requires a strong frame and unanimous per-frame s
  assert.equal(parseAuthorization({...config,minimum_frame_score:.94}),null);
  assert.equal(parseAuthorization({...config,minimum_frame_score:1}),null);
  assert.notEqual(strict.id,balanced.id);
+});
+
+
+test('confirmation diagnostics retain the exact failed frame without treating maximum score as agreement',()=>{
+ const p=parseAuthorization({...config,minimum_frame_score:.95}),rule={approve_above:.95};
+ const gate=confirmationAssessment(p,[.7285974636292093,.9999739953455818],rule);
+ assert.equal(gate.outcome,'frame_below_threshold');assert.deepEqual(gate.failed_frame_indices,[0]);
+ assert.equal(gate.minimum_frame_score,.95);assert.equal(gate.strong_frame_score,.99);
+ assert.equal(confirmationAssessment(p,[.98,.98],rule).outcome,'no_strong_frame');
+ assert.equal(confirmationAssessment(p,[.95,.99],rule).outcome,'confirmed');
+ assert.equal(confirmationAssessment(null,[1],rule).outcome,'not_authorized');
+ assert.deepEqual(confirmationAssessment(p,[NaN],rule).frame_scores,[]);
+ assert.deepEqual(confirmationAssessment(p,[.97,1],{approve_above:.98}).failed_frame_indices,[0]);
 });

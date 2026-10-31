@@ -1,9 +1,12 @@
 import test from 'node:test';
+import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {evaluate} from '../src/engine.mjs';
 import {ReviewContext} from '../src/review-context.mjs';
 
 const jpeg=Buffer.from('ffd8ffc00011080040004003012200021101031101ffd9','hex');
+// Full-frame recorder fixture must match the alarm source geometry.
+const frameJpeg=Buffer.from(jpeg);frameJpeg.writeUInt16BE(1080,7);frameJpeg.writeUInt16BE(1920,9);
 const policy={enabled:true,version:1,profile_id:'alarm-review-zh-v1',description:'核对人',reject_below:.05,approve_above:.95};
 function entering(){
  const rule={id:'r',version:1,name:'test',channel_id:'c',state:'enabled',label_ids:['person'],labels:[{label_id:'person',name:'人'}],geometry_revision:'g',label_map_version:'l',behavior:'region_enter',anchor:'center',points:[[.3,.3],[.7,.3],[.7,.7],[.3,.7]],review:policy};
@@ -26,7 +29,7 @@ function fixture(row){
 test('retained visuals become visual_completed without falsely claiming recording recovery or losing provenance',async()=>{
  const row=entering(),{context,patches}=fixture(row);
  const sample=row.analysis_evidence.review_context.samples.at(-1);
- const plan={mode:'verified_behavior_available_visuals',missing_frame_ids:['before'],items:[{sample,key:'a'.repeat(64),data:jpeg,source_kind:'retained_target',event_id:'b'.repeat(64),width:64,height:64}]};
+ const plan={mode:'verified_behavior_available_visuals',missing_frame_ids:['before'],items:[{sample,key:createHash('sha256').update(jpeg).digest('hex'),data:jpeg,source_kind:'retained_target',event_id:'b'.repeat(64),width:64,height:64}]};
  await context.ready(row,{alarm_id:row.alarm_id},plan,true);
  const patch=patches.at(-1).update;
  assert.equal(patch.$set['review.recovery.state'],'visual_completed');
@@ -41,7 +44,7 @@ test('actual recorder recovery keeps completed and names the exact-SEI source',a
  context.prepareInputs=async()=>{throw Error('missing_context');};
  context.image=async()=>{throw Error('missing_context');};
  let calls=0;
- context.recoverEvidence=async()=>{calls++;return {data:jpeg,provenance:{kind:'recording_exact_sei_v1',segment_id:'segment'}};};
+ context.recoverEvidence=async()=>{calls++;return {data:frameJpeg,provenance:{kind:'recording_exact_sei_v1',segment_id:'segment'}};};
  await context.recoverOne();
  assert.ok(calls>=2);
  const patch=patches.at(-1).update;

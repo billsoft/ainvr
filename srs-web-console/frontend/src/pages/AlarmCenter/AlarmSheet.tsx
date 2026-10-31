@@ -1,5 +1,5 @@
 import {ReviewFrames} from './ReviewFrames'
-import {reviewLabel,reviewReason,referenceLabel,recoveryLabel,reviewStatusClass} from '@/features/alarmReview'
+import {reviewDiagnostic,reviewLabel,reviewReason,referenceLabel,recoveryLabel,reviewStatusClass} from '@/features/alarmReview'
 import {useEffect,useRef,useState} from 'react'
 import {Link} from 'react-router-dom'
 import {Play,X,Search} from 'lucide-react'
@@ -27,6 +27,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
  useEffect(()=>{let active=true;void alarmEventService.get(id).then(v=>{if(active){setSnapshot({id,value:v});setStage(v.stages?.find(s=>s.event_id===initialStageId)?.event_id??v.stages?.at(-1)?.event_id??null)}}).catch(()=>{if(active)setFailedLoad({id,retry})});return()=>{active=false}},[id,retry,initialStageId])
  useEffect(()=>{const previous=document.activeElement as HTMLElement|null,overflow=document.body.style.overflow;document.body.style.overflow='hidden';closeRef.current?.focus();return()=>{document.body.style.overflow=overflow;if(previous?.isConnected)previous.focus();else document.querySelector<HTMLElement>('[aria-label="处理状态"] button')?.focus()}},[])
  const value=snapshot?.id===id?snapshot.value:null
+ const diagnostic=reviewDiagnostic(value?.review)
  const error=failedLoad?.id===id&&failedLoad.retry===retry
  const described=value?describeAlarm(value,trigger):null,look=levelLook[value?.behavior??'']??levelLook.appearance!
  const selected=value?.stages?.find(s=>s.event_id===stage)
@@ -76,11 +77,11 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
      <section aria-label="AI 审核结果" className="space-y-1 rounded-base border border-line p-3 text-sm">
       <h3 className={`inline-flex rounded border px-2 py-0.5 font-medium ${reviewStatusClass(value)}`}>{reviewLabel(value)}{value.handling.state==='acknowledged'?` · ${value.handling.disposition==='false_positive'?'误报':'确认'}`:''}</h3>
       {recoveryLabel(value.review)&&<p className="mt-1 text-xs text-ink-subtle">{recoveryLabel(value.review)}</p>}
-      {value.review?.reference&&<div className="space-y-1 border-t border-line pt-2"><p>{referenceLabel(value.review.reference)}</p><p className="text-xs text-ink-subtle">{value.review.reference.reason==='unvalidated_profile'?'已按行为关键时刻核对目标类别；模型尚未验证，分数不改变审核结论。':'此参考分析仅核对保留截图的目标类别，不能替代完整行为证据，请结合录像人工审核。'}</p>{value.review.reference.completed_at&&<p className="text-xs text-ink-subtle">{new Date(value.review.reference.completed_at).toLocaleString()} · {value.review.reference.model?.package_id}</p>}</div>}
-      {value.review?.score!==undefined&&!value.review.reference&&<p>目标类别匹配分数 {value.review.score.toFixed(3)}（不是概率）</p>}
-      {value.review?.policy?.description&&<p className="text-ink-subtle">{value.review.policy.description}</p>}
-      {value.review?.completed_at&&<p className="text-xs text-ink-subtle">{new Date(value.review.completed_at).toLocaleString()} · {value.review.model?.package_id}</p>}
-      {value.review?.reason&&<p className="text-xs text-warning-700">{reviewReason(value.review.reason)}</p>}
+      {diagnostic?<div className="space-y-1 border-t border-line pt-2"><p>{diagnostic.summary}</p><details className="text-xs text-ink-subtle"><summary className="min-h-11 cursor-pointer py-3">查看审核诊断与模型分数</summary><ul className="space-y-2 break-words">{diagnostic.details.map((text,i)=><li key={i}>{text}</li>)}</ul>{value.review?.policy?.description&&<p className="mt-2">规则说明：{value.review.policy.description}</p>}</details><p className="text-xs text-ink-subtle">人工确认与标记误报可独立操作。</p></div>:value.review?.reference&&<div className="space-y-1 border-t border-line pt-2"><p>{referenceLabel(value.review.reference)}</p><p className="text-xs text-ink-subtle">{value.review.geometry_verified?'行为几何条件已核验；参考图片仅核对目标类别，请结合录像人工审核。':'参考分析仅核对保留截图的目标类别；行为证据请结合关键帧与录像核对。'}</p></div>}
+      {!diagnostic&&value.review?.score!==undefined&&!value.review.reference&&<p>目标类别匹配分数 {value.review.score.toFixed(3)}（不是概率）</p>}
+      {!diagnostic&&value.review?.policy?.description&&<p className="text-ink-subtle">{value.review.policy.description}</p>}
+      {(value.review?.completed_at||value.review?.reference?.completed_at||value.review?.model||value.review?.reference?.model)&&<p className="text-xs text-ink-subtle">{(value.review.completed_at||value.review.reference?.completed_at)?new Date((value.review.completed_at||value.review.reference?.completed_at)!).toLocaleString():''} · {value.review.model?.package_id??value.review.reference?.model?.package_id}</p>}
+      {!diagnostic&&value.review?.reason&&<p className="text-xs text-warning-700">{reviewReason(value.review.reason)}</p>}
       {value.handling.reviewed_by_kind==='ai'&&<p>此条已由 AI 审核。下方人工操作可纠正结果。</p>}
      </section>
      <h3 className="font-semibold">经过</h3>

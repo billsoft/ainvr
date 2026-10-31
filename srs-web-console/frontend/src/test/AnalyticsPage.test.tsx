@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, expect, it, vi } from 'vitest'
 import AnalyticsPage from '@/pages/Analytics'
+import type { PlanCanvasProps } from '@/pages/Analytics/plan/PlanCanvas'
 import { flowService, type CounterResult } from '@/api/flowService'
 import { alarmEventService } from '@/api/alarmEventService'
 import { bucketCoverage, bucketValue, counterUnit, csvCell, selectedRows, sumKnown, toCsv, weekPattern, weekWindow } from '@/pages/Analytics/analyticsSource'
@@ -9,7 +10,7 @@ import { bucketCoverage, bucketValue, counterUnit, csvCell, selectedRows, sumKno
 vi.mock('@/api/flowService', async original => ({...await original<typeof import('@/api/flowService')>(),flowService:{list:vi.fn(),query:vi.fn(),records:vi.fn()}}))
 vi.mock('@/api/alarmEventService',()=>({alarmEventService:{statistics:vi.fn()}}))
 vi.mock('@/api/floorPlanService',()=>({createFloorPlanSession:()=>({load:async()=>({version:2,plans:[],activeId:null}),save:async()=>{},dispose:()=>{}})}))
-vi.mock('@/pages/Analytics/plan/PlanCanvas',()=>({PlanCanvas:()=> <div data-testid="analytics-map-values"/>}))
+vi.mock('@/pages/Analytics/plan/PlanCanvas',()=>({PlanCanvas:({annotations}:PlanCanvasProps)=> <div data-testid="analytics-map-values">{Object.entries(annotations??{}).map(([key,value])=><output key={key} data-testid={`map-label-${key}`}>{value.detail}</output>)}</div>}))
 const from='2026-10-01T00:00:00.000Z', mid='2026-10-01T00:30:00.000Z', to='2026-10-01T01:00:00.000Z'
 const coverage={state:'partial' as const,ratio:.5,expected_ms:3600000,covered_ms:1800000,expected_intervals:[{from,to}],intervals:[{from,to:mid}]}
 const counter={counter_id:'counter',name:'=counter',labels:[{label_id:'person',name:'人'}],method:'line',outputs:'both',names:{in:'进入',out:'离开'},occupancy:false,max_gap_ms:0,state:'enabled',version:1,bindings:[
@@ -166,10 +167,12 @@ it('retains global compatible totals but never merges two counters into one map 
  fireEvent.click(screen.getByText(/^计数器 1\//))
  fireEvent.click(screen.getByLabelText('同区另一计数器'))
  expect(await screen.findByText('111 人次')).toBeInTheDocument()
- expect(within(screen.getByRole('table',{name:'热区排名'})).getAllByRole('cell').map(c=>c.textContent)).toEqual(expect.arrayContaining(['4','100']))
+ expect(screen.getByTestId('map-label-z1')).toHaveTextContent('进入 4 · 离开 2')
+ expect(screen.getByTestId('map-label-z2')).toHaveTextContent('进入 100 · 离开 4')
+ expect(screen.getByTestId('map-label-z1')).toHaveTextContent('单位人次')
  fireEvent.change(screen.getByLabelText('地图计数器'),{target:{value:'counter2'}})
- expect(within(screen.getByRole('table',{name:'热区排名'})).getAllByRole('cell').map(c=>c.textContent)).toEqual(expect.arrayContaining(['7']))
- expect(within(screen.getByRole('table',{name:'热区排名'})).queryByRole('cell',{name:'100'})).not.toBeInTheDocument()
+ expect(screen.getByTestId('map-label-z1')).toHaveTextContent('进入 7 · 离开 4')
+ expect(screen.getByTestId('map-label-z2')).toHaveTextContent('未关联当前计数器')
 })
 it('lists historical bindings without selecting them by default and restores explicit historical URL selections', async () => {
  const historical={...counter.bindings[0],binding_id:'old-binding',zone_id:'old-zone',zone_name:'旧入口',active:false}
@@ -187,7 +190,7 @@ it('lists historical bindings without selecting them by default and restores exp
  expect(await screen.findByText('9 人次')).toBeInTheDocument()
  fireEvent.click(screen.getByText('统计位置 1'))
  expect(screen.getByLabelText(/旧入口（已解绑\/历史）/)).toBeChecked()
- expect(within(screen.getByRole('table',{name:'热区排名'})).getAllByRole('cell').map(c=>c.textContent)).toContain('9')
+ expect(screen.getByTestId('map-label-old-zone')).toHaveTextContent('进入 9 · 离开 4')
 })
 
 it('keeps four compact metrics and the comparison gate while putting full statistical explanations behind a disclosure', async () => {

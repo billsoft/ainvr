@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { expect, it, vi } from 'vitest'
 import { PlanCanvas } from '@/pages/Analytics/plan/PlanCanvas'
@@ -47,4 +47,33 @@ it('keeps planning frames transparent and draws heat only as a separate read-onl
   view.rerender(<PlanCanvas plan={plan} zones={zones} heat={[[1]]} selectedKey={null} onSelectZone={vi.fn()} />)
   expect(screen.queryByTestId('count-heat-overlay')).not.toBeInTheDocument()
   expect(screen.getByTestId('placement-fill')).toHaveTextContent('transparent')
+})
+it('selects and clears a zone through its data label without putting readings on planning frames', () => {
+  const plan: Plan = { id: 'p', name: '布局', image: null, shapes: [], placements: { hot: placement } }
+  const zones: ZoneInfo[] = [{ key: 'hot', zoneId: 'hot', channelId: 'p', name: '入口', counters: [] }]
+  const annotations = { hot: { summary: '进入 0 · 离开 — · —', detail: '人员入口 · 进入 0 · 离开 —；单位次' } }
+  const onSelectZone = vi.fn()
+  const props = { plan, zones, annotations, heat: [[1]], readOnly: true, onSelectZone }
+  const view = render(<PlanCanvas {...props} selectedKey={null} />)
+  const labels = screen.getByLabelText('热区数据标签')
+  const label = within(labels).getByRole('button', { name: `入口：${annotations.hot.detail}` })
+  expect(label).toHaveTextContent(annotations.hot.summary)
+  expect(label).toHaveAttribute('title', annotations.hot.detail)
+  expect(label).toHaveAttribute('aria-pressed', 'false')
+  expect(within(screen.getByTestId('zone-hot')).queryByText(annotations.hot.summary)).not.toBeInTheDocument()
+  expect(screen.getByTestId('placement-fill')).toHaveTextContent('transparent')
+  fireEvent.click(label)
+  expect(onSelectZone).toHaveBeenLastCalledWith('hot')
+  view.rerender(<PlanCanvas {...props} selectedKey="hot" />)
+  expect(label).toHaveAttribute('aria-pressed', 'true')
+  fireEvent.click(label)
+  expect(onSelectZone).toHaveBeenLastCalledWith(null)
+  expect(plan.placements.hot).toEqual(placement)
+  view.rerender(<PlanCanvas {...props} annotations={undefined} selectedKey={null} />)
+  expect(screen.queryByLabelText('热区数据标签')).not.toBeInTheDocument()
+  expect(screen.getByTestId('zone-hot')).toHaveTextContent('入口')
+  expect(screen.getByTestId('count-heat-overlay')).toHaveTextContent('独立热度场')
+  expect(screen.getByTestId('placement-fill')).toHaveTextContent('transparent')
+  view.rerender(<PlanCanvas {...props} readOnly={false} selectedKey={null} />)
+  expect(screen.queryByLabelText('热区数据标签')).not.toBeInTheDocument()
 })

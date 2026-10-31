@@ -1,3 +1,4 @@
+import {automaticReviewBanner} from '@/features/alarmReview'
 import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
 import {useLocation,useNavigate} from 'react-router-dom'
 import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react'
@@ -60,9 +61,9 @@ export default function AlarmListPage(){
  const [bulk,setBulk]=useState<{phase:'asking'|'working';items:AckItem[];key:string;scope:string;uncertain?:boolean}|null>(null),[bulkResult,setBulkResult]=useState('')
  const [singleAttempts,setSingleAttempts]=useState<Record<string,PendingAcknowledgement>>({})
  const loadRequest=useRef(0)
- const [automaticReview,setAutomaticReview]=useState(false)
+ const [automaticReview,setAutomaticReview]=useState<false|'confirm_only'|'confirm_or_reject'>(false)
  const [reference,setReference]=useState<{active:boolean;counts:Record<string,number>}|null>(null)
- useEffect(()=>{let active=true;const poll=()=>{if(document.hidden)return;void alarmEventService.summary().then(r=>{if(active){setReference(r.reference??null);setAutomaticReview(r.automatic_review?.mode==='confirm_only')}}).catch(()=>{if(active){setReference(null);setAutomaticReview(false)}})};poll();const timer=setInterval(poll,15000);return()=>{active=false;clearInterval(timer)}},[])
+ useEffect(()=>{let active=true;const poll=()=>{if(document.hidden)return;void alarmEventService.summary().then(r=>{if(active){setReference(r.reference??null);setAutomaticReview(r.automatic_review?.mode??false)}}).catch(()=>{if(active){setReference(null);setAutomaticReview(false)}})};poll();const timer=setInterval(poll,15000);return()=>{active=false;clearInterval(timer)}},[])
  const [today,setToday]=useState<Record<string,number>|null>(null)
  const filters=useMemo<AlarmFilters>(()=>({...(review?{disposition:review}:{}),...(level?{behavior:level}:{}),
   ...(scope.kind==='valid'?(scope.analytics?{analytics:JSON.stringify(scope.analytics)}:{from:scope.from,to:scope.to,locations:scope.locations}):{...(channel?{channel_id:channel}:{}),...(rangeFrom(range)?{from:rangeFrom(range)}:{})})}),[channel,level,range,review,scope])
@@ -259,7 +260,7 @@ export default function AlarmListPage(){
      <button type="button" disabled={bulk.phase==='working'} onClick={()=>setBulk(null)} className="btn-secondary !min-h-11">{bulk.uncertain?'关闭并稍后核对':'取消'}</button>
      <button type="button" disabled={bulk.phase==='working'} onClick={()=>void confirmAll()} className="btn-primary !min-h-11">{bulk.phase==='working'?'处理中…':`确认这 ${bulk.items.length} 条`}</button></div></AlarmConfirmation>}
     {bulkResult&&!bulk&&<p role="status">{bulkResult}</p>}
-    {automaticReview&&<p role="status" className="text-sm text-ink-subtle">AI 自动审核已启用：优先处理最新告警，关键帧判断一致时自动确认并移入“已 AI 审核”。疑似误报、证据不足或判断冲突保留人工审核；模型准确率尚未全面验证，可人工改判。</p>}
+    {automaticReview&&<p role="status" className="text-sm text-ink-subtle">{automaticReviewBanner(automaticReview)}</p>}
     {!automaticReview&&reference&&<p role="status" className="text-sm text-ink-subtle">AI 参考分析：{reference.active?'后台运行中':'后台未运行'} · 已分析 {reference.counts.completed??0} · 分析中 {reference.counts.running??0} · 待分析 {(reference.counts.waiting??0)+(reference.counts.queued??0)} · 无法分析 {reference.counts.failed??0}。优先分析最新未审核告警；模型待验证，参考分数不改变审核结论。</p>}
    </div>
    <div ref={scroll} onPointerDownCapture={()=>{interaction.current=Date.now()}} onKeyDownCapture={()=>{interaction.current=Date.now()}} aria-busy={busy} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 md:px-6">

@@ -2,9 +2,10 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import SearchPage from '@/pages/Search'
 import { MemoryRouter } from 'react-router-dom'
+import userEvent from '@testing-library/user-event'
 import type { SearchPageResult } from '@/api/searchService'
 import { searchService } from '@/api/searchService'
-import { formatRangeFull } from '@/utils/timeRange'
+import { formatRangeFull, formatRangeShort } from '@/utils/timeRange'
 vi.mock('@/api/searchService', async original => ({ ...await original<typeof import('@/api/searchService')>(), searchService: { coverage: vi.fn(), status: vi.fn(), channels: vi.fn(), query: vi.fn(), page: vi.fn(), detail: vi.fn(), cancel: vi.fn(), feedback: vi.fn() } }))
 const flags=vi.hoisted(()=>({aiReference:true}))
 vi.mock('@/pages/Search/aiReference',()=>({aiReferenceEnabled:()=>flags.aiReference}))
@@ -30,7 +31,7 @@ it('explains a large source selection before exceeding the100-channel contract a
   expect(screen.getByLabelText('南区摄像头001')).not.toBeChecked()
   fireEvent.change(screen.getByRole('textbox', { name: '查找摄像头' }), { target: { value: '南区' } })
   fireEvent.click(screen.getByRole('button', { name: '选择当前列表' }))
-  expect(screen.getByText('摄像头 · 已选 100 / 100')).toBeInTheDocument()
+  expect(screen.getByText('AI 输出 · 已选 100 / 100')).toBeInTheDocument()
   fireEvent.change(screen.getByRole('textbox', { name: '查找摄像头' }), { target: { value: '' } })
   expect(screen.getByLabelText('北区摄像头001')).toBeDisabled()
   expect(screen.getByLabelText('南区摄像头001')).toBeEnabled()
@@ -39,7 +40,7 @@ it('explains a large source selection before exceeding the100-channel contract a
   fireEvent.click(screen.getByLabelText('北区摄像头001'))
   expect(screen.getByLabelText('北区摄像头001')).toBeChecked()
   expect(screen.getByLabelText('南区摄像头001')).not.toBeChecked()
-  expect(screen.getByText('摄像头 · 已选 100 / 100')).toBeInTheDocument()
+  expect(screen.getByText('AI 输出 · 已选 100 / 100')).toBeInTheDocument()
 })
 it('shows real unavailable state rather than no matches, with searchable channel selection', async () => {
   render(<MemoryRouter><SearchPage /></MemoryRouter>)
@@ -87,6 +88,108 @@ async function ready() {
   fireEvent.click(await screen.findByRole('checkbox', { name: '后门' }))
   fireEvent.change(screen.getByRole('textbox', { name: '想找什么？' }), { target: { value: '黑色背包' } })
 }
+it('keeps the channel sidebar visible and editable before and after searching and closing evidence', async () => {
+  flags.aiReference = false
+  vi.mocked(searchService.query).mockImplementation(async input => ({ ...result(input.request_id), scope: input.scope }))
+  await ready()
+  const sidebar = screen.getByRole('complementary', { name: '搜索通道' })
+  expect(within(sidebar).getByRole('heading', { level: 1, name: '智能搜索' })).toBeVisible()
+  expect(within(sidebar).getByRole('checkbox', { name: '后门' })).toBeChecked()
+  expect(within(sidebar).getByRole('checkbox', { name: '大门' })).not.toBeChecked()
+  expect(screen.queryByRole('button', { name: /调整范围|收起范围/ })).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  const card = await screen.findByRole('button', { name: '查看第 1 条候选：后门' })
+  expect(sidebar).toBeVisible()
+  fireEvent.click(card)
+  fireEvent.click(within(sidebar).getByRole('checkbox', { name: '大门' }))
+  expect(within(sidebar).getByRole('checkbox', { name: '后门' })).toBeChecked()
+  expect(within(sidebar).getByRole('checkbox', { name: '大门' })).toBeChecked()
+  expect(screen.getByText(/条件已修改/)).toBeInTheDocument()
+  expect(card).toHaveAttribute('aria-pressed', 'true')
+  expect(searchService.query).toHaveBeenCalledTimes(1)
+  expect(searchService.cancel).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: '关闭详情' }))
+  expect(screen.queryByRole('complementary', { name: '候选详情' })).not.toBeInTheDocument()
+  expect(screen.getByRole('complementary', { name: '搜索通道' })).toBe(sidebar)
+  expect(sidebar).toBeVisible()
+  fireEvent.click(within(sidebar).getByRole('button', { name: '清除选择' }))
+  expect(within(sidebar).getByRole('checkbox', { name: '后门' })).not.toBeChecked()
+  expect(within(sidebar).getByRole('checkbox', { name: '大门' })).not.toBeChecked()
+  expect(card).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '搜索录像' })).toBeDisabled()
+})
+
+it.each([
+  ['近1小时', 3600000],
+  ['近24小时', 86400000],
+  ['近7天', 7 * 86400000],
+] as const)('%s changes only the time draft until an explicit search, preserving previous evidence and coverage', async (label, duration) => {
+  flags.aiReference = false
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-10-27T12:34:56Z'))
+  vi.mocked(searchService.query).mockImplementation(async input => ({ ...result(input.request_id), scope: structuredClone(input.scope) }))
+  await ready()
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  const card = await screen.findByRole('button', { name: '查看第 1 条候选：后门' })
+  fireEvent.click(card)
+  await waitFor(() => expect(searchService.coverage).toHaveBeenCalledTimes(1))
+  const committedScope = structuredClone(vi.mocked(searchService.query).mock.calls[0]![0].scope)
+  const committedSummary = screen.getByText(/本次描述/).closest('p')!.textContent
+  const playback = screen.getByRole('link', { name: '播放前后录像' }).getAttribute('href')
+  const now = new Date('2026-10-30T12:34:56Z')
+  vi.setSystemTime(now)
+  fireEvent.click(screen.getByRole('button', { name: label }))
+  const start = new Date(now.getTime() - duration)
+  expect(screen.getByRole('button', { name: '选择时间范围' })).toHaveTextContent(`${formatRangeShort(start)} → ${formatRangeShort(now)}`)
+  expect(screen.getByText(/条件已修改/)).toBeInTheDocument()
+  expect(searchService.query).toHaveBeenCalledTimes(1)
+  expect(searchService.cancel).not.toHaveBeenCalled()
+  expect(searchService.coverage).toHaveBeenCalledTimes(1)
+  expect(vi.mocked(searchService.coverage).mock.calls[0]![0]).toEqual(committedScope)
+  expect(screen.getByText(/本次描述/).closest('p')).toHaveTextContent(committedSummary!)
+  expect(screen.getByRole('textbox', { name: '想找什么？' })).toHaveValue('黑色背包')
+  expect(screen.getByRole('checkbox', { name: '后门' })).toBeChecked()
+  expect(card).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('link', { name: '播放前后录像' })).toHaveAttribute('href', playback)
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(searchService.query).mock.calls[1]![0]).toEqual(expect.objectContaining({
+    query: '黑色背包', min_similarity: 0.07,
+    scope: { channel_ids: ['a'], from: start.toISOString(), to: new Date(now.getTime() + 1000).toISOString() },
+  }))
+  await waitFor(() => expect(screen.queryByText(/条件已修改/)).not.toBeInTheDocument())
+})
+
+it('confirms the shared date picker into the draft without rerunning the saved search', async () => {
+  flags.aiReference = false
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date(2026, 9, 27, 12, 34, 56))
+  vi.mocked(searchService.query).mockImplementation(async input => ({ ...result(input.request_id), scope: structuredClone(input.scope) }))
+  await ready()
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  const card = await screen.findByRole('button', { name: '查看第 1 条候选：后门' })
+  fireEvent.click(card)
+  await waitFor(() => expect(searchService.coverage).toHaveBeenCalledTimes(1))
+  const trigger = screen.getByRole('button', { name: '选择时间范围' })
+  fireEvent.click(trigger)
+  expect(screen.getByRole('dialog', { name: '选择时间范围' })).toBeInTheDocument()
+  fireEvent.click(within(screen.getByTestId('range-picker-from')).getByRole('button', { name: '2026年10月25日' }))
+  fireEvent.click(screen.getByRole('button', { name: '确定' }))
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(trigger).toHaveTextContent('10-25 12:34 → 10-27 12:34')
+  expect(screen.getByText(/条件已修改/)).toBeInTheDocument()
+  expect(searchService.query).toHaveBeenCalledTimes(1)
+  expect(searchService.cancel).not.toHaveBeenCalled()
+  expect(searchService.coverage).toHaveBeenCalledTimes(1)
+  expect(card).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('link', { name: '播放前后录像' })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(searchService.query).mock.calls[1]![0].scope).toEqual({
+    channel_ids: ['a'], from: new Date(2026, 9, 25, 12, 34, 56).toISOString(), to: new Date(2026, 9, 27, 12, 34, 57).toISOString(),
+  })
+})
+
 it('submits a UUID request on HTTP LAN browsers without crypto.randomUUID', async () => {
   const getRandomValues = vi.fn((bytes: Uint8Array) => {
     bytes.set(Array.from({ length: 16 }, (_, index) => index))
@@ -125,14 +228,16 @@ it('search results keep evidence and playback on the explicit recording output',
   await ready()
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   fireEvent.click(await screen.findByRole('button', { name: '查看第 1 条候选：后门' }))
-  expect(screen.getByText(/本次描述/)).toHaveTextContent(formatRangeFull(new Date(Date.parse('2026-10-28T01:00:00Z') - 1)))
+  expect(screen.getByText(/本次描述/).closest('p')).toHaveTextContent(formatRangeFull(new Date(Date.parse('2026-10-28T01:00:00Z') - 1)))
   const href = screen.getByRole('link', { name: '播放前后录像' }).getAttribute('href')!
   expect(screen.getByRole('link', { name: '播放前后录像' })).toHaveAttribute('target', '_blank')
   expect(href).toContain('/playback/output-a?from=')
   expect(href).toContain(`from=${Date.parse('2026-10-27T01:00:00Z') - 2000}`)
   expect(href).toContain(`to=${Date.parse('2026-10-27T01:00:03Z') + 15000}`)
-  expect(screen.getByText(/AI 参考仅针对命中帧/)).toBeInTheDocument()
-  expect(screen.getByText(/所选范围有未分析或缺失时段/)).toBeInTheDocument()
+  fireEvent.click(screen.getByText('证据与操作说明'))
+  fireEvent.click(screen.getByText('结果说明'))
+  expect(screen.getByText(/AI 参考仅针对命中帧/)).toBeVisible()
+  expect(screen.getByText(/所选范围有未分析或缺失时段/)).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: '相关' }))
   await waitFor(() => expect(screen.getByRole('button', { name: '相关' })).toHaveAttribute('aria-pressed', 'true'))
   expect(searchService.feedback).toHaveBeenCalledWith(expect.any(String), 'result-a', true)
@@ -190,7 +295,8 @@ it('refreshes a later page and pending recording without moving the open evidenc
   expect(panel).toHaveFocus()
   expect(screen.getByRole('button', { name: '查看第 1 条候选：后门' })).toBeInTheDocument()
   expect(screen.getByRole('button', { name: '查看第 2 条候选：后续候选' })).toHaveAttribute('aria-pressed', 'true')
-  expect(screen.getByText(/所选范围有未分析或缺失时段/)).toBeInTheDocument()
+  fireEvent.click(screen.getByText('结果说明'))
+  expect(screen.getByText(/所选范围有未分析或缺失时段/)).toBeVisible()
 })
 it('refreshes verification for loaded later pages rather than only polling the first page', async () => {
   vi.mocked(searchService.query).mockImplementation(async input => { const page = result(input.request_id); page.items[0]!.verification = { state: 'uncertain' }; return { ...page, next_cursor: 'v1.20' } })
@@ -209,7 +315,7 @@ it('refreshes verification for loaded later pages rather than only polling the f
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '加载更多' })) })
   fireEvent.click(screen.getByRole('button', { name: '查看第 2 条候选：等待复核的第二页' }))
   await act(async () => { await vi.advanceTimersByTimeAsync(4000) })
-  expect(within(screen.getByRole('complementary', { name: '候选详情' })).getByText('AI 参考：符合描述')).toBeInTheDocument()
+  expect(screen.getByRole('complementary', { name: '候选详情' })).toHaveTextContent('AI 参考：符合描述')
   expect(searchService.page).toHaveBeenCalledTimes(2)
 })
 it('ignores a late pagination response after starting another query', async () => {
@@ -245,7 +351,7 @@ it('does not infer missing recordings from expired evidence or keep polling abse
   expect(screen.getByText(/部分候选证据已过期或不可访问/)).toBeInTheDocument()
   expect(screen.getByRole('link', { name: '播放前后录像' })).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '查看第 2 条候选：录像待确认的候选' }))
-  expect(within(screen.getByRole('complementary')).getByText(/录像状态待确认/)).toBeInTheDocument()
+  expect(within(screen.getByRole('complementary', { name: '候选详情' })).getByText(/录像状态待确认/)).toBeInTheDocument()
   expect(screen.queryByText(/对应录像不可用/)).not.toBeInTheDocument()
   await act(async () => { await vi.advanceTimersByTimeAsync(8000) })
   expect(searchService.page).toHaveBeenCalledTimes(1)
@@ -289,7 +395,7 @@ it('supports adjacent candidates and restores the selected card focus on Escape 
   expect(second).toHaveAttribute('aria-pressed', 'true')
   expect(panel).toHaveFocus()
   fireEvent.keyDown(panel, { key: 'Escape' })
-  expect(screen.queryByRole('complementary')).not.toBeInTheDocument()
+  expect(screen.queryByRole('complementary', { name: '候选详情' })).not.toBeInTheDocument()
   expect(second).toHaveFocus()
   fireEvent.click(first)
   fireEvent.click(screen.getByRole('button', { name: '关闭详情' }))
@@ -386,7 +492,8 @@ it('describes scene evidence as a saved screenshot without implying an unavailab
   await ready()
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   fireEvent.click(await screen.findByRole('button', { name: '查看第 1 条候选：后门' }))
-  expect(within(screen.getByRole('complementary')).getByText(/匹配画面区域：整幅场景截图，未定位精确目标/)).toBeInTheDocument()
+  fireEvent.click(screen.getByText('证据与操作说明'))
+  expect(within(screen.getByRole('complementary', { name: '候选详情' })).getByText(/匹配画面区域：整幅场景截图，未定位精确目标/)).toBeVisible()
   expect(screen.queryByText(/标示的是匹配画面区域/)).not.toBeInTheDocument()
   expect(screen.queryByText(/画面区域命中/)).not.toBeInTheDocument()
 })
@@ -425,13 +532,15 @@ it('polls initial head candidates, preserves feedback and selection, then stops 
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '相关' })) })
   expect(screen.getByRole('button', { name: '相关' })).toHaveAttribute('aria-pressed', 'true')
   await act(async () => { await vi.advanceTimersByTimeAsync(4000) })
-  const panel = screen.getByRole('complementary')
-  expect(within(panel).getByText('AI 参考：不符合描述')).toBeInTheDocument()
-  expect(within(panel).getByText(/沿用相同查询与证据/)).toBeInTheDocument()
+  const panel = screen.getByRole('complementary', { name: '候选详情' })
+  expect(panel).toHaveTextContent('AI 参考：不符合描述')
+  fireEvent.click(within(panel).getByText('证据与操作说明'))
+  expect(within(panel).getByText(/沿用相同查询与证据/)).toBeVisible()
   expect(within(panel).getByRole('button', { name: '相关' })).toHaveAttribute('aria-pressed', 'true')
   expect(screen.getByRole('button', { name: '查看第 6 条候选：摄像头5' })).toHaveTextContent('候选，尚未复核')
   expect(screen.getByRole('button', { name: '查看第 1 条候选：摄像头0' })).toHaveAttribute('aria-pressed', 'true')
-  expect(screen.getByText(/参考分析未标定，不是概率/)).toBeInTheDocument()
+  fireEvent.click(screen.getByText('结果说明'))
+  expect(screen.getByText(/参考分析未标定，不是概率/)).toBeVisible()
   await act(async () => { await vi.advanceTimersByTimeAsync(12000) })
   expect(searchService.page).toHaveBeenCalledTimes(1)
 })
@@ -444,7 +553,8 @@ it('explains disabled verification and does not keep polling or hide its candida
   await ready()
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   fireEvent.click(await screen.findByRole('button', { name: '查看第 1 条候选：后门' }))
-  expect(screen.getByText(/搜索参考分析未启用或暂不可用/)).toBeInTheDocument()
+  fireEvent.click(screen.getByText('证据与操作说明'))
+  expect(screen.getByText(/搜索参考分析未启用或暂不可用/)).toBeVisible()
   expect(screen.getByRole('button', { name: '相关' })).toBeEnabled()
   vi.useFakeTimers()
   await act(async () => { await vi.advanceTimersByTimeAsync(12000) })
@@ -467,12 +577,13 @@ it.each([403, 410])('stops reading and feedback after permanent search failure %
   expect(screen.getByRole('button', { name: '查看第 1 条候选：后门' })).toBeInTheDocument()
   expect(screen.queryByRole('img')).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: '查看第 1 条候选：后门' })).toHaveTextContent('AI 参考：分析已停止')
-  expect(within(screen.getByRole('complementary')).getByText('AI 参考：分析已停止')).toBeInTheDocument()
+  expect(screen.getByRole('complementary', { name: '候选详情' })).toHaveTextContent('AI 参考：分析已停止')
   expect(screen.queryByText('AI 参考：等待分析')).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: '查看第 2 条候选：已完成参考' })).toHaveTextContent('AI 参考：符合描述')
 
   expect(screen.getByRole('button', { name: '相关' })).toBeDisabled()
   expect(screen.getByRole('button', { name: '不相关' })).toBeDisabled()
+  expect(screen.queryByRole('link', { name: '播放前后录像' })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: '加载更多' })).toBeDisabled()
   await act(async () => { await vi.advanceTimersByTimeAsync(12000) })
   expect(searchService.page).toHaveBeenCalledTimes(1)
@@ -531,7 +642,6 @@ it('inherits an explicit evidence output scope and clears it without losing the 
   expect(vi.mocked(searchService.query).mock.calls[0]![0].scope).toEqual({ channel_ids: [id], from: new Date(1793062800000).toISOString(), to: new Date(1793062860000).toISOString() });
   fireEvent.click(screen.getByRole('button', { name: '清除继承范围' }));
   expect(screen.getByRole('textbox', { name: '想找什么？' })).toHaveValue('红衣');
-  fireEvent.click(screen.getByRole('button', { name: '调整范围' }));
   expect(screen.getByRole('checkbox', { name: '入口输出' })).not.toBeChecked();
 });
 it('keeps returned candidates when coverage is unavailable and shows separate object and scene intervals on retry', async () => {
@@ -539,14 +649,15 @@ it('keeps returned candidates when coverage is unavailable and shows separate ob
   vi.mocked(searchService.query).mockResolvedValue(result('coverage'));
   await ready(); fireEvent.click(screen.getByRole('button', { name: '搜索录像' }));
   expect(await screen.findByRole('button', { name: /查看第 1 条候选/ })).toBeInTheDocument();
-  expect(await screen.findByText(/覆盖情况暂未确认；已返回的候选仍可核对/)).toBeInTheDocument();
+  fireEvent.click(screen.getByText('采样覆盖'));
+  expect(await screen.findByText(/覆盖情况暂未确认；已返回的候选仍可核对/)).toBeVisible();
   vi.mocked(searchService.coverage).mockImplementation(async scope => ({ scope, state: 'partial', ranges: [
     { channel_id: 'a', kind: 'object', from: scope.from, to: scope.to, state: 'sampled' },
     { channel_id: 'a', kind: 'scene', from: scope.from, to: scope.to, state: 'gap' },
   ] }));
   fireEvent.click(screen.getByRole('button', { name: '重新确认覆盖' }));
-  expect(await screen.findByText('目标 · 1 个记录区间')).toBeInTheDocument();
-  expect(screen.getByText('场景 · 1 个记录区间')).toBeInTheDocument();
+  expect(await screen.findByText('目标 · 1 个记录区间')).toBeVisible();
+  expect(screen.getByText('场景 · 1 个记录区间')).toBeVisible();
   expect(screen.getByRole('button', { name: /查看第 1 条候选/ })).toBeInTheDocument();
 });
 it('stops access when the independent coverage request rejects authorization', async () => {
@@ -564,20 +675,20 @@ it('reorders only loaded candidates explicitly, preserves selection and appends 
   vi.mocked(searchService.query).mockResolvedValue(first); vi.mocked(searchService.page).mockResolvedValue(next);
   await ready(); fireEvent.click(screen.getByRole('button', { name: '搜索录像' }));
   fireEvent.click(await screen.findByRole('button', { name: /查看第 1 条候选/ }));
-  expect(screen.getByRole('complementary')).toHaveTextContent('1 / 2');
+  expect(screen.getByRole('complementary', { name: '候选详情' })).toHaveTextContent('1 / 2');
   fireEvent.click(screen.getByRole('button', { name: '按复核状态重排已加载候选' }));
-  expect(screen.getByRole('complementary')).toHaveTextContent('2 / 2');
+  expect(screen.getByRole('complementary', { name: '候选详情' })).toHaveTextContent('2 / 2');
   expect(screen.getByRole('button', { name: /查看第 2 条候选/ })).toHaveAttribute('aria-pressed', 'true');
   fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
-  await waitFor(() => expect(screen.getByRole('complementary')).toHaveTextContent('2 / 3'));
+  await waitFor(() => expect(screen.getByRole('complementary', { name: '候选详情' })).toHaveTextContent('2 / 3'));
   expect(screen.getByRole('button', { name: /查看第 2 条候选/ })).toHaveAttribute('aria-pressed', 'true');
   const strip = screen.getByLabelText('切换候选');
   fireEvent.touchStart(strip, { touches: [{ clientX: 200, clientY: 20 }] });
   fireEvent.touchEnd(strip, { touches: [], changedTouches: [{ clientX: 100, clientY: 25 }] });
-  expect(screen.getByRole('complementary')).toHaveTextContent('3 / 3');
+  expect(screen.getByRole('complementary', { name: '候选详情' })).toHaveTextContent('3 / 3');
   fireEvent.touchStart(strip, { touches: [{ clientX: 100, clientY: 20 }, { clientX: 200, clientY: 20 }] });
   fireEvent.touchEnd(strip, { touches: [], changedTouches: [{ clientX: 250, clientY: 20 }] });
-  expect(screen.getByRole('complementary')).toHaveTextContent('3 / 3');
+  expect(screen.getByRole('complementary', { name: '候选详情' })).toHaveTextContent('3 / 3');
 });
 
 it('pauses AI reference analysis so the model stays free for alarm review', async () => {
@@ -592,12 +703,13 @@ it('pauses AI reference analysis so the model stays free for alarm review', asyn
   expect(screen.queryByText(/AI 参考仅针对命中帧/)).not.toBeInTheDocument()
   expect(screen.getByText(/AI 参考分析已暂停/)).toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /按复核状态重排/ })).not.toBeInTheDocument()
-  await new Promise(resolve => setTimeout(resolve, 50))
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
   expect(searchService.page).not.toHaveBeenCalled()
 })
 
 it('keeps slider and numeric minimum in sync and submits a frozen search condition', async () => {
   await ready();
+  fireEvent.click(screen.getByText(/^高级选项/));
   const slider = screen.getByRole('slider', { name: '拖动最低相似度' });
   const numeric = screen.getByRole('spinbutton', { name: '最低相似度' });
   expect(numeric).toHaveValue(0.07);
@@ -613,6 +725,7 @@ it('keeps slider and numeric minimum in sync and submits a frozen search conditi
   vi.mocked(searchService.query).mockResolvedValue({ ...result('minimum-search'), min_similarity: 0.2, items: [] });
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }));
   await screen.findByText('所选范围内，没有候选达到当前相似度要求');
+  fireEvent.click(screen.getByText('结果说明'));
   expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.2);
   fireEvent.click(screen.getByRole('button', { name: '不限' }));
   expect(numeric).toHaveValue(null);
@@ -621,3 +734,94 @@ it('keeps slider and numeric minimum in sync and submits a frozen search conditi
   await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2));
   expect(vi.mocked(searchService.query).mock.calls[1]![0].min_similarity).toBeUndefined();
 });
+
+it('keeps advanced similarity collapsed by default without dropping its default or edits', async () => {
+  vi.mocked(searchService.query).mockImplementation(async input => ({
+    ...result(input.request_id), scope: input.scope, min_similarity: input.min_similarity,
+  }))
+  await ready()
+  const summary = screen.getByText(/^高级选项/)
+  const advanced = summary.closest('details')!
+  expect(advanced).not.toHaveAttribute('open')
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  await screen.findByRole('button', { name: '查看第 1 条候选：后门' })
+  expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.07)
+  fireEvent.click(summary)
+  expect(advanced).toHaveAttribute('open')
+  const minimum = screen.getByRole('spinbutton', { name: '最低相似度' })
+  expect(minimum).toHaveValue(0.07)
+  fireEvent.change(minimum, { target: { value: '0.125' } })
+  fireEvent.click(summary)
+  expect(advanced).not.toHaveAttribute('open')
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(searchService.query).mock.calls[1]![0].min_similarity).toBe(0.125)
+  fireEvent.click(summary)
+  expect(screen.getByRole('slider', { name: '拖动最低相似度' })).toHaveValue('0.125')
+})
+
+it('submits Enter once and ignores Chinese composition Enter and legacy keyCode 229', async () => {
+  const user = userEvent.setup()
+  vi.mocked(searchService.query).mockImplementation(async input => ({ ...result(input.request_id), scope: input.scope }))
+  await ready()
+  const input = screen.getByRole('textbox', { name: '想找什么？' })
+  input.focus()
+  fireEvent.compositionStart(input)
+  expect(fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', isComposing: true })).toBe(false)
+  fireEvent.compositionEnd(input)
+  expect(fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', keyCode: 229 })).toBe(false)
+  expect(searchService.query).not.toHaveBeenCalled()
+  await user.keyboard('{Enter}')
+  await screen.findByRole('button', { name: '查看第 1 条候选：后门' })
+  expect(searchService.query).toHaveBeenCalledTimes(1)
+  expect(vi.mocked(searchService.query).mock.calls[0]![0].query).toBe('黑色背包')
+})
+
+it('fills an example into the description and focuses it without starting a query', async () => {
+  await ready()
+  fireEvent.click(screen.getByRole('button', { name: '穿红色上衣的人' }))
+  const input = screen.getByRole('textbox', { name: '想找什么？' })
+  expect(input).toHaveValue('穿红色上衣的人')
+  expect(input).toHaveFocus()
+  expect(searchService.query).not.toHaveBeenCalled()
+  expect(searchService.cancel).not.toHaveBeenCalled()
+  expect(screen.getByRole('checkbox', { name: '后门' })).toBeChecked()
+})
+
+it('keeps submitted scope, description and threshold when draft conditions change until another search', async () => {
+  flags.aiReference = false
+  vi.mocked(searchService.query).mockImplementation(async input => ({
+    ...result(input.request_id), scope: structuredClone(input.scope), min_similarity: input.min_similarity,
+  }))
+  await ready()
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  const card = await screen.findByRole('button', { name: '查看第 1 条候选：后门' })
+  fireEvent.click(card)
+  fireEvent.click(screen.getByText('结果说明'))
+  const committedScope = structuredClone(vi.mocked(searchService.query).mock.calls[0]![0].scope)
+  await waitFor(() => expect(searchService.coverage).toHaveBeenCalledTimes(1))
+  const playback = screen.getByRole('link', { name: '播放前后录像' }).getAttribute('href')
+  fireEvent.change(screen.getByRole('textbox', { name: '想找什么？' }), { target: { value: '红色衣服' } })
+  fireEvent.click(screen.getByText(/^高级选项/))
+  fireEvent.change(screen.getByRole('spinbutton', { name: '最低相似度' }), { target: { value: '0.15' } })
+  fireEvent.click(screen.getByRole('checkbox', { name: '后门' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: '大门' }))
+  expect(screen.getByText(/条件已修改/)).toBeInTheDocument()
+  expect(screen.getByText(/本次描述/)).toHaveTextContent('黑色背包')
+  expect(screen.getByText(/本次最低相似度 0.07/)).toBeVisible()
+  expect(searchService.query).toHaveBeenCalledTimes(1)
+  expect(searchService.cancel).not.toHaveBeenCalled()
+  expect(searchService.coverage).toHaveBeenCalledTimes(1)
+  expect(vi.mocked(searchService.coverage).mock.calls[0]![0]).toEqual(committedScope)
+  expect(card).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('link', { name: '播放前后录像' })).toHaveAttribute('href', playback)
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(searchService.query).mock.calls[1]![0]).toEqual(expect.objectContaining({
+    query: '红色衣服', min_similarity: 0.15,
+    scope: expect.objectContaining({ channel_ids: ['b'] }),
+  }))
+  await waitFor(() => expect(screen.queryByText(/条件已修改/)).not.toBeInTheDocument())
+  expect(screen.getByText(/本次描述/)).toHaveTextContent('红色衣服')
+  expect(screen.getByText(/本次最低相似度 0.15/)).toBeInTheDocument()
+})

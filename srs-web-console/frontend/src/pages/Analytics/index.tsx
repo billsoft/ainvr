@@ -157,22 +157,34 @@ function FlowAnalyticsPage() {
   const coverageSummary = expectedCoverage === null ? '未知' : expectedCoverage === 0 ? '不适用' : ((coveredCoverage! / expectedCoverage) * 100).toFixed(1) + '%'
   const coverageIssue = rows.length !== selected.length || rows.some(r => measured(r.zone.in?.coverage) !== 1)
   const qualitySummary = coverageIssue ? '部分位置覆盖不足或未知，已记录量可能偏低。' : '所选位置采集覆盖完整。'
-  const coverage = <section className="ui-panel flex min-h-0 min-w-0 flex-col gap-1.5 overflow-auto p-3" aria-label="有效位置时段采集覆盖">
-    <header className="flex items-center gap-2">
-      <h2 className="text-sm font-semibold text-ink">数据完整度</h2>
-      <span className="ml-auto text-xs tabular-nums text-ink-subtle" title={`所选位置综合覆盖：${coverageSummary}（按位置有效时长加权）`}>{coverageSummary}</span>
-    </header>
-    <ul className="min-h-0 flex-1 space-y-1.5 overflow-auto">{rows.map(r => {
+  const coverageRows = <ul className="min-h-0 flex-1 space-y-1.5 overflow-auto">{rows.map(r => {
       const c = r.zone.in?.coverage, ratio = measured(c), detail = whyCoverage(r)
       return <li key={r.result.counter.counter_id + ':' + r.zone.binding_id} className="flex items-center gap-2 text-xs" title={`${r.result.counter.name} · ${r.zone.zone_name || r.zone.zone_id}：${detail}`}>
-        <span className="w-28 shrink-0 truncate text-ink">{r.zone.zone_name || r.zone.zone_id}</span>
+        <span className="min-w-0 max-w-28 flex-1 truncate text-ink">{r.zone.zone_name || r.zone.zone_id}</span>
         <span aria-hidden="true" className={`h-1.5 min-w-4 flex-1 overflow-hidden rounded-full bg-surface-page ${ratio === null ? 'border border-dashed border-line' : ''}`}>
           {ratio !== null && <span className={`block h-full rounded-full ${ratio === 1 ? 'bg-success' : 'bg-warning'}`} style={{ width: `${ratio * 100}%` }} />}
         </span>
         <span aria-label={detail} className="w-14 shrink-0 text-right tabular-nums text-ink-subtle">{ratio === null ? c?.expected_ms === 0 ? '不适用' : '未知' : (ratio * 100).toFixed(1) + '%'}</span>
       </li>
     })}</ul>
+  const coverage = <section className="ui-panel flex min-h-0 min-w-0 flex-col gap-1.5 overflow-auto p-3" aria-label="有效位置时段采集覆盖">
+    <header className="flex items-center gap-2">
+      <h2 className="text-sm font-semibold text-ink">数据完整度</h2>
+      <span className="ml-auto text-xs tabular-nums text-ink-subtle" title={`所选位置综合覆盖：${coverageSummary}（按位置有效时长加权）`}>{coverageSummary}</span>
+    </header>
+    {coverageRows}
     <p className="text-[11px] text-ink-faint" title="依据已保存的计数器状态与布防历史计算；历史不完整时显示未知，宽限时间不计入实测覆盖。覆盖不是识别准确率。">采集时段覆盖，不代表识别准确率。</p>
+  </section>
+  const coveragePreview = <section className="ui-panel min-w-0 p-2.5" aria-label="有效位置时段采集覆盖">
+    <details>
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 text-xs [&::-webkit-details-marker]:hidden [@media(pointer:coarse)]:min-h-11">
+        <h2 className="text-xs font-semibold text-ink">数据完整度</h2>
+        <strong className="tabular-nums text-ink" title="所选位置按有效时长加权的综合覆盖">{coverageSummary}</strong>
+        <span className="ml-auto flex items-center gap-1 text-ink-subtle">位置明细<ChevronDown size={12} aria-hidden="true" /></span>
+      </summary>
+      <div className="mt-2 max-h-40 overflow-auto">{coverageRows}</div>
+    </details>
+    <p className="mt-1 text-[11px] text-ink-faint" title={qualitySummary}>采集时段覆盖，不代表识别准确率。</p>
   </section>
   const records=(r:Row,output:'in'|'out',s?:Slot)=>setDrawer({result:{...r.result,zones:r.result.zones.filter(z=>bindings.includes(z.binding_id))},bindingId:r.zone.binding_id,output,from:s?new Date(Math.max(Date.parse(s.from),Date.parse(query.from))).toISOString():query.from,to:s?new Date(Math.min(Date.parse(s.to),Date.parse(query.to))).toISOString():query.to})
   const table=<section className="ui-panel overflow-auto p-3" aria-label="统计位置"><h2 className="font-semibold">计数器与位置</h2><p className="text-xs text-ink-subtle">点击已记录数查看通行记录；不同位置可能重复计数。</p>
@@ -183,15 +195,15 @@ function FlowAnalyticsPage() {
   const rankMax=Math.max(1,...rank.map(r=>totalsOf([r],'in')??0))
   useEffect(()=>{setSlotIndex(null);setRecordBinding('')},[query.from,query.to,selected])
   const selectedRecordRow=rows.find(r=>r.result.counter.counter_id+':'+r.zone.binding_id===recordBinding)
-  const trendPanel = <section className="ui-panel flex min-h-[16rem] min-w-0 flex-col gap-1 p-3 lg:min-h-0" aria-label="客流趋势">
+  const trendPanel = <section className={`ui-panel flex min-w-0 flex-col gap-1 overflow-auto p-3 ${tab === 'overview' ? 'min-h-[14rem] lg:min-h-0' : 'min-h-[16rem] lg:min-h-0'}`} aria-label="客流趋势">
     <header className="flex flex-wrap items-center gap-2">
       <h2 className="text-sm font-semibold text-ink">客流趋势</h2>
-      <div className="ml-auto flex gap-1" role="group" aria-label="视图">
+      {tab === 'overview' ? <button type="button" className={button + ' ml-auto'} onClick={() => setParam('tab', 'flow')}>查看客流</button> : <div className="ml-auto flex gap-1" role="group" aria-label="视图">
         <button type="button" className={button} aria-pressed={view === 'trend'} onClick={() => setView('trend')}>趋势</button>
         <button type="button" className={button} aria-pressed={view === 'rank'} onClick={() => setView('rank')}>排名</button>
-      </div>
+      </div>}
     </header>
-    {view === 'trend' ? <>
+    {tab === 'overview' || view === 'trend' ? <>
       <TrendChart key={query.from + '|' + query.to} label={names.in+(both?"与"+names.out:"")+"趋势"} bucket={range.bucket} slots={slots} onSelect={setSlotIndex} complete={trend.map(t => t.valid)}
         series={[{ name: names.in, color: '#16a34a', values: trend.map(t => t.in) }, ...(both?[{ name: names.out, color: '#f97316', values: trend.map(t => t.out) }]:[])]} />
       {slotIndex !== null && slots[slotIndex] && <div className="flex flex-wrap items-center gap-1 text-xs">
@@ -218,7 +230,7 @@ function FlowAnalyticsPage() {
   const peakDescription = peak ? `${peakComplete ? '本期高峰' : '已记录峰值'}在 ${new Date(peak.slot.from).toLocaleString('zh-CN')}，${names.in} ${fmt(peak.in)} ${unit}${peakComplete ? '' : '；覆盖不足或未知，无法确定实际高峰'}。` : '没有可用的已记录峰值。'
   const alarmDescription = alarmError ? '告警统计不可用：' + alarmError : alarm ? `按告警去重；另有 ${alarm.association?.unassociated ?? '未知'} 条未关联位置（未计入总数）` : '正在读取告警统计'
   const cutoff = new Date(query.to).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
-  return <main className="alarm-workspace flex min-h-0 flex-col gap-2 overflow-auto lg:h-full lg:overflow-hidden">
+  return <main className="alarm-workspace flex min-h-0 min-w-0 flex-col gap-2 overflow-auto lg:h-full">
     <header aria-label="统计筛选与操作" className="flex shrink-0 flex-wrap items-center gap-2">
       <h1 className="text-lg font-semibold leading-7 text-ink">统计分析</h1>
       <AnalyticsSubjectSwitch locations={locations} disabled={counters===null&&!configError}/>
@@ -286,10 +298,10 @@ function FlowAnalyticsPage() {
         </Kpi>
       </section>}
       {previousError && compare && <p role="alert" className="text-xs text-danger-700">对比期读取失败：{previousError}</p>}
-      <div id="analytics-panel" role="tabpanel" aria-labelledby={`analytics-tab-${tab}`} className="min-h-0 min-w-0 flex-1">
-        {tab === 'overview' && <div className="grid gap-2 lg:h-full lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-          <div className="grid min-h-0 min-w-0 gap-2 lg:grid-rows-2">{trendPanel}{weekPanel}</div>
-          <div className="grid min-h-0 min-w-0 gap-2 lg:grid-rows-[minmax(0,3fr)_minmax(0,1fr)]">{heatPanel}{coverage}</div>
+      <div id="analytics-panel" role="tabpanel" aria-labelledby={`analytics-tab-${tab}`} className={`min-w-0 flex-1 ${tab === 'overview' ? 'lg:min-h-[27rem]' : 'min-h-0'}`}>
+        {tab === 'overview' && <div className="grid gap-2 lg:h-full lg:grid-cols-[minmax(16rem,3fr)_minmax(0,7fr)] lg:grid-rows-[minmax(0,1fr)]">
+          <div className="grid min-h-0 min-w-0 gap-2 lg:overflow-y-auto lg:grid-rows-[minmax(10rem,1fr)_minmax(12rem,0.85fr)_auto]">{trendPanel}{weekPanel}{coveragePreview}</div>
+          {heatPanel}
         </div>}
         {tab === 'flow' && <div className="grid gap-2 lg:h-full lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
           {trendPanel}<div className="grid min-h-0 min-w-0 gap-2 lg:grid-rows-[minmax(0,1fr)_minmax(0,1fr)]">{table}{coverage}</div>
