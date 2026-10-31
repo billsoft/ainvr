@@ -34,3 +34,22 @@ it('late records from another location cannot appear under the current camera',a
  expect(screen.queryByRole('link',{name:'录像'})).not.toBeInTheDocument()
  expect(screen.getByText('这段时间没有记录。')).toBeInTheDocument()
 })
+it('links the actual source and event window to existing automatic replay',async()=>{
+ vi.mocked(flowService.records).mockResolvedValue({items:[{event_id:'event',occurred_at:start,label_id:'person',track_id:'track',frame_id:'frame',stream_session_id:'session'}],next_cursor:null})
+ setup('后口')
+ const link=await screen.findByRole('link',{name:'录像'})
+ const url=new URL(link.getAttribute('href')!,'https://console.test')
+ expect(decodeURIComponent(url.pathname)).toBe('/playback/后相机')
+ expect(url.searchParams.get('from')).toBe(String(Date.parse(start)-20000))
+ expect(url.searchParams.get('to')).toBe(String(Date.parse(start)+20000))
+ expect(url.searchParams.get('autoplay')).toBe('1')
+})
+it('keeps an unavailable direction unknown and does not query it',async()=>{
+ vi.mocked(flowService.records).mockResolvedValue({items:[],next_cursor:null})
+ const result=data([zone('前口','前相机',10,2)])
+ result.zones[0]!.out=undefined
+ render(<MemoryRouter><RecordsDrawer result={result} from={start} to={end} output="in" bindingId="前口" zoneName={z=>z.zone_name!} onClose={vi.fn()}/></MemoryRouter>)
+ expect(screen.getByRole('button',{name:'出 —'})).toBeDisabled()
+ await waitFor(()=>expect(flowService.records).toHaveBeenCalledTimes(1))
+ expect(flowService.records).toHaveBeenCalledWith(expect.objectContaining({output:'in'}))
+})

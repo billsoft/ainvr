@@ -83,7 +83,15 @@ it('流量概览默认今天，显示进、出、净流入并与上期比较；�
  expect(vi.mocked(flowService.query).mock.calls[0]![0]).toMatchObject({bucket:'hour'})
  fireEvent.click(within(card).getByRole('button',{name:'进合计 12，查看通行记录'}).closest('button')!)
  const drawer=await screen.findByRole('dialog',{name:'通行记录 · 客流'})
- await waitFor(()=>expect(within(drawer).getByRole('link',{name:/录像/})).toHaveAttribute('href',expect.stringMatching(/^\/playback\/cam\?from=\d+&to=\d+$/)))
+ await waitFor(()=>{
+  const href=within(drawer).getByRole('link',{name:/录像/}).getAttribute('href')
+  expect(href).toBeTruthy()
+  const url=new URL(href!, 'http://localhost')
+  expect(url.pathname).toBe('/playback/cam')
+  expect(url.searchParams.get('from')).toMatch(/^\d+$/)
+  expect(Number(url.searchParams.get('to'))).toBeGreaterThan(Number(url.searchParams.get('from')))
+  expect(url.searchParams.get('autoplay')).toBe('1')
+ })
 })
 it('前一时段还没有选用到热区时不显示“为 0”的比较',async()=>{
  vi.mocked(flowService.list).mockResolvedValue({items:[counter]})

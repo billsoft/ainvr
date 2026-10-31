@@ -17,7 +17,7 @@ export type BindingDirection=
 export interface CounterUsage {binding_id:string;source_id:string;processor_id:string;zone_id:string;zone_name:string|null;active:boolean;counting:boolean;direction:BindingDirection}
 /** deleting: counting stopped but its records are not purged yet; only a retry is possible. */
 export interface Counter extends CounterInput {version:number;bindings:CounterUsage[];deleting?:boolean}
-export interface Coverage {state:'complete'|'partial'|'no_data'|'unknown';gaps?:{from:string;to:string}[]}
+export interface Coverage {state:'complete'|'partial'|'no_data'|'unknown';gaps?:{from:string;to:string}[];expected_ms?:number|null;covered_ms?:number|null;qualifier?:string;unknown_ms?:number;ratio?:number|null;tolerated_ms?:number;intervals?:{from:string;to:string}[];expected_intervals?:{from:string;to:string}[]}
 export interface SeriesTotal {occurrences:number;buckets:{from:string;to:string;occurrences:number}[];coverage:Coverage['state']}
 export interface ZoneSeries {diagnostic?:{reason:string;at:string}|null;occurrences:number;tracked_targets:number;coverage:Coverage;buckets:{from:string;to:string;occurrences:number}[]}
 export interface CounterResult {
@@ -31,7 +31,7 @@ export interface Passage {
 export interface LiveCount {diagnostic?:{reason:string;at:string}|null;binding_id:string;counter_id:string;name:string;names:{in:string;out:string};outputs:'both'|'in';occupancy:boolean;counting:boolean;zone_id:string;direction:BindingDirection;in:number;out?:number}
 export interface CounterSaveResult {saved:true;counter:CounterInput&{version:number};application:TriggerApplication}
 export const flowService={
- list:()=>request<{items:Counter[]}>('/flow/counters',{signal:AbortSignal.timeout(15000)}),
+ list:(options?:{includeInactiveBindings?:boolean})=>request<{items:Counter[]}>(options?.includeInactiveBindings ? '/flow/counters?include_inactive=1' : '/flow/counters',{signal:AbortSignal.timeout(15000)}),
  save:(counter:CounterInput,version:number,key:string)=>request<CounterSaveResult>('/flow/counters',{method:'POST',headers:{'Idempotency-Key':key},
   body:JSON.stringify({counter,expected_version:version}),signal:AbortSignal.timeout(35000)}),
  query:(input:{counter_ids?:string[];from:string;to:string;bucket?:'minute'|'hour'|'day'|null;timezone:string;totals_only?:boolean})=>

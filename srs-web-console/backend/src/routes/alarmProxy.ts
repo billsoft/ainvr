@@ -59,8 +59,11 @@ export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxy
   app.get('/alarms/behavior-statistics', forward(() => '/v1/behavior-statistics', ['from','to','channel_id','zone_id','label_id','event_type','bucket','timezone','rule_id','trigger_id','group_by']));
   app.get('/alarms/behavior-events', forward(() => '/v1/behavior-events', ['from','to','channel_id','zone_id','label_id','event_type','limit','cursor','rule_id','trigger_id']));
   app.get('/alarms/behavior-events/:id', forward(req => `/v1/behavior-events/${encodeURIComponent((req.params as {id:string}).id)}`));
-  app.get('/alarms/events', forward(() => '/v1/events', ['status', 'channel_id', 'review', 'disposition', 'limit', 'cursor', 'from', 'to', 'zone_id', 'behavior']));
+  app.get('/alarms/events', forward(() => '/v1/events', ['status', 'channel_id', 'review', 'disposition', 'limit', 'cursor', 'from', 'to', 'zone_id', 'behavior', 'locations']));
   app.get('/alarms/events/summary', forward(() => '/v1/events/summary'));
+  app.post('/alarms/events/statistics', forward(() => '/v1/events/statistics'));
+  app.post('/flow/dwell', forward(() => '/v1/flow/dwell'));
+  app.post('/flow/heat', forward(() => '/v1/flow/heat'));
   app.get('/alarms/events/:id', forward(idPath()));
   app.get('/alarms/events/:id/logs', forward(idPath('/logs')));
   app.post('/alarms/events/:id/acknowledgements', forward(idPath('/acknowledgements'), [], true));

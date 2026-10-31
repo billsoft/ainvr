@@ -179,15 +179,15 @@ export class AlarmArmingStore {
     await c.query('INSERT INTO flow_counter_binding_versions(binding_id,seq,direction,reclassify,actor,effective_from) VALUES($1,$2,$3,$4,$5,clock_timestamp())',
       [b.binding_id,(last?.seq??0)+1,JSON.stringify(b.direction),!!last&&recount,actor]);
   }
-  async listCounters(){
-    const rows=await this.pool.query(`SELECT d.document,d.version,
-      COALESCE((SELECT jsonb_agg(jsonb_build_object('binding_id',b.binding_id,'source_id',b.source_id,'processor_id',b.document->>'processor_id',
-        'zone_id',b.document->>'zone_id','active',b.active,'counting',b.compiled_rule IS NOT NULL,'direction',b.document->'direction',
-        'zone_name',(SELECT z->>'name' FROM alarm_arming_sources s,jsonb_array_elements(s.document->'zones') z WHERE s.source_id=b.source_id AND z->>'zone_id'=b.document->>'zone_id')
-      ) ORDER BY b.created_at,b.binding_id) FROM flow_counter_bindings b WHERE b.counter_id=d.counter_id AND b.active),'[]'::jsonb) AS bindings
-      FROM flow_counter_definitions d ORDER BY d.counter_id LIMIT 1001`);
+  async listCounters(includeInactive=false){
+    const rows=await this.pool.query('SELECT document,version FROM flow_counter_definitions ORDER BY counter_id LIMIT 1001');
     if(rows.rows.length>1000)fail('capacity','计数器数量超过上限');
-    return rows.rows.map(r=>({...r.document,version:r.version,bindings:r.bindings}));
+    const bindings=await this.counterBindings(rows.rows.map(r=>r.document.counter_id));
+    return rows.rows.map(r=>({...r.document,version:r.version,bindings:bindings
+      .filter(b=>b.counter_id===r.document.counter_id&&(includeInactive||b.active))
+      .map(b=>({binding_id:b.binding_id,source_id:b.source_id,processor_id:b.document.processor_id,
+        zone_id:b.document.zone_id,active:b.active,counting:b.counting,direction:b.document.direction,
+        zone_name:b.zone_name??b.document.zone_id}))}));
   }
   async saveCounter(input:unknown,expected:number,actor:string,key:string,lookup:Lookup){
     const definition=parseCounterDefinition(input);
@@ -267,12 +267,38 @@ export class AlarmArmingStore {
     return (await this.pool.query(`SELECT b.binding_id,b.source_id,b.counter_id,b.document,b.active,b.compiled_rule IS NOT NULL AS counting,b.created_at,b.updated_at,
       COALESCE((SELECT jsonb_agg(jsonb_build_object('seq',v.seq,'direction',v.direction,'reclassify',v.reclassify,'effective_from',v.effective_from) ORDER BY v.seq)
         FROM flow_counter_binding_versions v WHERE v.binding_id=b.binding_id),'[]'::jsonb) AS versions,
-      (SELECT z->>'name' FROM alarm_arming_sources s,jsonb_array_elements(s.document->'zones') z WHERE s.source_id=b.source_id AND z->>'zone_id'=b.document->>'zone_id') AS zone_name
+      COALESCE((SELECT z->>'name' FROM alarm_arming_sources s,jsonb_array_elements(s.document->'zones') z WHERE s.source_id=b.source_id AND z->>'zone_id'=b.document->>'zone_id'),b.document->>'zone_id') AS zone_name
       FROM flow_counter_bindings b WHERE b.counter_id=ANY($1::text[]) ORDER BY b.created_at,b.binding_id`,[counterIds])).rows as {binding_id:string;source_id:string;counter_id:string;document:CounterBinding;active:boolean;counting:boolean;zone_name:string|null;created_at:Date;updated_at:Date;versions:BindingVersion[]}[];
   }
-  /** Target lists per definition version, for history queries. */
+  /** Full authoritative definitions also prove enabled/paused applicability. */
   async definitionHistory(counterIds:string[]){
-    return (await this.pool.query('SELECT counter_id,document->\'labels\' AS labels,created_at FROM flow_counter_definition_versions WHERE counter_id=ANY($1::text[]) ORDER BY created_at',[counterIds])).rows as {counter_id:string;labels:{label_id:string}[];created_at:Date}[];
+    const result=await this.pool.query(`SELECT counter_id,version,
+      jsonb_build_object('state',document->'state','deleting',document->'deleting') ||
+        CASE WHEN document ? 'schedule' THEN jsonb_build_object('schedule',document->'schedule') ELSE '{}'::jsonb END AS document,
+      document->'labels' AS labels,created_at FROM flow_counter_definition_versions
+      WHERE counter_id=ANY($1::text[]) ORDER BY created_at,version LIMIT 10001`,[counterIds]);
+    if(result.rows.length>10000)fail('capacity','计数器历史超过查询上限，请缩小选择范围');
+    return result.rows as ({counter_id:string;version:number;document:Pick<CounterDefinition,'state'>&{schedule?:unknown;deleting?:unknown};labels:{label_id:string}[];created_at:Date})[];
+  }
+  /** Only membership and revision evidence is projected, never a second arming document. */
+  async armingHistory(sourceIds:string[],window:{from:string;to:string}){
+    const result=await this.pool.query(`WITH selected AS (
+      (SELECT DISTINCT ON (source_id) source_id,revision,document,created_at FROM alarm_arming_versions
+        WHERE source_id=ANY($1::text[]) AND created_at<=$2::timestamptz ORDER BY source_id,created_at DESC,revision DESC)
+      UNION ALL
+      (SELECT source_id,revision,document,created_at FROM alarm_arming_versions
+        WHERE source_id=ANY($1::text[]) AND created_at>$2::timestamptz AND created_at<$3::timestamptz)
+      UNION ALL
+      (SELECT DISTINCT ON (source_id) source_id,revision,document,created_at FROM alarm_arming_versions
+        WHERE source_id=ANY($1::text[]) AND created_at>=$3::timestamptz ORDER BY source_id,created_at,revision)
+    ) SELECT v.source_id,v.revision,s.revision AS current_revision,v.created_at,
+      CASE WHEN jsonb_typeof(v.document->'counter_bindings')='array' THEN
+        COALESCE((SELECT jsonb_agg(b->>'binding_id') FROM jsonb_array_elements(v.document->'counter_bindings') b),'[]'::jsonb)
+        ELSE NULL END AS binding_ids
+      FROM selected v JOIN alarm_arming_sources s ON s.source_id=v.source_id
+      ORDER BY v.source_id,v.created_at,v.revision LIMIT 10001`,[sourceIds,window.from,window.to]);
+    if(result.rows.length>10000)fail('capacity','布防历史超过查询上限，请缩小查询范围');
+    return result.rows as import('./flowCounters.js').ArmingMembershipVersion[];
   }
   async saveArming(input:unknown,expected:number,actor:string,key:string,lookup:Lookup,sourceGeometry:(id:string)=>Promise<string|null>){
     const parsed=armingSchema.safeParse(input);

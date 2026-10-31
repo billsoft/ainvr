@@ -36,7 +36,7 @@ export function RecordsDrawer({result,from,to,output:initialOutput,bindingId,zon
    <div className="space-y-3 border-b border-line px-5 py-3">
     {result.zones.length>1?<label className="block text-sm text-ink">统计位置<select aria-label="记录所属热区" className="form-input mt-1 !min-h-11 w-full" value={zone} onChange={e=>setZone(e.target.value)}><option value="">请选择热区查看记录</option>{result.zones.map(z=><option key={z.binding_id} value={z.binding_id}>{zoneName(z)}{!z.active?'（已移除）':''}</option>)}</select></label>:<p className="text-sm text-ink">{selected?zoneName(selected):'没有可查询的统计位置'}</p>}
     {!selected&&<p role="status" className="text-sm text-ink-subtle">合计包含多个热区，请先选择一个热区查看通行记录。</p>}
-    {selected&&outputs.length>1&&<div role="group" aria-label="方向" className="flex gap-2">{outputs.map(o=><button key={o} type="button" aria-pressed={output===o} className={choice} onClick={()=>setOutput(o)}>{counter.names[o]} {selected?.[o]?.occurrences??0}</button>)}</div>}
+    {selected&&outputs.length>1&&<div role="group" aria-label="方向" className="flex gap-2">{outputs.map(o=><button key={o} type="button" aria-pressed={output===o} disabled={!selected[o]} className={choice} onClick={()=>setOutput(o)}>{counter.names[o]} {selected[o]?.occurrences??'—'}</button>)}</div>}
    </div>
    <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
     {error&&<p role="alert" className="text-sm text-danger">{error} <button type="button" className="btn-secondary ml-2" onClick={()=>void load()}>重试</button></p>}
@@ -45,7 +45,7 @@ export function RecordsDrawer({result,from,to,output:initialOutput,bindingId,zon
      <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${output==='in'?'bg-success-50 text-success-700':'bg-orange-50 text-orange-700'}`}>{counter.names[output]}</span>
      <div className="min-w-0 flex-1"><p className="font-medium text-ink">{new Date(at).toLocaleTimeString('zh-CN')}<span className="ml-2 text-xs font-normal text-ink-subtle">{new Date(at).toLocaleDateString('zh-CN')}</span></p>
       <p className="text-xs text-ink-subtle">{label(r.label_id)}{r.quality?.observation_gaps?' · 中途短暂遮挡':''}</p></div>
-     {selected&&<Link className="btn-secondary px-3 py-1.5" to={`/playback/${encodeURIComponent(selected.source_id)}?from=${at-20000}&to=${at+20000}`}><PlayCircle size={16} aria-hidden="true"/>录像</Link>}
+     {selected&&<Link className="btn-secondary min-h-11 px-3 py-1.5" to={`/playback/${encodeURIComponent(selected.source_id)}?from=${at-20000}&to=${at+20000}&autoplay=1`}><PlayCircle size={16} aria-hidden="true"/>录像</Link>}
     </li>})}</ul>
     {busy&&<p role="status" className="py-3 text-sm text-ink-subtle">正在读取…</p>}
     {cursor&&!busy&&<button type="button" className="btn-secondary mt-2 w-full" onClick={()=>void load(cursor)}>加载更早的记录</button>}

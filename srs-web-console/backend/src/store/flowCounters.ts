@@ -136,7 +136,7 @@ export function bindingFilters(direction:BindingDirection):{in:Filter;out:Filter
   return {in:{kind:'angle',entry:{...d.entry},exit:{...d.exit}},out:{kind:'angle',entry:{...d.exit},exit:{...d.entry}}};
 }
 export interface BindingVersion {seq:number;direction:BindingDirection;reclassify:boolean;effective_from:Date|string}
-export interface DefinitionVersion {labels:{label_id:string}[];created_at:Date|string}
+export interface DefinitionVersion {labels:{label_id:string}[];created_at:Date|string;version?:number;document?:{state?:unknown;schedule?:unknown;deleting?:unknown}}
 export interface CountingPiece {direction:BindingDirection;label_ids:string[];from:string;to:string;start_grace:boolean}
 /**
  * The periods of one binding inside a query window, each with the counting line
@@ -166,4 +166,66 @@ export function countingPieces(binding:{created_at:Date|string;updated_at:Date|s
     out.push({direction:line.direction,label_ids:def.labels.map(l=>l.label_id),from:new Date(from).toISOString(),to:new Date(to).toISOString(),start_grace:starts.has(from)})
   }
   return out
+}
+
+export interface ArmingMembershipVersion {
+ source_id:string;revision:number;current_revision:number;created_at:Date|string;binding_ids:string[]|null;
+}
+type CoverageInterval={from:string;to:string};
+export interface BindingApplicability {
+ expected_intervals:CoverageInterval[];unknown_ms:number;
+ qualifier:'persisted_configuration'|'applicability_history_incomplete';
+}
+/** Separate configuration applicability from fact classification. Never trims fact queries. */
+export function bindingApplicability(bindingId:string,definitions:DefinitionVersion[],arming:ArmingMembershipVersion[],
+ window:CoverageInterval,currentDefinitionVersion:number):BindingApplicability{
+ const time=(v:Date|string)=>new Date(v).getTime(),lo=time(window.from),hi=time(window.to);
+ const defs=[...definitions].sort((a,b)=>time(a.created_at)-time(b.created_at)||(a.version??0)-(b.version??0));
+ const arms=[...arming].sort((a,b)=>time(a.created_at)-time(b.created_at)||a.revision-b.revision);
+ const cuts=[...new Set([lo,hi,...defs.map(v=>time(v.created_at)),...arms.map(v=>time(v.created_at))].filter(v=>v>=lo&&v<=hi))].sort((a,b)=>a-b);
+ const expected_intervals:CoverageInterval[]=[];let unknown_ms=0;
+ for(let i=0;i+1<cuts.length;i++){
+  const from=cuts[i]!,to=cuts[i+1]!;
+  const indexAt=(items:{created_at:Date|string}[])=>{let l=0,r=items.length;while(l<r){const m=(l+r)>>1;if(time(items[m]!.created_at)<=from)l=m+1;else r=m;}return l-1;};
+  const di=indexAt(defs),ai=indexAt(arms);
+  const d=defs[di],a=arms[ai],nextD=defs[di+1],nextA=arms[ai+1];
+  const dContinuous=!!d&&Number.isInteger(d.version)&&(nextD ? nextD.version===d.version!+1 : d.version===currentDefinitionVersion);
+  const aContinuous=!!a&&(nextA ? nextA.revision===a.revision+1 : a.revision===a.current_revision);
+  const schedule=d?.document?.schedule;
+  const always=schedule===undefined||!!schedule&&typeof schedule==='object'&&'mode' in schedule&&schedule.mode==='always';
+  const enabled=!dContinuous ? null : d.document?.state==='paused'||d.document?.deleting===true ? false :
+    d.document?.state==='enabled'&&always ? true : null;
+  const bound=aContinuous&&Array.isArray(a.binding_ids) ? a.binding_ids.includes(bindingId) : null;
+  if(enabled===false||bound===false)continue;
+  if(enabled===null||bound===null){unknown_ms+=to-from;continue;}
+  const previous=expected_intervals.at(-1);
+  if(previous&&Date.parse(previous.to)===from)previous.to=new Date(to).toISOString();
+  else expected_intervals.push({from:new Date(from).toISOString(),to:new Date(to).toISOString()});
+ }
+ return {expected_intervals,unknown_ms,qualifier:unknown_ms?'applicability_history_incomplete':'persisted_configuration'};
+}
+function intervalUnion(intervals:CoverageInterval[]):CoverageInterval[]{
+ const sorted=intervals.map(v=>[Date.parse(v.from),Date.parse(v.to)]).filter(([a,b])=>Number.isFinite(a)&&Number.isFinite(b)&&b!>a!).sort((a,b)=>a[0]!-b[0]!);
+ const result:number[][]=[];
+ for(const [a,b] of sorted){const previous=result.at(-1);if(previous&&a!<=previous[1]!)previous[1]=Math.max(previous[1]!,b!);else result.push([a!,b!]);}
+ return result.map(([from,to])=>({from:new Date(from!).toISOString(),to:new Date(to!).toISOString()}));
+}
+function intersectIntervals(left:CoverageInterval[],right:CoverageInterval[]){
+ const a=intervalUnion(left),b=intervalUnion(right),result:CoverageInterval[]=[];let i=0,j=0;
+ while(i<a.length&&j<b.length){
+  const from=Math.max(Date.parse(a[i]!.from),Date.parse(b[j]!.from)),to=Math.min(Date.parse(a[i]!.to),Date.parse(b[j]!.to));
+  if(to>from)result.push({from:new Date(from).toISOString(),to:new Date(to).toISOString()});
+  if(Date.parse(a[i]!.to)<=Date.parse(b[j]!.to))i++;else j++;
+ }
+ return result;
+}
+const intervalDuration=(intervals:CoverageInterval[])=>intervalUnion(intervals).reduce((n,v)=>n+Date.parse(v.to)-Date.parse(v.from),0);
+export function applicableCoverage<T extends {gaps:CoverageInterval[];intervals?:CoverageInterval[];expected_intervals?:CoverageInterval[];tolerated_ms?:number}>(coverage:T,proof:BindingApplicability){
+ if(proof.unknown_ms||!Array.isArray(coverage.intervals))return {...coverage,expected_ms:null,covered_ms:null,ratio:null,
+  expected_intervals:undefined,qualifier:proof.unknown_ms?proof.qualifier:'observation_intervals_unavailable',unknown_ms:proof.unknown_ms};
+ const expected_intervals=proof.expected_intervals,intervals=intersectIntervals(coverage.intervals,expected_intervals);
+ const expected_ms=intervalDuration(expected_intervals),covered_ms=intervalDuration(intervals);
+ return {...coverage,expected_intervals,intervals,expected_ms,covered_ms,ratio:expected_ms?covered_ms/expected_ms:null,
+  tolerated_ms:Math.min(coverage.tolerated_ms??0,Math.max(0,expected_ms-covered_ms)),
+  qualifier:proof.qualifier,unknown_ms:0};
 }

@@ -3,6 +3,8 @@ import {reviewAuthorization} from './review-authorization.mjs';
 import {reviewFor} from './review-worker.mjs';
 import {randomUUID} from 'node:crypto';
 import {FlowStatistics} from './flow-statistics.mjs';
+import {DwellQuery} from './dwell-query.mjs';
+import {RegionHeatQuery} from './region-heat-query.mjs';
 import {BehaviorEvents} from './behavior-events.mjs';
 import {RuleSnapshots} from './rule-snapshots.mjs';
 import {stageRank} from './episodes.mjs';
@@ -10,10 +12,30 @@ import {acknowledge, digest, fail, identity, validateRule} from './domain.mjs';
 
 const withoutInternal=d=>{if(!d)return null;const {_id,operations,...publicDoc}=d;return publicDoc;};
 const pendingFilter=()=>({'handling.state':'unacknowledged','handling.disposition':{$ne:'false_positive'}});
+const zoneFilter=zone_id=>({$or:[{'rule.snapshot.zone_id':zone_id},{'stages.zone_id':zone_id}]});
+const locationPairs=value=>{
+  if(typeof value==='string'){
+    if(value.length>4096)fail('invalid_filter','Locations too large');
+    try{value=JSON.parse(value);}catch{fail('invalid_filter','Invalid locations');}
+  }
+  if(!Array.isArray(value)||!value.length||value.length>100||JSON.stringify(value).length>4096)
+    fail('invalid_filter','Select 1..100 bounded locations');
+  const pairs=new Map();
+  for(const location of value){
+    if(!location||typeof location!=='object'||Array.isArray(location)||Object.keys(location).some(k=>!['channel_id','zone_id'].includes(k)))
+      fail('invalid_filter','Invalid location');
+    const channel_id=identity(location.channel_id,'channel_id'),zone_id=identity(location.zone_id,'zone_id');
+    pairs.set(JSON.stringify([channel_id,zone_id]),{channel_id,zone_id});
+  }
+  return [...pairs.entries()].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([,pair])=>pair);
+};
+const locationFilter=pairs=>({$or:pairs.map(({channel_id,zone_id})=>({channel_id,...zoneFilter(zone_id)}))});
 export class AlarmRepository {
   constructor(db,{clock=()=>new Date().toISOString()}={}) {
     this.behaviors=new BehaviorEvents(db);
     this.flow=new FlowStatistics(db);
+    this.dwell=new DwellQuery(db);
+    this.heat=new RegionHeatQuery(db);
     this.ruleSnapshots=new RuleSnapshots(db,{clock});
     this.db=db;this.events=db.collection('alarms');this.rules=db.collection('alarm_rules');
     this.captureJobs=db.collection('alarm_capture_jobs');this.checkpoints=db.collection('alarm_consumer_checkpoints');this.clock=clock;
@@ -21,6 +43,8 @@ export class AlarmRepository {
   async initialize() {
     await this.behaviors.initialize();
     await this.flow.initialize();
+    await this.dwell.initialize();
+    await this.heat.initialize();
     await this.events.createIndex({alarm_id:1},{unique:true});
     await this.events.createIndex({dedup_key:1},{unique:true});
     await this.events.createIndex({'handling.state':1,'handling.disposition':1,'review.state':1,ingested_at:1});
@@ -154,7 +178,32 @@ export class AlarmRepository {
     const authorization=await reviewAuthorization();
     return {pending,as_of,automatic_review:authorization?{mode:authorization.mode,accuracy_validated:false,approve_above:authorization.approve_above,labels:authorization.labels}:null,reference:{active:(runtime?.expires_at??0)>Date.now(),counts:Object.fromEntries(referenceCounts.map(r=>[r._id,r.count]))}};
   }
-  async list({status='pending',channel_id,review,disposition,from,to,zone_id,behavior,limit=50,cursor}={}) {
+  async statistics(input){
+    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['from','to','locations'].includes(k)))
+      fail('invalid_filter','Expected from, to and locations');
+    const {from,to,locations}=input;
+    const start=typeof from==='string'?Date.parse(from):NaN,end=typeof to==='string'?Date.parse(to):NaN;
+    if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start||end-start>31*86400000)
+      fail('invalid_time_range','A time range of at most 31 days is required');
+    const pairs=locationPairs(locations),as_of=this.clock();
+    const match={ingested_at:{$lte:as_of},occurred_at:{$gte:new Date(start).toISOString(),$lt:new Date(end).toISOString()},channel_id:{$in:[...new Set(pairs.map(p=>p.channel_id))]}};
+    const selected=locationFilter(pairs);
+    // No unwind: each alarm contributes once even when multiple stages match.
+    // Unassociated alarms are a separate uncertainty signal, never assigned to a zone.
+    const unassociated={$nor:[
+      {'rule.snapshot.zone_id':{$type:'string',$ne:''}},
+      {stages:{$elemMatch:{zone_id:{$type:'string',$ne:''}}}}
+    ]};
+    const [row]=await this.events.aggregate([{$match:match},{$facet:{
+      total:[{$match:selected},{$count:'count'}],
+      handling:[{$match:selected},{$group:{_id:{$ifNull:['$handling.state','unknown']},count:{$sum:1}}}],
+      review:[{$match:selected},{$group:{_id:{$ifNull:['$review.state','unknown']},count:{$sum:1}}}],
+      unassociated:[{$match:unassociated},{$count:'count'}]
+    }}],{maxTimeMS:3000}).toArray();
+    const counts=items=>Object.fromEntries((items??[]).map(item=>[item._id,item.count]));
+    return {total:row?.total?.[0]?.count??0,as_of,handling:counts(row?.handling),review:counts(row?.review),association:{unassociated:row?.unassociated?.[0]?.count??0}};
+  }
+  async list({status='pending',channel_id,review,disposition,from,to,zone_id,behavior,locations,limit=50,cursor}={}) {
     if(!['pending','all','acknowledged','human','ai'].includes(status))fail('invalid_filter','status');
     if(!Number.isInteger(limit)||limit<1||limit>200)fail('invalid_limit','limit');
     if(disposition&&!['handled','false_positive'].includes(disposition))fail('invalid_filter','disposition');
@@ -164,7 +213,11 @@ export class AlarmRepository {
     if(behavior!==undefined&&!Object.hasOwn(stageRank,behavior))fail('invalid_filter','behavior');
     const start=from===undefined?null:Date.parse(from),end=to===undefined?null:Date.parse(to);
     if((from!==undefined&&(!Number.isFinite(start)||typeof from!=='string'))||(to!==undefined&&(!Number.isFinite(end)||typeof to!=='string'))||(start!==null&&end!==null&&end<=start))fail('invalid_time_range','Invalid alarm time range');
-    const signature=digest([status,disposition??null,channel_id??null,review??null,from??null,to??null,zone_id??null,behavior??null]);
+    if(locations!==undefined&&(channel_id!==undefined||zone_id!==undefined))fail('invalid_filter','locations cannot be combined with channel_id or zone_id');
+    const pairs=locations===undefined?null:locationPairs(locations);
+    const filters=[status,disposition??null,channel_id??null,review??null,from??null,to??null,zone_id??null,behavior??null];
+    if(pairs)filters.push(pairs);
+    const signature=digest(filters);
     let page={as_of:this.clock()};
     if(cursor) {
       try {if(typeof cursor!=='string'||cursor.length>2048||!/^[A-Za-z0-9_-]+$/.test(cursor))throw Error();page=JSON.parse(Buffer.from(cursor,'base64url').toString());
@@ -174,7 +227,7 @@ export class AlarmRepository {
     const query={ingested_at:{$lte:page.as_of}};
     if(channel_id)query.channel_id=channel_id;
     // An activity can span several zones: match the top rule or any stage.
-    query.$and=[...(zone_id?[{$or:[{'rule.snapshot.zone_id':zone_id},{'stages.zone_id':zone_id}]}]:[]),...(behavior?[{$or:[{behavior},{'stages.behavior':behavior}]}]:[])];
+    query.$and=[...(pairs?[locationFilter(pairs)]:[]),...(zone_id?[zoneFilter(zone_id)]:[]),...(behavior?[{$or:[{behavior},{'stages.behavior':behavior}]}]:[])];
     if(!query.$and.length)delete query.$and;
     if(from!==undefined||to!==undefined)query.occurred_at={...(start!==null?{$gte:new Date(start).toISOString()}:{}),...(end!==null?{$lt:new Date(end).toISOString()}:{})};
     if(status==='pending')Object.assign(query,pendingFilter());

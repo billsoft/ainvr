@@ -42,6 +42,8 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
     review:{available:!!repository.reviewContext,mode:'asynchronous_image_and_trajectory'},notification:{available:false},
     schedules:['always','weekly'],limits:{bulk_items:200}}));
   app.post('/v1/flow/query',async req=>repository.flow.query(req.body));
+  app.post('/v1/flow/dwell',async req=>repository.dwell.query(req.body));
+  app.post('/v1/flow/heat',async req=>repository.heat.query(req.body));
   app.post('/v1/flow/clear',async req=>repository.flow.clear(req.body,actor(req),identity(req.headers['idempotency-key'],'Idempotency-Key')));
   app.post('/v1/flow/purge',async req=>{
     identity(req.body?.counter_id,'counter_id');
@@ -89,6 +91,7 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
   });
   app.get('/v1/events',async req=>repository.list({...req.query,limit:req.query.limit===undefined?50:Number(req.query.limit)}));
   app.get('/v1/events/summary',async()=>repository.pendingSummary());
+  app.post('/v1/events/statistics',async req=>repository.statistics(req.body));
   app.post('/v1/events/purge',async req=>{
     if(!req.body||Object.keys(req.body).length!==1||req.body.scope!=='all')fail('invalid_request','Explicit all scope required');
     const who=actor(req),key=identity(req.headers['idempotency-key'],'Idempotency-Key');

@@ -155,7 +155,7 @@ export default function PlaybackPage() {
     linkedPlayback.current=scope
     const target=resolvePlayback(rangeSegments,range.from,range)
     if(target)void playSegment(channelId,target.segment,target.offsetMs)
-    else setPlayNotice('该告警时间段内没有可播放的 AI 输出录像，请检查该输出通道的录像配置。')
+    else setPlayNotice('所选时间范围内没有可播放录像，请检查该通道的录像配置或等待录像文件完成。')
     // Only initialize a linked replay once; refresh must not interrupt manual seeking.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[scope,channelId,catalogue.loading,catalogue.error,rangeSegments,searchParams])

@@ -1,5 +1,5 @@
 import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
-import {useLocation} from 'react-router-dom'
+import {useLocation,useNavigate} from 'react-router-dom'
 import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react'
 import {alarmEventService,type AlarmEvent,type AckDisposition,type AlarmFilters,type AckItem} from '@/api/alarmEventService'
 import {aiChannelService} from '@/api/aiChannelService'
@@ -16,6 +16,7 @@ import {AlarmRow} from './AlarmRow'
 import {AlarmSheet,type PendingAcknowledgement} from './AlarmSheet'
 import {AlarmConfirmation} from './AlarmConfirmation'
 import {AlarmPurgeDialog} from './AlarmPurgeDialog'
+import {alarmInScope,parseAlarmListScope} from './alarmListScope'
 
 // One compact row per target activity (highest level), newest first.
 // Evidence and stage history open in one detail layer; controls keep 44 px targets.
@@ -29,17 +30,28 @@ const ackOk=(outcome:string)=>['succeeded','already_acknowledged'].includes(outc
 export default function AlarmListPage(){
  // Unhandled alarms are never hidden by the clock: pending defaults to all time,
  // handled history defaults to today, until the user picks a range.
- const [status,setStatus]=useState<Status>('pending'),[level,setLevel]=useState(''),[channel,setChannel]=useState(''),[range,setRange]=useState<Range>('all')
+ const location=useLocation(),navigate=useNavigate()
+ const scope=useMemo(()=>parseAlarmListScope(location.search),[location.search])
+ const [statusState,setStatus]=useState<Status>(()=>scope.kind==='valid'?'all':'pending')
+ const [statusScope,setStatusScope]=useState(location.search)
+ const status=scope.kind==='valid'&&statusScope!==location.search?'all':statusState
+ const [level,setLevel]=useState(''),[channel,setChannel]=useState(''),[range,setRange]=useState<Range>('all')
  const [review,setReview]=useState('')
  const rangeTouched=useRef(false)
- const location=useLocation()
+ const clearScope=()=>{
+  const params=new URLSearchParams(location.search)
+  for(const key of ['from','to','locations','status'])params.delete(key)
+  setStatus('pending');setChannel('');setRange('all');setLevel('');setReview('');rangeTouched.current=false
+  navigate({pathname:location.pathname,search:params.toString()? `?${params}` : ''})
+ }
  useEffect(()=>{
   const params=new URLSearchParams(location.search)
-  if(params.get('status')==='pending'&&params.get('range')==='all'){
+  if(scope.kind==='valid'){setStatus('all');setStatusScope(location.search);setChannel('');setLevel('');setReview('')}
+  else if(scope.kind==='none'&&params.get('status')==='pending'&&params.get('range')==='all'){
    setStatus('pending');setRange('all');setChannel('');setLevel('');setReview('');rangeTouched.current=false
   }
- },[location.key,location.search])
- const pickStatus=(next:Status)=>{setStatus(next);if(next==='pending')setReview('');if(!rangeTouched.current)setRange(next==='pending'?'all':'today')}
+ },[location.key,location.search,scope.kind])
+ const pickStatus=(next:Status)=>{setStatusScope(location.search);setStatus(next);if(next==='pending')setReview('');if(!rangeTouched.current)setRange(next==='pending'?'all':'today')}
  const [channels,setChannels]=useState<{id:string;name:string}[]>([]),[triggers,setTriggers]=useState<AlarmTrigger[]>([])
  const [definitions,setDefinitions]=useState<TriggerDefinition[]>([]),[armings,setArmings]=useState<Record<string,ArmingDocument|null>>({})
  const [rows,setRows]=useState<AlarmEvent[]>([]),[cursor,setCursor]=useState<string|null>(null),[loaded,setLoaded]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(false)
@@ -52,7 +64,8 @@ export default function AlarmListPage(){
  const [reference,setReference]=useState<{active:boolean;counts:Record<string,number>}|null>(null)
  useEffect(()=>{let active=true;const poll=()=>{if(document.hidden)return;void alarmEventService.summary().then(r=>{if(active){setReference(r.reference??null);setAutomaticReview(r.automatic_review?.mode==='confirm_only')}}).catch(()=>{if(active){setReference(null);setAutomaticReview(false)}})};poll();const timer=setInterval(poll,15000);return()=>{active=false;clearInterval(timer)}},[])
  const [today,setToday]=useState<Record<string,number>|null>(null)
- const filters=useMemo<AlarmFilters>(()=>({...(review?{disposition:review}:{}),...(channel?{channel_id:channel}:{}),...(level?{behavior:level}:{}),...(rangeFrom(range)?{from:rangeFrom(range)}:{})}),[channel,level,range,review])
+ const filters=useMemo<AlarmFilters>(()=>({...(review?{disposition:review}:{}),...(level?{behavior:level}:{}),
+  ...(scope.kind==='valid'?{from:scope.from,to:scope.to,locations:scope.locations}:{...(channel?{channel_id:channel}:{}),...(rangeFrom(range)?{from:rangeFrom(range)}:{})})}),[channel,level,range,review,scope])
  const live=useRef(true)
  useEffect(()=>{live.current=true;return()=>{live.current=false}},[])
  useEffect(()=>{
@@ -64,13 +77,14 @@ export default function AlarmListPage(){
  },[])
  const load=useCallback(async(more=false)=>{
   const requestId=++loadRequest.current
+  if(scope.kind==='invalid'){setBusy(false);return}
   setBusy(true);setError(false)
   try{const page=await alarmEventService.list(status,more?cursor??undefined:undefined,filters)
    if(!live.current||requestId!==loadRequest.current)return
    setRows(old=>more?[...new Map([...old,...page.items].map(r=>[r.alarm_id,r])).values()]:page.items);setCursor(page.next_cursor);setLoaded(true);if(!more){setBulkResult('')}}
   catch{if(live.current&&requestId===loadRequest.current)setError(true)}finally{if(live.current&&requestId===loadRequest.current)setBusy(false)}
- },[status,filters,cursor])
- useEffect(()=>{setRows([]);setCursor(null);setLoaded(false);void load()},[status,filters]) // eslint-disable-line react-hooks/exhaustive-deps
+ },[status,filters,cursor,scope.kind])
+ useEffect(()=>{setRows([]);setCursor(null);setLoaded(false);void load()},[status,filters,scope.kind]) // eslint-disable-line react-hooks/exhaustive-deps
  // Refresh only list data. Dialogs and uncertain writes retain their snapshot.
  const scroll=useRef<HTMLDivElement>(null)
  const anchor=useRef<{id:string;top:number}|null>(null)
@@ -85,7 +99,7 @@ export default function AlarmListPage(){
  useEffect(()=>{
   let active=true,running=false
   const poll=async()=>{
-   if(running||document.hidden||busy||detail||bulk||purge||Object.keys(singleAttempts).length||Date.now()-interaction.current<1500)return
+   if(scope.kind==='invalid'||running||document.hidden||busy||detail||bulk||purge||Object.keys(singleAttempts).length||Date.now()-interaction.current<1500)return
    running=true;const revision=loadRequest.current
    try{
     const previous=rowsRef.current
@@ -102,19 +116,27 @@ export default function AlarmListPage(){
      retained.push(...refreshed.filter((r):r is AlarmEvent=>r!==null))
     }
     if(!active||revision!==loadRequest.current||Date.now()-interaction.current<1500)return
-    const matches=(r:AlarmEvent)=>
+    const matches=(r:AlarmEvent)=>scope.kind==='valid'?(
+     (status!=='pending'||(r.handling.state==='unacknowledged'&&r.handling.disposition!=='false_positive'))&&
+     (status!=='acknowledged'||r.handling.state==='acknowledged')&&
+     (status!=='human'||(r.handling.state==='acknowledged'&&r.handling.reviewed_by_kind!=='ai'))&&
+     (status!=='ai'||(r.handling.state==='acknowledged'&&r.handling.reviewed_by_kind==='ai'))&&
+     (!review||(r.handling.state==='acknowledged'&&r.handling.disposition===review))&&
+     (!level||r.behavior===level||!!r.stages?.some(stage=>stage.behavior===level))&&alarmInScope(r,scope)
+    ):(
      (status!=='pending'||r.handling.state!=='acknowledged')&&
      (status!=='human'||r.handling.reviewed_by_kind==='human')&&
      (status!=='ai'||r.handling.reviewed_by_kind==='ai')&&
      (status!=='acknowledged'||r.handling.state==='acknowledged')&&
      (!review||r.handling.disposition===review)&&(!channel||r.channel_id===channel)&&(!level||r.behavior===level)&&
      (!filters.from||Date.parse(r.occurred_at)>=Date.parse(filters.from))
+    )
     const container=scroll.current
     if(container&&container.scrollTop>0){
      const node=Array.from(container.querySelectorAll<HTMLElement>('[data-alarm-id]')).find(n=>n.getBoundingClientRect().bottom>container.getBoundingClientRect().top)
      if(node)anchor.current={id:node.dataset.alarmId!,top:node.getBoundingClientRect().top}
     }
-    setRows([...new Map([...retained,...page.items].filter(matches).map(r=>[r.alarm_id,r])).values()].sort((a,b)=>Date.parse(b.occurred_at)-Date.parse(a.occurred_at)||b.alarm_id.localeCompare(a.alarm_id)))
+    setRows([...new Map([...(scope.kind==='valid'?retained.filter(matches):retained),...page.items].filter(r=>scope.kind==='valid'||matches(r)).map(r=>[r.alarm_id,r])).values()].sort((a,b)=>Date.parse(b.occurred_at)-Date.parse(a.occurred_at)||b.alarm_id.localeCompare(a.alarm_id)))
     if(previous.length===0||!retained.length)setCursor(page.next_cursor)
     setError(false)
     window.dispatchEvent(new Event('ainvr:alarms-changed'))
@@ -122,7 +144,7 @@ export default function AlarmListPage(){
   }
   const timer=setInterval(()=>void poll(),3000)
   return()=>{active=false;clearInterval(timer)}
- },[status,filters,review,channel,level,busy,detail,bulk,purge,singleAttempts])
+ },[status,filters,review,channel,level,busy,detail,bulk,purge,singleAttempts,scope])
  // Zone names come from the source's arming; read each source once while its alarms are shown.
  useEffect(()=>{
   for(const id of new Set(rows.flatMap(r=>r.input_stream_id&&!(r.input_stream_id in armings)?[r.input_stream_id]:[]))){
@@ -178,7 +200,7 @@ export default function AlarmListPage(){
  }
  const groups=[...rows.reduce((map,a)=>{const zone=a.stages?.at(-1)?.zone_id??'frame';const key=JSON.stringify([a.channel_id,zone,Math.floor(Date.parse(a.occurred_at)/60000)]);map.set(key,[...(map.get(key)??[]),a]);return map},new Map<string,AlarmEvent[]>()).entries()]
  const pending=rows.filter(r=>r.handling.state!=='acknowledged')
- const askBulk=()=>setBulk({phase:'asking',items:pending.slice(0,200).map(r=>({alarm_id:r.alarm_id,expected_handling_revision:r.handling.revision})),key:newAlarmOperationId(),scope:`${channel?channelName(channel):'全部通道'} · ${triggerBehaviors.find(b=>b.id===level)?.name??'全部级别'} · ${range==='all'?'全部时间':range==='today'?'今天':'近7天'}`})
+ const askBulk=()=>setBulk({phase:'asking',items:pending.slice(0,200).map(r=>({alarm_id:r.alarm_id,expected_handling_revision:r.handling.revision})),key:newAlarmOperationId(),scope:scope.kind==='valid'?`统计范围 · ${scope.locations.length} 个位置 · ${scope.from} 至 ${scope.to}`:`${channel?channelName(channel):'全部通道'} · ${triggerBehaviors.find(b=>b.id===level)?.name??'全部级别'} · ${range==='all'?'全部时间':range==='today'?'今天':'近7天'}`})
  const confirmAll=async()=>{
   if(!bulk||bulk.phase==='working')return
   const batch=bulk;setBulk({...batch,phase:'working'})
@@ -195,8 +217,8 @@ export default function AlarmListPage(){
   <nav aria-label="告警通道" className="flex shrink-0 flex-col border-line bg-surface md:w-56 md:border-r">
    <div className="px-5 pb-2 pt-5"><h1 className="page-title">告警列表</h1>
     <p className="mt-1.5 text-sm text-ink-subtle"><span className={`text-base font-semibold ${status==='pending'?'text-danger-700':'text-primary-600'}`}>{rows.length}{cursor?'+':''}</span> 条{status==='pending'?'未审核':status==='ai'?'已 AI 审核':status==='human'?'已人工审核':'告警'}（已加载）</p></div>
-   <div className="flex gap-1 overflow-x-auto p-3 md:flex-col">{[{id:'',name:'全部通道'},...channels].map(c=><button key={c.id||'all'} type="button" aria-pressed={channel===c.id} onClick={()=>setChannel(c.id)}
-    className={`flex !min-h-11 shrink-0 items-center justify-between gap-2 rounded-base px-3 py-2 text-left text-sm ${channel===c.id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle hover:bg-surface-hover'}`}>
+   <div className="flex gap-1 overflow-x-auto p-3 md:flex-col">{[{id:'',name:'全部通道'},...channels].map(c=><button key={c.id||'all'} type="button" aria-pressed={scope.kind==='none'&&channel===c.id} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择通道':undefined} onClick={()=>setChannel(c.id)}
+    className={`flex !min-h-11 shrink-0 items-center justify-between gap-2 rounded-base px-3 py-2 text-left text-sm ${scope.kind==='none'&&channel===c.id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle hover:bg-surface-hover'}`}>
     <span className="truncate">{c.name}</span><span className="text-sm text-ink-subtle">{c.id?counts.get(c.id)??'':rows.length||''}</span></button>)}</div>
    <aside aria-label="今日概况" className="mx-3 mb-3 mt-auto hidden rounded-panel border border-line p-3 md:block"><h2 className="mb-2 text-sm font-semibold">今天行为记录</h2>
     <div className="space-y-2">{[...triggerBehaviors].reverse().map(b=><div key={b.id}><div className="flex justify-between text-sm"><span>{b.name}</span><span className="tabular-nums">{today?.[b.id]??0}</span></div>
@@ -208,11 +230,16 @@ export default function AlarmListPage(){
   <main className="alarm-workspace flex min-w-0 flex-1 flex-col">
    <PtzProtectionNotice/>
    <div className="space-y-3 px-4 pb-3 pt-4 md:px-6">
+    {scope.kind!=='none'&&<div role={scope.kind==='invalid'?'alert':'status'} className="rounded-panel border border-line bg-surface p-3 text-sm">
+     {scope.kind==='valid'?<>统计范围：{scope.from} 至 {scope.to}（结束时间不含），{scope.locations.length} 个位置。通道和时间已固定，可按处理状态、结论和级别继续筛选。</>:<>统计范围无效或不完整，无法读取告警。请返回统计页重新打开，或清除范围。</>}
+     <button type="button" onClick={clearScope} className="btn-secondary ml-3 !min-h-11">清除统计范围</button>
+     {scope.kind==='valid'&&<details className="mt-2"><summary className="min-h-11 cursor-pointer">查看统计位置</summary><ul>{scope.locations.map((pair,index)=><li key={index}>{channelName(pair.channel_id)} · {pair.zone_id}</li>)}</ul></details>}
+    </div>}
     <div className="flex flex-wrap items-center gap-3">
      <div role="group" aria-label="处理状态" className="flex gap-1 rounded-base border border-line bg-surface p-1">{([['pending','未审核'],['human','已人工审核'],['ai','已 AI 审核'],['all','全部']] as const).map(([id,label])=>
       <button key={id} type="button" aria-pressed={status===id} onClick={()=>pickStatus(id)} className={`!min-h-11 rounded-base px-3 py-1.5 text-sm ${status===id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle'}`}>{label}</button>)}</div>
      <label className="flex items-center gap-2 text-sm text-ink-subtle">结论<select aria-label="审核结论" disabled={status==='pending'} title={status==='pending'?'未审核告警尚无确认或误报结论':undefined} value={review} onChange={e=>setReview(e.target.value)} className="form-input !min-h-11 w-auto"><option value="">全部</option><option value="handled">确认</option><option value="false_positive">误报</option></select></label>
-     <label className="flex items-center gap-2 text-sm text-ink-subtle">时间<select value={range} onChange={e=>{rangeTouched.current=true;setRange(e.target.value as Range)}} className="form-input !min-h-11 w-auto py-1.5"><option value="today">今天</option><option value="7d">近 7 天</option><option value="all">全部</option></select></label>
+     <label className="flex items-center gap-2 text-sm text-ink-subtle">时间<select value={scope.kind==='none'?range:'scoped'} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择时间':undefined} onChange={e=>{rangeTouched.current=true;setRange(e.target.value as Range)}} className="form-input !min-h-11 w-auto py-1.5">{scope.kind!=='none'&&<option value="scoped">统计范围</option>}<option value="today">今天</option><option value="7d">近 7 天</option><option value="all">全部</option></select></label>
      {status!=='acknowledged'&&pending.length>0&&<button type="button" disabled={!!bulk} onClick={askBulk} className={`btn-secondary !min-h-11 ml-auto`}>确认已加载（{Math.min(200,pending.length)}）</button>}
      <button type="button" disabled={!!bulk||purge} onClick={()=>setPurge(true)} className="btn-secondary !min-h-11 text-danger-700">清空所有告警</button>
     </div>

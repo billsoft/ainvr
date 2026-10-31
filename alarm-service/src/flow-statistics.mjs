@@ -54,13 +54,29 @@ export function seriesQuery(raw){
 // Consecutive frames of one binding (also across a rule version change) are at most
 // one frame interval apart; the engine itself treats 1.5 s as still continuous.
 const JOIN_MS=1500;
+function coverageIntervals(segments,from,to,tolerance=JOIN_MS){
+  const lo=Date.parse(from),hi=Date.parse(to);
+  const ranges=segments.map(s=>[Math.max(lo,Date.parse(s.from)),Math.min(hi,Date.parse(s.to))])
+    .filter(([a,b])=>Number.isFinite(a)&&Number.isFinite(b)&&b>a).sort((a,b)=>a[0]-b[0]);
+  const merged=[];
+  for(const [a,b] of ranges){const last=merged.at(-1);if(last&&a<=last[1]+tolerance)last[1]=Math.max(last[1],b);else merged.push([a,b]);}
+  return merged;
+}
+/** Measured coverage is separate from boundary grace. Grace never fabricates observation time. */
+export function measuredCoverage(segments,from,to,grace={}){
+  const base=mergeCoverage(segments,from,to,grace),expected_ms=Date.parse(to)-Date.parse(from);
+  const merged=coverageIntervals(segments,from,to,0);
+  const covered_ms=merged.reduce((n,[a,b])=>n+b-a,0);
+  const gap_ms=base.gaps.reduce((n,g)=>n+Date.parse(g.to)-Date.parse(g.from),0);
+  return {...base,expected_ms,covered_ms,ratio:expected_ms>0?covered_ms/expected_ms:null,
+    tolerated_ms:Math.max(0,expected_ms-covered_ms-gap_ms),
+    intervals:merged.map(([a,b])=>({from:new Date(a).toISOString(),to:new Date(b).toISOString()})),
+    expected_intervals:[{from,to}]};
+}
 /** grace: only the caller knows a period starts when the rule took effect (start_ms)
  * or is still running with throttled coverage writes (end_ms). Without it every gap counts. */
 export function mergeCoverage(segments,from,to,grace={}){
-  const lo=Date.parse(from),hi=Date.parse(to),ranges=segments.map(s=>[Math.max(lo,Date.parse(s.from)),Math.min(hi,Date.parse(s.to))])
-    .filter(([a,b])=>Number.isFinite(a)&&Number.isFinite(b)&&b>a).sort((a,b)=>a[0]-b[0]);
-  const merged=[];
-  for(const [a,b] of ranges){const last=merged.at(-1);if(last&&a<=last[1]+JOIN_MS)last[1]=Math.max(last[1],b);else merged.push([a,b]);}
+  const lo=Date.parse(from),hi=Date.parse(to),merged=coverageIntervals(segments,from,to);
   const gaps=[];let next=lo;
   for(const [a,b] of merged){if(a>next)gaps.push([next,a]);next=b;}
   if(next<hi)gaps.push([next,hi]);
@@ -155,7 +171,7 @@ export class FlowStatistics {
       ];
       const [result]=await this.facts.aggregate([{$match:visibleQuery(s)},{$facet:facet}],{maxTimeMS:5000,allowDiskUse:false}).toArray();
       const total=result?.totals?.[0];
-      items.push({key:s.key,diagnostic,from:s.from,to:s.to,occurrences:total?.occurrences??0,tracked_targets:total?.tracked_targets??0,coverage:mergeCoverage(rows,s.from,s.to,s.grace),
+      items.push({key:s.key,diagnostic,from:s.from,to:s.to,occurrences:total?.occurrences??0,tracked_targets:total?.tracked_targets??0,coverage:measuredCoverage(rows,s.from,s.to,s.grace),
         buckets:(result?.series??[]).map(r=>({from:new Date(Math.max(Date.parse(s.from),+r._id)).toISOString(),to:new Date(Math.min(Date.parse(s.to),+r.end)).toISOString(),occurrences:r.occurrences}))});
     }
     return {bucket,timezone,items,time_basis:'passage_completed_at'};

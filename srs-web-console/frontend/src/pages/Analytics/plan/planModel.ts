@@ -21,6 +21,42 @@ export type NewShape = Distribute<PlanShape>
 export interface Plan { id: string; name: string; image: { data: string; w: number; h: number } | null; shapes: PlanShape[]; placements: Record<string, Placement> }
 export interface PlanDraft { version: 2; plans: Plan[]; activeId: string | null }
 
+/** Viewer fits the centered background and all planned content without changing stored coordinates. */
+export function planViewport(plan: Plan | null, readOnly = false): Placement {
+  if (!readOnly || !plan) return { x: 0, y: 0, w: PLAN_W, h: PLAN_H }
+  if(!plan.image){
+    // With no background, fit the actual planned content instead of reserving
+    // an empty 1600x900 board. Editing coordinates remain unchanged.
+    const boxes:Placement[]=Object.values(plan.placements).map(p=>({x:p.x-p.w*.65,y:p.y-p.h*.65,w:p.w*2.3,h:p.h*2.3}))
+    for(const s of plan.shapes){
+      if(s.kind==='room')boxes.push({x:s.x-4,y:s.y-4,w:s.w+8,h:s.h+8})
+      else if(s.kind==='line')boxes.push({x:Math.min(s.points[0],s.points[2])-4,y:Math.min(s.points[1],s.points[3])-4,w:Math.abs(s.points[2]-s.points[0])+8,h:Math.abs(s.points[3]-s.points[1])+8})
+      else boxes.push({x:s.x,y:s.y,w:s.text.length*26,h:32})
+    }
+    if(!boxes.length)return {x:0,y:0,w:PLAN_W,h:PLAN_H}
+    const x=Math.min(...boxes.map(p=>p.x)),y=Math.min(...boxes.map(p=>p.y)),right=Math.max(...boxes.map(p=>p.x+p.w)),bottom=Math.max(...boxes.map(p=>p.y+p.h))
+    const w=Math.max(400,right-x+40),h=Math.max(225,bottom-y+40)
+    return {x:(x+right-w)/2,y:(y+bottom-h)/2,w,h}
+  }
+  const fit = Math.min(PLAN_W / plan.image.w, PLAN_H / plan.image.h)
+  const cx = PLAN_W / 2, cy = PLAN_H / 2
+  let hw = plan.image.w * fit / 2, hh = plan.image.h * fit / 2
+  const include = (x: number, y: number, right: number, bottom: number) => {
+    hw = Math.max(hw, Math.abs(x - cx), Math.abs(right - cx))
+    hh = Math.max(hh, Math.abs(y - cy), Math.abs(bottom - cy))
+  }
+  for (const p of Object.values(plan.placements)) {
+    // Preserve the visible tails of the independent count heat field as well as the frame.
+    include(p.x - p.w * .65, p.y - p.h * .65, p.x + p.w * 1.65, p.y + p.h * 1.65)
+  }
+  for (const s of plan.shapes) {
+    if (s.kind === 'room') include(s.x - 4, s.y - 4, s.x + s.w + 4, s.y + s.h + 4)
+    else if (s.kind === 'line') include(Math.min(s.points[0], s.points[2]) - 4, Math.min(s.points[1], s.points[3]) - 4, Math.max(s.points[0], s.points[2]) + 4, Math.max(s.points[1], s.points[3]) + 4)
+    else include(s.x, s.y, s.x + s.text.length * 26, s.y + 32)
+  }
+  return { x: cx - hw, y: cy - hh, w: hw * 2, h: hh * 2 }
+}
+
 export const emptyDraft = (): PlanDraft => ({ version: 2, plans: [], activeId: null })
 /** 热区的唯一标识就是布防里的 zone_id，计数器的选用也按它引用。 */
 export const zoneKey = (zoneId: string) => zoneId
@@ -148,4 +184,36 @@ export function heatCells(plan: Plan, values: Record<string, number>, cols = 32,
   }))
   const max = Math.max(0, ...grid.flat())
   return max > 0 ? grid.map(r => r.map(v => v / max)) : grid
+}
+
+// Per-binding facts stay separate even when counters share a physical zone.
+export interface MapCounter {
+  id: string
+  name: string
+  names?: { in: string; out: string }
+  outputs?: 'both' | 'in'
+  unit?: string
+}
+export interface MapReading {
+  counterId: string
+  bindingId: string
+  zoneKey: string
+  in: number | null
+  out: number | null
+}
+/** Ambiguous multiple locations on one zone are not silently summed for a map label. */
+export function mapValuesForCounter(readings: MapReading[], counterId: string, direction: 'in' | 'out'): Record<string, number> {
+  const groups = new Map<string, MapReading[]>()
+  for (const r of readings) if (r.counterId === counterId) groups.set(r.zoneKey, [...(groups.get(r.zoneKey) ?? []), r])
+  const values: Record<string, number> = {}
+  for (const [key, rows] of groups) {
+    const value = rows[0]?.[direction]
+    if (rows.length === 1 && typeof value === 'number' && Number.isFinite(value)) values[key] = value
+  }
+  return values
+}
+/** Missing lookup data never removes stored display geometry. */
+export function unresolvedPlacementKeys(plan: Plan | null, zones: ZoneInfo[]): string[] {
+  const known = new Set(zones.map(z => z.key))
+  return Object.keys(plan?.placements ?? {}).filter(key => !known.has(key))
 }

@@ -1,7 +1,7 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import type {AlarmArmingStore} from '../store/alarmArmingStore.js';
 import type {AssignmentSource} from '../store/alarmTriggerDefinition.js';
-import {bindingFilters,countingPieces,type BindingVersion,type CounterDefinition,type DefinitionVersion} from '../store/flowCounters.js';
+import {bindingApplicability,applicableCoverage,bindingFilters,countingPieces,type BindingVersion,type CounterDefinition,type DefinitionVersion} from '../store/flowCounters.js';
 import {AlarmConfigError} from '../store/alarmZones.js';
 import {AlarmRuleSync} from '../services/alarmRuleSync.js';
 import {endpoint,limitedJson,type AlarmConnection} from './alarmProxy.js';
@@ -11,7 +11,7 @@ interface Options{
  connection:()=>Promise<AlarmConnection|null>;
 }
 type Output='in'|'out';
-interface SeriesResult{diagnostic?:{reason:string;at:string}|null;key:string;occurrences:number;tracked_targets:number;coverage:{state:'complete'|'partial'|'no_data'|'unknown';gaps:{from:string;to:string}[]};buckets:{from:string;to:string;occurrences:number}[]}
+interface SeriesResult{diagnostic?:{reason:string;at:string}|null;key:string;occurrences:number;tracked_targets:number;coverage:{state:'complete'|'partial'|'no_data'|'unknown';gaps:{from:string;to:string}[];expected_ms?:number|null;covered_ms?:number|null;qualifier?:string;unknown_ms?:number;ratio?:number|null;tolerated_ms?:number;intervals?:{from:string;to:string}[];expected_intervals?:{from:string;to:string}[]};buckets:{from:string;to:string;occurrences:number}[]}
 const validId=(v:unknown):v is string=>typeof v==='string'&&/^[a-zA-Z0-9_.:-]{1,128}$/.test(v);
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v);
 const bad=(message:string):never=>{throw new AlarmConfigError('invalid_query',message);};
@@ -27,7 +27,18 @@ function sum(parts:SeriesResult[]){
  const buckets=new Map<string,{from:string;to:string;occurrences:number}>();
  for(const p of parts)for(const b of p.buckets){const old=buckets.get(b.from);if(old)old.occurrences+=b.occurrences;else buckets.set(b.from,{...b});}
  const states=parts.map(p=>p.coverage.state);
- return {diagnostic:parts.map(p=>p.diagnostic).filter(Boolean).sort((a,b)=>b!.at.localeCompare(a!.at))[0]??null,occurrences:parts.reduce((n,p)=>n+p.occurrences,0),tracked_targets:parts.reduce((n,p)=>n+p.tracked_targets,0),gaps:parts.flatMap(p=>p.coverage.gaps??[]),buckets:[...buckets.values()].sort((a,b)=>a.from.localeCompare(b.from)),
+ const measured=parts.length>0&&parts.every(p=>typeof p.coverage.expected_ms==='number'&&typeof p.coverage.covered_ms==='number');
+ const incomplete=parts.some(p=>p.coverage.expected_ms===null||p.coverage.covered_ms===null);
+ const expected_ms=measured?parts.reduce((n,p)=>n+p.coverage.expected_ms!,0):undefined;
+ const covered_ms=measured?parts.reduce((n,p)=>n+p.coverage.covered_ms!,0):undefined;
+ const measurement:Omit<Partial<SeriesResult['coverage']>,'state'|'gaps'>=measured?{expected_ms,covered_ms,ratio:expected_ms?covered_ms!/expected_ms:null,
+  tolerated_ms:parts.reduce((n,p)=>n+(p.coverage.tolerated_ms??0),0),
+  intervals:parts.flatMap(p=>p.coverage.intervals??[]),expected_intervals:parts.flatMap(p=>p.coverage.expected_intervals??[]),
+  ...(parts.some(p=>p.coverage.qualifier)?{qualifier:'persisted_configuration',unknown_ms:0}:{})}:
+  incomplete?{expected_ms:null,covered_ms:null,ratio:null,unknown_ms:parts.reduce((n,p)=>n+(p.coverage.unknown_ms??0),0),
+   qualifier:parts.find(p=>p.coverage.expected_ms===null||p.coverage.covered_ms===null)?.coverage.qualifier??'measurement_incomplete'}:{};
+
+ return {...measurement,diagnostic:parts.map(p=>p.diagnostic).filter(Boolean).sort((a,b)=>b!.at.localeCompare(a!.at))[0]??null,occurrences:parts.reduce((n,p)=>n+p.occurrences,0),tracked_targets:parts.reduce((n,p)=>n+p.tracked_targets,0),gaps:parts.flatMap(p=>p.coverage.gaps??[]),buckets:[...buckets.values()].sort((a,b)=>a.from.localeCompare(b.from)),
   coverage:!parts.length||states.every(s=>s==='no_data')?'no_data':states.every(s=>s==='complete')?'complete':states.includes('partial')?'partial':states.includes('unknown')?'unknown':'partial'};
 }
 export async function flowRoutes(app:FastifyInstance,options:Options){
@@ -70,8 +81,12 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
   return pieces(row,definitions,counter,window).map((p,i)=>({key:`${row.binding_id}:${output}:${i}`,rule_id:row.binding_id,label_ids:p.label_ids,filter:bindingFilters(p.direction)[output],from:p.from,to:p.to,
    ...(p.start_grace||Date.parse(p.to)>=live?{grace:{...(p.start_grace?{start_ms:LIVE_GRACE_MS}:{}),...(Date.parse(p.to)>=live?{end_ms:LIVE_GRACE_MS}:{})}}:{})}))
  }
- const zoneTotals=(results:SeriesResult[],binding:string,output:Output)=>{const parts=results.filter(r=>r.key.startsWith(`${binding}:${output}:`));return parts.length?{...sum(parts),coverage:{state:sum(parts).coverage,gaps:sum(parts).gaps}}:undefined}
- app.get('/flow/counters',async()=>({items:await store().listCounters()}));
+ const zoneTotals=(results:SeriesResult[],binding:string,output:Output)=>{const parts=results.filter(r=>r.key.startsWith(`${binding}:${output}:`));if(!parts.length)return undefined;const total=sum(parts);return {...total,coverage:{state:total.coverage,gaps:total.gaps,...('expected_ms' in total?{expected_ms:total.expected_ms,covered_ms:total.covered_ms,ratio:total.ratio,tolerated_ms:total.tolerated_ms,intervals:total.intervals,expected_intervals:total.expected_intervals,qualifier:total.qualifier,unknown_ms:total.unknown_ms}:{})}}}
+ app.get('/flow/counters',async req=>{
+  const q=req.query as Record<string,unknown>;
+  if(q.include_inactive!==undefined&&q.include_inactive!=='0'&&q.include_inactive!=='1')bad('历史选用参数无效');
+  return {items:await store().listCounters(q.include_inactive==='1')};
+ });
  app.post('/flow/counters',async req=>{
   const b=req.body,key=req.headers['idempotency-key'];
   if(!object(b)||Object.keys(b).some(k=>!['counter','expected_version'].includes(k))||!object(b.counter)||!Number.isSafeInteger(b.expected_version)||!validId(key))
@@ -129,13 +144,27 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
   const counters=await readCounters(body.counter_ids as string[]|undefined);
   const series=counters.flatMap(({counter,bindings,definitions})=>bindings.flatMap(row=>outputsOf(counter).flatMap(o=>seriesOf(counter,row,definitions,o,window))));
   if(body.totals_only!==undefined&&typeof body.totals_only!=='boolean')bad('查询参数无效');
-  const results=await analyse(series,{bucket:body.bucket??null,timezone:body.timezone??'UTC',totals_only:body.totals_only===true});
+  const [rawResults,arming]=await Promise.all([
+   analyse(series,{bucket:body.bucket??null,timezone:body.timezone??'UTC',totals_only:body.totals_only===true}),
+   body.totals_only===true||!series.length||typeof store().armingHistory!=='function'?Promise.resolve([]):
+    store().armingHistory([...new Set(counters.flatMap(c=>c.bindings.map(b=>b.source_id)))],window),
+  ]);
+  const requests=new Map(series.map(s=>[s.key,s]));
+  // Applicability only changes measured coverage metadata. Raw facts, classification,
+  // buckets and legacy state/gaps keep the exact query and response semantics.
+  const results=body.totals_only===true?rawResults:rawResults.map(result=>{
+   const request=requests.get(result.key),owner=counters.find(c=>c.bindings.some(b=>b.binding_id===request?.rule_id));
+   const row=owner?.bindings.find(b=>b.binding_id===request?.rule_id);
+   if(!request||!owner||!row)return result;
+   const proof=bindingApplicability(row.binding_id,owner.definitions,arming.filter(v=>v.source_id===row.source_id),request,owner.counter.version);
+   return {...result,coverage:applicableCoverage(result.coverage,proof)};
+  });
   return {from:window.from,to:window.to,items:counters.map(({counter,bindings,definitions})=>{
    // Zones removed before this period have nothing to show here.
    const zones=bindings.filter(row=>pieces(row,definitions,counter,window).length).map(row=>({binding_id:row.binding_id,source_id:row.source_id,processor_id:row.document.processor_id,zone_id:row.document.zone_id,zone_name:row.zone_name,
     active:row.active,counting:row.counting,direction:row.document.direction,
     ...Object.fromEntries(outputsOf(counter).map(o=>[o,zoneTotals(results,row.binding_id,o)]))}));
-   return {counter,zones,...Object.fromEntries(outputsOf(counter).map(o=>{const t=sum(zones.map(z=>(z as unknown as Record<Output,SeriesResult>)[o]).filter(Boolean));return [o,{occurrences:t.occurrences,buckets:t.buckets,coverage:t.coverage}]}))};
+   return {counter,zones,...Object.fromEntries(outputsOf(counter).map(o=>{const t=sum(zones.map(z=>(z as unknown as Record<Output,SeriesResult>)[o]).filter(Boolean));return [o,{occurrences:t.occurrences,buckets:t.buckets,coverage:t.coverage,...('expected_ms' in t?{coverage_details:{state:t.coverage,expected_ms:t.expected_ms,covered_ms:t.covered_ms,ratio:t.ratio,tolerated_ms:t.tolerated_ms,qualifier:t.qualifier,unknown_ms:t.unknown_ms,basis:'binding_time'}}:{})}]}))};
   })};
  });
  app.post('/flow/records',async req=>{

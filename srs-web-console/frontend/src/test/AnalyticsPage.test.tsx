@@ -1,228 +1,231 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, expect, it, vi } from 'vitest'
 import AnalyticsPage from '@/pages/Analytics'
-import { channelService } from '@/api/channelService'
-import { aiChannelService } from '@/api/aiChannelService'
-import { alarmTriggerService } from '@/api/alarmTriggerService'
-import { alarmArmingService } from '@/api/alarmArmingService'
-import { flowService } from '@/api/flowService'
-import {
-  deltaOf, insightsOf, peakOf, sampleSource, slotTotals, toCsv, totalsOf,
-  type AnalyticsData, type AnalyticsScope,
-} from '@/pages/Analytics/analyticsSource'
+import { flowService, type CounterResult } from '@/api/flowService'
+import { alarmEventService } from '@/api/alarmEventService'
+import { bucketCoverage, bucketValue, counterUnit, csvCell, selectedRows, sumKnown, toCsv, weekPattern, weekWindow } from '@/pages/Analytics/analyticsSource'
 
-vi.mock('@/api/channelService', () => ({ channelService: { list: vi.fn() } }))
-vi.mock('@/api/aiChannelService', () => ({ aiChannelService: { list: vi.fn() } }))
-vi.mock('@/api/alarmTriggerService', () => ({ alarmTriggerService: { source: vi.fn() } }))
-vi.mock('@/api/alarmArmingService', () => ({ alarmArmingService: { read: vi.fn() } }))
-vi.mock('@/api/flowService', async original => ({ ...await original<typeof import('@/api/flowService')>(), flowService: { list: vi.fn(), query: vi.fn() } }))
-vi.mock('@/pages/Analytics/plan/PlanCanvas', () => ({ PlanCanvas: (p: { heat?: number[][]; readOnly?: boolean }) => <div data-testid="plan-canvas" data-heat={p.heat ? p.heat.flat().reduce((a, b) => a + b, 0).toFixed(3) : 'none'} /> }))
-const zoneOf = (id: string, name: string) => ({ zone_id: id, name, points: [], edge_ids: [], version: 1 })
-const usage = (zone_id: string) => ({ binding_id: `b-${zone_id}`, source_id: 's', processor_id: 'p', zone_id, zone_name: null, active: true, counting: true, direction: { kind: 'line', edge: 'e', in_side: 'inward' } })
-const counterOf = (id: string, name: string, zone: string) => ({ counter_id: id, name, labels: [], method: 'line', outputs: 'both', names: { in: '进', out: '出' }, occupancy: false, max_gap_ms: 0, state: 'enabled', version: 1, bindings: [usage(zone)] })
-const series = (n: number) => ({ occurrences: n, tracked_targets: 0, coverage: { state: 'complete' }, buckets: [] })
-
-const day = 86400000
-function scope(over: Partial<AnalyticsScope> = {}): AnalyticsScope {
-  const to = new Date(2026, 9, 30, 12, 0, 0), from = new Date(2026, 9, 24, 0, 0, 0)
-  return { channelIds: ['a', 'b'], from, to, bucket: 'day', compareLabel: '前 7 天',
-    previous: { from: new Date(from.getTime() - 7 * day), to: new Date(to.getTime() - 7 * day) }, ...over }
-}
-const renderPage = (url = '/analytics') => render(<MemoryRouter initialEntries={[url]}><AnalyticsPage /></MemoryRouter>)
-beforeEach(() => {
-  vi.mocked(channelService.list).mockResolvedValue([
-    { id: 'a', name: '后门8K全景AI输出' }, { id: 'b', name: '大门口' }, { id: 'c', name: '小门' },
-  ] as never)
-  vi.mocked(aiChannelService.list).mockResolvedValue([{ id: 'ai1', name: '后门' }] as never)
-  vi.mocked(alarmTriggerService.source).mockResolvedValue({ channel_id: 'ai1', input_stream_id: 'in1' } as never)
-  vi.mocked(alarmArmingService.read).mockResolvedValue({ arming: { source_id: 'in1', processor_id: 'ai1', zones: [zoneOf('za', '一厅A口'), zoneOf('zb', '二厅B口')], assignments: [] } } as never)
-  const c1 = counterOf('c1', '一厅人数', 'za'), c2 = counterOf('c2', '二厅人数', 'zb')
-  vi.mocked(flowService.list).mockResolvedValue({ items: [c1, c2] } as never)
-  vi.mocked(flowService.query).mockResolvedValue({ from: '', to: '', items: [
-    { counter: c1, in: series(30), out: series(10), zones: [{ ...usage('za'), in: series(30), out: series(10) }] },
-    { counter: c2, in: series(5), out: series(5), zones: [{ ...usage('zb'), in: series(5), out: series(5) }] },
-  ] } as never)
-  localStorage.clear()
+vi.mock('@/api/flowService', async original => ({...await original<typeof import('@/api/flowService')>(),flowService:{list:vi.fn(),query:vi.fn(),records:vi.fn()}}))
+vi.mock('@/api/alarmEventService',()=>({alarmEventService:{statistics:vi.fn()}}))
+vi.mock('@/api/floorPlanService',()=>({createFloorPlanSession:()=>({load:async()=>({version:2,plans:[],activeId:null}),save:async()=>{},dispose:()=>{}})}))
+vi.mock('@/pages/Analytics/plan/PlanCanvas',()=>({PlanCanvas:()=> <div data-testid="analytics-map-values"/>}))
+const from='2026-10-01T00:00:00.000Z', mid='2026-10-01T00:30:00.000Z', to='2026-10-01T01:00:00.000Z'
+const coverage={state:'partial' as const,ratio:.5,expected_ms:3600000,covered_ms:1800000,expected_intervals:[{from,to}],intervals:[{from,to:mid}]}
+const counter={counter_id:'counter',name:'=counter',labels:[{label_id:'person',name:'人'}],method:'line',outputs:'both',names:{in:'进入',out:'离开'},occupancy:false,max_gap_ms:0,state:'enabled',version:1,bindings:[
+ {binding_id:'b1',source_id:'s',processor_id:'p',zone_id:'z1',zone_name:'门一',active:true,counting:true,direction:{kind:'line',edge:'e',in_side:'inward'}},
+ {binding_id:'b2',source_id:'s',processor_id:'p',zone_id:'z2',zone_name:'门二',active:true,counting:true,direction:{kind:'line',edge:'e',in_side:'inward'}}
+]}
+const series={occurrences:4,tracked_targets:1,coverage,buckets:[{from,to,occurrences:4}]}
+const result={counter,in:{occurrences:104,buckets:[],coverage:'partial'},zones:[
+ {...counter.bindings[0],in:series,out:{...series,occurrences:2}},
+ {...counter.bindings[1],in:{...series,occurrences:100},out:series}
+]} as unknown as CounterResult
+it('refreshes fixed-range alarms and counter definitions while retaining selected bindings',async()=>{
+ const query=new URLSearchParams({range:'yesterday',counters:'["counter"]',bindings:'["b1"]'})
+ render(<MemoryRouter initialEntries={['/analytics?'+query]}><AnalyticsPage/></MemoryRouter>)
+ await screen.findByText('4 人次')
+ await waitFor(()=>expect(alarmEventService.statistics).toHaveBeenCalled())
+ const before=vi.mocked(alarmEventService.statistics).mock.calls.length
+ fireEvent.click(screen.getByRole('button',{name:'刷新'}))
+ await waitFor(()=>expect(flowService.list).toHaveBeenCalledTimes(2))
+ await waitFor(()=>expect(vi.mocked(alarmEventService.statistics).mock.calls.length).toBeGreaterThan(before))
+ expect(await screen.findByText('4 人次')).toBeInTheDocument()
+ expect(screen.getByText('统计位置 1')).toBeInTheDocument()
+})
+it('uses configured direction names across cards and does not invent an unused exit direction',async()=>{
+ const single={...counter,names:{in:'上船',out:'下船'},outputs:'in'}
+ vi.mocked(flowService.list).mockResolvedValue({items:[single]} as never)
+ vi.mocked(flowService.query).mockResolvedValue({from,to,items:[{...result,counter:single}]} as never)
+ render(<MemoryRouter><AnalyticsPage/></MemoryRouter>)
+ expect(await screen.findByRole('group',{name:'已记录上船'})).toBeInTheDocument()
+ expect(screen.queryByRole('group',{name:'已记录离开'})).not.toBeInTheDocument()
+ expect(within(screen.getByLabelText('概览')).getByRole('group',{name:'统计方向'})).toHaveTextContent('单向计数')
+})
+beforeEach(()=>{
+ vi.clearAllMocks()
+ vi.mocked(flowService.list).mockResolvedValue({items:[counter]} as never)
+ vi.mocked(flowService.query).mockResolvedValue({from,to,items:[result]} as never)
+ vi.mocked(alarmEventService.statistics).mockResolvedValue({total:3,as_of:to,handling:{},review:{},association:{unassociated:2}})
+})
+it('uses per-bucket measured intersection; legacy and absent measurements never become zero',()=>{
+ expect(bucketCoverage(coverage,{from,to:mid},{from,to})).toEqual({ratio:1,state:'complete'})
+ expect(bucketCoverage(coverage,{from:mid,to},{from,to})).toEqual({ratio:0,state:'no_data'})
+ expect(bucketCoverage({state:'complete'},{from,to},{from,to}).ratio).toBeNull()
+ expect(bucketValue({...series,occurrences:0,buckets:[],coverage:{state:'complete'}},{from,to},{from,to})).toBeNull()
+ expect(sumKnown([0,null])).toBeNull()
+ expect(sumKnown([0,0])).toBe(0)
+ expect(sumKnown([4,null])).toBe(4)
+})
+it('keeps human, vehicle and mixed counting units distinct',()=>{
+ expect(counterUnit({labels:[{label_id:'person'}]})).toBe('人次')
+ expect(counterUnit({labels:[{label_id:'class:0',name:'person'}]})).toBe('人次')
+ expect(counterUnit({labels:[{label_id:'class:2',name:'car'}]})).toBe('车次')
+ expect(counterUnit({labels:[{label_id:'car'},{label_id:'bus'}]})).toBe('车次')
+ expect(counterUnit({labels:[{label_id:'person'},{label_id:'car'}]})).toBe('次')
+ expect(counterUnit({labels:[]})).toBe('次')
+})
+it('counts only observation time intersecting proven applicable periods, including exact boundaries',()=>{
+ const at=(minutes:number)=>new Date(Date.parse(from)+minutes*60000).toISOString()
+ const c={state:'complete' as const,expected_intervals:[{from,to:at(20)},{from:at(40),to}],intervals:[{from:at(10),to:at(50)}]}
+ expect(bucketCoverage(c,{from,to},{from,to})).toEqual({ratio:.5,state:'partial'})
+ expect(bucketCoverage(c,{from:at(20),to:at(40)},{from,to})).toEqual({ratio:null,state:'not_applicable'})
+ expect(bucketCoverage(c,{from:at(40),to:at(50)},{from,to})).toEqual({ratio:1,state:'complete'})
+})
+it('keeps many adjacent observed fragments exact without reprocessing them for every bucket',()=>{
+ const at=(ms:number)=>new Date(Date.parse(from)+ms).toISOString(),end=at(1000000)
+ const c={state:'complete' as const,expected_intervals:[{from,to:end}],intervals:Array.from({length:10000},(_,i)=>({from:at(i*100),to:at((i+1)*100)}))}
+ for(let i=0;i<1000;i++)expect(bucketCoverage(c,{from:at(i*1000),to:at((i+1)*1000)},{from,to:end})).toEqual({ratio:1,state:'complete'})
+})
+it('filters by actual binding and escapes CSV formula injection with bucket coverage',()=>{
+ const rows=selectedRows([result],[{counterId:'counter',bindingId:'b1'}])
+ expect(rows).toHaveLength(1)
+ const csv=toCsv(rows,[{from,to:mid},{from:mid,to}],{from,to},'UTC',to)
+ expect(csv).toContain('"\'=counter"')
+ expect(csv).toContain('"完整","1"')
+ expect(csv).toContain('"无覆盖","0"')
+ expect(csv).not.toContain('门二')
+ expect(csvCell('  @SUM(1)')).toContain("'  @")
+})
+it('uses four complete weeks and leaves uncovered samples empty',()=>{
+ const end=new Date(2026,9,30,12),window=weekWindow(end)
+ expect(window.to.getDay()).toBe(1)
+ expect(window.to.getHours()).toBe(0)
+ expect((window.to.getTime()-window.from.getTime())/86400000).toBe(28)
+ const cells=weekPattern(selectedRows([result],[{counterId:'counter',bindingId:'b1'}]),window.from,window.to)
+ expect(cells.flat().every(c=>c.value===null&&c.samples===0)).toBe(true)
+})
+it('uses counter and binding filters without repeating flow queries on binding changes',async()=>{
+ render(<MemoryRouter><AnalyticsPage /></MemoryRouter>)
+ expect(await screen.findByText('104 人次')).toBeInTheDocument()
+ await waitFor(()=>expect(flowService.query).toHaveBeenCalledTimes(3))
+ fireEvent.click(screen.getByText('统计位置 2'))
+ fireEvent.click(screen.getByLabelText(/门二/))
+ expect(await screen.findByText('4 人次')).toBeInTheDocument()
+ expect(flowService.query).toHaveBeenCalledTimes(3)
+ expect(vi.mocked(flowService.query).mock.calls.every(([q])=>q.counter_ids?.[0]==='counter')).toBe(true)
+ await waitFor(()=>expect(alarmEventService.statistics).toHaveBeenLastCalledWith(expect.any(String),expect.any(String),[{channel_id:'p',zone_id:'z1'}]))
 })
 
-// ---- 数据口径：示例数字必须互相对得上 ----
-it('overview totals equal the sum of the trend and the peak equals its maximum', async () => {
-  const data = await sampleSource.load(scope())
-  const slots = slotTotals(data), totals = totalsOf(data)
-  expect(slots.reduce((n, v) => n + v, 0)).toBe(totals.in)
-  const peak = peakOf(data)
-  expect(peak.value).toBe(Math.max(...slots))
-  expect(slots[peak.index]).toBe(peak.value)
-  expect(insightsOf(data).join('\n')).toContain(peak.label)
-})
-it('is deterministic for the same scope and differs between channels', async () => {
-  const one = await sampleSource.load(scope()), again = await sampleSource.load(scope())
-  expect(again).toEqual(one)
-  const other = await sampleSource.load(scope({ channelIds: ['b', 'c'] }))
-  expect(totalsOf(other).in).not.toBe(totalsOf(one).in)
-})
-it('never compares with a previous period that has no coverage and names the comparison period', async () => {
-  const old = await sampleSource.load(scope({ previous: { from: new Date(2020, 0, 1), to: new Date(2020, 0, 8) } }))
-  expect(old.previous).toBeNull()
-  expect(deltaOf(100, old.previous?.in ?? null)).toBeNull()
-  expect(deltaOf(120, 100)).toBeCloseTo(20)
-  expect(deltaOf(5, 0)).toBeNull()
-  expect(insightsOf(old).join('')).not.toMatch(/较/)
-  const covered = await sampleSource.load(scope({ previous: { from: new Date(Date.now() - 8 * day), to: new Date(Date.now() - day) } }))
-  expect(insightsOf(covered).join('')).toMatch(/较前 7 天/)
-})
-it('marks sample exports from the data source and not from the page', async () => {
-  const data = await sampleSource.load(scope())
-  const names = { a: '后门', b: '大门口' }
-  const csv = toCsv(data, names)
-  expect(csv.split(/\r?\n/)[0]).toContain('示例数据')
-  expect(csv).toContain('时段起,通道,进入,离开')
-  const live: AnalyticsData = { ...data, provenance: 'live' }
-  expect(toCsv(live, names)).not.toContain('示例数据')
+it('restores selected bindings from a shared URL and shows the recorded peak with a coverage warning',async()=>{
+ const query=new URLSearchParams({counters:JSON.stringify(['counter']),bindings:JSON.stringify(['b1']),compare:'0'})
+ render(<MemoryRouter initialEntries={['/analytics?'+query]}><AnalyticsPage /></MemoryRouter>)
+ expect(await screen.findByText('4 人次')).toBeInTheDocument()
+ expect(screen.getByText('统计位置 1')).toBeInTheDocument()
+ expect(screen.getByText('已记录峰值')).toBeInTheDocument()
+ expect(screen.queryByText('104 人次')).not.toBeInTheDocument()
 })
 
-// ---- 页面：仪表盘 ----
-it('keeps the sample marker always visible and tags each panel with where real data comes from', async () => {
-  renderPage()
-  expect(await screen.findByRole('heading', { name: '统计分析' })).toBeInTheDocument()
-  const note = await screen.findByRole('note', { name: '数据来源说明' })
-  expect(note).toHaveTextContent('示例数据')
-  expect(note.getAttribute('title')).toMatch(/不代表真实客流/)
-  expect(screen.getAllByText('可接入现有计数').length).toBeGreaterThan(0)
-  expect(await screen.findByText('真实计数')).toBeInTheDocument()
-  expect(screen.getByText('需新增采集')).toBeInTheDocument()
-  expect(screen.getByText('待验证')).toBeInTheDocument()
-  expect(document.body.textContent).not.toMatch(/海康|大华/)
+it('combines compatible counters in one query and excludes different target definitions',async()=>{
+ const compatible={...counter,counter_id:'counter2',name:'入口二',bindings:[{...counter.bindings[0],binding_id:'b3',zone_id:'z3',zone_name:'门三'}]}
+ const incompatible={...counter,counter_id:'vehicles',name:'车辆',labels:[{label_id:'car',name:'车'}]}
+ vi.mocked(flowService.list).mockResolvedValue({items:[counter,compatible,incompatible]} as never)
+ vi.mocked(flowService.query).mockResolvedValue({from,to,items:[result,{...result,counter:compatible,zones:[{...compatible.bindings[0],in:series,out:series}]}]} as never)
+ render(<MemoryRouter><AnalyticsPage/></MemoryRouter>)
+ await screen.findByText('104 人次')
+ fireEvent.click(screen.getByText(/^计数器 1\//))
+ expect(screen.getByLabelText(/车辆/)).toBeDisabled()
+ fireEvent.click(screen.getByLabelText('入口二'))
+ await waitFor(()=>expect(vi.mocked(flowService.query).mock.calls.some(([q])=>q.counter_ids?.length===2)).toBe(true))
+ expect(await screen.findByText('108 人次')).toBeInTheDocument()
 })
-it('shows every panel on the overview tab and moves detail into tabs instead of scrolling', async () => {
-  renderPage()
-  const tabs = await screen.findByRole('tablist', { name: '统计视图' })
-  expect(within(tabs).getAllByRole('tab').map(t => t.textContent)).toEqual(['总览', '客流', '热区', '规律'])
-  expect(within(tabs).getByRole('tab', { name: '总览' })).toHaveAttribute('aria-selected', 'true')
-  expect(await screen.findByRole('region', { name: '客流趋势' })).toBeInTheDocument()
-  expect(screen.getByRole('region', { name: '热区分布' })).toBeInTheDocument()
-  expect(screen.getByRole('region', { name: '星期与小时规律' })).toBeInTheDocument()
-  expect(screen.getByRole('region', { name: '统计覆盖' })).toBeInTheDocument()
-  fireEvent.click(within(tabs).getByRole('tab', { name: '规律' }))
-  expect(await screen.findByRole('region', { name: '星期与小时规律' })).toBeInTheDocument()
-  expect(screen.queryByRole('region', { name: '热区分布' })).not.toBeInTheDocument()
-  fireEvent.click(within(tabs).getByRole('tab', { name: '热区' }))
-  expect(await screen.findByRole('region', { name: '热区分布' })).toBeInTheDocument()
-  expect(screen.queryByRole('region', { name: '客流趋势' })).not.toBeInTheDocument()
+
+it('keeps a dirty floor plan open across automatic refresh intervals',async()=>{
+ vi.useFakeTimers()
+ try{
+  await act(async()=>{render(<MemoryRouter><AnalyticsPage /></MemoryRouter>)})
+  await act(async()=>{fireEvent.click(screen.getByRole('button',{name:'编辑平面图'}))})
+  fireEvent.change(screen.getByLabelText('平面图名称'),{target:{value:'未保存的布局'}})
+  const calls=vi.mocked(flowService.query).mock.calls.length
+  await act(async()=>{await vi.advanceTimersByTimeAsync(125000)})
+  expect(screen.getByRole('dialog',{name:'平面图编辑'})).toBeInTheDocument()
+  expect(screen.getByLabelText('平面图名称')).toHaveValue('未保存的布局')
+  expect(flowService.query).toHaveBeenCalledTimes(calls)
+ }finally{vi.useRealTimers()}
 })
-it('restores the tab and period from the address', async () => {
-  renderPage('/analytics?tab=heat&range=7d')
-  expect(await screen.findByRole('tab', { name: '热区' })).toHaveAttribute('aria-selected', 'true')
-  expect(screen.getByRole('button', { name: '近 7 天' })).toHaveAttribute('aria-pressed', 'true')
+it('freezes the analysis range while a region observation is selected',async()=>{
+ vi.useFakeTimers()
+ try{
+  await act(async()=>{render(<MemoryRouter><AnalyticsPage /></MemoryRouter>)})
+  await act(async()=>{fireEvent.click(screen.getByRole('tab',{name:'热区'}))})
+  fireEvent.change(screen.getByRole('combobox',{name:'停留位置'}),{target:{value:'0'}})
+  const calls=vi.mocked(flowService.query).mock.calls.length
+  await act(async()=>{await vi.advanceTimersByTimeAsync(125000)})
+  expect(screen.getByRole('combobox',{name:'停留位置'})).toHaveValue('0')
+  expect(flowService.query).toHaveBeenCalledTimes(calls)
+  expect(screen.getByTitle(/分析期间固定查询截止时间/)).toBeInTheDocument()
+ }finally{vi.useRealTimers()}
 })
-it('names the comparison period and the freshness instead of a generic refresh', async () => {
-  renderPage()
-  const card = await screen.findByRole('group', { name: '进入人次' })
-  await waitFor(() => expect(card.textContent).toMatch(/较昨天同时段|昨天同时段无统计覆盖/))
-  expect(screen.getByRole('button', { name: '刷新' })).toBeInTheDocument()
-  expect(screen.getByText(/更新于 \d{2}:\d{2}/)).toBeInTheDocument()
+
+it('retains global compatible totals but never merges two counters into one map reading', async () => {
+ const shared = {...counter,counter_id:'counter2',name:'同区另一计数器',bindings:[{...counter.bindings[0],binding_id:'b3'}]}
+ vi.mocked(flowService.list).mockResolvedValue({items:[counter,shared]} as never)
+ vi.mocked(flowService.query).mockResolvedValue({from,to,items:[result,{...result,counter:shared,zones:[{...shared.bindings[0],in:{...series,occurrences:7},out:series}]}]} as never)
+ render(<MemoryRouter><AnalyticsPage/></MemoryRouter>)
+ await screen.findByText('104 人次')
+ fireEvent.click(screen.getByText(/^计数器 1\//))
+ fireEvent.click(screen.getByLabelText('同区另一计数器'))
+ expect(await screen.findByText('111 人次')).toBeInTheDocument()
+ expect(within(screen.getByRole('table',{name:'热区排名'})).getAllByRole('cell').map(c=>c.textContent)).toEqual(expect.arrayContaining(['4','100']))
+ fireEvent.change(screen.getByLabelText('地图计数器'),{target:{value:'counter2'}})
+ expect(within(screen.getByRole('table',{name:'热区排名'})).getAllByRole('cell').map(c=>c.textContent)).toEqual(expect.arrayContaining(['7']))
+ expect(within(screen.getByRole('table',{name:'热区排名'})).queryByRole('cell',{name:'100'})).not.toBeInTheDocument()
 })
-it('switching the period updates the overview and asks the counters again for the new range', async () => {
-  renderPage()
-  const peak = await screen.findByLabelText('高峰时段')
-  expect(peak.textContent).toMatch(/时/)
-  const before = vi.mocked(flowService.query).mock.calls.length
-  fireEvent.click(screen.getByRole('button', { name: '近 7 天' }))
-  expect(screen.getByRole('button', { name: '近 7 天' })).toHaveAttribute('aria-pressed', 'true')
-  await waitFor(() => expect(screen.getByLabelText('高峰时段').textContent).toMatch(/周[一二三四五六日]/))
-  await waitFor(() => expect(vi.mocked(flowService.query).mock.calls.length).toBeGreaterThan(before))
+it('lists historical bindings without selecting them by default and restores explicit historical URL selections', async () => {
+ const historical={...counter.bindings[0],binding_id:'old-binding',zone_id:'old-zone',zone_name:'旧入口',active:false}
+ const definition={...counter,bindings:[...counter.bindings,historical]}
+ vi.mocked(flowService.list).mockResolvedValue({items:[definition]} as never)
+ vi.mocked(flowService.query).mockResolvedValue({from,to,items:[{...result,counter:definition,zones:[...result.zones,{...historical,in:{...series,occurrences:9},out:series}]}]} as never)
+ const initial=render(<MemoryRouter><AnalyticsPage/></MemoryRouter>)
+ await screen.findByText('104 人次')
+ expect(flowService.list).toHaveBeenCalledWith({includeInactiveBindings:true})
+ fireEvent.click(screen.getByText('统计位置 2'))
+ expect(screen.getByLabelText(/旧入口（已解绑\/历史）/)).not.toBeChecked()
+ initial.unmount()
+ const query=new URLSearchParams({counters:JSON.stringify(['counter']),bindings:JSON.stringify(['old-binding']),compare:'0'})
+ render(<MemoryRouter initialEntries={['/analytics?'+query]}><AnalyticsPage/></MemoryRouter>)
+ expect(await screen.findByText('9 人次')).toBeInTheDocument()
+ fireEvent.click(screen.getByText('统计位置 1'))
+ expect(screen.getByLabelText(/旧入口（已解绑\/历史）/)).toBeChecked()
+ expect(within(screen.getByRole('table',{name:'热区排名'})).getAllByRole('cell').map(c=>c.textContent)).toContain('9')
 })
-it('ranks the real zones by their counted passages with the counters that use them, and highlights a tapped row', async () => {
-  renderPage()
-  const table = await screen.findByRole('table', { name: '热区排名' })
-  const rows = within(table).getAllByRole('row').slice(1)
-  expect(rows.map(r => r.querySelectorAll('td')[1]!.textContent)).toEqual(['一厅A口', '二厅B口'])
-  const cells = (r: HTMLElement) => [...r.querySelectorAll('td')].map(c => c.textContent)
-  expect(cells(rows[0]!)).toEqual(['1', '一厅A口', '一厅人数', '30', '10', '80%'])
-  expect(cells(rows[1]!)).toEqual(['2', '二厅B口', '二厅人数', '5', '5', '20%'])
-  fireEvent.click(rows[1]!)
-  expect(rows[1]).toHaveAttribute('aria-current', 'true')
-  expect(rows[0]).not.toHaveAttribute('aria-current')
+
+it('keeps four compact metrics and the comparison gate while putting full statistical explanations behind a disclosure', async () => {
+ render(<MemoryRouter><AnalyticsPage /></MemoryRouter>)
+ await screen.findByText('104 人次')
+ const overview=screen.getByRole('region',{name:'概览'})
+ expect(within(overview).getAllByRole('group')).toHaveLength(4)
+ const entering=within(overview).getByRole('group',{name:'已记录进入'})
+ expect(entering).toHaveTextContent('104 人次')
+ expect(within(entering).getByLabelText(/覆盖不完整或未知，不计算变化率/)).toHaveTextContent('对比不足')
+ expect(screen.getByRole('status',{name:'数据状态'})).toHaveTextContent('覆盖不足或未知，已记录量可能偏低')
+ const explanation=screen.getByLabelText('统计说明')
+ expect(explanation).not.toHaveAttribute('open')
+ fireEvent.click(explanation.querySelector('summary')!)
+ expect(explanation).toHaveAttribute('open')
+ const content=screen.getByRole('region',{name:'统计说明详情'})
+ expect(content).toHaveTextContent('已记录量不代表缺口内为零')
+ expect(content).toHaveTextContent('覆盖不是识别准确率')
+ expect(content).toHaveTextContent('仅在两期位置匹配、覆盖完整时计算变化率')
+ expect(content).toHaveTextContent('另有 2 条未关联位置（未计入总数）')
 })
-it('still shows the zones and says so when the counts could not be read', async () => {
-  vi.mocked(flowService.query).mockRejectedValue(new Error('boom'))
-  renderPage()
-  const table = await screen.findByRole('table', { name: '热区排名' })
-  expect(await screen.findByText(/计数没有读到/)).toBeInTheDocument()
-  expect([...within(table).getAllByRole('row')[1]!.querySelectorAll('td')].slice(3).map(c => c.textContent)).toEqual(['—', '—', '—'])
-})
-it('explains how to get zones when none are drawn yet', async () => {
-  vi.mocked(alarmArmingService.read).mockResolvedValue({ arming: null } as never)
-  vi.mocked(flowService.list).mockResolvedValue({ items: [] } as never)
-  renderPage()
-  expect(await screen.findByText(/还没有热区/)).toBeInTheDocument()
-})
-it('opens the plan editor from the panel and picks up a saved plan afterwards', async () => {
-  renderPage()
-  fireEvent.click(await screen.findByRole('button', { name: '编辑平面图' }))
-  const dialog = screen.getByRole('dialog', { name: '平面图编辑' })
-  fireEvent.click(within(dialog).getByRole('button', { name: '保存草稿' }))
-  fireEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
-  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-  expect(screen.getByRole('region', { name: '热区分布' })).toHaveTextContent('平面图：平面图 1')
-})
-it('reads a week-hour cell from a fixed line on tap and says the grid is always the last four weeks', async () => {
-  renderPage()
-  await screen.findByRole('group', { name: '星期与小时分布' })
-  expect(screen.getByRole('region', { name: '星期与小时规律' })).toHaveTextContent('近 4 周')
-  const readout = screen.getByLabelText('分布读数')
-  expect(readout).toHaveTextContent('点格子查看')
-  fireEvent.click(screen.getByRole('button', { name: /^周三 8 时/ }))
-  expect(readout.textContent).toMatch(/周三 8 时.*人次/)
-})
-it('selects channels from a dropdown that says how many are chosen, and the ranking view needs two or more', async () => {
-  renderPage()
-  fireEvent.click(await screen.findByRole('button', { name: '排名' }))
-  expect(await screen.findByRole('list', { name: '通道排名' })).toBeInTheDocument()
-  const opener = screen.getByRole('button', { name: /^通道/ })
-  expect(opener).toHaveTextContent('3')
-  fireEvent.click(opener)
-  const group = screen.getByRole('group', { name: '统计通道' })
-  const boxes = within(group).getAllByRole('checkbox')
-  expect(boxes).toHaveLength(3); boxes.forEach(b => expect(b).toBeChecked())
-  fireEvent.click(boxes[0]!); fireEvent.click(boxes[1]!)
-  await waitFor(() => expect(screen.queryByRole('button', { name: '排名' })).not.toBeInTheDocument())
-  fireEvent.pointerDown(document.body)
-  expect(screen.queryByRole('group', { name: '统计通道' })).not.toBeInTheDocument()
-})
-it('keeps appearance statistics as an honest placeholder without any chart', async () => {
-  renderPage()
-  const panel = await screen.findByRole('region', { name: '外观属性统计' })
-  expect(panel).toHaveTextContent('待验证')
-  expect(panel.querySelector('svg')).toBeNull()
-  expect(panel.textContent).not.toMatch(/\d+%/)
-})
-it('draws the counts as heat over the plan instead of numbers on the zone boxes, and follows the chosen direction', async () => {
-  renderPage()
-  const canvas = await screen.findByTestId('plan-canvas')
-  await waitFor(() => expect(canvas.getAttribute('data-heat')).not.toBe('none'))
-  const total = canvas.getAttribute('data-heat')
-  const group = screen.getByRole('group', { name: '统计方向' })
-  expect(within(group).getByRole('button', { name: '合计' })).toHaveAttribute('aria-pressed', 'true')
-  fireEvent.click(within(group).getByRole('button', { name: '出' }))
-  expect(within(group).getByRole('button', { name: '出' })).toHaveAttribute('aria-pressed', 'true')
-  expect(screen.getByTestId('plan-canvas').getAttribute('data-heat')).not.toBe(total)
-  fireEvent.click(within(group).getByRole('button', { name: '合计' }))
-  expect(screen.getByTestId('plan-canvas').getAttribute('data-heat')).toBe(total)
-  expect(screen.getByRole('slider', { name: '隐藏冷区' })).toBeInTheDocument()
-})
-it('reads out the tapped zone on one fixed line instead of putting numbers on the boxes', async () => {
-  renderPage()
-  const table = await screen.findByRole('table', { name: '热区排名' })
-  const readout = screen.getByLabelText('热区读数')
-  expect(readout).toHaveTextContent('点热区查看')
-  fireEvent.click(within(table).getAllByRole('row')[1]!)
-  expect(readout).toHaveTextContent('一厅A口：进 30，出 10')
-})
-it('shows no heat at all when the counts query fails', async () => {
-  vi.mocked(flowService.query).mockRejectedValue(new Error('boom'))
-  renderPage()
-  const canvas = await screen.findByTestId('plan-canvas')
-  expect(canvas).toHaveAttribute('data-heat', 'none')
+it('retains model category metadata and query scope when switching between the overview and two-pane region view', async () => {
+ const definition={...counter,labels:[{label_id:'class:0',name:'person'}]}
+ vi.mocked(flowService.list).mockResolvedValue({items:[definition]} as never)
+ vi.mocked(flowService.query).mockResolvedValue({from,to,items:[{...result,counter:definition}]} as never)
+ render(<MemoryRouter><AnalyticsPage /></MemoryRouter>)
+ await screen.findByText('104 人次')
+ await waitFor(()=>expect(flowService.query).toHaveBeenCalledTimes(3))
+ const regionTab=screen.getByRole('tab',{name:'热区'})
+ await act(async()=>{fireEvent.click(regionTab)})
+ expect(regionTab).toHaveAttribute('aria-selected','true')
+ const regionView=screen.getByRole('tabpanel',{name:'热区'})
+ expect(regionView).toContainElement(screen.getByTestId('analytics-map-values'))
+ expect(within(regionView).getByRole('region',{name:'停留观测'})).toHaveTextContent('筛选类别：人员')
+ expect(screen.getByRole('combobox',{name:'停留位置'})).toHaveValue('')
+ expect(flowService.query).toHaveBeenCalledTimes(3)
+ await act(async()=>{fireEvent.click(screen.getByRole('tab',{name:'总览'}))})
+ expect(screen.getByRole('tabpanel',{name:'总览'})).toContainElement(screen.getByRole('region',{name:'客流趋势'}))
+ expect(screen.getByText('统计位置 2')).toBeInTheDocument()
+ expect(flowService.query).toHaveBeenCalledTimes(3)
 })

@@ -1,116 +1,140 @@
-import { periodSlots } from '@/pages/Flow/FlowChart'
-
-/**
- * 统计分析页的数据来源契约。页面只认这里的形状，不关心数字从哪来：
- * `provenance` 决定页面顶部的说明、导出文件的第一行和文件名，接入真实数据后提示会自动消失。
- * 目前只有示例来源（sampleSource）；真实来源要按各面板的“数据来源”标签分别接入。
- */
-export type Provenance = 'sample' | 'live'
+import { flowService, type CounterResult, type Coverage, type ZoneSeries } from '@/api/flowService'
 export type Bucket = 'hour' | 'day'
-
-export interface AnalyticsScope {
-  channelIds: string[]
-  from: Date
-  to: Date
-  bucket: Bucket
-  previous: { from: Date; to: Date }
-  /** 对比期的名称，例如“昨天同时段”，直接写进页面文字。 */
-  compareLabel: string
-}
 export interface Slot { from: string; to: string }
-export interface ChannelSeries { channelId: string; in: number[]; out: number[]; coverage: number }
-export interface AnalyticsData {
-  provenance: Provenance
-  bucket: Bucket
-  compareLabel: string
-  slots: Slot[]
-  channels: ChannelSeries[]
-  /** null 表示上期没有统计覆盖：不是 0，页面不显示对比。 */
-  previous: { in: number; out: number } | null
-  /** 7 行（周一到周日）× 24 小时的进入人次。 */
-  weekHour: number[][]
-  alarms: number
-}
-export interface AnalyticsSource {
-  /** 自动刷新间隔（毫秒）；示例数据不会变化，所以为 null。 */
-  refreshMs: number | null
-  load(scope: AnalyticsScope): Promise<AnalyticsData>
-}
-
 export const weekdayNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
-const weekdayOf = (d: Date) => (d.getDay() + 6) % 7
-
-// ---------- 汇总（真实来源同样使用） ----------
-export function totalsOf(data: AnalyticsData) {
-  const sum = (pick: (c: ChannelSeries) => number[]) => data.channels.reduce((n, c) => n + pick(c).reduce((a, b) => a + b, 0), 0)
-  return { in: sum(c => c.in), out: sum(c => c.out) }
+export type Location = { counterId: string; bindingId: string }
+export type Value = number | null
+const vehicleLabels = new Set(['car','truck','bus','motorcycle','bicycle'])
+export function counterUnit(counter: { labels: { label_id: string; name?: string }[] }): string {
+  const labels = counter.labels.map(l => (l.name || l.label_id).trim().toLowerCase())
+  return labels.length === 1 && ['person','people','pedestrian','人','人员','行人'].includes(labels[0]!) ? '人次' : labels.length && labels.every(id => vehicleLabels.has(id)) ? '车次' : '次'
 }
-export function slotTotals(data: AnalyticsData): number[] {
-  return data.slots.map((_, i) => data.channels.reduce((n, c) => n + (c.in[i] ?? 0), 0))
+export interface Row { result: CounterResult; zone: CounterResult['zones'][number] }
+export function selectedRows(items: CounterResult[], selected: Location[]): Row[] {
+  return items.flatMap(result => result.zones.filter(z => selected.some(x => x.counterId === result.counter.counter_id && x.bindingId === z.binding_id)).map(zone => ({ result, zone })))
 }
-export function slotLabel(slot: Slot, bucket: Bucket) {
-  const d = new Date(slot.from)
-  return bucket === 'hour' ? `${d.getHours()}–${d.getHours() + 1} 时` : `${d.getMonth() + 1}/${d.getDate()}（${weekdayNames[weekdayOf(d)]}）`
+export function measured(c: Coverage | undefined): number | null {
+  return c && typeof c.ratio === 'number' && Number.isFinite(c.ratio) && c.ratio >= 0 && c.ratio <= 1 ? c.ratio : null
 }
-export function peakOf(data: AnalyticsData) {
-  const values = slotTotals(data), value = Math.max(0, ...values), index = Math.max(0, values.indexOf(value))
-  const total = values.reduce((a, b) => a + b, 0)
-  return { index, value, label: data.slots[index] ? slotLabel(data.slots[index]!, data.bucket) : '—', share: total ? Math.round(value / total * 100) : 0 }
-}
-/** 百分比变化；上期缺失或为 0 时没有可比性，返回 null。 */
-export function deltaOf(current: number, previous: number | null): number | null {
-  return previous === null || previous <= 0 ? null : (current - previous) / previous * 100
-}
-export function insightsOf(data: AnalyticsData): string[] {
-  const out: string[] = [], totals = totalsOf(data), peak = peakOf(data)
-  if (totals.in > 0) out.push(`客流高峰在 ${peak.label}，进入 ${peak.value.toLocaleString('zh-CN')} 人次，占本期 ${peak.share}%。`)
-  const delta = deltaOf(totals.in, data.previous?.in ?? null)
-  if (delta !== null) out.push(Math.abs(delta) < 1 ? `进入人次与${data.compareLabel}基本持平。` : `进入人次较${data.compareLabel}${delta > 0 ? '增加' : '减少'} ${Math.abs(delta).toFixed(0)}%。`)
-  const low = data.channels.filter(c => c.coverage < 95).length
-  if (low) out.push(`有 ${low} 个通道的统计覆盖不足 95%，数字可能偏低。`)
+type IntervalIndex = { starts: number[]; ends: number[]; prefix: number[] }
+const coverageIndexes = new WeakMap<Coverage, { expected: IntervalIndex; observed: IntervalIndex }>()
+function merged(intervals: Slot[]): number[][] {
+  const parts = intervals.map(i => [Date.parse(i.from),Date.parse(i.to)])
+    .filter(([a,b]) => Number.isFinite(a) && Number.isFinite(b) && b! > a!).sort((a,b) => a[0]!-b[0]!)
+  const out: number[][] = []
+  for (const [a,b] of parts) {
+    const last = out.at(-1)
+    if (last && a! <= last[1]!) last[1] = Math.max(last[1]!,b!)
+    else out.push([a!,b!])
+  }
   return out
 }
-
-// ---------- 导出 ----------
-export function toCsv(data: AnalyticsData, names: Record<string, string>): string {
-  const lines: string[] = []
-  if (data.provenance === 'sample') lines.push('# 示例数据，不代表真实统计')
-  lines.push('时段起,通道,进入,离开')
-  data.channels.forEach(c => data.slots.forEach((s, i) => lines.push(`${s.from},${(names[c.channelId] ?? c.channelId).replaceAll(',', ' ')},${c.in[i] ?? 0},${c.out[i] ?? 0}`)))
-  return '﻿' + lines.join('\r\n')
+function intervalIndex(parts: number[][]): IntervalIndex {
+  const index: IntervalIndex = { starts: [], ends: [], prefix: [0] }
+  for (const [a,b] of parts) {
+    index.starts.push(a!); index.ends.push(b!); index.prefix.push(index.prefix.at(-1)!+b!-a!)
+  }
+  return index
 }
-
-// ---------- 示例来源 ----------
-function hash(text: string) { let h = 2166136261; for (const ch of text) { h ^= ch.codePointAt(0)!; h = Math.imul(h, 16777619) } return h >>> 0 }
-function rng(seed: number) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296 } }
-const bump = (h: number, mid: number, width: number) => Math.exp(-((h - mid) ** 2) / (2 * width * width))
-const hourProfile = (h: number) => .12 + bump(h, 8.5, 1.2) + .8 * bump(h, 12.5, 1.4) + 1.1 * bump(h, 18, 1.5)
-const dayFactor = (weekday: number) => weekday >= 5 ? .7 : 1
-const HISTORY_DAYS = 45
-
-export const sampleSource: AnalyticsSource = {
-  refreshMs: null,
-  async load(scope) {
-    const slots = periodSlots(scope.from, scope.to, scope.bucket)
-    const seed = hash(`${scope.channelIds.join(',')}|${scope.from.getTime()}|${scope.bucket}`)
-    const channels: ChannelSeries[] = scope.channelIds.map(channelId => {
-      const next = rng(seed ^ hash(channelId)), scale = 40 + hash(channelId) % 60
-      const inn: number[] = [], out: number[] = []
-      for (const s of slots) {
-        const start = new Date(s.from), factor = dayFactor(weekdayOf(start))
-        const base = scope.bucket === 'hour' ? hourProfile(start.getHours()) : Array.from({ length: 24 }, (_, h) => hourProfile(h)).reduce((a, b) => a + b, 0)
-        const value = Math.round(scale * base * factor * (.85 + .3 * next()))
-        inn.push(value); out.push(Math.round(value * (.9 + .1 * next())))
-      }
-      return { channelId, in: inn, out, coverage: Math.round((82 + hash(channelId + 'cov') % 180 / 10) * 10) / 10 }
-    })
-    const total = channels.reduce((n, c) => n + c.in.reduce((a, b) => a + b, 0), 0)
-    const covered = scope.previous.from.getTime() >= Date.now() - HISTORY_DAYS * 86400000
-    const previous = covered ? { in: Math.round(total * (.8 + .4 * rng(hash(`prev|${seed}`))())), out: 0 } : null
-    if (previous) previous.out = Math.round(previous.in * .96)
-    const week = rng(hash(`week|${scope.channelIds.join(',')}`))
-    const weekHour = Array.from({ length: 7 }, (_, d) => Array.from({ length: 24 }, (_, h) =>
-      Math.round(scope.channelIds.reduce((n, id) => n + (40 + hash(id) % 60), 0) * hourProfile(h) * dayFactor(d) * 4 * (.85 + .3 * week()))))
-    return { provenance: 'sample', bucket: scope.bucket, compareLabel: scope.compareLabel, slots, channels, previous, weekHour, alarms: Math.round(total * .03) }
-  },
+function elapsed(index: IntervalIndex, from: number, to: number): number {
+  if (to <= from || !Number.isFinite(from) || !Number.isFinite(to)) return 0
+  const until = (at: number) => {
+    let lo = 0, hi = index.starts.length
+    while (lo < hi) { const mid = (lo+hi) >>> 1; if (index.starts[mid]! < at) lo = mid+1; else hi = mid }
+    const i = lo-1
+    return i < 0 ? 0 : index.prefix[i]! + Math.min(index.ends[i]!-index.starts[i]!,at-index.starts[i]!)
+  }
+  return until(to)-until(from)
+}
+/** API coverage objects are immutable: merge/intersect once, then read every bucket in logarithmic time. */
+function indexedCoverage(c: Coverage | undefined) {
+  if (!c?.intervals || !c.expected_intervals) return null
+  const cached = coverageIndexes.get(c)
+  if (cached) return cached
+  const expected = merged(c.expected_intervals), observed = merged(c.intervals), intersection: number[][] = []
+  let i = 0, j = 0
+  while (i < expected.length && j < observed.length) {
+    const a = Math.max(expected[i]![0]!,observed[j]![0]!), b = Math.min(expected[i]![1]!,observed[j]![1]!)
+    if (b > a) intersection.push([a,b])
+    if (expected[i]![1]! <= observed[j]![1]!) i++; else j++
+  }
+  const result = { expected: intervalIndex(expected), observed: intervalIndex(intersection) }
+  coverageIndexes.set(c,result)
+  return result
+}
+export function bucketCoverage(c: Coverage | undefined, slot: Slot, query: Slot): {ratio:number|null; state:string} {
+  const index = indexedCoverage(c)
+  if (!index) return {ratio:null,state:'unknown'}
+  const from = Math.max(Date.parse(slot.from), Date.parse(query.from)), to = Math.min(Date.parse(slot.to), Date.parse(query.to))
+  const expected = elapsed(index.expected, from, to)
+  if (expected <= 0) return {ratio:null,state:'not_applicable'}
+  const ratio = Math.min(1,elapsed(index.observed, from, to) / expected)
+  return {ratio,state:ratio === 1 ? 'complete' : ratio === 0 ? 'no_data' : 'partial'}
+}
+export function bucketComplete(c: Coverage | undefined, slot: Slot, query: Slot): boolean {
+  const start=Math.max(Date.parse(slot.from),Date.parse(query.from)), end=Math.min(Date.parse(slot.to),Date.parse(query.to))
+  const index = indexedCoverage(c)
+  return !!index && end>start && elapsed(index.expected,start,end) === end-start && elapsed(index.observed,start,end) === end-start
+}
+export function valueOf(series: ZoneSeries | undefined): Value {
+  if (!series) return null
+  return series.occurrences > 0 || measured(series.coverage) === 1 ? series.occurrences : null
+}
+export function bucketValue(series: ZoneSeries | undefined, slot: Slot, query: Slot): Value {
+  if (!series) return null
+  const count = series.buckets.filter(b => Date.parse(b.from) < Date.parse(slot.to) && Date.parse(b.to) > Date.parse(slot.from)).reduce((n,b) => n+b.occurrences,0)
+  return count > 0 || bucketComplete(series.coverage, slot, query) ? count : null
+}
+export function sumKnown(values: Value[]): Value {
+  const present = values.filter((n): n is number => n !== null)
+  if (!present.length) return null
+  const sum = present.reduce((a,b) => a+b,0)
+  return sum === 0 && present.length !== values.length ? null : sum
+}
+export function complete(rows: Row[], direction: 'in'|'out', query: Slot): boolean {
+  const applicable = rows.filter(r => direction === 'in' || r.result.counter.outputs === 'both')
+  return applicable.length > 0 && applicable.every(r => bucketComplete(r.zone[direction]?.coverage,query,query))
+}
+export function totalsOf(rows: Row[], direction: 'in'|'out'): Value {
+  return sumKnown(rows.map(r => valueOf(r.zone[direction])))
+}
+export function weekWindow(now: Date): {from: Date; to: Date} {
+  const to = new Date(now); to.setHours(0,0,0,0); to.setDate(to.getDate() - (to.getDay()+6)%7)
+  const from = new Date(to); from.setDate(from.getDate()-28)
+  return {from,to}
+}
+export interface WeekCell { value: number | null; samples: number }
+export function weekPattern(rows: Row[], from: Date, to: Date): WeekCell[][] {
+  const cells: {sum:number; samples:number}[][] = Array.from({length:7},()=>Array.from({length:24},()=>({sum:0,samples:0})))
+  const query = {from:from.toISOString(),to:to.toISOString()}
+  const groups = new Map<string, Slot[]>()
+  const slots:Slot[] = []
+  for (let t=from.getTime();t<to.getTime();t+=3600000) slots.push({from:new Date(t).toISOString(),to:new Date(Math.min(t+3600000,to.getTime())).toISOString()})
+  for (const slot of slots) {
+    const d = new Date(slot.from), key = [d.getFullYear(),d.getMonth(),d.getDate(),d.getHours()].join('-')
+    groups.set(key,[...(groups.get(key) ?? []),slot])
+  }
+  for (const slots of groups.values()) {
+    if (!rows.length || !slots.every(s => rows.every(r => bucketComplete(r.zone.in?.coverage,s,query)))) continue
+    const d = new Date(slots[0]!.from), cell = cells[(d.getDay()+6)%7]![d.getHours()]!
+    cell.sum += slots.reduce((n,s) => n + rows.reduce((a,r)=>a+(bucketValue(r.zone.in,s,query) ?? 0),0),0); cell.samples++
+  }
+  return cells.map(row => row.map(c => ({value:c.samples ? c.sum/c.samples : null,samples:c.samples})))
+}
+export async function queryFlow(from: Date, to: Date, bucket: Bucket, counterIds: string[]) {
+  return flowService.query({from:from.toISOString(),to:to.toISOString(),bucket,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',counter_ids:counterIds})
+}
+export function csvCell(value: string | number | null | undefined): string {
+  let s = value == null ? '' : String(value)
+  if (typeof value === 'string' && /^[\s]*[=+\-@\t\r]/.test(s)) s = "'" + s
+  return '"' + s.replaceAll('"','""') + '"'
+}
+export function toCsv(rows: Row[], slots: Slot[], query: Slot, timezone: string, asOf: string): string {
+  const output = [['时间起','时间止','时区','计数器','热区','方向','单位','已记录次数','覆盖状态','覆盖比例','查询截止','口径']]
+  for (const r of rows) for (const direction of (r.result.counter.outputs === 'both' ? ['in','out'] : ['in']) as ('in'|'out')[]) for (const s of slots) {
+    const series = r.zone[direction], coverage = bucketCoverage(series?.coverage,s,query)
+    output.push([new Date(Math.max(Date.parse(s.from),Date.parse(query.from))).toISOString(),new Date(Math.min(Date.parse(s.to),Date.parse(query.to))).toISOString(),timezone,r.result.counter.name,r.zone.zone_name ?? r.zone.zone_id,r.result.counter.names[direction],counterUnit(r.result.counter),
+      String(bucketValue(series,s,query) ?? ''),({complete:'完整',partial:'部分覆盖',no_data:'无覆盖',unknown:'未知',not_applicable:'不适用'}[coverage.state]??'未知'),coverage.ratio === null ? '' : String(coverage.ratio),asOf,'按绑定及方向统计；可能重复计数'])
+  }
+  return '\ufeff' + output.map(line=>line.map(csvCell).join(',')).join('\r\n')
 }

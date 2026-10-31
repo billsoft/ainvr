@@ -31,6 +31,9 @@ import {OnvifStore} from './store/onvifStore.js';
 import {OnvifManager} from './services/onvifManager.js';
 import {alarmTriggerRoutes} from './routes/alarmTriggerRoutes.js';
 import {flowRoutes} from './routes/flowRoutes.js';
+import {floorPlanRoutes} from './routes/floorPlanRoutes.js';
+import {FloorPlans} from './store/floorPlans.js';
+import {FloorPlanImages, selectedFloorPlanDirectory} from './services/floorPlanImages.js';
 import {gb28181Routes} from './routes/gb28181.js';
 import {GB28181Store} from './store/gb28181Store.js';
 import {GB28181Sync} from './services/gb28181Sync.js';
@@ -622,6 +625,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       }),
     });
     await instance.register(searchRoutes, { principal: alarmPrincipal, channels: searchChannels, worker: searchWorker });
+    const floorPlanImages = new FloorPlanImages(async generation => {
+      const helper = osHelperConfigFromEnv();
+      if (!helper) return null;
+      return selectedFloorPlanDirectory(await storageRequest(helper, '/storage/volumes'), generation);
+    });
+    await instance.register(floorPlanRoutes,{store:pgStore ? new FloorPlans(pgStore.pool,floorPlanImages) : null,principal:alarmPrincipal});
     await instance.register(flowRoutes,{
       store:armingStore,
       principal:alarmPrincipal,connection:alarmConnection,synchronization:ruleSync,

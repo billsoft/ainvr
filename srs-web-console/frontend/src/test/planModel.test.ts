@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  MAX_PLANS, PLAN_H, PLAN_W, activePlan, addPlan, addShape, clampPlacement, emptyDraft, groupByCounter, isPlaced, movePlacement, parseDraft,
+  MAX_PLANS, PLAN_H, PLAN_W, mapValuesForCounter, unresolvedPlacementKeys, activePlan, addPlan, addShape, clampPlacement, emptyDraft, groupByCounter, isPlaced, movePlacement, parseDraft,
   heatCells, placeAll, placeZone, plansOfZone, removePlan, removeShape, renamePlan, resizePlacement, setActive, setImage, setPlacement, unplaceZone,
   updateActive, updateShape, type Plan, type PlanDraft, type ZoneInfo,
 } from '@/pages/Analytics/plan/planModel'
@@ -138,4 +138,23 @@ describe('heat rendered from the counts over the plan', () => {
     expect(hottest(heatCells(one, { a: 50 })).x).toBeLessThan(400)
     expect(hottest(heatCells(two, { a: 50 })).x).toBeGreaterThan(1100)
   })
+})
+
+it('keeps per-counter map values separate and refuses to hide multiple bindings in a zone sum', () => {
+  const rows = [
+    { counterId: 'c1', bindingId: 'b1', zoneKey: 'shared', in: 0, out: null },
+    { counterId: 'c2', bindingId: 'b2', zoneKey: 'shared', in: 70, out: 12 },
+  ]
+  expect(mapValuesForCounter(rows, 'c1', 'in')).toEqual({ shared: 0 })
+  expect(mapValuesForCounter(rows, 'c1', 'out')).toEqual({})
+  expect(mapValuesForCounter(rows, 'c2', 'in')).toEqual({ shared: 70 })
+  expect(mapValuesForCounter([...rows, { ...rows[0]!, bindingId: 'another', in: 4 }], 'c1', 'in')).toEqual({})
+})
+it('reports unresolved placements without removing or changing any stored geometry', () => {
+  const plan = first(addPlan(emptyDraft(), '存量', [zone('known'), zone('missing')]))
+  const snapshot = structuredClone(plan)
+  expect(unresolvedPlacementKeys(plan, [zone('known')])).toEqual(['missing'])
+  expect(plan).toEqual(snapshot)
+  expect(unplaceZone(plan, 'missing').placements).toEqual({ known: snapshot.placements.known })
+  expect(plan.placements.missing).toEqual(snapshot.placements.missing)
 })
