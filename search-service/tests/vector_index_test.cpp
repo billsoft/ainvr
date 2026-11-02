@@ -83,5 +83,14 @@ int main() {
   separate.id="scene";separate.scene=true;evidence_index.Upsert(separate);
   grouped=evidence_index.Query({1,0},{{"allowed"},0,4000,20});Check(grouped.size()==3);
   for(const auto& hit:grouped)if(hit.id=="scene")Check(hit.evidence_refs.size()==1&&hit.evidence_refs[0].id=="scene");
+  {
+    // Projection budget: 128M floats. 2048-d vectors (Qwen3-VL-Embedding) fit 62,500 samples; the 768-d and 1152-d spaces keep 100,000.
+    auto rejects=[](size_t dimensions,size_t capacity){try{VectorIndex index("m",dimensions,capacity);}catch(const std::invalid_argument&){return true;}return false;};
+    Check(!rejects(2048,62500)&&rejects(2048,62501)&&!rejects(768,100000)&&!rejects(1152,100000)&&rejects(4096,31251)&&!rejects(4096,31250));
+    std::vector<float> vector(2048,0.0f);vector[2047]=2.0f;
+    auto unit=NormalizeVector(vector,2048);Check(unit.size()==2048&&std::abs(unit[2047]-1.0f)<1e-6f);
+    bool wrong_dimension=false;try{NormalizeVector(std::vector<float>(768,1.0f),2048);}catch(const std::invalid_argument&){wrong_dimension=true;}
+    Check(wrong_dimension);
+  }
   std::cout << "vector index: identity, scope, grouping, limits and validation passed\n";
 }

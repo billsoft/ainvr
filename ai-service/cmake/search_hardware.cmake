@@ -16,10 +16,17 @@ add_library(ainvr_search_hardware_owner
  "${AINVR_SEARCH_HW_ROOT}/ai-service/src/output/search_prepared_sample.cpp")
 target_include_directories(ainvr_search_hardware_owner PUBLIC "${AINVR_SEARCH_HW_ROOT}/ai-service/src")
 target_link_libraries(ainvr_search_hardware_owner PUBLIC ainvr_config ainvr_ai_core ainvr_search_sample_contract PkgConfig::MONGOC Threads::Threads)
+# BuildSearchPreparedSample validates the vector dimensions against the package catalogue.
+if(TARGET ainvr_search_model_package)
+ target_link_libraries(ainvr_search_hardware_owner PUBLIC ainvr_search_model_package)
+endif()
 target_compile_options(ainvr_search_hardware_owner PRIVATE -Wall -Wextra -Werror)
 if(TARGET ainvr_snapshot AND TARGET ainvr_search_bpu_vision_encoder)
- add_library(ainvr_search_hardware_native "${AINVR_SEARCH_HW_ROOT}/ai-service/src/output/search_hardware_native.cpp")
- target_link_libraries(ainvr_search_hardware_native PUBLIC ainvr_search_hardware_owner ainvr_snapshot ainvr_search_bpu_vision_encoder ainvr_vpu)
+ include("${CMAKE_CURRENT_LIST_DIR}/search_embedding.cmake")
+ add_library(ainvr_search_hardware_native "${AINVR_SEARCH_HW_ROOT}/ai-service/src/output/search_hardware_native.cpp"
+   "${AINVR_SEARCH_HW_ROOT}/ai-service/src/output/search_hardware_qwen.cpp")
+ target_link_libraries(ainvr_search_hardware_native PUBLIC ainvr_search_hardware_owner ainvr_snapshot ainvr_search_bpu_vision_encoder ainvr_vpu
+   ainvr_qwen3vl_embedding ainvr_embed_ipc ainvr_search_qwen_runtime)
  target_include_directories(ainvr_search_hardware_native SYSTEM PRIVATE /usr/include/hobot)
  target_compile_options(ainvr_search_hardware_native PRIVATE -idirafter /usr/hobot/include -Wall -Wextra -Werror)
 endif()

@@ -56,11 +56,11 @@ export type SearchSettings = z.infer<typeof searchSettingsSchema>;
 export const DEFAULT_SEARCH_SETTINGS: SearchSettings = {
   schema_version: '1.0', enabled: false, listen: { host: '127.0.0.1', port: 8400 }, callers: [],
   history: { source: 'ai-history' }, index_storage: { volume_id: null, relative_path: 'ainvr/search-index' },
-  model: { package_id: 'siglip2-base-full-int8' }, sampling: { mode: 'all', channel_ids: [], object: true, scene: true,
+  model: { package_id: 'qwen3vl-embedding-2b-o2' }, sampling: { mode: 'all', channel_ids: [], object: true, scene: true,
     object_interval_ms: 1000, scene_active_interval_ms: 10000, scene_static_interval_ms: 60000,
     scene_change_min_interval_ms: 3000, track_slots: 8 },
   limits: { query_concurrency: 2, http_workers: 4, http_queue: 4, producer_queue: 1, producer_bytes: 134217728,
-    max_samples: 100000, max_bytes: 1073741824, retention_days: 30, max_coverage: 100000,
+    max_samples: 60000, max_bytes: 1073741824, retention_days: 30, max_coverage: 100000,
     max_searches: 1000, search_ttl_s: 3600, image_max_bytes: 8388608 },
 };
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {freshModelTransition,freshModelSettings,validateFreshModelManifest,validateCollections,NEW_PACKAGE,OLD_PACKAGE,acquireDeploymentLock,recoverFreshModelServices,waitForCondition,freshModelReady} from '../../deploy-package/search_fresh_model_policy.mjs';
+import {QWEN_PACKAGE,QWEN_MAX_SAMPLES,freshModelTransition,freshModelSettings,validateFreshModelManifest,validateCollections,NEW_PACKAGE,OLD_PACKAGE,acquireDeploymentLock,recoverFreshModelServices,waitForCondition,freshModelReady} from '../../deploy-package/search_fresh_model_policy.mjs';
 const forward=freshModelTransition(OLD_PACKAGE,NEW_PACKAGE),reverse=freshModelTransition(NEW_PACKAGE,OLD_PACKAGE);
 const model='search-v1-'+'a'.repeat(64),pin={package_id:'siglip2-base-full-int8',model_version:model};
 const settings={model:{package_id:pin.package_id},sampling:{object_interval_ms:1000,scene_active_interval_ms:10000,scene_static_interval_ms:60000,scene_change_min_interval_ms:3000,channel_ids:['preserved']},limits:{producer_queue:4,max_bytes:123},callers:['preserved']};
@@ -94,4 +94,21 @@ test('reverse readiness accepts only the SigLIP2 target pin and its matching tex
  assert.equal(freshModelReady({...runtime,active_model_pin:{...pin,package_id:NEW_PACKAGE}},status,ai,18,true,reverse),false);
  assert.equal(freshModelReady(runtime,{...status,model_version:'other'},ai,18,true,reverse),false);
  assert.equal(freshModelReady(runtime,status,{...ai,business:{...ai.business,search_sampling:{ready:true,model_version:'other'}}},18,false,reverse),false);
+});
+
+test('Qwen3-VL-Embedding target: 2048 dimensions, search-rate floors and the 60,000 sample cap',()=>{
+ const toQwen=freshModelTransition(OLD_PACKAGE,QWEN_PACKAGE),fromQwen=freshModelTransition(QWEN_PACKAGE,OLD_PACKAGE);
+ assert.equal(toQwen.targetDimensions,2048);assert.equal(fromQwen.sourceDimensions,2048);
+ const roomy=structuredClone(settings);roomy.limits.max_samples=100000;
+ const next=freshModelSettings(roomy,pin,[model],toQwen);
+ assert.equal(next.model.package_id,QWEN_PACKAGE);assert.equal(next.limits.max_samples,QWEN_MAX_SAMPLES);
+ assert.equal(next.sampling.object_interval_ms,4000);assert.equal(next.limits.producer_queue,1);
+ assert.equal(roomy.limits.max_samples,100000);
+ const small=structuredClone(settings);small.limits.max_samples=5000;
+ assert.equal(freshModelSettings(small,pin,[],toQwen).limits.max_samples,5000);   // never raises a lower cap
+ const qwenPin={package_id:QWEN_PACKAGE,model_version:model};
+ const manifest={dimensions:2048,model_version:model};
+ validateFreshModelManifest(manifest,qwenPin,fromQwen);
+ assert.throws(()=>validateFreshModelManifest({...manifest,dimensions:768},qwenPin,fromQwen),/mixed_index_space/);
+ assert.throws(()=>freshModelTransition(QWEN_PACKAGE,QWEN_PACKAGE),/unsupported_fresh_model_transition/);
 });

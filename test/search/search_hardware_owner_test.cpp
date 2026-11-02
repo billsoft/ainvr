@@ -1,6 +1,7 @@
 // Software fake factory and synthetic bytes only; no SDK/EGL/model load.
 #include "output/search_hardware_owner.hpp"
 #include "output/search_hardware_plan.hpp"
+#include "../../search-service/src/model_package.hpp"
 #include <iostream>
 #include <thread>
 #include <condition_variable>
@@ -10,6 +11,8 @@ using namespace ai_service::config;
 using namespace ai_service::output;
 #include "search_frame_fixture.hpp"
 using namespace search_test;
+// BuildSearchPreparedSample validates against the package catalogue, so fakes use a real package id.
+constexpr const char* kRealPackage="siglip2-base-full-int8";
 struct FakeState {
  std::mutex mutex;std::condition_variable cv;bool block=false,entered=false;
  std::thread::id owner;int creates=0,destroys=0,prepares=0;
@@ -21,7 +24,7 @@ struct FakeSession:SearchHardwareSession {
    std::unique_lock<std::mutex> lock(state->mutex);state->owner=std::this_thread::get_id();++state->creates;state->entered=true;state->cv.notify_all();state->cv.wait(lock,[&]{return !state->block;});
  }
  ~FakeSession(){Check(state->owner==std::this_thread::get_id(),"non-affine destruction");++state->destroys;}
- SearchEmbeddingSpace Space()const override{return {package,version,"input-v1"};}
+ SearchEmbeddingSpace Space()const override{return {package,version,ainvr::search::FindPackageSpec(package).input_spec_version};}
  std::function<bool()> HealthReader()const override{auto h=state->healthy;return [h]{return h->load();};}
  SearchHardwareProduct Prepare(const FrozenSearchFrame&,const SearchSamplingCurrent& current)override{
    Check(state->owner==std::this_thread::get_id(),"non-affine prepare");++state->prepares;
@@ -37,11 +40,11 @@ SearchProducerLease SetPin(Fixture& f,char hash,char revision){
 }
 void PinTests(){
  using Pin=ainvr::search::RuntimeModelPin;
- {Fixture f;auto lease=SetPin(f,'a','c');auto state=std::make_shared<FakeState>();std::atomic<int> calls{0};
+ {Fixture f(kRealPackage);auto lease=SetPin(f,'a','c');auto state=std::make_shared<FakeState>();std::atomic<int> calls{0};
   SearchHardwareOwner legacy([&](const std::string& package){++calls;return std::make_unique<FakeSession>(state,package);});
   legacy.Refresh(lease);Await([&]{return legacy.Tick()==SearchHardwareOwner::State::Failed;});
   Check(calls==0&&state->creates==0&&!legacy.CurrentSpace(),"pinned_grant_called_unverifiable_legacy_loader");legacy.Stop();}
- {Fixture f;auto lease=SetPin(f,'a','c');auto state=std::make_shared<FakeState>();std::string actual=Version('a');std::atomic<int> verifies{0};
+ {Fixture f(kRealPackage);auto lease=SetPin(f,'a','c');auto state=std::make_shared<FakeState>();std::string actual=Version('a');std::atomic<int> verifies{0};
   SearchHardwareOwner pinned(SearchHardwareOwner::PinnedFactory([&](const std::string& package,const std::optional<Pin>& expected,const SearchSamplingCurrent& current){
     ++verifies;const Pin verified{package,actual.substr(10),actual};
     if(!expected||!ainvr::search::MatchesRuntimeModelPin(*expected,verified))throw std::runtime_error("fake_verified_pin_mismatch");
@@ -57,7 +60,7 @@ void PinTests(){
   Check(verifies==2&&state->creates==1&&state->destroys==1&&!pinned.CurrentSpace(),"same_id_changed_package_loaded_before_pin_check");
   lease=SetPin(f,'b','d');pinned.Refresh(lease);Await([&]{pinned.Tick();return bool(pinned.CurrentSpace());});
   Check(verifies==3&&state->creates==2&&pinned.CurrentSpace()->model_version==Version('b'),"new_authorized_pin_not_loaded");pinned.Stop();}
- {Fixture f;auto lease=SetPin(f,'a','c');auto state=std::make_shared<FakeState>();
+ {Fixture f(kRealPackage);auto lease=SetPin(f,'a','c');auto state=std::make_shared<FakeState>();
   std::mutex gate;std::condition_variable changed;bool entered=false,release=false;std::atomic<int> verifies{0};
   SearchHardwareOwner pinned(SearchHardwareOwner::PinnedFactory([&](const std::string& package,const std::optional<Pin>& expected,const SearchSamplingCurrent& current){
     ++verifies;const Pin verified{package,std::string(64,'a'),Version('a')};
@@ -71,7 +74,7 @@ void PinTests(){
   Await([&]{return pinned.Tick()==SearchHardwareOwner::State::Stopped;});
   {std::lock_guard<std::mutex> lock(gate);release=true;}changed.notify_all();stop.get();
   Check(verifies==1&&state->creates==0&&state->destroys==0,"stop_during_verify_allocated_model");}
- {Fixture f;auto lease=SetPin(f,'a','c');auto state=std::make_shared<FakeState>();
+ {Fixture f(kRealPackage);auto lease=SetPin(f,'a','c');auto state=std::make_shared<FakeState>();
   std::mutex gate;std::condition_variable changed;bool entered=false,release=false,first=true;std::string actual=Version('a');std::atomic<int> verifies{0};
   SearchHardwareOwner pinned(SearchHardwareOwner::PinnedFactory([&](const std::string& package,const std::optional<Pin>& expected,const SearchSamplingCurrent& current){
     std::string checked;
@@ -95,7 +98,7 @@ int main(){try{
   auto tiny=SearchHardwarePlan({0,0,2,2},8,4,false,320,0);Check(tiny.width==18&&tiny.height==18,"tiny canvas below JPU minimum");
   Check(tiny.source_rectangle==std::array<double,4>{0,0,2,2},"tiny FOV changed");
   auto scene=SearchHardwarePlan({},1920,1080,true,1280,0);Check(scene.source_rectangle==std::array<double,4>{0,0,1920,1080},"scene not full raw frame");}
- Fixture f;auto state=std::make_shared<FakeState>();state->block=true;
+ Fixture f(kRealPackage);auto state=std::make_shared<FakeState>();state->block=true;
  SearchHardwareOwner owner([state](const std::string& p){return std::make_unique<FakeSession>(state,p);});
  Check(!owner.CurrentSpace(),"idle owner ready");auto lease=*f.authority->Read();
  Check(owner.Refresh(lease)==SearchHardwareOwner::State::Loading,"refresh not async loading");

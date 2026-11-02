@@ -1,4 +1,5 @@
 #include "index_shard_files.hpp"
+#include "index_limits.hpp"
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -510,7 +511,7 @@ struct IndexShardFiles::Impl {
       bytes = parsed.at("data").at("bytes").get<uint64_t>(); count = parsed.at("record_count").get<uint64_t>();
       hash = parsed.at("data").at("sha256").get<std::string>();
       if (bytes < 24 || bytes > limits.max_shard_bytes || count > limits.max_records ||
-          count > 64000000ULL/identity.dimensions || !HashString(hash) ||
+          count > kMaxIndexFloats/identity.dimensions || !HashString(hash) ||
           raw != Manifest(identity,count,bytes,hash).dump() || count != publication.record_count ||
           bytes+raw.size() != publication.byte_count) Fail("search_index_manifest_invalid");
     } catch (const Json::exception&) { Fail("search_index_manifest_invalid"); }
@@ -549,7 +550,7 @@ ShardPublication IndexShardFiles::Publish(const IndexShardIdentity& identity, co
   std::unique_lock<std::mutex> serial(impl_->mutex,std::try_to_lock);
   if (!serial.owns_lock()) Fail("search_index_busy");
   IoLock io(impl_->writer.get()); impl_->Current(); impl_->Check(identity);
-  if (records.size() > impl_->limits.max_records || records.size() > 64000000ULL/identity.dimensions)
+  if (records.size() > impl_->limits.max_records || records.size() > kMaxIndexFloats/identity.dimensions)
     Fail("search_index_record_capacity");
   std::vector<size_t> order(records.size()); std::iota(order.begin(),order.end(),0);
   for (const auto& record : records) if (record.id.empty() || record.id.size() > 256) Fail("search_index_record_invalid");

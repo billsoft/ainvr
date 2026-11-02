@@ -9,6 +9,9 @@ const migration = (name: string) => readFileSync(new URL(`../store/migrations/${
 const oldMigration = migration('018_search_runtime.sql');
 const legacy = JSON.parse(oldMigration.match(/VALUES\('search-service','system','settings','([\s\S]*?)'::jsonb/)![1]!) as Record<string, unknown>;
 const advance = migration('020_search_siglip2_default.sql');
+const qwen = migration('027_search_qwen3vl_default.sql');
+// Result of migration 020 (the seed 027 starts from).
+const siglip2Seed = { ...DEFAULT_SEARCH_SETTINGS, model: { package_id: 'siglip2-base-full-int8' }, limits: { ...DEFAULT_SEARCH_SETTINGS.limits, max_samples: 100000 } };
 const source = { snapshot_store: { mongo_uri: '${secret:ai-service/history}', db_name: 'unchanged_history' } };
 
 async function isolated(test: (pool: Pool) => Promise<void>, preexisting = false) {
@@ -48,7 +51,7 @@ it.skipIf(!enabled)('020 advances only the untouched 018 seed, publishes a full 
     await pool.query(advance);
     const after = await state(pool);
     const search = after.documents.find(row => row.service === 'search-service')!;
-    expect(search.config).toEqual(DEFAULT_SEARCH_SETTINGS);
+    expect(search.config).toEqual(siglip2Seed);
     expect(search.config.enabled).toBe(false);
     expect(search.config.callers).toEqual([]);
     expect(after.services.find(row => row.service_name === 'search-service')).toMatchObject({ applied_version: 8, desired_version: 9, status: 'pending', restart_required: false });
@@ -102,4 +105,61 @@ it.skipIf(!enabled)('020 preserves an explicit pre-018 so400m document even when
     await pool.query(advance);
     expect(await state(pool)).toEqual(before);
   }, true);
+});
+
+it.skipIf(!enabled)('027 advances only the untouched 020 seed to Qwen3-VL-Embedding with a 60,000 sample cap, publishes a full snapshot and is idempotent', async () => {
+  await isolated(async pool => {
+    await pool.query(advance);
+    const before = await state(pool);
+    await pool.query(qwen);
+    const after = await state(pool);
+    const search = after.documents.find(row => row.service === 'search-service')!;
+    expect(search.config).toEqual(DEFAULT_SEARCH_SETTINGS);
+    expect(DEFAULT_SEARCH_SETTINGS.model.package_id).toBe('qwen3vl-embedding-2b-o2');
+    expect(DEFAULT_SEARCH_SETTINGS.limits.max_samples).toBe(60000);
+    expect(search.config.enabled).toBe(false);
+    expect(after.services.find(row => row.service_name === 'search-service')).toMatchObject({ applied_version: 8, desired_version: 10, status: 'pending', restart_required: false });
+    expect(after.services.filter(row => row.service_name !== 'search-service')).toEqual(before.services.filter(row => row.service_name !== 'search-service'));
+    expect(after.documents.filter(row => row.service !== 'search-service')).toEqual(before.documents.filter(row => row.service !== 'search-service'));
+    expect(after.secrets).toEqual(before.secrets);
+    expect(after.versions).toHaveLength(before.versions.length + 1);
+    const latest = after.versions.find(row => row.version === 10)!;
+    expect(latest).toMatchObject({ status: 'published', published_by: 'migration' });
+    const snapshot = after.snapshots.filter(row => row.version_id === latest.id);
+    expect(snapshot).toHaveLength(after.documents.length);
+    expect(snapshot.find(row => row.service === 'search-service')!.config).toEqual(search.config);
+    expect(after.audits).toHaveLength(2);
+    expect(after.audits[1]).toMatchObject({ actor: 'migration', service: 'search-service', action: 'publish', version_before: 9, version_after: 10 });
+    await pool.query(qwen);
+    expect(await state(pool)).toEqual(after);
+  });
+});
+it.skipIf(!enabled).each(preservedCases.filter(([name]) => name !== 'different current desired snapshot'))('027 preserves %s without publishing or changing any state', async (_name, modify) => {
+  await isolated(async pool => {
+    await pool.query(advance);
+    await modify(pool);
+    const before = await state(pool);
+    await pool.query(qwen);
+    await pool.query(qwen);
+    expect(await state(pool)).toEqual(before);
+  });
+});
+it.skipIf(!enabled)('027 does nothing on an installation that never ran 020 (explicit pre-018 document)', async () => {
+  await isolated(async pool => {
+    const before = await state(pool);
+    await pool.query(qwen);
+    expect(await state(pool)).toEqual(before);
+  }, true);
+});
+it.skipIf(!enabled)('027 preserves a different current desired snapshot (published after 020) without changing any state', async () => {
+  await isolated(async pool => {
+    await pool.query(advance);
+    const version = await pool.query("INSERT INTO config_versions(version,status,published_by) VALUES(11,'published','admin') RETURNING id");
+    await pool.query('INSERT INTO config_snapshots(version_id,service,"group",name,config) VALUES($1,\'search-service\',\'system\',\'settings\',$2)',
+      [version.rows[0].id, JSON.stringify({ ...siglip2Seed, model: { package_id: null } })]);
+    await pool.query("UPDATE config_service_states SET desired_version=11 WHERE service_name='search-service'");
+    const before = await state(pool);
+    await pool.query(qwen);
+    expect(await state(pool)).toEqual(before);
+  });
 });

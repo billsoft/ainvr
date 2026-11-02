@@ -14,8 +14,9 @@ void ValidateTransform(const Nv12Frame& f,const ImageTransform& t){
     throw std::invalid_argument("Invalid normalization");
   if(t.erp_perspective&&(!std::isfinite(t.yaw)||!std::isfinite(t.pitch)||!(t.horizontal_fov>0&&t.horizontal_fov<std::numbers::pi)))
     throw std::invalid_argument("Invalid ERP perspective parameters");
-  double ratio=std::min(double(t.width)/f.width,double(t.height)/f.height);
-  if(t.letterbox&&!t.erp_perspective&&(std::nearbyint(f.width*ratio)<1||std::nearbyint(f.height*ratio)<1))
+  const double rw=t.source_region?(*t.source_region)[2]:f.width,rh=t.source_region?(*t.source_region)[3]:f.height;
+  double ratio=std::min(double(t.width)/rw,double(t.height)/rh);
+  if(t.letterbox&&!t.erp_perspective&&(std::nearbyint(rw*ratio)<1||std::nearbyint(rh*ratio)<1))
     throw std::invalid_argument("Letterbox dimension rounds to zero");
   ValidateInterpolation(t,f.width,f.height);
 }
@@ -31,7 +32,9 @@ std::vector<float> CpuPreprocess(const Nv12Frame& input,const ImageTransform& t)
   if(t.interpolation!=ImageInterpolation::Bilinear)
     throw std::invalid_argument("This CPU test oracle does not implement the requested GPU resize filter");
   ValidateTransform(input,t);int w=input.width,h=input.height,nw=t.width,nh=t.height;
-  if(t.letterbox&&!t.erp_perspective){double scale=std::min(double(nw)/w,double(nh)/h);nw=std::nearbyint(w*scale);nh=std::nearbyint(h*scale);}
+  if(t.letterbox&&!t.erp_perspective){
+    const double rw=t.source_region?(*t.source_region)[2]:w,rh=t.source_region?(*t.source_region)[3]:h;
+    double scale=std::min(double(nw)/rw,double(nh)/rh);nw=std::nearbyint(rw*scale);nh=std::nearbyint(rh*scale);}
   int left=(t.width-nw)/2,top=(t.height-nh)/2;size_t area=size_t(t.width)*t.height;
   std::vector<float> result(area*3);const uint8_t* chroma=input.pixels.data()+size_t(w)*h;
   double tangent=std::tan(t.horizontal_fov/2.),cp=std::cos(t.pitch),sp=std::sin(t.pitch),cy=std::cos(t.yaw),sy=std::sin(t.yaw);

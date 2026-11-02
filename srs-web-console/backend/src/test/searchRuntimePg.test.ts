@@ -24,7 +24,7 @@ it.skipIf(!enabled)('runtime migration preserves old services and ACKs dependenc
     expect(search.desired_version).toBe(8);
     // 018 is a frozen historical seed; current defaults advance in 020.
     expect((await pool.query("SELECT config FROM config_documents WHERE service='search-service'")).rows[0].config)
-      .toEqual({ ...DEFAULT_SEARCH_SETTINGS, model: { package_id: 'siglip-so400m-i18n-full-int8' } });
+      .toEqual({ ...DEFAULT_SEARCH_SETTINGS, model: { package_id: 'siglip-so400m-i18n-full-int8' }, limits: { ...DEFAULT_SEARCH_SETTINGS.limits, max_samples: 100000 } });
     expect(Number((await pool.query('SELECT count(*) AS n FROM config_snapshots WHERE version_id=(SELECT id FROM config_versions WHERE version=8)')).rows[0].n)).toBe(2);
     const runtime = new SearchRuntimeStore(pool), revision = 'a'.repeat(64);
     expect(await runtime.read()).toBeNull();

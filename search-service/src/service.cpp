@@ -1,6 +1,7 @@
 #include "runtime_config.hpp"
 #include "model_catalog.hpp"
 #include "runtime_text.hpp"
+#include "remote_text_encoder.hpp"
 #include "index_runtime.hpp"
 #include "source_ingestion_runtime.hpp"
 #if defined(AINVR_SEARCH_WITH_BPU_TEXT) && AINVR_SEARCH_WITH_BPU_TEXT
@@ -22,16 +23,20 @@ using namespace ainvr::search;
 volatile std::sig_atomic_t stopping = 0;
 void Stop(int) { stopping = 1; }
 constexpr const char* model_root = "/home/sunrise/ainvr/ai-service/models/search";
-constexpr bool ProductionTextSupported() {
-#if defined(AINVR_SEARCH_WITH_BPU_TEXT) && AINVR_SEARCH_WITH_BPU_TEXT
-  return true;
-#else
-  return false;
-#endif
-}
+// Qwen3-VL-Embedding queries are answered by the single weight owner (ai-service) over its local socket and
+// need no BPU linkage here; the dual-tower SigLIP text tower still requires AINVR_SEARCH_WITH_BPU_TEXT.
+constexpr bool ProductionTextSupported() { return true; }
 RuntimeTextLoader ProductionTextLoader(const EffectiveRuntime& runtime,HistoryMongo& history) {
-#if defined(AINVR_SEARCH_WITH_BPU_TEXT) && AINVR_SEARCH_WITH_BPU_TEXT
   return [&runtime,&history](const std::string& id) -> std::unique_ptr<TextEncoder> {
+    if(FindPackageSpec(id).kind==PackageKind::QwenEmbedding){
+      auto package=VerifyPackageDeclared(id);
+      const auto version=package.model_version;
+      const RuntimeModelPin candidate{id,version.substr(10),version};
+      return LoadAuthorizedRuntimeTextEncoder(runtime,candidate,
+        [&](const auto& model){return history.ModelSpaceCompatible(model);},
+        [&]()->std::unique_ptr<TextEncoder>{return RemoteTextEncoder::Connect(package);});
+    }
+#if defined(AINVR_SEARCH_WITH_BPU_TEXT) && AINVR_SEARCH_WITH_BPU_TEXT
     auto package = VerifyPackage(id);
     const auto version = package.model_version;
     const RuntimeModelPin candidate{id,version.substr(10),version};
@@ -41,11 +46,10 @@ RuntimeTextLoader ProductionTextLoader(const EffectiveRuntime& runtime,HistoryMo
     return LoadAuthorizedRuntimeTextEncoder(runtime,candidate,
       [&](const auto& model){return history.ModelSpaceCompatible(model);},
       [&]()->std::unique_ptr<TextEncoder>{return BpuTextEncoder::Load(std::move(package));});
-  };
 #else
-  (void)runtime;(void)history;
-  return {};
+    return nullptr;
 #endif
+  };
 }
 // Immutable HTTP generations: stop accepting, drain handlers, then destroy
 // history/encoder objects. A hot apply cannot leave requests using freed state.

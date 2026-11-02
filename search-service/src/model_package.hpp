@@ -8,7 +8,15 @@ namespace ainvr::search {
 inline constexpr const char* kSearchModelRoot = "/home/sunrise/ainvr/ai-service/models/search";
 struct TensorSpec { std::string name, dtype; std::vector<int64_t> shape; };
 struct EncoderSpec { std::string file, program; TensorSpec input, output; };
+// DualTower: one vision HBM + one text HBM + SentencePiece tokenizer (SigLIP family).
+// QwenEmbedding: Qwen3-VL-Embedding, nine HBM packages plus host data files, owned by one process
+// (ai-service); search-service only asks that owner for text vectors.
+enum class PackageKind { DualTower, QwenEmbedding };
 struct PackageSpec {
+  PackageKind kind = PackageKind::DualTower;
+  // QwenEmbedding only: every artifact relative to the model root (HBM + sidecar, data, tokenizer).
+  std::vector<std::string> embedding_artifacts;
+  uint64_t reservation_bytes = 0;   // measured ION accounting for the whole package
   std::string id, title, family;
   EncoderSpec vision, text;
   std::string tokenizer;
@@ -35,6 +43,8 @@ class VerifiedPackage {
   VerifiedPackage(const VerifiedPackage&) = delete;
   VerifiedPackage& operator=(const VerifiedPackage&) = delete;
   bool files_verified = false;
+  // false for VerifyPackageDeclared: large files are bound by SHA256SUMS.txt + inode identity, not rehashed.
+  bool contents_hashed = true;
   // Sidecar claims only, NOT proof of G1, BPU execution or ION safety.
   bool production_approval_declared = false;
   const PackageSpec* spec = nullptr;
@@ -45,8 +55,14 @@ class VerifiedPackage {
  private:
   std::shared_ptr<PackageVerificationState> state_;
   friend VerifiedPackage VerifyPackageAtTrustedRoot(const std::string&, const std::string&);
+  friend VerifiedPackage VerifyEmbeddingPackage(const std::string&, const PackageSpec&, bool);
   friend bool VerifyStillCurrent(const VerifiedPackage&);
 };
+// Cheap identity for processes that never load weights (search-service asking the owner for text
+// vectors): small files are fully hashed, large files are bound by SHA256SUMS.txt and their size.
+// The loading owner always uses the full VerifyPackage; the vector-space version is identical.
+VerifiedPackage VerifyPackageDeclared(const std::string& package_id);
+VerifiedPackage VerifyPackageDeclaredAtTrustedRoot(const std::string& root, const std::string& package_id);
 // Production loader uses only the fixed-root entry point.
 VerifiedPackage VerifyPackage(const std::string& package_id);
 // Explicit trusted test/offline root; MUST NOT be an HTTP parameter.

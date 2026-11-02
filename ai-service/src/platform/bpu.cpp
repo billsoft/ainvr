@@ -13,6 +13,7 @@ void Check(int rc, const char* operation) {
 }
 }
 bool BpuRuntimeHealthy() noexcept { return runtime_healthy.load(); }
+void BpuMarkRuntimeFault() noexcept { runtime_healthy.store(false); }
 uint64_t BpuQuarantinedBytes() noexcept { return quarantined_bytes.load(); }
 struct BpuModel::Quarantine {
   hbDNNPackedHandle_t packed=nullptr;

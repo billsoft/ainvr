@@ -1115,7 +1115,7 @@ void RegisterRoutes(httplib::Server& server, std::shared_ptr<ChannelManager> man
   const auto reencode_gate=std::make_shared<std::mutex>();
   server.Get("/api/v1/search/reencode/capabilities",Wrap(manager,[search_reencode](const auto&,auto& res){
     WriteJson(res,200,json{{"schema_version","search-reencode-capabilities-v1"},{"implemented",bool(search_reencode)},
-      {"target_package_ids",search_reencode?json::array({"siglip2-base-full-int8"}):json::array()},
+      {"target_package_ids",search_reencode?json::array({"siglip2-base-full-int8","qwen3vl-embedding-2b-o2"}):json::array()},
       {"max_image_bytes",kSearchReencodeMaxImageBytes},{"max_duration_ms",30000},
       {"cpu_model_fallback",false},{"cpu_image_processing",false}});
   }));

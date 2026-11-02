@@ -11,6 +11,8 @@
 namespace ainvr {
 // Failed waits latch a process fault; the watchdog must restart the service.
 bool BpuRuntimeHealthy() noexcept;
+// Latch the process-wide fault (same latch as failed BpuModel waits).
+void BpuMarkRuntimeFault() noexcept;
 uint64_t BpuQuarantinedBytes() noexcept;
 class BpuModel {
  public:

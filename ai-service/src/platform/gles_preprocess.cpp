@@ -198,7 +198,7 @@ GlesPreprocessor::~GlesPreprocessor()=default;
 void ValidateSourceRegion(const ImageTransform& t) {
   if(!t.source_region)return;
   const auto& r=*t.source_region;
-  if(t.erp_perspective||t.letterbox||r[2]<=0||r[3]<=0||
+  if(t.erp_perspective||r[2]<=0||r[3]<=0||
      !std::all_of(r.begin(),r.end(),[](float x){return std::isfinite(x)&&std::abs(x)<=131072;}))
     throw std::invalid_argument("Invalid source region or conflicting transform");
 }
@@ -208,9 +208,9 @@ void ValidateInterpolation(const ImageTransform& t,int w,int h){
   if(t.interpolation!=ImageInterpolation::Area)return;
   if(t.erp_perspective)throw std::invalid_argument("Area footprint for ERP projection is not defined");
   double nw=t.width,nh=t.height;
-  if(t.letterbox){double ratio=std::min(nw/w,nh/h);nw=std::nearbyint(w*ratio);nh=std::nearbyint(h*ratio);}
   const double sw=t.source_region?(*t.source_region)[2]:w;
   const double sh=t.source_region?(*t.source_region)[3]:h;
+  if(t.letterbox){double ratio=std::min(nw/sw,nh/sh);nw=std::nearbyint(sw*ratio);nh=std::nearbyint(sh*ratio);}
   if(nw<=0||nh<=0||(std::ceil(sw/nw)+1)*(std::ceil(sh/nh)+1)>4096)
     throw std::invalid_argument("Area resize footprint exceeds the bounded 4096-tap GPU contract");
 }
@@ -297,7 +297,11 @@ std::vector<float> GlesPreprocessor::RunImpl(const std::vector<uint8_t>& rgba,in
   if(t.source_region){const auto& r=*t.source_region;
     glUniform4f(uniform("source_region"),r[0]/w,r[1]/h,r[2]/w,r[3]/h);}
   int nw=t.width,nh=t.height;
-  if(t.letterbox&&!t.erp_perspective){double scale=std::min(double(t.width)/w,double(t.height)/h);nw=int(std::nearbyint(w*scale));nh=int(std::nearbyint(h*scale));if(nw<1||nh<1)throw std::invalid_argument("letterbox dimension rounds to zero");}
+  if(t.letterbox&&!t.erp_perspective){
+    // A source region is letterboxed as the image: its own extent is fitted into the output.
+    const double rw=t.source_region?(*t.source_region)[2]:w,rh=t.source_region?(*t.source_region)[3]:h;
+    double scale=std::min(double(t.width)/rw,double(t.height)/rh);nw=int(std::nearbyint(rw*scale));nh=int(std::nearbyint(rh*scale));
+    if(nw<1||nh<1)throw std::invalid_argument("letterbox dimension rounds to zero");}
   glUniform4f(uniform("rectangle"),(t.width-nw)/2,(t.height-nh)/2,nw,nh);
   glUniform3fv(uniform("mean_value"),1,t.mean.data());glUniform3fv(uniform("divisor"),1,t.divisor.data());glUniform3fv(uniform("padding"),1,t.padding.data());
   glUniform1i(uniform("reverse_channels"),t.bgr);glUniform1i(uniform("perspective"),t.erp_perspective);

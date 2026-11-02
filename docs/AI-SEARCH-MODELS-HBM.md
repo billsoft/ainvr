@@ -1,5 +1,7 @@
 # 文搜相关模型：HBM（O2）下载、编译与板端实测
 
+> 2026-11-02 起智能搜索使用 Qwen3-VL-Embedding-2B（全 BPU），见 `SEARCH-QWEN3VL-EMBEDDING.md`；本文保留 SigLIP 系列的历史测量。
+
 测量原始记录日期：2026-10-28；选型状态更新：2026-10-29。板：S100P（nash-m），HBRT 4.7.5 / DNN 3.13.6。工具链：OE 3.7.0 GPU 容器 `ai_toolchain_ubuntu_22_s100_s600_gpu:v3.7.0`（镜像 ID 见 `test/model_conversion/final/approved-recipes.json`）。
 
 范围：设计文档 `AI-TEXT-SEARCH-DESIGN.md` 用到的全部模型，含暂缓功能所需。官方 ModelZoo 有现成 HBM 的直接下载，不重编；没有的自己编，统一 O2。

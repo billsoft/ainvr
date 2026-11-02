@@ -19,7 +19,7 @@ inline SearchReencodeImage MakeSearchReencodeHandler(
     const auto& raw_target=input.at("target");
     const ainvr::search::RuntimeModelPin target{raw_target.at("package_id").get<std::string>(),
       raw_target.at("package_sha256").get<std::string>(),raw_target.at("model_version").get<std::string>()};
-    if(target.package_id!="siglip2-base-full-int8")
+    if(target.package_id!="siglip2-base-full-int8"&&target.package_id!="qwen3vl-embedding-2b-o2")
       throw ApiError(503,"search_reencode_model_unavailable","该模型尚未提供经验证的历史图像编码器");
     const auto valid=[&]{return (!current||current())&&authorized()&&std::chrono::steady_clock::now()<deadline;};
     auto result=owner->Reencode(target,std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(jpeg.data()),jpeg.size()),deadline,valid);

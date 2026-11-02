@@ -8,6 +8,8 @@ const args=process.argv.slice(2);
 if(args.length!==5||!['--check','--apply'].includes(args[0])||args[1]!=='--from'||args[3]!=='--to')
  throw Error('use_check_or_apply_with_explicit_from_and_to');
 const apply=args[0]==='--apply';
+// Loading the nine-HBM Qwen3-VL-Embedding owner (hash + weights) takes longer than the legacy 120 s default.
+const readyTimeoutMs=Math.min(900000,Math.max(120000,Number(process.env.AINVR_FRESH_READY_TIMEOUT_MS||120000)));
 const transition=freshModelTransition(args[2],args[4]);
 // Acquire the same lock as the transactional publisher before reading state.
 const releaseLock=acquireDeploymentLock({
@@ -61,7 +63,10 @@ try {
   const manifests=files.filter(f=>f.endsWith('.manifest.json'));if(!manifests.length)throw Error('index_manifest_missing');
   for(const f of manifests)validateFreshModelManifest(read(path.join(p,f)),pin,transition);
  }
- const binaries=[['ai-service','ainvr-ai','out/build/ai-api-compat/ainvr_s100p_control_service','ainvr_ai_service'],['search-service','ainvr-search','out/search-text-integration/ainvr_search_service','ainvr_search_service']].map(([service,unit,source,name])=>({service,unit,source:root+'/'+source,live:root+'/deploy/s100p/bin/'+name,name}));
+ // Candidate executables default to the validated caches; an operator may name another build under out/ with
+ // AINVR_FRESH_AI_BINARY / AINVR_FRESH_SEARCH_BINARY (relative to the repository root).
+ const candidate=(variable,fallback)=>{const rel=process.env[variable]??fallback;const full=path.resolve(root,rel);if(!full.startsWith(root+'/out/'))throw Error('unsafe_candidate_binary');return path.relative(root,full);};
+ const binaries=[['ai-service','ainvr-ai',candidate('AINVR_FRESH_AI_BINARY','out/build/ai-api-compat/ainvr_s100p_control_service'),'ainvr_ai_service'],['search-service','ainvr-search',candidate('AINVR_FRESH_SEARCH_BINARY','out/search-text-integration/ainvr_search_service'),'ainvr_search_service']].map(([service,unit,source,name])=>({service,unit,source:root+'/'+source,live:root+'/deploy/s100p/bin/'+name,name}));
  for(const b of binaries){if(fs.lstatSync(b.live).isSymbolicLink())throw Error('unsafe_binary');b.sha=hash(b.source);b.old=hash(b.live);}
  const oldCount=await db.collection('search_samples').countDocuments();
  console.log(JSON.stringify({mode:apply?'apply':'check',...transition,oldSamples:oldCount,collections,indexShards:shards.length,newPackage:next.model.package_id,sampling:next.sampling,limits:next.limits}));
@@ -98,7 +103,7 @@ try {
    if(!key)return false;
    const [status,ai]=await Promise.all([get('http://127.0.0.1:8400/v1/status',{'x-service-token':key},remaining),get('http://127.0.0.1:8000/health',{},remaining)]);
    return freshModelReady(current,status,ai,version.version,requireSampling,transition);
-  });
+  },{timeoutMs:readyTimeoutMs});
   report.phase='ready';fs.writeFileSync(reportPath,JSON.stringify(report,null,2));
   for(const b of binaries)fs.writeFileSync(b.backup+'/backup.json',JSON.stringify({phase:'applied',createdAt:Date.now()/1000}));
   // Reuse the shared service buckets, timestamp ordering and transaction invalidation.

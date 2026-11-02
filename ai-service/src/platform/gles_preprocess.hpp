@@ -20,7 +20,7 @@ struct ImageTransform {
   bool erp_perspective = false;
   float yaw = 0, pitch = 0, horizontal_fov = 1.57079632679f;
   // Source pixel-edge coordinates x/y/width/height. Out-of-frame samples
-  // replicate the image edge. Mutually exclusive with ERP and letterboxing.
+  // replicate the image edge. Mutually exclusive with ERP. With letterbox the region itself is fitted into the output.
   std::optional<std::array<float,4>> source_region;
   // Opt-in constant padding for evidence crops; ordinary detector crops retain replication.
   bool source_region_padding = false;

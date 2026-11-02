@@ -8,7 +8,9 @@ export class EvidenceImages {
  constructor(db,{clock=()=>Date.now()}={}){this.rows=db.collection('alarm_evidence_images');this.clearState=db.collection('alarm_history_clear');this.clock=clock;}
  async initialize(){
   await this.rows.createIndex({expires_at:1},{expireAfterSeconds:0});
-  await this.rows.createIndex({pool:1,created_at:1});
+  // Eviction order (created_at, then _id) with the byte size, so the oldest-first scan is answered from
+  // index keys alone: no in-memory sort and no JPEG fetched from disk. Also serves the age filter (prefix).
+  await this.rows.createIndex({pool:1,created_at:1,_id:1,bytes:1});
   await this.rows.createIndex({pool:1,bytes:1});
   await this.rows.createIndex({occurred_at:1});
  }
@@ -26,6 +28,8 @@ export class EvidenceImages {
   this.id(pool,'check');
   await this.rows.deleteMany({pool,$or:[{expires_at:{$lte:new Date(this.clock())}},{created_at:{$lte:new Date(this.clock()-maxAge)}}]});
   let used=await this.bytes(pool);
+  // Nothing to evict: do not open the oldest-first scan at all.
+  if(used<=maxBytes)return true;
   // Bounded batches; callers retry later if an extreme backlog cannot be reclaimed.
   for await(const row of this.rows.find({pool},{projection:{_id:1,bytes:1}}).sort({created_at:1,_id:1}).limit(512)){
    if(used<=maxBytes)break;

@@ -10,11 +10,11 @@ import { SearchCapacityStatus } from './SearchCapacityStatus'
 const defaults = {
   schema_version: '1.0', enabled: false, listen: { host: '127.0.0.1', port: 8400 }, callers: [],
   history: { source: 'ai-history' }, index_storage: { volume_id: null as string | null, relative_path: 'ainvr/search-index' },
-  model: { package_id: 'siglip2-base-full-int8' as string | null }, sampling: { mode: 'all', channel_ids: [] as string[], object: true, scene: true,
+  model: { package_id: 'qwen3vl-embedding-2b-o2' as string | null }, sampling: { mode: 'all', channel_ids: [] as string[], object: true, scene: true,
     object_interval_ms: 1000, scene_active_interval_ms: 10000, scene_static_interval_ms: 60000,
     scene_change_min_interval_ms: 3000, track_slots: 8 },
   limits: { query_concurrency: 2, http_workers: 4, http_queue: 4, producer_queue: 1, producer_bytes: 134217728,
-    max_samples: 100000, max_bytes: 1073741824, retention_days: 30, max_coverage: 100000,
+    max_samples: 60000, max_bytes: 1073741824, retention_days: 30, max_coverage: 100000,
     max_searches: 1000, search_ttl_s: 3600, image_max_bytes: 8388608 },
 }
 export const searchReadiness = (status: SearchStatus | null) => status?.ready ? '模型与索引已就绪' : ({
@@ -100,7 +100,7 @@ export function SearchServiceConfigForm({ document, onSaveBatch,onReload }: {
       <Field label="搜索模型包" hint="只展示已发现的配套模型。模型、分词器与索引版本必须匹配，不接受手填模型路径。">
         <select aria-label="搜索模型包" className={`${inputCls} min-h-11`} value={model} onChange={event => { setModel(event.target.value); change() }}>
           <option value="">{loading ? '正在读取模型包…' : '请选择模型包'}</option>
-          {model && !selectedModel && <option value={model}>{loading || !catalog ? `模型包（列表尚未确认）：${model}` : savedModel === undefined && model === defaults.model.package_id ? 'SigLIP2 Base 256 · 完整词表 INT8（当前未发现）' : `已保存模型包（当前未发现）：${model}`}</option>}
+          {model && !selectedModel && <option value={model}>{loading || !catalog ? `模型包（列表尚未确认）：${model}` : savedModel === undefined && model === defaults.model.package_id ? 'Qwen3-VL-Embedding-2B · 全 BPU（当前未发现）' : `已保存模型包（当前未发现）：${model}`}</option>}
           {catalog?.items.map(item => <option key={item.package_id} value={item.package_id}>{item.display_name} · 文件已发现</option>)}
         </select>
       </Field>

@@ -42,7 +42,7 @@ Json Tensor(const TensorSpec& spec) { return {{"name", spec.name}, {"dtype", spe
 struct Fixture {
   fs::path root;
   const PackageSpec& spec;
-  explicit Fixture(const PackageSpec& selected = FindPackageSpec(DefaultPackageId())) : spec(selected) {
+  explicit Fixture(const PackageSpec& selected = FindPackageSpec("siglip2-base-full-int8")) : spec(selected) {
     auto pattern = (fs::current_path() / "ainvr-model-package-fixture-XXXXXX").string();
     char* created = mkdtemp(pattern.data()); Check(created != nullptr, "fixture directory failed"); root = created;
     fs::create_directory(root / "hbm"); fs::create_directory(root / "tokenizers");
@@ -79,14 +79,100 @@ struct Fixture {
   }
   VerifiedPackage Verify() const { return VerifyPackageAtTrustedRoot(root.string(), spec.id); }
 };
+bool IsSidecar(const std::string& name) { return name.size() > 15 && name.compare(name.size() - 15, 15, ".hbm.ainvr.json") == 0; }
+struct EmbeddingFixture {
+  fs::path root;
+  const PackageSpec& spec;
+  EmbeddingFixture() : spec(FindPackageSpec("qwen3vl-embedding-2b-o2")) {
+    auto pattern = (fs::current_path() / "ainvr-embedding-fixture-XXXXXX").string();
+    char* created = mkdtemp(pattern.data()); Check(created != nullptr, "fixture directory failed"); root = created;
+    for (const char* dir : {"hbm", "data", "tokenizers"}) fs::create_directory(root / dir);
+    for (const auto& relative : spec.embedding_artifacts) if (!IsSidecar(relative)) Write(root / relative, "fixture-bytes-for-" + relative);
+    for (const auto& relative : spec.embedding_artifacts) if (IsSidecar(relative)) {
+      const auto hbm = relative.substr(0, relative.size() - 11); const auto data = Read(root / hbm);
+      Json metadata{{"schema_version", 1}, {"target", "rdk_s100p"}, {"hbm_file", hbm.substr(4)}, {"hbm_sha256", Digest(data)}, {"hbm_bytes", data.size()},
+        {"family", spec.family}, {"programs", {{"program_a", {{"inputs", Json::array()}, {"outputs", Json::array()}}}}},
+        {"accuracy_verified", false}, {"production_approved", false}};
+      Write(root / relative, metadata.dump());
+    }
+    Manifest();
+  }
+  ~EmbeddingFixture() { std::error_code error; fs::remove_all(root, error); }
+  void Manifest() {
+    std::map<std::string, std::string> hashes;
+    for (const auto& dir : {root / "hbm", root / "data", root / "tokenizers"}) for (const auto& entry : fs::directory_iterator(dir))
+      if (entry.is_regular_file()) hashes[fs::relative(entry.path(), root).generic_string()] = Digest(Read(entry.path()));
+    std::string text; for (const auto& [name, hash] : hashes) text += hash + "  ./" + name + "\n";
+    Write(root / "SHA256SUMS.txt", text);
+  }
+  void EditSidecar(const std::string& relative, const std::function<void(Json&)>& edit) {
+    auto metadata = Json::parse(Read(root / relative)); edit(metadata); Write(root / relative, metadata.dump()); Manifest();
+  }
+};
+void EmbeddingChecks() {
+  {
+    EmbeddingFixture fixture; const auto& spec = fixture.spec;
+    Check(spec.kind == PackageKind::QwenEmbedding && spec.dimensions == 2048 && spec.embedding_artifacts.size() == 23 && spec.reservation_bytes > 3000000000ULL, "embedding spec drift"); ++cases;
+    auto deep = VerifyPackageAtTrustedRoot(fixture.root.string(), spec.id);
+    Check(deep.files_verified && deep.contents_hashed && !deep.production_approval_declared && deep.model_version.size() == 74 &&
+          deep.model_version.rfind("search-v1-", 0) == 0 && deep.artifacts.size() == 23 && VerifyStillCurrent(deep), "embedding package not verified"); ++cases;
+    auto declared = VerifyPackageDeclaredAtTrustedRoot(fixture.root.string(), spec.id);
+    Check(!declared.contents_hashed && declared.model_version == deep.model_version && VerifyStillCurrent(declared), "declared identity differs from the loader identity"); ++cases;
+    // The catalog lists the package without claiming readiness.
+    bool seen = false;
+    const auto catalog = ModelCatalog(fixture.root.string());
+    for (const auto& item : catalog.at("items")) if (item.at("package_id") == spec.id) {
+      Check(item.at("ready") == false && item.at("dimensions") == 2048 && item.at("model_version").is_null(), "catalog fabricated readiness"); seen = true;
+    }
+    Check(seen, "embedding package missing from catalog"); ++cases;
+    const auto profile = VerifyModelProfile(fixture.root.string(), spec.id);
+    Check(profile.at("model_version") == deep.model_version && profile.at("dimensions") == 2048 && profile.at("runtime_ready") == false, "embedding profile drift"); ++cases;
+    // A rewrite with the same size changes timestamps: the held-descriptor check catches it even without rehashing.
+    const auto big = fixture.root / "data" / "qwen3vl-embed-tokens-bf16.bin";
+    Write(big, std::string(fs::file_size(big), 'x'));
+    Check(!VerifyStillCurrent(declared) && !VerifyStillCurrent(deep), "same-inode rewrite accepted"); ++cases;
+  }
+  {
+    EmbeddingFixture fixture; const auto before = VerifyPackageAtTrustedRoot(fixture.root.string(), fixture.spec.id).model_version;
+    Write(fixture.root / "tokenizers" / "qwen3vl-merges.txt", "changed merges"); fixture.Manifest();
+    Check(VerifyPackageAtTrustedRoot(fixture.root.string(), fixture.spec.id).model_version != before, "tokenizer did not fence the vector space"); ++cases;
+  }
+  {
+    EmbeddingFixture fixture;   // contents differing from SHA256SUMS: the loading owner (deep) refuses, the cheap identity is bound to the manifest
+    Write(fixture.root / "hbm" / "qwen3vl-emb-txt-2.hbm", "tampered-hbm");
+    Reject([&] { VerifyPackageAtTrustedRoot(fixture.root.string(), fixture.spec.id); });
+  }
+  for (const auto& mutation : std::vector<std::function<void(Json&)>>{
+    [](auto& m) { m["family"] = "other"; }, [](auto& m) { m["target"] = "rdk_x5"; }, [](auto& m) { m["hbm_bytes"] = 1; },
+    [](auto& m) { m["hbm_sha256"] = std::string(64, '0'); }, [](auto& m) { m["hbm_file"] = "../outside.hbm"; },
+    [](auto& m) { m["programs"] = Json::object(); }, [](auto& m) { m["production_approved"] = "true"; }, [](auto& m) { m["schema_version"] = 2; },
+  }) {
+    EmbeddingFixture fixture; fixture.EditSidecar("hbm/qwen3vl-emb-vis-1.hbm.ainvr.json", mutation);
+    Reject([&] { VerifyPackageAtTrustedRoot(fixture.root.string(), fixture.spec.id); });
+    Reject([&] { VerifyPackageDeclaredAtTrustedRoot(fixture.root.string(), fixture.spec.id); });
+  }
+  {
+    EmbeddingFixture fixture; fs::remove(fixture.root / "data" / "qwen3vl-prefix-kv.f32"); fixture.Manifest();
+    Reject([&] { VerifyPackageAtTrustedRoot(fixture.root.string(), fixture.spec.id); });
+    const auto catalog = ModelCatalog(fixture.root.string());
+    for (const auto& item : catalog.at("items")) Check(item.at("package_id") != fixture.spec.id, "incomplete package listed");
+    ++cases;
+  }
+  {
+    EmbeddingFixture fixture; for (const auto& relative : fixture.spec.embedding_artifacts) if (IsSidecar(relative))
+      fixture.EditSidecar(relative, [](auto& m) { m["accuracy_verified"] = true; m["production_approved"] = true; });
+    Check(VerifyPackageAtTrustedRoot(fixture.root.string(), fixture.spec.id).production_approval_declared, "approval declaration lost"); ++cases;
+  }
+}
 }  // namespace
 int main() {
   static_assert(!std::is_copy_constructible_v<VerifiedPackage>);
   try {
-    Check(std::string(DefaultPackageId()) == "siglip2-base-full-int8", "wrong default");
-    Check(PackageSpecs().size() == 4 && PackageSpecs()[0].id == DefaultPackageId(), "candidate duplication/order"); ++cases;
+    Check(std::string(DefaultPackageId()) == "qwen3vl-embedding-2b-o2", "wrong default");
+    Check(PackageSpecs().size() == 5 && PackageSpecs()[0].id == DefaultPackageId() && PackageSpecs()[1].id == "siglip2-base-full-int8", "candidate duplication/order"); ++cases;
     Reject([] { FindPackageSpec("../../private"); });
     for (const auto& spec : PackageSpecs()) {
+      if (spec.kind != PackageKind::DualTower) continue;   // the Qwen embedding package has its own fixture below
       Fixture fixture(spec); auto verified = fixture.Verify();
       const auto profile=VerifyModelProfile(fixture.root.string(),spec.id);
       Check(profile.at("package_sha256")==verified.model_version.substr(10)&&
@@ -187,6 +273,7 @@ int main() {
         auto moved = std::move(verified); Check(fcntl(fd, F_GETFD) >= 0 && VerifyStillCurrent(moved), "move lost ownership"); }
       Check(fcntl(fd, F_GETFD) == -1 && errno == EBADF, "verified descriptor leaked"); ++cases;
     }
+    EmbeddingChecks();
     std::cout << "model package: " << cases << " checks passed (small fixtures only; no BPU/model loading)\n";
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -78,7 +78,7 @@ describe('智能搜索配置', () => {
     expect(container.querySelector('[data-unsaved="true"]')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '保存并应用' }))
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
-    expect(save.mock.calls[0]![0][0].config).toMatchObject({ enabled: false, callers: [], model: { package_id: 'siglip2-base-full-int8' } })
+    expect(save.mock.calls[0]![0][0].config).toMatchObject({ enabled: false, callers: [], model: { package_id: 'qwen3vl-embedding-2b-o2' } })
   })
   it('prevents enabling without a model and external disk instead of claiming readiness', async () => {
     const { save } = open()
@@ -109,11 +109,11 @@ describe('智能搜索配置', () => {
     await waitFor(() => expect(save).toHaveBeenCalled())
     expect(save.mock.calls[0]![0][0].config).toMatchObject({ model: { package_id: 'siglip-so400m-i18n-full-int8' }, sampling: { channel_ids: [source] } })
   })
-  it('defaults new drafts to SigLIP2 Base 256 full-vocabulary INT8 without enabling or marking an edit', async () => {
+  it('defaults new drafts to Qwen3-VL-Embedding-2B without enabling or marking an edit', async () => {
     vi.mocked(searchService.status).mockResolvedValue({ ready: false, reason: 'model_pending', model_version: null })
     const { container } = open()
     await screen.findByText('模型或索引尚未就绪')
-    expect(screen.getByRole('combobox', { name: '搜索模型包' })).toHaveValue('siglip2-base-full-int8')
+    expect(screen.getByRole('combobox', { name: '搜索模型包' })).toHaveValue('qwen3vl-embedding-2b-o2')
     expect(screen.getByRole('checkbox', { name: '启用智能搜索' })).not.toBeChecked()
     expect(container.querySelector('[data-unsaved="true"]')).toBeNull()
     expect(screen.queryByText('模型与索引已就绪')).not.toBeInTheDocument()
@@ -121,13 +121,13 @@ describe('智能搜索配置', () => {
   it('offers the same disabled default for a missing model field without silently saving or marking the form dirty', async () => {
     const { container, save } = open(stored({ enabled: false }))
     await screen.findByText('智能搜索未启用')
-    expect(screen.getByRole('combobox', { name: '搜索模型包' })).toHaveValue('siglip2-base-full-int8')
-    expect(screen.getByRole('option', { name: 'SigLIP2 Base 256 · 完整词表 INT8（当前未发现）' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '搜索模型包' })).toHaveValue('qwen3vl-embedding-2b-o2')
+    expect(screen.getByRole('option', { name: 'Qwen3-VL-Embedding-2B · 全 BPU（当前未发现）' })).toBeInTheDocument()
     expect(container.querySelector('[data-unsaved="true"]')).toBeNull()
     expect(save).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '保存并应用' }))
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
-    expect(save.mock.calls[0]![0][0].config).toMatchObject({ enabled: false, model: { package_id: 'siglip2-base-full-int8' } })
+    expect(save.mock.calls[0]![0][0].config).toMatchObject({ enabled: false, model: { package_id: 'qwen3vl-embedding-2b-o2' } })
   })
   it('preserves an explicitly empty saved model instead of replacing it with the new default', async () => {
     const { container } = open(stored({ model: { package_id: null } }))

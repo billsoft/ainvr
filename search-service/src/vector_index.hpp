@@ -1,4 +1,5 @@
 #pragma once
+#include "index_limits.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -47,7 +48,7 @@ class VectorIndex {
   VectorIndex(std::string model, size_t dimensions, size_t capacity)
       : model_(std::move(model)), dimensions_(dimensions), capacity_(capacity) {
     if (model_.empty() || dimensions_ == 0 || dimensions_ > 4096 ||
-        capacity_ == 0 || capacity_ > 1000000 || dimensions_ > 64000000 / capacity_)
+        capacity_ == 0 || capacity_ > 1000000 || dimensions_ > kMaxIndexFloats / capacity_)
       throw std::invalid_argument("invalid_index_budget");
   }
   void Upsert(Record value) {

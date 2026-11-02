@@ -176,6 +176,33 @@ PackageSpec Spec(bool so400m, bool pruned) {
   if (pruned) spec.input_spec_version += ";pruned-longest-kept-piece-remap-v1";
   return spec;
 }
+PackageSpec EmbeddingSpec() {
+  PackageSpec spec;
+  spec.kind = PackageKind::QwenEmbedding;
+  spec.id = "qwen3vl-embedding-2b-o2";
+  spec.title = "Qwen3-VL-Embedding-2B · 全 BPU";
+  spec.family = "qwen3vl-embedding-2b";
+  spec.dimensions = 2048;
+  spec.embedding_vocab_size = 151936;
+  spec.pad_id = 151643; spec.eos_id = 151643;
+  // Estimate, not an ION measurement: HBM file sizes 2.94 GB (measured) + about 0.63 GB of program tensors (computed from the port shapes).
+  spec.reservation_bytes = 3750000000ULL;
+  for (const char* name : {"vis-0", "vis-1", "vis-2", "vis-3", "txt-0", "txt-1", "txt-2", "txt-3", "head"}) {
+    spec.embedding_artifacts.push_back(std::string("hbm/qwen3vl-emb-") + name + ".hbm");
+    spec.embedding_artifacts.push_back(std::string("hbm/qwen3vl-emb-") + name + ".hbm.ainvr.json");
+  }
+  for (const char* data : {"data/qwen3vl-embed-tokens-bf16.bin", "data/qwen3vl-vision-rope.f32", "data/qwen3vl-prefix-kv.f32",
+                           "tokenizers/qwen3vl-vocab.json", "tokenizers/qwen3vl-merges.txt"})
+    spec.embedding_artifacts.push_back(data);
+  // Numerical preprocessing is part of the vector space: a different resize or padding is a different space.
+  spec.input_spec_version = "qwen3vl-embedding-448x896-rgb-mean127.5-div127.5-aspect-1.6to2.5-stretch-else-letterbox-gray127.5-resize-area-if-both-axes-shrink-else-bicubic;"
+                            "source-yuv-matrix-range-from-frame-metadata;doc-instruction-v1;query-instruction-v1;last-token-final-norm-l2-v1";
+  return spec;
+}
+bool IsLargeArtifact(const std::string& relative) {
+  const bool sidecar = relative.size() > 5 && relative.compare(relative.size() - 5, 5, ".json") == 0;
+  return !sidecar && (relative.rfind("hbm/", 0) == 0 || relative.rfind("data/", 0) == 0);
+}
 }  // namespace
 struct PackageVerificationState {
   std::string root_path, manifest_sha256;
@@ -184,14 +211,14 @@ struct PackageVerificationState {
   std::vector<HeldFile> files, directories;
 };
 const std::vector<PackageSpec>& PackageSpecs() {
-  static const std::vector<PackageSpec> specs{Spec(false, false), Spec(true, false), Spec(false, true), Spec(true, true)};
+  static const std::vector<PackageSpec> specs{EmbeddingSpec(), Spec(false, false), Spec(true, false), Spec(false, true), Spec(true, true)};   // first entry is the product default
   return specs;
 }
 const PackageSpec& FindPackageSpec(const std::string& id) {
   for (const auto& spec : PackageSpecs()) if (spec.id == id) return spec;
   throw std::invalid_argument("unknown_search_model_package");
 }
-const char* DefaultPackageId() { return "siglip2-base-full-int8"; }
+const char* DefaultPackageId() { return "qwen3vl-embedding-2b-o2"; }
 int VerifiedPackage::BorrowedFileDescriptor(const std::string& relative_path) const {
   if (state_ && files_verified) for (const auto& file : state_->files) if (file.relative == relative_path) return file.fd.get();
   throw std::invalid_argument("unverified_model_artifact");
@@ -211,6 +238,7 @@ bool VerifyStillCurrent(const VerifiedPackage& package) {
       // Timestamp granularity can hide a same-inode, same-size rewrite. This is
       // a loading-boundary check, never a per-query or per-frame operation.
       std::string expected = state.manifest_sha256;
+      if (!package.contents_hashed && IsLargeArtifact(file.relative)) continue;   // identity (inode/size/times) already compared
       if (file.relative != "SHA256SUMS.txt") {
         const auto item = std::find_if(package.artifacts.begin(), package.artifacts.end(),
           [&](const auto& artifact) { return artifact.relative_path == file.relative; });
@@ -222,9 +250,56 @@ bool VerifyStillCurrent(const VerifiedPackage& package) {
     return true;
   } catch (...) { return false; }
 }
+VerifiedPackage VerifyEmbeddingPackage(const std::string& root_path, const PackageSpec& spec, bool deep) {
+  auto state = std::make_shared<PackageVerificationState>(); state->root_path = root_path; state->root = Root(root_path);
+  if (fstat(state->root.get(), &state->root_identity)) Invalid();
+  for (const char* dir : {"hbm", "data", "tokenizers"}) state->directories.push_back(Open(state->root.get(), dir, true, 0));
+  state->files.push_back(Open(state->root.get(), "SHA256SUMS.txt", false, kMaxMetadataBytes));
+  state->manifest_sha256 = Hash(state->files.back());
+  const auto sums = Checksums(state->files.back());
+  VerifiedPackage result; result.spec = &spec; result.state_ = state; result.contents_hashed = deep;
+  Json files = Json::object();
+  bool approved = true;
+  for (const auto& relative : spec.embedding_artifacts) {
+    state->files.push_back(Open(state->root.get(), relative, false, kMaxHbmBytes));
+    auto& file = state->files.back();
+    const auto expected = sums.find(relative);
+    if (expected == sums.end()) Invalid();
+    const auto hash = (deep || !IsLargeArtifact(relative)) ? Hash(file) : expected->second;
+    if (hash != expected->second) Invalid();
+    result.artifacts.push_back({relative, hash, uint64_t(file.identity.st_size)});
+    files[relative] = hash;
+    if (relative.size() > 15 && relative.compare(relative.size() - 15, 15, ".hbm.ainvr.json") == 0) {
+      const auto metadata = Metadata(file);
+      const auto hbm = relative.substr(0, relative.size() - 11);
+      const auto hbm_sum = sums.find(hbm);
+      const auto bytes = std::find_if(result.artifacts.begin(), result.artifacts.end(), [&](const auto& a) { return a.relative_path == hbm; });
+      if (hbm_sum == sums.end() || bytes == result.artifacts.end() || !metadata.is_object() || metadata.at("schema_version") != 1 ||
+          metadata.at("target") != "rdk_s100p" || metadata.at("hbm_file") != hbm.substr(4) || metadata.at("family") != spec.family ||
+          metadata.at("hbm_sha256") != hbm_sum->second || metadata.at("hbm_bytes") != bytes->bytes ||
+          !metadata.at("programs").is_object() || metadata.at("programs").empty() || metadata.at("programs").size() > 4 ||
+          !metadata.at("accuracy_verified").is_boolean() || !metadata.at("production_approved").is_boolean())
+        Invalid();
+      approved = approved && metadata.at("accuracy_verified").get<bool>() && metadata.at("production_approved").get<bool>();
+    }
+  }
+  Json version{{"schema", "ainvr-search-vector-space-v1"}, {"package_id", spec.id}, {"family", spec.family},
+    {"dimensions", spec.dimensions}, {"embedding_vocab_size", spec.embedding_vocab_size}, {"input_spec", spec.input_spec_version}, {"files", files}};
+  result.production_approval_declared = approved;
+  result.model_version = "search-v1-" + HashText(version.dump()); result.files_verified = true;
+  if (!VerifyStillCurrent(result)) Invalid();
+  return result;
+}
+VerifiedPackage VerifyPackageDeclared(const std::string& package_id) { return VerifyPackageDeclaredAtTrustedRoot(kSearchModelRoot, package_id); }
+VerifiedPackage VerifyPackageDeclaredAtTrustedRoot(const std::string& root_path, const std::string& package_id) {
+  const auto& spec = FindPackageSpec(package_id);
+  if (spec.kind != PackageKind::QwenEmbedding) return VerifyPackageAtTrustedRoot(root_path, package_id);
+  return VerifyEmbeddingPackage(root_path, spec, false);
+}
 VerifiedPackage VerifyPackage(const std::string& package_id) { return VerifyPackageAtTrustedRoot(kSearchModelRoot, package_id); }
 VerifiedPackage VerifyPackageAtTrustedRoot(const std::string& root_path, const std::string& package_id) {
   const auto& spec = FindPackageSpec(package_id);
+  if (spec.kind == PackageKind::QwenEmbedding) return VerifyEmbeddingPackage(root_path, spec, true);
   auto state = std::make_shared<PackageVerificationState>(); state->root_path = root_path; state->root = Root(root_path);
   if (fstat(state->root.get(), &state->root_identity)) Invalid();
   state->directories.push_back(Open(state->root.get(), "hbm", true, 0));
@@ -266,6 +341,18 @@ VerifiedPackage VerifyPackageAtTrustedRoot(const std::string& root_path, const s
 }
 Json InspectPackageMetadata(const std::string& trusted_root, const PackageSpec& spec) {
   const auto& expected = FindPackageSpec(spec.id); auto root = Root(trusted_root);
+  if (expected.kind == PackageKind::QwenEmbedding) {
+    bool declared = true;
+    for (const auto& relative : expected.embedding_artifacts) {
+      auto file = Open(root.get(), relative, false, kMaxHbmBytes);
+      if (relative.size() > 15 && relative.compare(relative.size() - 15, 15, ".hbm.ainvr.json") == 0) {
+        const auto metadata = Metadata(file);
+        if (!metadata.at("accuracy_verified").is_boolean() || !metadata.at("production_approved").is_boolean()) Invalid();
+        declared = declared && metadata.at("accuracy_verified").get<bool>() && metadata.at("production_approved").get<bool>();
+      }
+    }
+    return {{"production_approval_declared", declared}};
+  }
   auto vision = Open(root.get(), "hbm/" + expected.vision.file, false, kMaxHbmBytes);
   auto text = Open(root.get(), "hbm/" + expected.text.file, false, kMaxHbmBytes);
   auto vfile = Open(root.get(), vision.relative + ".ainvr.json", false, kMaxMetadataBytes);
@@ -282,6 +369,10 @@ Json InspectPackageMetadata(const std::string& trusted_root, const PackageSpec& 
 bool PackageArtifactsPresent(const std::string& trusted_root, const PackageSpec& spec) {
   try {
     const auto& expected = FindPackageSpec(spec.id); auto root = Root(trusted_root);
+    if (expected.kind == PackageKind::QwenEmbedding) {
+      for (const auto& relative : expected.embedding_artifacts) Open(root.get(), relative, false, kMaxHbmBytes);
+      return true;
+    }
     Open(root.get(), "hbm/" + expected.vision.file, false, kMaxHbmBytes);
     Open(root.get(), "hbm/" + expected.text.file, false, kMaxHbmBytes);
     return true;

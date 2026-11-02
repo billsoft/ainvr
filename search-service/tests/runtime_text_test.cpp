@@ -95,8 +95,9 @@ int main() { try {
     Check(faulted.calls == 0);
   }
   runtime.budget.max_samples = 100000;
-  Check(RuntimeProjectionCapacity(runtime, 768) == 83333);
-  Check(RuntimeProjectionCapacity(runtime, 1152) == 55555);
+  Check(RuntimeProjectionCapacity(runtime, 768) == 100000);     // the retention cap binds below the 128M-float ceiling
+  Check(RuntimeProjectionCapacity(runtime, 1152) == 100000);
+  Check(RuntimeProjectionCapacity(runtime, 2048) == 62500);     // 2048-d vectors are bounded by the 512 MB projection
   runtime.budget.max_samples = 64; Check(RuntimeProjectionCapacity(runtime, 768) == 64);
   Reject([&] { RuntimeProjectionCapacity(runtime, 0); });
   Reject([&] { RuntimeProjectionCapacity(runtime, 4097); });

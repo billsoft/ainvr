@@ -1,4 +1,5 @@
 #include "output/search_prepared_sample.hpp"
+#include "output/search_qwen_transform.hpp"
 #include "output/search_sampling_metrics.hpp"
 #include "../../../search-service/src/model_package.hpp"
 #include <algorithm>
@@ -8,6 +9,12 @@ namespace {
 bool FiniteBox(const std::array<double,4>& box) {
   return std::all_of(box.begin(),box.end(),[](double v) {return std::isfinite(v)&&std::abs(v)<=131072;}) && box[2]>0&&box[3]>0;
 }
+}
+// What the vector's model actually saw. Truthful per package: the dual-tower SigLIP vision towers squash to 256x256,
+// the Qwen3-VL-Embedding input is 896x448 and is stretched or letterboxed by the region's aspect ratio.
+nlohmann::json ModelInputEvidence(const ainvr::search::PackageSpec& spec,const ainvr::SnapshotPlan& plan){
+  if(spec.kind==ainvr::search::PackageKind::QwenEmbedding)return QwenModelInputEvidence(plan);
+  return {{"width",256},{"height",256},{"color","RGB"},{"interpolation","INTER_AREA"},{"aspect","squash"},{"mean",127.5},{"divisor",127.5}};
 }
 std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const FrozenSearchFrame& frame,
     const SearchEmbeddingSpace& space,const config::SearchProducerLease& lease,SearchHardwareProduct product,
@@ -54,8 +61,7 @@ std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const Froz
     {"raw_frame_width",geometry.raw_width},{"raw_frame_height",geometry.raw_height},
     {"captured_ms",record.captured_ms},{"image_width",product.plan.width},{"image_height",product.plan.height},
     {"raw_source_rectangle",product.plan.source_rectangle},{"image_space","raw-nv12-crop"},{"projection_mode","raw_planar"},
-    {"input_spec_version",space.input_spec_version},{"model_input",{{"width",256},{"height",256},{"color","RGB"},
-      {"interpolation","INTER_AREA"},{"aspect","squash"},{"mean",127.5},{"divisor",127.5}}},
+    {"input_spec_version",space.input_spec_version},{"model_input",ModelInputEvidence(spec,product.plan)},
     {"source_yuv",{{"bt709",frame.Bt709()},{"full_range",frame.FullRange()}}},
     {"render_backend",product.render_backend},{"encoder_backend",product.encoder_backend},{"vision_backend",product.vision_backend}};
   if(frame.SourceDetection()){

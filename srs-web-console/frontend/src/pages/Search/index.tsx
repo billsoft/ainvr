@@ -10,6 +10,11 @@ import { newOperationId } from '@/utils/operationId'
 import { searchService, type SearchStatus, type SearchPageResult, type SearchChannel } from '@/api/searchService'
 import { SearchResults } from './SearchResults'
 
+// Scale of the embedding model's cosine scores: unrelated image/text pairs sit around 0.15-0.25 and good matches reach 0.3-0.47,
+// so the slider spans 0-0.5. Ranking never depends on this filter; it only trims weak candidates.
+const DEFAULT_MIN_SIMILARITY = 0.25
+const MAX_MIN_SIMILARITY = 0.5
+
 const button = 'min-h-9 [@media(pointer:coarse)]:min-h-11 rounded-base border border-line bg-surface px-3 py-1.5 text-sm text-ink-subtle transition-colors hover:border-primary hover:text-primary disabled:opacity-50'
 const searchRanges: RangePreset[] = [
   { label: '近1小时', unit: 'hour', n: 1 },
@@ -28,8 +33,8 @@ export default function SearchPage() {
   const [inherited] = useState(() => searchEntryScope(entryParams))
   const [inheritedVisible, setInheritedVisible] = useState(!!inherited)
   const [query, setQuery] = useState('')
-  const [minimum, setMinimum] = useState('0.07')
-  const validMinimum = minimum === '' || (Number.isFinite(Number(minimum)) && Number(minimum) >= 0 && Number(minimum) <= 0.2)
+  const [minimum, setMinimum] = useState(String(DEFAULT_MIN_SIMILARITY))
+  const validMinimum = minimum === '' || (Number.isFinite(Number(minimum)) && Number(minimum) >= 0 && Number(minimum) <= MAX_MIN_SIMILARITY)
   const [data, setData] = useState<SearchPageResult | null>(null)
   const [submitted, setSubmitted] = useState('')
   const [submittedCriteria, setSubmittedCriteria] = useState('')
@@ -284,15 +289,15 @@ export default function SearchPage() {
         <div className="mt-2 max-w-xl space-y-1">
         <label htmlFor="search-minimum" className="text-sm font-medium text-ink">最低相似度</label>
         <div className="flex flex-wrap items-center gap-3">
-          <input type="range" aria-label="拖动最低相似度" aria-describedby="search-minimum-hint" min="0" max="0.2" step="0.005" value={minimum === '' ? 0 : Number(minimum) || 0} disabled={searching}
-            onChange={e => setMinimum(Number(e.target.value).toFixed(3))} className="h-11 min-w-32 flex-1 cursor-pointer accent-primary focus-visible:outline-primary" />
-          <input id="search-minimum" type="number" inputMode="decimal" min="0" max="0.2" step="0.005" placeholder="不限" value={minimum} disabled={searching}
+          <input type="range" aria-label="拖动最低相似度" aria-describedby="search-minimum-hint" min="0" max={MAX_MIN_SIMILARITY} step="0.01" value={minimum === '' ? 0 : Number(minimum) || 0} disabled={searching}
+            onChange={e => setMinimum(String(Number(Number(e.target.value).toFixed(3))))} className="h-11 min-w-32 flex-1 cursor-pointer accent-primary focus-visible:outline-primary" />
+          <input id="search-minimum" type="number" inputMode="decimal" min="0" max={MAX_MIN_SIMILARITY} step="any" placeholder="不限" value={minimum} disabled={searching}
             onChange={e => setMinimum(e.target.value)} aria-invalid={!validMinimum} aria-describedby="search-minimum-hint"
             className="h-11 w-24 rounded-base border border-line bg-surface px-3 text-sm tabular-nums focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
           <button type="button" disabled={searching} className={button} onClick={() => setMinimum('')}>不限</button>
         </div>
-        <p id="search-minimum-hint" className="text-xs text-ink-subtle">数值越高，结果越少；不是置信度或概率。0.07 为试用起点，可拖动或输入，点击“搜索录像”生效。</p>
-        {!validMinimum && <p role="alert" className="text-xs text-red-700">请输入 0 到 0.20 之间的数值，或选择不限。</p>}
+        <p id="search-minimum-hint" className="text-xs text-ink-subtle">数值越高，结果越少；不是置信度或概率。{DEFAULT_MIN_SIMILARITY.toFixed(2)} 为试用起点，可拖动或输入，点击“搜索录像”生效；结果始终按相似度从高到低排列。</p>
+        {!validMinimum && <p role="alert" className="text-xs text-red-700">请输入 0 到 {MAX_MIN_SIMILARITY.toFixed(2)} 之间的数值，或选择不限。</p>}
       </div>
         <p className="mt-2 text-xs text-ink-subtle">时间与位置以所选条件为准；描述中的“昨晚”等条件不会自动生效。</p>
       </details>

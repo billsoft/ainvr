@@ -5,6 +5,9 @@
 #include "analytics/jpeg_dimensions.hpp"
 #include "platform/vpu_decoder.hpp"
 #include "../../../search-service/src/bpu_vision_encoder.hpp"
+#include "output/search_hardware_qwen.hpp"
+#include "output/search_qwen_runtime.hpp"
+#include "../../../shared/cpp/embed_ipc.hpp"
 namespace ai_service::output {
 namespace {
 class NativeSession final:public SearchHardwareSession {
@@ -77,8 +80,14 @@ class NativeSession final:public SearchHardwareSession {
 };
 }
 std::shared_ptr<SearchHardwareOwner> MakeNativeSearchHardwareOwner(SearchHardwareNativeOptions options){
+  // The text-query channel exists for the whole life of the process; the weights load only when search-service asks.
+  QwenEmbeddingHost::Instance().StartIpc(ainvr::kSearchEmbedSocket);
   return std::make_shared<SearchHardwareOwner>([options](const std::string& package,
-      const std::optional<ainvr::search::RuntimeModelPin>& expected,const SearchSamplingCurrent& current){
+      const std::optional<ainvr::search::RuntimeModelPin>& expected,const SearchSamplingCurrent& current)
+      ->std::unique_ptr<SearchHardwareSession>{
+    // The package kind selects the owner: dual-tower SigLIP vision encoder, or the single Qwen3-VL-Embedding owner.
+    if(ainvr::search::FindPackageSpec(package).kind==ainvr::search::PackageKind::QwenEmbedding)
+      return MakeQwenSearchSession(package,options,expected,current);
     return std::make_unique<NativeSession>(package,options,expected,current);});
 }
 }

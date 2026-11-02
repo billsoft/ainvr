@@ -1,7 +1,10 @@
 // Destructive fresh-model cutover policy. No database or service side effects.
 export const OLD_PACKAGE = 'siglip2-base-full-int8';
 export const NEW_PACKAGE = 'siglip-so400m-i18n-full-int8';
-const PACKAGE_DIMENSIONS = Object.freeze({[OLD_PACKAGE]:768,[NEW_PACKAGE]:1152});
+export const QWEN_PACKAGE = 'qwen3vl-embedding-2b-o2';
+// 2048-d vectors: 62,500 samples fill the 128M-float exact projection, so the default cap is 60,000.
+export const QWEN_MAX_SAMPLES = 60000;
+const PACKAGE_DIMENSIONS = Object.freeze({[OLD_PACKAGE]:768,[NEW_PACKAGE]:1152,[QWEN_PACKAGE]:2048});
 // Both endpoints are explicit: a misspelled or same-model request must fail closed.
 export function freshModelTransition(sourcePackage, targetPackage) {
   if (!Object.hasOwn(PACKAGE_DIMENSIONS,sourcePackage) ||
@@ -30,6 +33,8 @@ export function freshModelSettings(settings, pin, models, transition) {
   next.sampling.scene_static_interval_ms = Math.max(60000, next.sampling.scene_static_interval_ms, next.sampling.scene_active_interval_ms);
   next.sampling.scene_change_min_interval_ms = Math.max(5000, next.sampling.scene_change_min_interval_ms);
   next.limits.producer_queue = 1;
+  // A single image costs about 1.5 s on the BPU: keep the bounded in-flight queue and cap the history for 2048-d vectors.
+  if (targetPackage === QWEN_PACKAGE) next.limits.max_samples = Math.min(next.limits.max_samples, QWEN_MAX_SAMPLES);
   return next;
 }
 export function validateFreshModelManifest(manifest, pin, transition) {
