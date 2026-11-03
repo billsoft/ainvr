@@ -168,8 +168,8 @@ void EmbeddingChecks() {
 int main() {
   static_assert(!std::is_copy_constructible_v<VerifiedPackage>);
   try {
-    Check(std::string(DefaultPackageId()) == "qwen3vl-embedding-2b-o2", "wrong default");
-    Check(PackageSpecs().size() == 5 && PackageSpecs()[0].id == DefaultPackageId() && PackageSpecs()[1].id == "siglip2-base-full-int8", "candidate duplication/order"); ++cases;
+    Check(std::string(DefaultPackageId()) == "siglip2-base-full-int8", "wrong default");
+    Check(PackageSpecs().size() == 5 && PackageSpecs()[0].id == DefaultPackageId() && PackageSpecs()[4].id == "qwen3vl-embedding-2b-o2", "candidate duplication/order"); ++cases;
     Reject([] { FindPackageSpec("../../private"); });
     for (const auto& spec : PackageSpecs()) {
       if (spec.kind != PackageKind::DualTower) continue;   // the Qwen embedding package has its own fixture below

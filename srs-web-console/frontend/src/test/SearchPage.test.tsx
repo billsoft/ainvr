@@ -28,11 +28,10 @@ it('explains a large source selection before exceeding the100-channel contract a
   await screen.findByLabelText('南区摄像头001')
   expect(screen.getByRole('button', { name: '选择当前列表' })).toBeDisabled()
   expect(screen.getByText(/全部选中当前列表后将达到 200/)).toBeInTheDocument()
-  expect(screen.getByLabelText('南区摄像头001')).not.toBeChecked()
-  fireEvent.change(screen.getByRole('textbox', { name: '查找摄像头' }), { target: { value: '南区' } })
-  fireEvent.click(screen.getByRole('button', { name: '选择当前列表' }))
+  // Entry selects the first 100 AI outputs (the per-search limit); the rest stay selectable only after removing some.
+  expect(screen.getByLabelText('南区摄像头001')).toBeChecked()
+  expect(screen.getByLabelText('北区摄像头001')).not.toBeChecked()
   expect(screen.getByText('AI 输出 · 已选 100 / 100')).toBeInTheDocument()
-  fireEvent.change(screen.getByRole('textbox', { name: '查找摄像头' }), { target: { value: '' } })
   expect(screen.getByLabelText('北区摄像头001')).toBeDisabled()
   expect(screen.getByLabelText('南区摄像头001')).toBeEnabled()
   fireEvent.click(screen.getByLabelText('南区摄像头001'))
@@ -85,9 +84,26 @@ function result(id: string, name = '后门'): SearchPageResult {
 async function ready() {
   vi.mocked(searchService.status).mockResolvedValue({ ready: true, reason: null, model_version: 'test' })
   render(<MemoryRouter><SearchPage /></MemoryRouter>)
-  fireEvent.click(await screen.findByRole('checkbox', { name: '后门' }))
+  const door = await screen.findByRole('checkbox', { name: '后门' })
+  await waitFor(() => expect(door).toBeChecked())
+  const other = screen.queryByRole('checkbox', { name: '大门' })
+  if (other && (other as HTMLInputElement).checked) fireEvent.click(other)
   fireEvent.change(screen.getByRole('textbox', { name: '想找什么？' }), { target: { value: '黑色背包' } })
 }
+it('selects every AI output on entry and keeps the conditions outside the scrolling results', async () => {
+  vi.mocked(searchService.status).mockResolvedValue({ ready: true, reason: null, model_version: 'test' })
+  render(<MemoryRouter><SearchPage /></MemoryRouter>)
+  const door = await screen.findByRole('checkbox', { name: '后门' })
+  await waitFor(() => expect(door).toBeChecked())
+  expect(screen.getByRole('checkbox', { name: '大门' })).toBeChecked()
+  expect(screen.getByText(/已选 2 \/ 100/)).toBeInTheDocument()
+  const conditions = screen.getByLabelText('搜索条件区'), results = screen.getByLabelText('搜索结果区')
+  expect(conditions.contains(screen.getByRole('form', { name: '搜索条件' }))).toBe(true)
+  expect(results.contains(conditions)).toBe(false)
+  expect(conditions.className).toContain('shrink-0')
+  expect(results.className).toContain('overflow-y-auto')
+  expect(conditions.className).not.toContain('flex-1')
+})
 it('keeps the channel sidebar visible and editable before and after searching and closing evidence', async () => {
   flags.aiReference = false
   vi.mocked(searchService.query).mockImplementation(async input => ({ ...result(input.request_id), scope: input.scope }))
@@ -154,7 +170,7 @@ it.each([
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
   expect(vi.mocked(searchService.query).mock.calls[1]![0]).toEqual(expect.objectContaining({
-    query: '黑色背包', min_similarity: 0.25,
+    query: '黑色背包', min_similarity: 0.055,
     scope: { channel_ids: ['a'], from: start.toISOString(), to: new Date(now.getTime() + 1000).toISOString() },
   }))
   await waitFor(() => expect(screen.queryByText(/条件已修改/)).not.toBeInTheDocument())
@@ -506,7 +522,7 @@ it('labels unsupported live panorama sampling but keeps historical channel selec
   const history = await screen.findByRole('checkbox', { name: /全景后门/ });
   expect(history).not.toBeDisabled();
   expect(screen.getByText('全景采集待验证 · 可查历史')).toBeInTheDocument();
-  fireEvent.click(history);
+  await waitFor(() => expect(history).toBeChecked());   // selected by default like every other AI output
   fireEvent.change(screen.getByRole('textbox', { name: '想找什么？' }), { target: { value: '黑色背包' } });
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }));
   await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(1));
@@ -623,8 +639,9 @@ it('places the unavailable reason before search conditions while allowing condit
   expect(screen.getByRole('button', { name: '搜索录像' })).toBeDisabled()
   fireEvent.change(screen.getByRole('textbox', { name: '想找什么？' }), { target: { value: '先编辑描述' } })
   expect(screen.getByRole('textbox', { name: '想找什么？' })).toHaveValue('先编辑描述')
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: '后门' })).toBeChecked())
   fireEvent.click(screen.getByRole('checkbox', { name: '后门' }))
-  expect(screen.getByRole('checkbox', { name: '后门' })).toBeChecked()
+  expect(screen.getByRole('checkbox', { name: '后门' })).not.toBeChecked()
 })
 
 
@@ -707,29 +724,41 @@ it('pauses AI reference analysis so the model stays free for alarm review', asyn
   expect(searchService.page).not.toHaveBeenCalled()
 })
 
+it('paints the pressed state of the quick time range like the recognition history page', async () => {
+  await ready();
+  const group = screen.getByLabelText('快捷时间范围');
+  const pressed = () => within(group).getAllByRole('button').filter(b => b.getAttribute('aria-pressed') === 'true').map(b => b.textContent);
+  expect(pressed()).toEqual(['近24小时']);
+  fireEvent.click(within(group).getByRole('button', { name: '近7天' }));
+  expect(pressed()).toEqual(['近7天']);
+  fireEvent.click(within(group).getByRole('button', { name: '近1小时' }));
+  expect(pressed()).toEqual(['近1小时']);
+  expect(screen.getByRole('button', { name: '选择时间范围' })).toHaveTextContent('→');
+});
+
 it('keeps slider and numeric minimum in sync and submits a frozen search condition', async () => {
   await ready();
   fireEvent.click(screen.getByText(/^高级选项/));
   const slider = screen.getByRole('slider', { name: '拖动最低相似度' });
   const numeric = screen.getByRole('spinbutton', { name: '最低相似度' });
-  expect(numeric).toHaveValue(0.25);
-  expect(slider).toHaveAttribute('max', '0.5');
-  expect(slider).toHaveAttribute('step', '0.01');
-  fireEvent.change(slider, { target: { value: '0.3' } });
-  expect(numeric).toHaveValue(0.3);
+  expect(numeric).toHaveValue(0.055);
+  expect(slider).toHaveAttribute('max', '0.2');
+  expect(slider).toHaveAttribute('step', '0.005');
+  fireEvent.change(slider, { target: { value: '0.075' } });
+  expect(numeric).toHaveValue(0.075);
   fireEvent.change(slider, { target: { value: '0.15' } });
   expect(numeric).toHaveValue(0.15);
-  fireEvent.change(numeric, { target: { value: '0.5' } });
-  expect(slider).toHaveValue('0.5');
+  fireEvent.change(numeric, { target: { value: '0.2' } });
+  expect(slider).toHaveValue('0.2');
   fireEvent.change(screen.getByRole('textbox', { name: '想找什么？' }), { target: { value: '白色衣服' } });
-  vi.mocked(searchService.query).mockResolvedValue({ ...result('minimum-search'), min_similarity: 0.5, items: [] });
+  vi.mocked(searchService.query).mockResolvedValue({ ...result('minimum-search'), min_similarity: 0.2, items: [] });
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }));
   await screen.findByText('所选范围内，没有候选达到当前相似度要求');
   fireEvent.click(screen.getByText('结果说明'));
-  expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.5);
+  expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.2);
   fireEvent.click(screen.getByRole('button', { name: '不限' }));
   expect(numeric).toHaveValue(null);
-  expect(screen.getByText(/本次最低相似度 0.50/)).toBeInTheDocument();
+  expect(screen.getByText(/本次最低相似度 0.20/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }));
   await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2));
   expect(vi.mocked(searchService.query).mock.calls[1]![0].min_similarity).toBeUndefined();
@@ -745,19 +774,19 @@ it('keeps advanced similarity collapsed by default without dropping its default 
   expect(advanced).not.toHaveAttribute('open')
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   await screen.findByRole('button', { name: '查看第 1 条候选：后门' })
-  expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.25)
+  expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.055)
   fireEvent.click(summary)
   expect(advanced).toHaveAttribute('open')
   const minimum = screen.getByRole('spinbutton', { name: '最低相似度' })
-  expect(minimum).toHaveValue(0.25)
-  fireEvent.change(minimum, { target: { value: '0.12' } })
+  expect(minimum).toHaveValue(0.055)
+  fireEvent.change(minimum, { target: { value: '0.125' } })
   fireEvent.click(summary)
   expect(advanced).not.toHaveAttribute('open')
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
-  expect(vi.mocked(searchService.query).mock.calls[1]![0].min_similarity).toBe(0.12)
+  expect(vi.mocked(searchService.query).mock.calls[1]![0].min_similarity).toBe(0.125)
   fireEvent.click(summary)
-  expect(screen.getByRole('slider', { name: '拖动最低相似度' })).toHaveValue('0.12')
+  expect(screen.getByRole('slider', { name: '拖动最低相似度' })).toHaveValue('0.125')
 })
 
 it('submits Enter once and ignores Chinese composition Enter and legacy keyCode 229', async () => {
@@ -808,7 +837,7 @@ it('keeps submitted scope, description and threshold when draft conditions chang
   fireEvent.click(screen.getByRole('checkbox', { name: '大门' }))
   expect(screen.getByText(/条件已修改/)).toBeInTheDocument()
   expect(screen.getByText(/本次描述/)).toHaveTextContent('黑色背包')
-  expect(screen.getByText(/本次最低相似度 0.25/)).toBeVisible()
+  expect(screen.getByText(/本次最低相似度 0.055/)).toBeVisible()
   expect(searchService.query).toHaveBeenCalledTimes(1)
   expect(searchService.cancel).not.toHaveBeenCalled()
   expect(searchService.coverage).toHaveBeenCalledTimes(1)

@@ -1,7 +1,7 @@
 # AINVR search-service
 
-2026-11-02：默认包已换为 Qwen3-VL-Embedding-2B（全 BPU，2048 维，`qwen3vl-embedding-2b-o2`），说明见
-`../docs/SEARCH-QWEN3VL-EMBEDDING.md`；SigLIP2/so400m 仍可通过换包+清空重积累切回。
+默认包是 SigLIP2 Base 256（768 维，`siglip2-base-full-int8`）。Qwen3-VL-Embedding-2B（全 BPU，2048 维，`qwen3vl-embedding-2b-o2`）
+是可选包，2026-11-02 曾上线后按用户决定换回，说明见 `../docs/SEARCH-QWEN3VL-EMBEDDING.md`；换包都要清空重积累（`deploy-package/search_fresh_model_cutover.mjs`）。
 2026-10-29：基础采样、检索与异步参考复核已部署开发测试板（当时默认包 `siglip2-base-full-int8`）。当前修复与发布证据见
 `../docs/AI-SEARCH-RELEASE-20261029.md`；接口联调不代表现场准确率验收。
 

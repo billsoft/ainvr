@@ -10,11 +10,6 @@ import { newOperationId } from '@/utils/operationId'
 import { searchService, type SearchStatus, type SearchPageResult, type SearchChannel } from '@/api/searchService'
 import { SearchResults } from './SearchResults'
 
-// Scale of the embedding model's cosine scores: unrelated image/text pairs sit around 0.15-0.25 and good matches reach 0.3-0.47,
-// so the slider spans 0-0.5. Ranking never depends on this filter; it only trims weak candidates.
-const DEFAULT_MIN_SIMILARITY = 0.25
-const MAX_MIN_SIMILARITY = 0.5
-
 const button = 'min-h-9 [@media(pointer:coarse)]:min-h-11 rounded-base border border-line bg-surface px-3 py-1.5 text-sm text-ink-subtle transition-colors hover:border-primary hover:text-primary disabled:opacity-50'
 const searchRanges: RangePreset[] = [
   { label: '近1小时', unit: 'hour', n: 1 },
@@ -33,8 +28,8 @@ export default function SearchPage() {
   const [inherited] = useState(() => searchEntryScope(entryParams))
   const [inheritedVisible, setInheritedVisible] = useState(!!inherited)
   const [query, setQuery] = useState('')
-  const [minimum, setMinimum] = useState(String(DEFAULT_MIN_SIMILARITY))
-  const validMinimum = minimum === '' || (Number.isFinite(Number(minimum)) && Number(minimum) >= 0 && Number(minimum) <= MAX_MIN_SIMILARITY)
+  const [minimum, setMinimum] = useState('0.055')
+  const validMinimum = minimum === '' || (Number.isFinite(Number(minimum)) && Number(minimum) >= 0 && Number(minimum) <= 0.2)
   const [data, setData] = useState<SearchPageResult | null>(null)
   const [submitted, setSubmitted] = useState('')
   const [submittedCriteria, setSubmittedCriteria] = useState('')
@@ -73,12 +68,15 @@ export default function SearchPage() {
   }, [])
   const [filter, setFilter] = useState('')
   const [selected, setSelected] = useState<string[]>(inherited?.channel_ids ?? [])
+  const defaultSelectionApplied = useRef(!!inherited)
   const [channels, setChannels] = useState<SearchChannel[]>([])
   const [status, setStatus] = useState<SearchStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [retry, setRetry] = useState(0)
   const [picker, setPicker] = useState(false)
+  // Which quick preset produced the current range (null = hand-picked in the dialog or inherited). Only paints the pressed state.
+  const [selectedPreset, setSelectedPreset] = useState<string | null>(inherited ? null : '近24小时')
   const [range, setRange] = useState(() => {
     if (inherited) return { from: toDatetimeLocalValue(new Date(inherited.from)), to: toDatetimeLocalValue(new Date(Date.parse(inherited.to) - 1)) }
     const now = new Date()
@@ -91,7 +89,10 @@ export default function SearchPage() {
       .then(([next, sources]) => {
         if (abort.signal.aborted) return
         setStatus(next); setChannels(sources.items)
-        setSelected(ids => ids.filter(id => sources.items.some(c => c.id === id)))
+        // First load without an inherited selection: all AI outputs (the page limit is 100 per search). Later reloads only prune.
+        const apply = !defaultSelectionApplied.current
+        defaultSelectionApplied.current = true
+        setSelected(ids => apply ? sources.items.slice(0, 100).map(c => c.id) : ids.filter(id => sources.items.some(c => c.id === id)))
       })
       .catch(e => { if (!abort.signal.aborted) { setStatus(null); setError(e instanceof Error ? e.message : '读取搜索状态失败') } })
       .finally(() => { if (!abort.signal.aborted) setLoading(false) })
@@ -118,7 +119,7 @@ export default function SearchPage() {
     active.current = { id, abort }
     setSearching(true); setQueryError(''); setDescriptionError(false); setRefreshError(''); setEvidenceNotice(false); setAccessError(''); setData(null); setSubmitted(query.trim()); setSubmittedCriteria(criteriaKey)
     try {
-      const next = await searchService.query({ ...(minimum === '' ? {} : { min_similarity: Number(minimum) }), query: query.trim(), request_id: id, verify: aiReferenceEnabled(),
+      const next = await searchService.query({ ...(minimum === '' ? {} : { min_similarity: Math.min(1, Number(minimum)) }), query: query.trim(), request_id: id, verify: aiReferenceEnabled(),
         scope: { channel_ids: selected, from: from!.toISOString(), to: new Date(to!.getTime() + 1000).toISOString() } }, abort.signal)
       if (epoch.current === own) {
         loadedPages.current = [{ cursor: null, ids: next.items.map(i => i.id) }]
@@ -251,7 +252,9 @@ export default function SearchPage() {
       </fieldset>
       <p className="border-t border-line p-3 text-xs leading-relaxed text-ink-faint">支持跨通道多选。修改通道或条件后，点击搜索应用。</p>
     </aside>
-    <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-y-auto pb-2">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+    {/* Search conditions never scroll away with the results; a tall expanded panel scrolls on its own. */}
+    <div aria-label="搜索条件区" className="max-h-[60vh] shrink-0 space-y-3 overflow-y-auto">
     {(!status?.ready || error) && <section role={error ? 'alert' : 'status'} className="rounded-xl border border-line bg-surface p-5">
       <h2 className="font-medium text-ink">{loading ? '正在检查搜索服务' : error ? '暂时无法读取搜索状态' : status?.reason === 'disabled' ? '智能搜索未启用' : status?.reason === 'config_pending' ? '配置等待应用' : status?.reason === 'storage_unavailable' ? '搜索存储不可用' : status?.reason === 'service_unavailable' ? '搜索服务暂不可用' : '等待搜索能力就绪'}</h2>
       <p className="mt-2 text-sm text-ink-subtle">{message}</p>
@@ -283,21 +286,21 @@ export default function SearchPage() {
       </div>
       <div className="flex flex-wrap items-end gap-2">
         <div><span className="mb-1 block text-xs text-ink-faint">时间范围</span><button type="button" aria-label="选择时间范围" className={`${button} inline-flex items-center gap-1.5 px-2`} onClick={() => setPicker(true)}><CalendarClock size={14} className="text-ink-faint" aria-hidden="true" /><span>{from && to ? `${formatRangeShort(from)} → ${formatRangeShort(to)}` : '选择时间范围'}</span></button></div>
-        <div className="flex flex-wrap gap-1" aria-label="快捷时间范围">{searchRanges.map(preset => <button key={preset.label} type="button" className="min-h-9 [@media(pointer:coarse)]:min-h-11 rounded-base border border-line px-2 py-1 text-xs text-ink-subtle hover:border-primary hover:text-primary" onClick={() => setRange(presetRange(preset))}>{preset.label}</button>)}</div>
+        <div className="flex flex-wrap gap-1" aria-label="快捷时间范围">{searchRanges.map(preset => <button key={preset.label} type="button" aria-pressed={selectedPreset === preset.label} className={['min-h-9 [@media(pointer:coarse)]:min-h-11 rounded-base border px-2 py-1 text-xs transition-colors', selectedPreset === preset.label ? 'border-primary bg-primary-50 text-primary' : 'border-line text-ink-subtle hover:border-primary hover:text-primary'].join(' ')} onClick={() => { setRange(presetRange(preset)); setSelectedPreset(preset.label) }}>{preset.label}</button>)}</div>
       <details className="group ml-auto open:basis-full open:ml-0">
         <summary className="inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 cursor-pointer items-center gap-1.5 text-xs text-ink-subtle hover:text-primary"><SlidersHorizontal size={14} aria-hidden="true" />高级选项 · 相似度 {minimum === '' ? '不限' : minimum}<span className="ml-1 text-ink-faint group-open:rotate-180">⌄</span></summary>
         <div className="mt-2 max-w-xl space-y-1">
         <label htmlFor="search-minimum" className="text-sm font-medium text-ink">最低相似度</label>
         <div className="flex flex-wrap items-center gap-3">
-          <input type="range" aria-label="拖动最低相似度" aria-describedby="search-minimum-hint" min="0" max={MAX_MIN_SIMILARITY} step="0.01" value={minimum === '' ? 0 : Number(minimum) || 0} disabled={searching}
-            onChange={e => setMinimum(String(Number(Number(e.target.value).toFixed(3))))} className="h-11 min-w-32 flex-1 cursor-pointer accent-primary focus-visible:outline-primary" />
-          <input id="search-minimum" type="number" inputMode="decimal" min="0" max={MAX_MIN_SIMILARITY} step="any" placeholder="不限" value={minimum} disabled={searching}
+          <input type="range" aria-label="拖动最低相似度" aria-describedby="search-minimum-hint" min="0" max="0.2" step="0.005" value={minimum === '' ? 0 : Number(minimum) || 0} disabled={searching}
+            onChange={e => setMinimum(Number(e.target.value).toFixed(3))} className="h-11 min-w-32 flex-1 cursor-pointer accent-primary focus-visible:outline-primary" />
+          <input id="search-minimum" type="number" inputMode="decimal" min="0" max="0.2" step="0.005" placeholder="不限" value={minimum} disabled={searching}
             onChange={e => setMinimum(e.target.value)} aria-invalid={!validMinimum} aria-describedby="search-minimum-hint"
             className="h-11 w-24 rounded-base border border-line bg-surface px-3 text-sm tabular-nums focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
           <button type="button" disabled={searching} className={button} onClick={() => setMinimum('')}>不限</button>
         </div>
-        <p id="search-minimum-hint" className="text-xs text-ink-subtle">数值越高，结果越少；不是置信度或概率。{DEFAULT_MIN_SIMILARITY.toFixed(2)} 为试用起点，可拖动或输入，点击“搜索录像”生效；结果始终按相似度从高到低排列。</p>
-        {!validMinimum && <p role="alert" className="text-xs text-red-700">请输入 0 到 {MAX_MIN_SIMILARITY.toFixed(2)} 之间的数值，或选择不限。</p>}
+        <p id="search-minimum-hint" className="text-xs text-ink-subtle">数值越高，结果越少；不是置信度或概率。0.055 为试用起点，可拖动或输入，点击“搜索录像”生效。</p>
+        {!validMinimum && <p role="alert" className="text-xs text-red-700">请输入 0 到 0.20 之间的数值，或选择不限。</p>}
       </div>
         <p className="mt-2 text-xs text-ink-subtle">时间与位置以所选条件为准；描述中的“昨晚”等条件不会自动生效。</p>
       </details>
@@ -310,7 +313,8 @@ export default function SearchPage() {
             {selected.length > 100 && <p role="alert" className="text-sm text-red-600">单次最多选择 100 个通道，请缩小范围。</p>}
 
     </form>
-
+    </div>
+    <div aria-label="搜索结果区" className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-2">
     {queryError && <p id="search-query-error" role="alert" className="rounded-base border border-red-200 bg-red-50 p-3 text-sm text-red-700">{queryError}</p>}
     {refreshError && <p role="alert" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{refreshError}</p>}
     {evidenceNotice && data && <p role="status" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">部分候选证据已过期或不可访问，已停止更新这些候选；可通过已有录像链接核对，或重新搜索。</p>}
@@ -320,8 +324,9 @@ export default function SearchPage() {
       <SearchResults key={data.search_id} data={data} moreLoading={moreLoading} readOnlyReason={accessError} onAccessDenied={setAccessError} onMore={() => void more()}
         onUpdate={item => setData(old => old && old.search_id === data.search_id ? { ...old, items: old.items.map(i => i.id === item.id ? { ...i, feedback: item.feedback } : i) } : old)} /></>}
     {picker && <DateTimeRangePicker open from={range.from} to={range.to} onClose={() => setPicker(false)}
-      onConfirm={(start, end) => { setRange({ from: start, to: end }); setPicker(false) }}
+      onConfirm={(start, end) => { setRange({ from: start, to: end }); setSelectedPreset(null); setPicker(false) }}
       validateRange={(start, end) => end.getTime() + 1000 - start.getTime() > 31 * 86400000 ? '每次最多查询 31 天' : null} />}
+    </div>
     </div>
   </section>
 }

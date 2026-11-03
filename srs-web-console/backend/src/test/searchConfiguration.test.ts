@@ -19,7 +19,7 @@ describe('search configuration shares the existing parameter-store contract', ()
   });
   it('is disabled and resource bounded before models or historical storage exist', async () => {
     expect(searchSettingsSchema.parse(defaults()).enabled).toBe(false);
-    expect(defaults().model.package_id).toBe('qwen3vl-embedding-2b-o2');
+    expect(defaults().model.package_id).toBe('siglip2-base-full-int8');
     expect((await new SearchConfigAdapter().validate([{ group: 'system', name: 'settings', config: defaults() }] as never)).ok).toBe(true);
     for (const overrides of [{ enabled: true }, { listen: { host: '0.0.0.0', port: 8400 } },
       { limits: { ...defaults().limits, producer_bytes: 2 ** 40 } },

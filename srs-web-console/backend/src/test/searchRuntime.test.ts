@@ -138,7 +138,7 @@ describe('effective search configuration and dependency fencing', () => {
   it('migration defaults preserve the historical initial package and do not alter other desired service versions', () => {
     const sql = readFileSync(new URL('../store/migrations/018_search_runtime.sql', import.meta.url), 'utf8');
     const json = /VALUES\('search-service','system','settings','([\s\S]*?)'::jsonb/.exec(sql)![1];
-    expect(JSON.parse(json)).toEqual({ ...DEFAULT_SEARCH_SETTINGS, model: { package_id: 'siglip-so400m-i18n-full-int8' }, limits: { ...DEFAULT_SEARCH_SETTINGS.limits, max_samples: 100000 } });
+    expect(JSON.parse(json)).toEqual({ ...DEFAULT_SEARCH_SETTINGS, model: { package_id: 'siglip-so400m-i18n-full-int8' } });
     expect(sql).toContain("WHERE service_name='search-service'");
     expect(sql).not.toContain('DELETE');
   });

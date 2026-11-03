@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include "http_service.hpp"
+#include "rank_refine.hpp"
 #include "migration_coverage.hpp"
 #include "migration_sample.hpp"
 #include "model_migration_authorization.hpp"
@@ -172,35 +173,6 @@ std::string MatchEngine::ReplaceTrackSlot(const Sample& sample, size_t slot, con
                                          const std::string& token) {
   return projection_.ReplaceTrackSlot(sample, slot, expected, token);
 }
-namespace {
-// Result refinement on top of raw cosine scores. Constants come from the Qwen3-VL-Embedding board analysis
-// (docs/SEARCH-QWEN3VL-EMBEDDING.md): whole-scene frames score ~0.09 higher than object crops on neutral queries (hubness),
-// consecutive samples of one scene/track are near-identical, and an absolute threshold cannot separate "best available"
-// from "actually matching".
-constexpr double kSceneScoreOffset = 0.04;      // subtracted from scene scores so scenes do not crowd out object crops
-constexpr double kRelativeWindow = 0.08;        // keep hits within this distance of the best corrected score
-constexpr int64_t kNearDuplicateMs = 5000;      // same channel+kind(+track) hits closer than this collapse into the best one
-void RefineRanking(std::vector<RankedSample>& items) {
-  for (auto& item : items) if (item.sample.record.scene) item.score -= kSceneScoreOffset;
-  std::stable_sort(items.begin(), items.end(), [](const RankedSample& a, const RankedSample& b) { return a.score > b.score; });
-  std::vector<RankedSample> kept;
-  for (auto& item : items) {
-    const auto& r = item.sample.record;
-    bool duplicate = false;
-    for (const auto& other : kept) {
-      const auto& o = other.sample.record;
-      if (o.channel == r.channel && o.scene == r.scene && (r.scene || o.track == r.track) &&
-          std::llabs(o.captured_ms - r.captured_ms) <= kNearDuplicateMs) { duplicate = true; break; }
-    }
-    if (!duplicate) kept.push_back(std::move(item));
-  }
-  if (!kept.empty()) {
-    const double floor = kept.front().score - kRelativeWindow;
-    kept.erase(std::remove_if(kept.begin(), kept.end(), [&](const RankedSample& x) { return x.score < floor; }), kept.end());
-  }
-  items = std::move(kept);
-}
-}  // namespace
 Json MatchEngine::Match(const std::string& text, const Scope& scope) {
   std::unique_lock<std::mutex> lock(inference_, std::try_to_lock);
   if (!lock.owns_lock()) throw std::runtime_error("search_busy");
@@ -224,7 +196,7 @@ Json MatchEngine::Match(const std::string& text, const Scope& scope) {
   }
   catch (...) { throw std::runtime_error("search_encoding_failed"); }
   auto matches = projection_.Query(vector, scope); Json items = Json::array();
-  RefineRanking(matches.items);
+  RefineRanking(matches.items, RankRefineOptionsFor(dimensions_));
   for (const auto& hit : matches.items) {
     auto item = SampleMetadata(hit.sample); item["similarity"] = hit.score;
     item["evidence_refs"]=Json::array();for(const auto& ref:hit.evidence_refs)item["evidence_refs"].push_back({{"sample_id",ref.id},{"fingerprint",ref.fingerprint}});

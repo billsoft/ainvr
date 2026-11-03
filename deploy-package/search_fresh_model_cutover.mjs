@@ -107,8 +107,9 @@ try {
   report.phase='ready';fs.writeFileSync(reportPath,JSON.stringify(report,null,2));
   for(const b of binaries)fs.writeFileSync(b.backup+'/backup.json',JSON.stringify({phase:'applied',createdAt:Date.now()/1000}));
   // Reuse the shared service buckets, timestamp ordering and transaction invalidation.
-  run('python3','-c','import sys; sys.path.insert(0,sys.argv[1]); from deploy_ptz_release import prune; [prune(service) for service in sys.argv[2:]]',root+'/deploy-package',...binaries.map(b=>b.service));
+  // The cutover itself is complete and verified here: a retention-cleanup failure must never stop the services again.
   stopped=false;
+  try{run('python3','-c','import sys; sys.path.insert(0,sys.argv[1]); from deploy_ptz_release import prune; [prune(service) for service in sys.argv[2:]]',root+'/deploy-package',...binaries.map(b=>b.service));}catch(error){console.error(JSON.stringify({warning:'backup_retention_prune_failed',detail:String(error.message).split('\n')[0]}));}
   console.log(JSON.stringify({version:version.version,phase:'ready',report:reportPath,deleted:report.deleted}));
  }
 } catch(error){

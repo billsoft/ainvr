@@ -39,7 +39,9 @@ try {
  console.log(JSON.stringify({mode,collections:counts,shards:shards.length,binary}));
  if(apply){
   const stamp=new Date().toISOString().replace(/[-:]/g,'').replace(/\.\d{3}Z/,'Z');
-  const backup=ssd+'/ainvr-rollback/search-service/'+stamp+'-rank';fs.mkdirSync(backup,{recursive:true,mode:0o700});fs.copyFileSync(live,backup+'/ainvr_search_service');
+  const backup=ssd+'/ainvr-rollback/search-service/'+stamp+'-'+Date.now();fs.mkdirSync(backup,{recursive:true,mode:0o700});fs.copyFileSync(live,backup+'/ainvr_search_service');
+  // Same naming and phase markers as the cutover script, so the shared retention prune accepts this directory.
+  fs.writeFileSync(backup+'/backup.json',JSON.stringify({phase:'prepared',createdAt:Date.now()/1000}));
   stopped=true;run('systemctl','stop','ainvr-ai','ainvr-search','ainvr-backend');
   for(const u of ['ainvr-ai','ainvr-search','ainvr-backend'])if(run('systemctl','show',u,'-p','MainPID','--value').trim()!=='0')throw Error('writer_still_running');
   const deleted={};for(const c of collections)deleted[c]=(await db.collection(c).deleteMany({})).deletedCount;
@@ -48,6 +50,7 @@ try {
   const temp=live+'.rank-'+process.pid;fs.copyFileSync(binary,temp);fs.chmodSync(temp,0o755);fs.renameSync(temp,live);
   run('systemctl','start','ainvr-backend');await new Promise(r=>setTimeout(r,8000));
   run('systemctl','start','ainvr-search');run('systemctl','start','ainvr-ai');stopped=false;
+  fs.writeFileSync(backup+'/backup.json',JSON.stringify({phase:'applied',createdAt:Date.now()/1000}));
   console.log(JSON.stringify({phase:'started',deleted,backup}));
  }
  await mongo.close();await pg.pool.end();

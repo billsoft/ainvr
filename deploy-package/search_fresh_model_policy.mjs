@@ -25,8 +25,15 @@ export function freshModelSettings(settings, pin, models, transition) {
       models.some(model => model !== pin.model_version)) throw Error('fresh_switch_source_mismatch');
   const next = structuredClone(settings);
   next.model.package_id = targetPackage;
-  // Returning to SigLIP2 changes only the model; retain all current user tuning.
-  if (targetPackage === OLD_PACKAGE) return next;
+  // Returning to SigLIP2 (~30 ms per image) undoes the Qwen-specific slowdowns: the product defaults for sampling rates and the 100,000 sample cap.
+  if (targetPackage === OLD_PACKAGE) {
+    next.sampling.object_interval_ms = Math.min(1000, next.sampling.object_interval_ms);
+    next.sampling.scene_active_interval_ms = Math.min(10000, next.sampling.scene_active_interval_ms);
+    next.sampling.scene_static_interval_ms = Math.min(60000, next.sampling.scene_static_interval_ms);
+    next.sampling.scene_change_min_interval_ms = Math.min(3000, next.sampling.scene_change_min_interval_ms);
+    if (sourcePackage === QWEN_PACKAGE) next.limits.max_samples = Math.max(next.limits.max_samples, 100000);
+    return next;
+  }
   // Search sampling only; never changes detector FPS or tracking timing.
   next.sampling.object_interval_ms = Math.max(4000, next.sampling.object_interval_ms);
   next.sampling.scene_active_interval_ms = Math.max(20000, next.sampling.scene_active_interval_ms);

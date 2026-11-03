@@ -1,6 +1,6 @@
 # 文搜相关模型：HBM（O2）下载、编译与板端实测
 
-> 2026-11-02 起智能搜索使用 Qwen3-VL-Embedding-2B（全 BPU），见 `SEARCH-QWEN3VL-EMBEDDING.md`；本文保留 SigLIP 系列的历史测量。
+> 2026-11-02 晚起智能搜索默认使用 SigLIP2 Base 256（曾短暂上线 Qwen3-VL-Embedding-2B，见 `SEARCH-QWEN3VL-EMBEDDING.md`，现为可选包）；本文是 SigLIP 系列的测量。
 
 测量原始记录日期：2026-10-28；选型状态更新：2026-10-29。板：S100P（nash-m），HBRT 4.7.5 / DNN 3.13.6。工具链：OE 3.7.0 GPU 容器 `ai_toolchain_ubuntu_22_s100_s600_gpu:v3.7.0`（镜像 ID 见 `test/model_conversion/final/approved-recipes.json`）。
 

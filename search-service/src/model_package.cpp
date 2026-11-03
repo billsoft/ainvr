@@ -211,14 +211,14 @@ struct PackageVerificationState {
   std::vector<HeldFile> files, directories;
 };
 const std::vector<PackageSpec>& PackageSpecs() {
-  static const std::vector<PackageSpec> specs{EmbeddingSpec(), Spec(false, false), Spec(true, false), Spec(false, true), Spec(true, true)};   // first entry is the product default
+  static const std::vector<PackageSpec> specs{Spec(false, false), Spec(true, false), Spec(false, true), Spec(true, true), EmbeddingSpec()};   // first entry is the product default (SigLIP2 base 256); the Qwen3-VL-Embedding package stays selectable
   return specs;
 }
 const PackageSpec& FindPackageSpec(const std::string& id) {
   for (const auto& spec : PackageSpecs()) if (spec.id == id) return spec;
   throw std::invalid_argument("unknown_search_model_package");
 }
-const char* DefaultPackageId() { return "qwen3vl-embedding-2b-o2"; }
+const char* DefaultPackageId() { return "siglip2-base-full-int8"; }
 int VerifiedPackage::BorrowedFileDescriptor(const std::string& relative_path) const {
   if (state_ && files_verified) for (const auto& file : state_->files) if (file.relative == relative_path) return file.fd.get();
   throw std::invalid_argument("unverified_model_artifact");

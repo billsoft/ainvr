@@ -1,6 +1,7 @@
 # 智能搜索模型：Qwen3-VL-Embedding-2B（全 BPU）
 
-状态：2026-11-02 已在开发测试板 S100P 切换上线（旧 768 维搜索数据已按授权清空，从零重新积累）。
+当前生产状态：2026-11-02 晚已按用户决定换回 SigLIP2 Base 256（768 维，siglip2-base-full-int8），搜索数据已清空重积；本包保留为可选模型（切换用 deploy-package/search_fresh_model_cutover.mjs，两个方向都支持，切回 SigLIP2 时恢复默认采样节奏与 10 万样本上限）。
+历史：2026-11-02 曾切换上线本模型（旧 768 维搜索数据已按授权清空，从零重新积累）。同样本并排对比未显示它在检索结果上明显优于 SigLIP2，所以产品默认回到 SigLIP2。
 本文是该模型的唯一说明；SigLIP 系列的历史记录见 `AI-SEARCH-MODELS-HBM.md` 与 `SEARCH-SO400M-FRESH-CUTOVER.md`。
 指标是"板上结果与原版 BF16 向量的一致度"，不是现场检索准确率。
 

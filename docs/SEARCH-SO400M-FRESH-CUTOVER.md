@@ -1,6 +1,6 @@
 # 智能搜索模型切换记录：当前已回切 SigLIP2
 
-> 2026-11-02 起智能搜索模型已切换为 Qwen3-VL-Embedding-2B，见 `SEARCH-QWEN3VL-EMBEDDING.md`；下文为此前的历史记录。
+> 2026-11-02 晚起智能搜索默认模型是 SigLIP2 Base 256（曾短暂切到 Qwen3-VL-Embedding-2B，见 `SEARCH-QWEN3VL-EMBEDDING.md`）；下文为 so400m 切换的历史记录。
 
 当前状态：2026-10-30 已执行回切 SigLIP2-256 / full-int8 / 768 维，目标包为 `siglip2-base-full-int8`。本次新配置版本及最终运行验收结果以主线程随后发布的部署报告为准；下文的 so400m v18 及其运行数字仅为此前上线的历史记录，不代表当前状态。
 

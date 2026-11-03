@@ -112,3 +112,10 @@ test('Qwen3-VL-Embedding target: 2048 dimensions, search-rate floors and the 60,
  assert.throws(()=>validateFreshModelManifest({...manifest,dimensions:768},qwenPin,fromQwen),/mixed_index_space/);
  assert.throws(()=>freshModelTransition(QWEN_PACKAGE,QWEN_PACKAGE),/unsupported_fresh_model_transition/);
 });
+
+test("returning from Qwen to SigLIP2 restores product sampling rates and the 100,000 sample cap",()=>{
+ const slow=structuredClone(settings);slow.model.package_id=QWEN_PACKAGE;slow.sampling.object_interval_ms=4000;slow.sampling.scene_active_interval_ms=20000;slow.sampling.scene_change_min_interval_ms=5000;slow.limits.max_samples=60000;
+ const back=freshModelSettings(slow,{package_id:QWEN_PACKAGE,model_version:pin.model_version},[],freshModelTransition(QWEN_PACKAGE,OLD_PACKAGE));
+ assert.equal(back.model.package_id,OLD_PACKAGE);assert.equal(back.sampling.object_interval_ms,1000);assert.equal(back.sampling.scene_active_interval_ms,10000);
+ assert.equal(back.sampling.scene_change_min_interval_ms,3000);assert.equal(back.limits.max_samples,100000);
+});
