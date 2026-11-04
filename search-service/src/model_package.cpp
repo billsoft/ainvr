@@ -174,6 +174,12 @@ PackageSpec Spec(bool so400m, bool pruned) {
   spec.input_spec_version = "image-area-rgb-u8-round-before-normalize-mean127.5-div127.5-squash256-l2-v1;source-yuv-matrix-range-from-frame-metadata;";
   spec.input_spec_version += so400m ? ainvr::text::kSiglipNormalizationSpec : ainvr::text::kSiglip2NormalizationSpec;
   if (pruned) spec.input_spec_version += ";pruned-longest-kept-piece-remap-v1";
+  // The SigLIP2 base package stores a whole-frame vector plus three short-edge squares per scene sample. The layout is part
+  // of the input spec, so it is part of the vector-space version: samples of another layout can never mix with these.
+  if (!so400m && !pruned) {
+    spec.views = ainvr::search::kSceneViews;
+    spec.input_spec_version += std::string(";scene-views=") + ainvr::search::kSceneViewLayout;
+  }
   return spec;
 }
 PackageSpec EmbeddingSpec() {

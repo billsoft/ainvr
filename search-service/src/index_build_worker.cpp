@@ -99,7 +99,7 @@ IndexBuildOutcome IndexBuildWorker::RunOne(const std::string& worker,const std::
     if(stopped())return Result(State::Cancelled);
     build=jobs_.Begin(*job); build->shard.dimensions=dimensions_;
     if(!SameBuild(*job,*build))return Result(State::Invalid);
-    VectorIndex index(context_.model_version,dimensions_,capacity_);
+    VectorIndex index(context_.model_version,dimensions_,capacity_,context_.views);
     int64_t checkpoint=0; size_t batches=0;
     for(;;) {
       if(stopped())return abandoned(State::Cancelled);

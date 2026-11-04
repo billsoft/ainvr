@@ -24,4 +24,17 @@ inline std::optional<double> SearchAppearanceDistance(std::span<const float> a,s
   if(!std::isfinite(cosine))return {};
   return double(1-std::clamp(cosine,-1.0L,1.0L));
 }
+// Multi-view descriptors: the distance is the LARGEST per-view distance, so a change in any one view (a tile)
+// counts, and a detector never decides what "changed" means.
+inline std::optional<double> SearchAppearanceDistance(std::span<const float> a,std::span<const float> b,size_t views) {
+  if(views<=1)return SearchAppearanceDistance(a,b);
+  if(a.empty()||a.size()!=b.size()||a.size()%views)return {};
+  const size_t per=a.size()/views;std::optional<double> worst;
+  for(size_t v=0;v<views;++v){
+    const auto d=SearchAppearanceDistance(a.subspan(v*per,per),b.subspan(v*per,per));
+    if(!d)return {};
+    if(!worst||*d>*worst)worst=*d;
+  }
+  return worst;
+}
 } // namespace ai_service::output

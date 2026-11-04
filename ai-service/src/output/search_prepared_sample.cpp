@@ -14,7 +14,9 @@ bool FiniteBox(const std::array<double,4>& box) {
 // the Qwen3-VL-Embedding input is 896x448 and is stretched or letterboxed by the region's aspect ratio.
 nlohmann::json ModelInputEvidence(const ainvr::search::PackageSpec& spec,const ainvr::SnapshotPlan& plan){
   if(spec.kind==ainvr::search::PackageKind::QwenEmbedding)return QwenModelInputEvidence(plan);
-  return {{"width",256},{"height",256},{"color","RGB"},{"interpolation","INTER_AREA"},{"aspect","squash"},{"mean",127.5},{"divisor",127.5}};
+  nlohmann::json input={{"width",256},{"height",256},{"color","RGB"},{"interpolation","INTER_AREA"},{"aspect","squash"},{"mean",127.5},{"divisor",127.5}};
+  if(spec.views>1)input["views"]=spec.views;
+  return input;
 }
 std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const FrozenSearchFrame& frame,
     const SearchEmbeddingSpace& space,const config::SearchProducerLease& lease,SearchHardwareProduct product,
@@ -31,7 +33,7 @@ std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const Froz
       product.render_backend.find("cpu")!=std::string::npos||product.render_backend.empty()||
       product.jpeg.size()<4||product.jpeg.size()>size_t(lease.grant->limits.image_max_bytes)||
       product.jpeg.front()!=255||product.jpeg[1]!=216||product.jpeg[product.jpeg.size()-2]!=255||product.jpeg.back()!=217||
-      product.embedding.size()!=spec.dimensions||identity.captured_ms<0||space.model_version.empty()||space.input_spec_version.empty())
+      product.embedding.size()!=spec.dimensions*spec.views||(spec.views>1&&selection.slot)||identity.captured_ms<0||space.model_version.empty()||space.input_spec_version.empty())
     throw std::runtime_error("search_prepared_sample_invalid");
   const auto permitted=lease.grant->sources.find(source.processor_id);
   if(permitted==lease.grant->sources.end()||permitted->second.processor_id!=source.processor_id||permitted->second.channel_id!=source.channel_id||
@@ -48,7 +50,7 @@ std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const Froz
   record.id=ainvr::search::SearchSampleStorageUuid({source.input_stream_id,source.channel_id,source.processor_id,
     identity.binding.stream_session_id,space.model_version,selection.track_id,selection.slot,
     static_cast<uint64_t>(identity.source_pts_ns),static_cast<uint64_t>(identity.source_frame_index)});
-  record.vector=ainvr::search::NormalizeVector(std::move(product.embedding),spec.dimensions);
+  record.vector=ainvr::search::NormalizeViews(product.embedding,spec.dimensions*spec.views,spec.views);
   const int64_t days=lease.grant->limits.retention_days;
   if(days<1||days>365||record.captured_ms>INT64_MAX-days*86400000)throw std::runtime_error("search_prepared_expiry_invalid");
   sample->expires_ms=record.captured_ms+days*86400000;sample->track_slot=selection.slot;sample->jpeg=std::move(product.jpeg);
@@ -64,6 +66,13 @@ std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const Froz
     {"input_spec_version",space.input_spec_version},{"model_input",ModelInputEvidence(spec,product.plan)},
     {"source_yuv",{{"bt709",frame.Bt709()},{"full_range",frame.FullRange()}}},
     {"render_backend",product.render_backend},{"encoder_backend",product.encoder_backend},{"vision_backend",product.vision_backend}};
+  if(spec.views>1){
+    // Fractions of the whole frame, so the console can outline the view that matched without knowing pixel sizes.
+    const auto rects=ainvr::search::PlanSceneViews(geometry.raw_width,geometry.raw_height);
+    auto views=nlohmann::json::array();
+    for(const auto& r:rects)views.push_back({r.x/geometry.raw_width,r.y/geometry.raw_height,r.w/geometry.raw_width,r.h/geometry.raw_height});
+    evidence["scene_views"]={{"layout",ainvr::search::kSceneViewLayout},{"count",spec.views},{"rects",views}};
+  }
   if(frame.SourceDetection()){
     const auto& target=*frame.SourceDetection();evidence["target"]={{"track_id",record.track},{"label_id",target.label_id},
       {"class_name",target.class_name},{"observation_bbox",target.bbox},{"raw_bbox",*frame.RawTargetBox()}};

@@ -34,12 +34,15 @@ class NativeSession final:public SearchHardwareSession {
     if(!current||!current())throw std::runtime_error("search_hardware_stale");
     encoder_=ainvr::search::BpuVisionEncoder::Load(std::move(verified));
     space_={package,encoder_->ModelVersion(),encoder_->InputSpecVersion()};
+    views_=ainvr::search::FindPackageSpec(package).views;
   }
   SearchEmbeddingSpace Space() const override{return space_;}
   std::function<bool()> HealthReader() const override{return []{return ainvr::BpuRuntimeHealthy();};}
   SearchHardwareProduct Prepare(const FrozenSearchFrame& frame,const SearchSamplingCurrent& current)override{
     if(!current||!current()||!ainvr::BpuRuntimeHealthy())throw std::runtime_error("search_hardware_stale");
     const bool scene=!frame.Selection().slot;
+    // A multi-view space is a whole-frame space: a detector box has no place in it.
+    if(views_>1&&!scene)throw std::runtime_error("search_hardware_object_not_supported");
     if(!scene&&!frame.RawTargetBox())throw std::runtime_error("search_hardware_target_missing");
     const auto& raw=frame.Pixels();
     auto plan=SearchHardwarePlan(scene?std::array<double,4>{}:*frame.RawTargetBox(),raw.width,raw.height,scene,
@@ -48,7 +51,9 @@ class NativeSession final:public SearchHardwareSession {
     if(!current())throw std::runtime_error("search_hardware_stale");
     auto vision=encoder_->Encode(raw,plan,frame.Bt709(),frame.FullRange());
     if(!current())throw std::runtime_error("search_hardware_stale");
-    return {image.plan,std::move(image.jpeg),std::move(vision.embedding),image.render_backend,image.encoder_backend,vision.image_backend};
+    auto embedding=std::move(vision.embedding);
+    AppendTileViews(raw,frame.Bt709(),frame.FullRange(),vision.image_backend,embedding,current);
+    return {image.plan,std::move(image.jpeg),std::move(embedding),image.render_backend,image.encoder_backend,vision.image_backend};
   }
   SearchReencodeResult ReencodeJpeg(const std::vector<uint8_t>& jpeg,const SearchSamplingCurrent& current)override{
     auto check=[&]{if(!current||!current()||!ainvr::BpuRuntimeHealthy())throw std::runtime_error("search_hardware_stale");};
@@ -70,9 +75,28 @@ class NativeSession final:public SearchHardwareSession {
     // JPEG JPU output uses the existing review-image full-range BT.601 contract.
     auto plan=SearchHardwarePlan({},width,height,true,std::min(4096,std::max(width,height)),0);
     auto encoded=encoder_->Encode(*frame,plan,false,true);check();
-    return {SearchReencodeResult::Status::Ready,space_,std::move(encoded.embedding),width,height};
+    auto embedding=std::move(encoded.embedding);
+    AppendTileViews(*frame,false,true,encoded.image_backend,embedding,current);
+    return {SearchReencodeResult::Status::Ready,space_,std::move(embedding),width,height};
   }
  private:
+  // Views 1..N-1: squares of the short edge along the long axis (shared/cpp/search_views.hpp). Each is cropped from the same
+  // frame by the same GLES path as the whole-frame view and squashed to the model square; no detector box is involved.
+  void AppendTileViews(const ainvr::Nv12Frame& frame,bool bt709,bool full_range,const std::string& whole_backend,
+      std::vector<float>& embedding,const SearchSamplingCurrent& current){
+    if(views_<=1)return;
+    const auto rects=ainvr::search::PlanSceneViews(frame.width,frame.height);
+    for(size_t k=1;k<views_;++k){
+      const auto& r=rects[k];
+      const auto plan=SearchHardwarePlan({r.x,r.y,r.w,r.h},frame.width,frame.height,false,options_.object_max_dimension,0);
+      auto tile=encoder_->Encode(frame,plan,bt709,full_range);
+      if(!current||!current())throw std::runtime_error("search_hardware_stale");
+      if(tile.image_backend!=whole_backend||tile.embedding.size()!=encoder_->Dimensions())throw std::runtime_error("search_hardware_view_contract");
+      embedding.insert(embedding.end(),tile.embedding.begin(),tile.embedding.end());
+    }
+    if(embedding.size()!=encoder_->Dimensions()*views_)throw std::runtime_error("search_hardware_view_count");
+  }
+  size_t views_=1;
   SearchHardwareNativeOptions options_;
   ainvr::SnapshotRenderer renderer_;
   std::unique_ptr<ainvr::search::BpuVisionEncoder> encoder_;

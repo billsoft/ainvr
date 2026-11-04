@@ -1,5 +1,6 @@
 #pragma once
 #include <nlohmann/json.hpp>
+#include "../../shared/cpp/search_views.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -22,6 +23,8 @@ struct PackageSpec {
   std::string tokenizer;
   std::vector<std::string> tokenizer_auxiliary;
   size_t dimensions = 0;
+  // Vectors stored per scene sample (see shared/cpp/search_views.hpp); the text vector has `dimensions` floats.
+  size_t views = 1;
   // HBM addressable rows, not the raw SentencePiece piece count.
   int64_t embedding_vocab_size = 0;
   bool pruned = false;
@@ -32,6 +35,10 @@ struct PackageSpec {
 const std::vector<PackageSpec>& PackageSpecs();
 const PackageSpec& FindPackageSpec(const std::string& id);
 const char* DefaultPackageId();
+// Vectors stored per scene sample for a package id; 1 for an id this build does not know.
+inline size_t PackageViews(const std::string& id) {
+  try { return FindPackageSpec(id).views; } catch (...) { return 1; }
+}
 struct VerifiedArtifact { std::string relative_path, sha256; uint64_t bytes = 0; };
 struct PackageVerificationState;
 // Retains stable read-only descriptors through loading. No copied raw FDs.

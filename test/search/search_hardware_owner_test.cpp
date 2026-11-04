@@ -12,7 +12,8 @@ using namespace ai_service::output;
 #include "search_frame_fixture.hpp"
 using namespace search_test;
 // BuildSearchPreparedSample validates against the package catalogue, so fakes use a real package id.
-constexpr const char* kRealPackage="siglip2-base-full-int8";
+// Detector (object) samples only exist in single-view packages; the multi-view scene layout is covered by search_execution_port_test.
+constexpr const char* kRealPackage="siglip-so400m-i18n-full-int8";
 struct FakeState {
  std::mutex mutex;std::condition_variable cv;bool block=false,entered=false;
  std::thread::id owner;int creates=0,destroys=0,prepares=0;
@@ -30,7 +31,8 @@ struct FakeSession:SearchHardwareSession {
    Check(state->owner==std::this_thread::get_id(),"non-affine prepare");++state->prepares;
    if(!current())throw std::runtime_error("stale");
    ainvr::SnapshotPlan plan;plan.width=plan.height=18;plan.source_rectangle={0,0,8,4};
-   return {plan,{255,216,255,217},std::vector<float>(768,1),"gles","jpu","gles"};
+   const auto& spec=ainvr::search::FindPackageSpec(package);
+   return {plan,{255,216,255,217},std::vector<float>(spec.dimensions*spec.views,1),"gles","jpu","gles"};
  }
 };
 std::string Version(char hash){return "search-v1-"+std::string(64,hash);}
@@ -114,7 +116,7 @@ int main(){try{
  auto candidate=policy.ProposeObject(*parsed,*object);Check(bool(candidate.candidate),"candidate absent");
  SearchWorkBudget budget;budget.Configure(2,16*1024*1024);auto ticket=budget.TryAcquire(f.raw->pixels.capacity());
  auto frozen=FreezeSearchFrame(lease,*candidate.candidate,f.result,f.capture,f.capture.fence,f.raw,std::move(*ticket));Check(bool(frozen),"freeze failed");
- auto sample=owner.Prepare(*frozen.frame,space,lease,[]{return true;});Check(bool(sample)&&sample->sample->record.vector.size()==768,"prepare failed");
+ auto sample=owner.Prepare(*frozen.frame,space,lease,[]{return true;});Check(bool(sample)&&sample->sample->record.vector.size()==ainvr::search::FindPackageSpec(kRealPackage).dimensions,"prepare failed");
  auto again=owner.Prepare(*frozen.frame,space,lease,[]{return true;});Check(again->sample->record.id==sample->sample->record.id,"same slot storage ID unstable");
  Check(sample->sample->evidence["source_pts_ns"]=="1000000000"&&sample->sample->evidence["source_frame_index"]=="1","identity used raw timestamp");
  f.Advance(2);auto next_candidate=*candidate.candidate;

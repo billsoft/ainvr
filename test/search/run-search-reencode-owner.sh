@@ -12,6 +12,6 @@ fi
 g++ "${flags[@]}" $(pkg-config --cflags libmongoc-1.0) test/search/search_reencode_owner_test.cpp \
  ai-service/src/output/search_hardware_owner.cpp ai-service/src/output/search_prepared_sample.cpp \
  ai-service/src/output/snapshot_plan.cpp ai-service/src/config/search_producer_grant.cpp \
- ai-service/src/pipeline/postprocessor.cpp search-service/src/sample_contract.cpp \
+ ai-service/src/pipeline/postprocessor.cpp search-service/src/model_package.cpp search-service/src/sample_contract.cpp \
  $(pkg-config --libs libbson-1.0) -lcrypto -o "$binary"
 ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 timeout 20 "$binary"

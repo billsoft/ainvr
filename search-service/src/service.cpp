@@ -217,8 +217,9 @@ int main(int argc, char** argv) {
                 encoder=std::move(retained_encoder);
               } else encoder = LoadConfiguredTextEncoder(runtime, ProductionTextLoader(runtime,*history));
               if (encoder) {
+                const size_t views = FindPackageSpec(runtime.package_id).views;
                 engine = std::make_unique<MatchEngine>(*history, *encoder,
-                    RuntimeProjectionCapacity(runtime, encoder->Dimensions()));
+                    RuntimeProjectionCapacity(runtime, encoder->Dimensions() * views), views);
                 runtime.access.ingestion_model = encoder->ModelVersion();
                 engine->Start(window);
                 text_ready = true;
@@ -242,7 +243,7 @@ int main(int argc, char** argv) {
             if(encoder&&engine)index_context.model_version = encoder->ModelVersion();
             index_context.retention_days = int(runtime.budget.retention_ms / 86400000);
             for (const auto& source : runtime.access.sources) index_context.channels.push_back(source.first);
-            if(encoder&&engine)dimensions = encoder->Dimensions();
+            if(encoder&&engine){index_context.views = FindPackageSpec(runtime.package_id).views;dimensions = encoder->Dimensions() * index_context.views;}
           }
           applied_model.reset();
           if(text_ready&&encoder)applied_model=RuntimeModelPin{runtime.package_id,encoder->ModelVersion().substr(10),encoder->ModelVersion()};

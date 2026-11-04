@@ -1,4 +1,5 @@
 #include "output/search_hardware_owner.hpp"
+#include "../../../search-service/src/model_package.hpp"
 #include "analytics/jpeg_dimensions.hpp"
 #include <atomic>
 #include <algorithm>
@@ -14,10 +15,14 @@ bool ReencodeDimensions(int width,int height){
   return width>=16&&height>=16&&width<=8192&&height<=8192&&width%2==0&&height%2==0&&
     size_t(width)*size_t(height)<=kSearchReencodeMaxPixels;
 }
-bool ReencodeEmbedding(std::span<const float> embedding){
-  if(embedding.empty()||embedding.size()>4096)return false;
-  double sum=0;for(const float value:embedding){if(!std::isfinite(value))return false;sum+=double(value)*value;}
-  return std::isfinite(sum)&&std::abs(sum-1)<.01;
+bool ReencodeEmbedding(std::span<const float> embedding,size_t views=1){
+  if(embedding.empty()||embedding.size()>4096||!views||embedding.size()%views)return false;
+  const size_t per=embedding.size()/views;
+  for(size_t v=0;v<views;++v){   // every view block is unit-norm on its own
+    double sum=0;for(size_t i=0;i<per;++i){const float value=embedding[v*per+i];if(!std::isfinite(value))return false;sum+=double(value)*value;}
+    if(!std::isfinite(sum)||std::abs(sum-1)>=.01)return false;
+  }
+  return true;
 }
 }
 struct SearchHardwareOwner::Impl {
@@ -178,7 +183,7 @@ SearchHardwareOwner::ProbeResult SearchHardwareOwner::PrepareInternal(const Froz
     if(!valid())return;
     std::optional<SearchAppearanceAudit> audit;
     if(probe){
-      const auto distance=SearchAppearanceDistance(product.embedding,baseline);
+      const auto distance=SearchAppearanceDistance(product.embedding,baseline,ainvr::search::PackageViews(space.package_id));
       if(!distance||!std::isfinite(frame.Selection().probe_threshold)||frame.Selection().probe_threshold<0||frame.Selection().probe_threshold>1)return;
       output->distance=distance;
       if(*distance<frame.Selection().probe_threshold)return;
@@ -245,7 +250,7 @@ SearchReencodeResult SearchHardwareOwner::Reencode(const Pin& target,std::span<c
       auto output=selected->ReencodeJpeg(bytes,valid);
       if(!valid()){if(cached)drop_cache();result->status=Status::Stale;return;}
       if(output.status==Status::Ready&&(!PinAllowsSpace(target,output.space)||output.space!=selected->Space()||
-          std::pair(output.image_width,output.image_height)!=dimensions||!ReencodeEmbedding(output.embedding)))
+          std::pair(output.image_width,output.image_height)!=dimensions||!ReencodeEmbedding(output.embedding,ainvr::search::PackageViews(target.package_id))))
         output={Status::Failed,{}, {},0,0};
       if(output.status==Status::Ready&&cached){std::lock_guard<std::mutex> guard(p->mutex);p->reencode_expiry=valid_until;}
       else if(output.status!=Status::Ready&&cached)drop_cache();

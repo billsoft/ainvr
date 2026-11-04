@@ -3,7 +3,7 @@
 #include <mutex>
 #include <chrono>
 namespace ainvr::search {
-struct RankedSample { Sample sample; double score; std::vector<IndexEvidenceRef> evidence_refs{}; };
+struct RankedSample { Sample sample; double score; std::vector<IndexEvidenceRef> evidence_refs{}; size_t view = 0; };
 struct ProjectionResult {
   std::vector<RankedSample> items;
   // A resource-limited or not fully loaded window cannot report a definitive
@@ -12,8 +12,8 @@ struct ProjectionResult {
 };
 class IndexProjection {
  public:
-  IndexProjection(HistoryMongo& history, std::string model, size_t dimensions, size_t capacity)
-    : history_(history), model_(std::move(model)), dimensions_(dimensions), capacity_(capacity) {}
+  IndexProjection(HistoryMongo& history, std::string model, size_t dimensions, size_t capacity, size_t views = 1)
+    : history_(history), model_(std::move(model)), dimensions_(dimensions), capacity_(capacity), views_(views) {}
   uint64_t CacheEpoch() {std::lock_guard<std::mutex> lock(mutex_);return cache_epoch_;}
   std::optional<uint64_t> Resident(const std::vector<Record>& rows) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -35,7 +35,7 @@ class IndexProjection {
     }
     if (!part.channels.empty()) VectorIndex::ValidateScope(part);
     std::lock_guard<std::mutex> lock(mutex_);
-    ++cache_epoch_;index_ = std::make_unique<VectorIndex>(model_, dimensions_, capacity_);
+    ++cache_epoch_;index_ = std::make_unique<VectorIndex>(model_, dimensions_, capacity_, views_);
     window_ = window; maintenance_cursor_.clear();
     writes_since_maintenance_ = 0; recovery_scope_ = {}; recovery_checkpoint_ = 0;
     recovery_exhausted_=false;recovery_revision_=0;
@@ -57,7 +57,7 @@ class IndexProjection {
   }
   void Rebuild(const Scope& window) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto next = std::make_unique<VectorIndex>(model_, dimensions_, capacity_);
+    auto next = std::make_unique<VectorIndex>(model_, dimensions_, capacity_, views_);
     int64_t checkpoint = 0;
     for (;;) {
       const auto batch = history_.Scan(model_, window, checkpoint, 512);
@@ -147,7 +147,7 @@ class IndexProjection {
           if(index_->Fingerprint(hit.id)==std::optional<std::string>(hit.fingerprint)){index_->Remove(hit.id);++cache_epoch_;}
           removed = true; out.partial = true; recovery_exhausted_=false;recovery_checkpoint_=0;continue;
         }
-        out.items.push_back({std::move(row->second), hit.score, hit.evidence_refs});
+        out.items.push_back({std::move(row->second), hit.score, hit.evidence_refs, hit.view});
         if (out.items.size() >= scope.limit) break;
       }
       if (!removed || out.items.size() >= scope.limit || hits.size() < candidates.limit) {
@@ -218,7 +218,7 @@ class IndexProjection {
   }
   HistoryMongo& history_;
   std::string model_;
-  size_t dimensions_, capacity_;
+  size_t dimensions_, capacity_, views_ = 1;
   std::mutex mutex_;
   std::unique_ptr<VectorIndex> index_;
   Scope window_;

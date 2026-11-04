@@ -39,7 +39,8 @@ class TextEncoder {
 
 class MatchEngine {
  public:
-  MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t capacity);
+  // `views` stored vectors per scene sample; `capacity` is a sample count.
+  MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t capacity, size_t views = 1);
   void Start(const Scope& window);
   size_t Warm(const std::vector<Record>& records);
   uint64_t CacheEpoch(){return projection_.CacheEpoch();}
@@ -54,7 +55,7 @@ class MatchEngine {
   bool Ready() const { return loaded_.load() && Healthy(); }
  private:
   const std::string model_;
-  const size_t dimensions_;
+  const size_t dimensions_, views_;
   TextEncoder& encoder_;
   IndexProjection projection_;
   BoundedTextEmbeddingCache text_cache_;

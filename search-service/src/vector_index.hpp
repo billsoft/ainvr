@@ -1,5 +1,6 @@
 #pragma once
 #include "index_limits.hpp"
+#include "../../shared/cpp/search_views.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -25,6 +26,18 @@ inline std::vector<float> NormalizeVector(const std::vector<float>& input, size_
   for (float v : input) out.push_back(float(v / norm));
   return out;
 }
+// A scene record is `views` blocks, each unit-norm on its own (see shared/cpp/search_views.hpp).
+inline std::vector<float> NormalizeViews(const std::vector<float>& input, size_t dimensions, size_t views) {
+  if (views == 0 || dimensions == 0 || dimensions % views || input.size() != dimensions) throw std::invalid_argument("vector_dimensions");
+  const size_t per = dimensions / views;
+  std::vector<float> out; out.reserve(dimensions);
+  for (size_t v = 0; v < views; ++v) {
+    const auto begin = input.begin() + std::ptrdiff_t(v * per);
+    const auto block = NormalizeVector(std::vector<float>(begin, begin + std::ptrdiff_t(per)), per);
+    out.insert(out.end(), block.begin(), block.end());
+  }
+  return out;
+}
 struct Record {
   std::string id, channel, processor, session, track, model;
   int64_t captured_ms = 0;
@@ -38,18 +51,21 @@ struct Scope {
   size_t limit = 20;
 };
 struct IndexEvidenceRef { std::string id, fingerprint; int64_t captured_ms = 0; };
-struct Hit { std::string id; double score; std::string fingerprint{}; std::vector<IndexEvidenceRef> evidence_refs{}; };
+struct Hit { std::string id; double score; std::string fingerprint{}; std::vector<IndexEvidenceRef> evidence_refs{}; size_t view = 0; };
 struct IndexReference { std::string id, fingerprint, channel; int64_t captured_ms; };
 
 // Exact CPU retrieval baseline, not model inference. Authoritative records are
 // persisted separately; this bounded projection can be rebuilt after restart.
 class VectorIndex {
  public:
-  VectorIndex(std::string model, size_t dimensions, size_t capacity)
-      : model_(std::move(model)), dimensions_(dimensions), capacity_(capacity) {
-    if (model_.empty() || dimensions_ == 0 || dimensions_ > 4096 ||
+  // `dimensions` is the stored record length. With views > 1 a record is `views` unit-norm blocks of
+  // dimensions/views floats; a query is one block and a record scores as its best block.
+  VectorIndex(std::string model, size_t dimensions, size_t capacity, size_t views = 1)
+      : model_(std::move(model)), dimensions_(dimensions), capacity_(capacity), views_(views) {
+    if (model_.empty() || dimensions_ == 0 || dimensions_ > 4096 || views_ == 0 || views_ > 8 || dimensions_ % views_ ||
         capacity_ == 0 || capacity_ > 1000000 || dimensions_ > kMaxIndexFloats / capacity_)
       throw std::invalid_argument("invalid_index_budget");
+    view_dimensions_ = dimensions_ / views_;
   }
   void Upsert(Record value) {
     Validate(value);
@@ -137,15 +153,20 @@ class VectorIndex {
     for (const auto& [id, record] : records_) {
       if (!scope.channels.count(record.channel) || record.captured_ms < scope.from_ms ||
           record.captured_ms >= scope.to_ms) continue;
-      double score = 0;
-      for (size_t i = 0; i < dimensions_; ++i) score += double(query[i]) * record.vector[i];
+      double score = -2; size_t best_view = 0;
+      for (size_t v = 0; v < views_; ++v) {
+        const float* block = record.vector.data() + v * view_dimensions_;
+        double s = 0;
+        for (size_t i = 0; i < view_dimensions_; ++i) s += double(query[i]) * block[i];
+        if (s > score) { score = s; best_view = v; }
+      }
       const Key key = record.scene ? Key{"scene", id} :
         Key{"object", record.channel, record.processor, record.session, record.track};
       const IndexEvidenceRef ref{id, record.fingerprint, record.captured_ms};
       auto found = groups.find(key);
-      if (found == groups.end()) { groups.emplace(key, Group{{id, score, record.fingerprint}, ref, ref}); continue; }
+      if (found == groups.end()) { groups.emplace(key, Group{{id, score, record.fingerprint, {}, best_view}, ref, ref}); continue; }
       auto& group = found->second;
-      if (score > group.hit.score || (score == group.hit.score && id < group.hit.id)) group.hit = {id, score, record.fingerprint};
+      if (score > group.hit.score || (score == group.hit.score && id < group.hit.id)) group.hit = {id, score, record.fingerprint, {}, best_view};
       if (record.captured_ms < group.first.captured_ms || (record.captured_ms == group.first.captured_ms && id < group.first.id)) group.first = ref;
       if (record.captured_ms > group.last.captured_ms || (record.captured_ms == group.last.captured_ms && id > group.last.id)) group.last = ref;
     }
@@ -172,13 +193,20 @@ class VectorIndex {
     if (value.id.empty() || value.channel.empty() || value.captured_ms < 0 ||
         (!value.scene && (value.processor.empty() || value.session.empty() || value.track.empty())))
       throw std::invalid_argument("invalid_record_identity");
-    value.vector = Normalize(value.vector);
+    // Each view block is normalised on its own, so a record never trades one view's weight for another's.
+    if (value.vector.size() != dimensions_) throw std::invalid_argument("vector_dimensions");
+    for (size_t v = 0; v < views_; ++v) {
+      const auto begin = value.vector.begin() + std::ptrdiff_t(v * view_dimensions_);
+      const auto block = NormalizeVector(std::vector<float>(begin, begin + std::ptrdiff_t(view_dimensions_)), view_dimensions_);
+      std::copy(block.begin(), block.end(), value.vector.begin() + std::ptrdiff_t(v * view_dimensions_));
+    }
   }
+  // Queries are one view block (the text vector), whatever the stored record length is.
   std::vector<float> Normalize(const std::vector<float>& input) const {
-    return NormalizeVector(input, dimensions_);
+    return NormalizeVector(input, view_dimensions_);
   }
   std::string model_;
-  size_t dimensions_, capacity_;
+  size_t dimensions_, capacity_, views_ = 1, view_dimensions_ = 0;
   std::map<std::string, Record> records_;
 };
 }  // namespace ainvr::search

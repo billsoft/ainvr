@@ -323,6 +323,23 @@ int main() {
       {std::lock_guard<std::mutex> lock(port->mutex);port->space.input_spec_version=spec.input_spec_version;}
       Check(source->Bind(token,f.capture.fence),"exact input specification restore failed");
     }
+    for(const bool good:{true,false}){
+      // A whole-frame space stores several view blocks per sample, each unit-norm on its own: the resident descriptor must
+      // accept them (the live system rejected every such write when the check looked at the whole vector's norm).
+      Fixture f;int retained=0;auto port=std::make_shared<Port>();port->probes_enabled=true;
+      const auto& spec=ainvr::search::FindPackageSpec("siglip2-base-full-int8");
+      Check(spec.views==4,"fixture expects a four view package");
+      port->space.package_id=spec.id;port->space.input_spec_version=spec.input_spec_version;
+      f.doc["model"]["package_id"]=spec.id;f.doc["revision"]=std::string(64,'d');f.Renew();
+      {std::lock_guard<std::mutex> lock(port->mutex);
+        port->next_descriptor=good?std::vector<float>{1,0,0,1,1,0,0,1}:std::vector<float>{1,0,0,1,2,0,0,1};}
+      SearchSamplingOwner owner(f.Reader(),port);auto source=owner.CreateSource("processor");auto token=source->Token();
+      Check(source->Bind(token,f.capture.fence),"multiview_bind");
+      Check(source->OfferScene(token,f.result,f.capture,*f.raw,f.Retain(retained),{true,true,{}}).status==Status::Queued,"multiview_scene_queue");
+      Await([&]{auto u=owner.Usage();return u.pending==0&&u.retained_jobs==0;});
+      if(good)Check(port->submits==1&&owner.Usage().descriptor_count==1&&owner.Usage().descriptor_bytes==8*sizeof(float)+512,"multiview_descriptor_rejected");
+      else Check(port->submits==0&&owner.Usage().descriptor_count==0,"badly_normalised_view_block_accepted");
+    }
     {
       Fixture f; int retained = 0; SearchSamplingOwner owner(f.Reader(), {}, executor); auto source = owner.CreateSource("processor");
       Check(!source->Bind(source->Token(), f.capture.fence), "missing hardware port bound source");

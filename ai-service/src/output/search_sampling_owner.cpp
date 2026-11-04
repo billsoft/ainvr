@@ -1,3 +1,4 @@
+#include "../../../search-service/src/model_package.hpp"
 #include <chrono>
 #include <thread>
 #include "output/search_sampling_owner.hpp"
@@ -240,10 +241,16 @@ struct State: std::enable_shared_from_this<State> {
       else ++i;
     }
   }
-  std::shared_ptr<Descriptor> CopyDescriptor(std::span<const float> values)const {
+  std::shared_ptr<Descriptor> CopyDescriptor(std::span<const float> values,const SearchEmbeddingSpace& job_space)const {
     if(values.empty()||values.size()>4096)return {};
-    long double norm=0;for(float v:values){if(!std::isfinite(v))return {};norm+=static_cast<long double>(v)*v;}
-    if(norm<.999L||norm>1.001L)return {};
+    // A whole-frame space stores several view blocks per sample, each unit-norm on its own.
+    const size_t views=ainvr::search::PackageViews(job_space.package_id);
+    if(!views||values.size()%views)return {};
+    const size_t per=values.size()/views;
+    for(size_t v=0;v<views;++v){
+      long double norm=0;for(size_t i=0;i<per;++i){const float x=values[v*per+i];if(!std::isfinite(x))return {};norm+=static_cast<long double>(x)*x;}
+      if(norm<.999L||norm>1.001L)return {};
+    }
     constexpr size_t max_count=4096+128+kSearchSamplingMetadataPendingLimit,max_bytes=32*1024*1024;
     const auto charge=values.size()*sizeof(float)+512;
     auto account=descriptor_account;
@@ -442,7 +449,7 @@ struct State: std::enable_shared_from_this<State> {
               std::string key, query;
               try { key = operation->ReceiptKey(); query = operation->ReceiptQuery(); }
               catch (...) { reply.result = SearchSamplingReceipt::Result::Rejected; }
-              auto descriptor=self->port->SupportsProbes()?self->CopyDescriptor(operation->Descriptor()):nullptr;
+              auto descriptor=self->port->SupportsProbes()?self->CopyDescriptor(operation->Descriptor(),job->space):nullptr;
               if (!Safe(key) || !ReceiptQueryValid(query,*job)||(self->port->SupportsProbes()&&!descriptor)) reply.result = SearchSamplingReceipt::Result::Rejected;
               else {
                 { std::lock_guard<std::mutex> lock(self->mutex);

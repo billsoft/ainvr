@@ -37,6 +37,18 @@ describe('native search transport', () => {
       .rejects.toMatchObject({ code: 'invalid_response' });
   });
 
+  it('accepts the whole-frame view fields and rejects malformed ones', async () => {
+    const scene = { ...sample, kind: 'scene', processor_id: '', track_id: '' };
+    const value = { ...page, view_layout: 'whole+3squares-shortedge-v1', items: [{ ...scene, similarity: 0.9, matched_view: 2 }] };
+    const result = await fixture(value).client.match('person', scope, 'pair-v1');
+    expect(result.items[0]!.matched_view).toBe(2);
+    expect((result as { view_layout?: string }).view_layout).toBe('whole+3squares-shortedge-v1');
+    for (const bad of [-1, 8, 1.5, 'x'])
+      await expect(fixture({ ...value, items: [{ ...scene, similarity: 0.9, matched_view: bad }] }).client.match('person', scope, 'pair-v1'))
+        .rejects.toMatchObject({ code: 'invalid_response' });
+    // A service without views keeps its exact old shape.
+    expect(Object.keys((await fixture({ ...page, items: [{ ...scene, similarity: 0.9 }] }).client.match('person', scope, 'pair-v1')).items[0]!)).not.toContain('matched_view');
+  });
   it('preserves explicit model pending and does not pretend an unconfigured service is ready', async () => {
     const { client } = fixture({ ready: false, reason: 'model_pending', model_version: null });
     expect(await client.status()).toEqual({ ready: false, reason: 'model_pending', model_version: null });

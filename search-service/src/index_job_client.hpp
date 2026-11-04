@@ -18,6 +18,8 @@ struct IndexJobContext {
   // retained scope. Ordinary contexts keep current retention semantics.
   std::optional<MigrationWriteProof> migration_lease{};
   std::optional<Scope> migration_scope{};
+  // Vectors per scene sample in this vector space; `dimensions` handed to the builder is the whole record length.
+  size_t views = 1;
 };
 struct IndexJob {
   std::string id, worker;

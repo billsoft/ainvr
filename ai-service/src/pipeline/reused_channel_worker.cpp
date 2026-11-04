@@ -7,6 +7,7 @@
 #include "../stream/evidence_geometry.hpp"
 #include "../output/review_frame_cache.hpp"
 #include "../output/search_sampling_metrics.hpp"
+#include "../output/search_scene_cadence.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -1276,7 +1277,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
         objects_complete=quality.has_value()&&complete(offer)&&objects_complete;
       }
       output::SearchSamplingScene scene;
-      scene.usable = true; scene.active = !result.detections.empty();
+      scene.usable = true; scene.active = output::SearchSceneActive(result.detections.size());
       const auto scene_offer=search_source->OfferScene(search_token,result,*search_capture,frame.ref->nv12,retain,scene);
       search_source->EndFrame(search_token,result,*search_capture,objects_complete,complete(scene_offer));
     } catch (...) { /* Sampling refusal must not interrupt existing business. */ }

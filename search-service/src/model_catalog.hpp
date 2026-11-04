@@ -12,7 +12,7 @@ inline nlohmann::json VerifyModelProfile(const std::string& trusted_root,const s
     throw std::runtime_error("search_model_pending");
   const auto& spec=*verified.spec;
   return {{"package_id",spec.id},{"package_sha256",verified.model_version.substr(10)},
-    {"model_version",verified.model_version},{"dimensions",spec.dimensions},{"input_spec_version",spec.input_spec_version},
+    {"model_version",verified.model_version},{"dimensions",spec.dimensions},{"views",spec.views},{"input_spec_version",spec.input_spec_version},
     {"files_verified",true},{"production_approval_declared",verified.production_approval_declared},
     {"pruned",spec.pruned},{"runtime_ready",false}};
 }

@@ -170,7 +170,7 @@ it.each([
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
   expect(vi.mocked(searchService.query).mock.calls[1]![0]).toEqual(expect.objectContaining({
-    query: '黑色背包', min_similarity: 0.055,
+    query: '黑色背包', min_similarity: 0.035,
     scope: { channel_ids: ['a'], from: start.toISOString(), to: new Date(now.getTime() + 1000).toISOString() },
   }))
   await waitFor(() => expect(screen.queryByText(/条件已修改/)).not.toBeInTheDocument())
@@ -741,24 +741,24 @@ it('keeps slider and numeric minimum in sync and submits a frozen search conditi
   fireEvent.click(screen.getByText(/^高级选项/));
   const slider = screen.getByRole('slider', { name: '拖动最低相似度' });
   const numeric = screen.getByRole('spinbutton', { name: '最低相似度' });
-  expect(numeric).toHaveValue(0.055);
-  expect(slider).toHaveAttribute('max', '0.2');
+  expect(numeric).toHaveValue(0.035);
+  expect(slider).toHaveAttribute('max', '0.1');
   expect(slider).toHaveAttribute('step', '0.005');
   fireEvent.change(slider, { target: { value: '0.075' } });
   expect(numeric).toHaveValue(0.075);
-  fireEvent.change(slider, { target: { value: '0.15' } });
-  expect(numeric).toHaveValue(0.15);
-  fireEvent.change(numeric, { target: { value: '0.2' } });
-  expect(slider).toHaveValue('0.2');
+  fireEvent.change(slider, { target: { value: '0.09' } });
+  expect(numeric).toHaveValue(0.09);
+  fireEvent.change(numeric, { target: { value: '0.1' } });
+  expect(slider).toHaveValue('0.1');
   fireEvent.change(screen.getByRole('textbox', { name: '想找什么？' }), { target: { value: '白色衣服' } });
-  vi.mocked(searchService.query).mockResolvedValue({ ...result('minimum-search'), min_similarity: 0.2, items: [] });
+  vi.mocked(searchService.query).mockResolvedValue({ ...result('minimum-search'), min_similarity: 0.1, items: [] });
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }));
   await screen.findByText('所选范围内，没有候选达到当前相似度要求');
   fireEvent.click(screen.getByText('结果说明'));
-  expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.2);
+  expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.1);
   fireEvent.click(screen.getByRole('button', { name: '不限' }));
   expect(numeric).toHaveValue(null);
-  expect(screen.getByText(/本次最低相似度 0.20/)).toBeInTheDocument();
+  expect(screen.getByText(/本次最低相似度 0.10/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }));
   await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2));
   expect(vi.mocked(searchService.query).mock.calls[1]![0].min_similarity).toBeUndefined();
@@ -774,19 +774,19 @@ it('keeps advanced similarity collapsed by default without dropping its default 
   expect(advanced).not.toHaveAttribute('open')
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   await screen.findByRole('button', { name: '查看第 1 条候选：后门' })
-  expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.055)
+  expect(vi.mocked(searchService.query).mock.calls[0]![0].min_similarity).toBe(0.035)
   fireEvent.click(summary)
   expect(advanced).toHaveAttribute('open')
   const minimum = screen.getByRole('spinbutton', { name: '最低相似度' })
-  expect(minimum).toHaveValue(0.055)
-  fireEvent.change(minimum, { target: { value: '0.125' } })
+  expect(minimum).toHaveValue(0.035)
+  fireEvent.change(minimum, { target: { value: '0.075' } })
   fireEvent.click(summary)
   expect(advanced).not.toHaveAttribute('open')
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
-  expect(vi.mocked(searchService.query).mock.calls[1]![0].min_similarity).toBe(0.125)
+  expect(vi.mocked(searchService.query).mock.calls[1]![0].min_similarity).toBe(0.075)
   fireEvent.click(summary)
-  expect(screen.getByRole('slider', { name: '拖动最低相似度' })).toHaveValue('0.125')
+  expect(screen.getByRole('slider', { name: '拖动最低相似度' })).toHaveValue('0.075')
 })
 
 it('submits Enter once and ignores Chinese composition Enter and legacy keyCode 229', async () => {
@@ -832,12 +832,12 @@ it('keeps submitted scope, description and threshold when draft conditions chang
   const playback = screen.getByRole('link', { name: '播放前后录像' }).getAttribute('href')
   fireEvent.change(screen.getByRole('textbox', { name: '想找什么？' }), { target: { value: '红色衣服' } })
   fireEvent.click(screen.getByText(/^高级选项/))
-  fireEvent.change(screen.getByRole('spinbutton', { name: '最低相似度' }), { target: { value: '0.15' } })
+  fireEvent.change(screen.getByRole('spinbutton', { name: '最低相似度' }), { target: { value: '0.09' } })
   fireEvent.click(screen.getByRole('checkbox', { name: '后门' }))
   fireEvent.click(screen.getByRole('checkbox', { name: '大门' }))
   expect(screen.getByText(/条件已修改/)).toBeInTheDocument()
   expect(screen.getByText(/本次描述/)).toHaveTextContent('黑色背包')
-  expect(screen.getByText(/本次最低相似度 0.055/)).toBeVisible()
+  expect(screen.getByText(/本次最低相似度 0.035/)).toBeVisible()
   expect(searchService.query).toHaveBeenCalledTimes(1)
   expect(searchService.cancel).not.toHaveBeenCalled()
   expect(searchService.coverage).toHaveBeenCalledTimes(1)
@@ -847,10 +847,10 @@ it('keeps submitted scope, description and threshold when draft conditions chang
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
   expect(vi.mocked(searchService.query).mock.calls[1]![0]).toEqual(expect.objectContaining({
-    query: '红色衣服', min_similarity: 0.15,
+    query: '红色衣服', min_similarity: 0.09,
     scope: expect.objectContaining({ channel_ids: ['b'] }),
   }))
   await waitFor(() => expect(screen.queryByText(/条件已修改/)).not.toBeInTheDocument())
   expect(screen.getByText(/本次描述/)).toHaveTextContent('红色衣服')
-  expect(screen.getByText(/本次最低相似度 0.15/)).toBeInTheDocument()
+  expect(screen.getByText(/本次最低相似度 0.09/)).toBeInTheDocument()
 })

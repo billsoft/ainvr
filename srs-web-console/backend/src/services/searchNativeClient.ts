@@ -54,14 +54,17 @@ const nativeFramesSchema = z.array(z.object({ id: identity, captured_ms: integer
 
 const nativeMatchSchema = z.object({
   model_version: model, partial: z.boolean(),
+  // Whole-frame spaces store several view vectors per scene sample; the service names the layout and the view that matched.
+  view_layout: z.string().min(1).max(64).optional(),
   items: z.array(z.object({
     // Parse the complete sample separately, since refinement schemas cannot be extended.
     similarity: z.number().finite().min(-1.00001).max(1.00001),
+    matched_view: z.number().int().min(0).max(7).optional(),
   }).passthrough()).max(60),
 }).strict();
 export interface NativeMatch {
   model_version: string; partial: boolean;
-  items: (NativeSample & { similarity: number; evidence_refs?: z.infer<typeof evidenceRefsSchema> })[];
+  items: (NativeSample & { similarity: number; evidence_refs?: z.infer<typeof evidenceRefsSchema>; matched_view?: number })[];
 }
 const rangeSchema = z.object({
   channel: identity, from: integer, to: integer, scene: z.boolean(), state: z.enum(['sampled', 'pending', 'gap']),
@@ -304,13 +307,13 @@ export class SearchNativeClient {
       if (raw.model_version !== expectedModel) throw new Error();
       const ids = new Set<string>();
       const items = raw.items.map(row => {
-        const { similarity, evidence_refs: refs, ...value } = row; const sample = nativeSampleSchema.parse(value);
+        const { similarity, evidence_refs: refs, matched_view, ...value } = row; const sample = nativeSampleSchema.parse(value);
         const evidence_refs = refs === undefined ? undefined : evidenceRefsSchema.parse(refs);
         if (evidence_refs && (!sample.fingerprint || !evidence_refs.some(ref => ref.sample_id === sample.id && ref.fingerprint === sample.fingerprint) ||
           (sample.kind === 'scene' && (evidence_refs.length !== 1 || evidence_refs[0]!.sample_id !== sample.id)))) throw new Error();
         if (ids.has(sample.id) || !scope.channel_ids.includes(sample.channel_id) || sample.captured_ms < input.from_ms ||
           sample.captured_ms >= input.to_ms || sample.model_version !== expectedModel || sample.expires_ms <= Date.now()) throw new Error();
-        ids.add(sample.id); return { ...sample, similarity, ...(evidence_refs ? { evidence_refs } : {}) };
+        ids.add(sample.id); return { ...sample, similarity, ...(evidence_refs ? { evidence_refs } : {}), ...(matched_view === undefined ? {} : { matched_view }) };
       });
       return { ...raw, items };
     } catch (error) { if (error instanceof SearchNativeError) throw error; throw new SearchNativeError('invalid_response'); }

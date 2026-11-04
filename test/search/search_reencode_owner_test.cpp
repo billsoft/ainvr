@@ -1,5 +1,6 @@
 // Pure fake sessions. Synthetic JPEG headers test contracts, not a decoder or
 // semantic accuracy. No SDK, GLES, device, model or production configuration.
+#include "../../search-service/src/model_package.hpp"
 #include "output/search_hardware_owner.hpp"
 #include "api/search_reencode_handler.hpp"
 #include "search_frame_fixture.hpp"
@@ -37,7 +38,10 @@ struct Session:SearchHardwareSession {
   s->affine=s->affine&&s->thread==std::this_thread::get_id();++s->calls;s->input_addresses.push_back(bytes.data());s->Gate(false);
   if(!current())throw std::runtime_error("cancelled");
   if(!s->error.empty())throw std::runtime_error(s->error);
-  auto result=SearchReencodeResult{Status::Ready,Space(),std::vector<float>(768,0),104,320};result.embedding[0]=1;
+  size_t per=768,views=1;
+  try{const auto& spec=ainvr::search::FindPackageSpec(pin.package_id);per=spec.dimensions;views=spec.views;}catch(...){}
+  auto result=SearchReencodeResult{Status::Ready,Space(),std::vector<float>(per*views,0),104,320};
+  for(size_t k=0;k<views;++k)result.embedding[k*per]=1;   // every view block is unit-norm
   if(s->corrupt==1)result.embedding[0]=std::numeric_limits<float>::quiet_NaN();
   if(s->corrupt==2)result.embedding[0]=2;
   if(s->corrupt==3)result.image_width=112;
@@ -78,7 +82,7 @@ void HandlerTests(){
  const auto response=handler(input,jpeg);
  for(const auto& [key,value]:input.items())Check(response.at(key)==value,"handler_did_not_echo_exact_binding");
  Check(response.at("input_kind")=="retained-jpeg"&&response.at("preprocessing_version")==kSearchReencodePreprocessing&&
-   response.at("image_width")==104&&response.at("image_height")==320&&response.at("dimensions")==768&&response.at("vector").size()==768,"handler_wrong_response_contract");
+   response.at("image_width")==104&&response.at("image_height")==320&&response.at("dimensions")==response.at("vector").size()&&response.at("vector").size()==ainvr::search::FindPackageSpec("siglip2-base-full-int8").dimensions*ainvr::search::FindPackageSpec("siglip2-base-full-int8").views,"handler_wrong_response_contract");
  rejects(handler,input,std::string("\xff\xd8\xff\xd9",4),422);
  state->error="ion_budget_exceeded";rejects(handler,input,jpeg,429);state->error.clear();
  state->corrupt=1;rejects(handler,input,jpeg,503);owner->Stop();

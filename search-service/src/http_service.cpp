@@ -158,12 +158,12 @@ template<class Function> httplib::Server::Handler Handle(Function fn) {
 }
 }  // namespace
 
-MatchEngine::MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t capacity)
-    : model_(encoder.ModelVersion()), dimensions_(encoder.Dimensions()), encoder_(encoder),
-      projection_(history, model_, dimensions_, capacity), text_cache_(model_, dimensions_) {
+MatchEngine::MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t capacity, size_t views)
+    : model_(encoder.ModelVersion()), dimensions_(encoder.Dimensions()), views_(views), encoder_(encoder),
+      projection_(history, model_, dimensions_ * views, capacity, views), text_cache_(model_, dimensions_) {
   if (model_.empty() || model_.size() > 128) throw std::invalid_argument("invalid_search_model");
   // Validate dimensions/capacity before the first request arrives.
-  VectorIndex validate(model_, dimensions_, capacity);
+  VectorIndex validate(model_, dimensions_ * views_, capacity, views_);
 }
 void MatchEngine::Start(const Scope& window) { projection_.Start(window); loaded_.store(true); }
 size_t MatchEngine::Warm(const std::vector<Record>& records) { return projection_.Warm(records); }
@@ -199,13 +199,16 @@ Json MatchEngine::Match(const std::string& text, const Scope& scope) {
   RefineRanking(matches.items, RankRefineOptionsFor(dimensions_));
   for (const auto& hit : matches.items) {
     auto item = SampleMetadata(hit.sample); item["similarity"] = hit.score;
+    if (views_ > 1) item["matched_view"] = hit.view;
     item["evidence_refs"]=Json::array();for(const auto& ref:hit.evidence_refs)item["evidence_refs"].push_back({{"sample_id",ref.id},{"fingerprint",ref.fingerprint}});
     items.push_back(std::move(item));
   }
   // The projection cannot certify coverage of unobserved scenes. The BFF
   // combines this limitation with persisted sampling coverage, never counts a
   // successful query alone as complete video coverage.
-  return {{"model_version", model_}, {"partial", matches.partial}, {"items", items}};
+  Json result = {{"model_version", model_}, {"partial", matches.partial}, {"items", items}};
+  if (views_ > 1) result["view_layout"] = ainvr::search::kSceneViewLayout;
+  return result;
 }
 HttpService::HttpService(HistoryMongo* history, HttpAccess access, MatchEngine* engine)
     : history_(history), access_(std::move(access)), engine_(engine) {
@@ -430,6 +433,8 @@ void HttpService::Register(httplib::Server& server) {
     const auto pin=migration_authorization::Pin({{"package_id",target.at("package_id")},
       {"package_sha256",target.at("package_sha256")},{"model_version",target.at("model_version")}});
     const auto& spec=FindPackageSpec(pin.package_id);
+    // Re-encoding a stored frame into a multi-view space would have to derive every view from the retained JPEG; not built.
+    if(spec.views>1){Error(response,"migration_multiview_unsupported",409);return;}
     std::vector<float> embedding;
     if(!receipt) {
       const auto& values=target.at("vector");

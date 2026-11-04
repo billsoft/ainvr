@@ -8,3 +8,9 @@ g++ -std=c++17 -Wall -Wextra -Werror -pthread -Iai-service/src \
   $(pkg-config --cflags libmongoc-1.0) test/search/search_sampling_policy_test.cpp \
   $(pkg-config --libs libbson-1.0) -o test/build/search-sampling-policy/search_sampling_policy_test
 timeout 10 test/build/search-sampling-policy/search_sampling_policy_test
+
+mkdir -p test/build/search-scene-cadence
+g++ -std=c++17 -Wall -Wextra -Werror -pthread -Iai-service/src \
+  $(pkg-config --cflags libmongoc-1.0) test/search/search_scene_cadence_test.cpp \
+  $(pkg-config --libs libbson-1.0) -o test/build/search-scene-cadence/search_scene_cadence_test
+timeout 10 test/build/search-scene-cadence/search_scene_cadence_test
