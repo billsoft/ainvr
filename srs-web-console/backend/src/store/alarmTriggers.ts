@@ -134,6 +134,7 @@ export class AlarmTriggerStore {
       if(rows.rows.length>1000)throw new AlarmConfigError('trigger_capacity','触发器数量超过上限',503);
       const rules=rows.rows.flatMap(({document:t,version})=>t.bindings.map((b:Record<string,any>)=>({
         id:`${t.trigger_id}@${b.channel_id}`,trigger_id:t.trigger_id,version,name:t.name,channel_id:b.channel_id,input_stream_id:b.input_stream_id,state:'enabled',
+        labels:t.labels.map((l:{label_id:string;name?:string})=>({label_id:l.label_id,name:l.name})),...(t.group?{group:t.group}:{}),
         label_ids:t.labels.map((l:{label_id:string})=>l.label_id),label_map_version:b.label_map_version,geometry_revision:b.geometry_revision,
         zone_id:b.zone_id,zone_version:b.zone_version,points:b.zone_snapshot?.points,behavior:t.behavior,source_binding:b.source_binding??null,
         duration_ms:t.duration_ms,entry_edges:b.direction.entry_edges,exit_edges:b.direction.exit_edges,

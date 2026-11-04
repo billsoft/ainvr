@@ -14,7 +14,9 @@ export function evidenceCaptureIntents(pending) {
   for(const intent of pending.capture_intents??[])intents.set(digest([intent.channel_id,intent.stream_session_id,intent.sample.frame_id]),intent);
   for(const event of pending.events??[]){
     if(event.rule.snapshot.alarm_enabled===false)continue;
-    for(const sample of event.analysis_evidence?.review_context?.samples??[]){
+    const group=event.analysis_evidence?.group;
+    const samples=group&&event.rule.snapshot.review.enabled?group.members.flatMap(m=>[m.start,...m.transition,m.sample,m.identity_sample].filter(Boolean)):event.analysis_evidence?.review_context?.samples??[];
+    for(const sample of samples){
       if(!sample.event_eligible||sample.observation!=='detected')continue;
       const intent={channel_id:event.channel_id,stream_session_id:event.stream_session_id,source:event.analysis_evidence.source,sample};
       intents.set(digest([intent.channel_id,intent.stream_session_id,sample.frame_id]),intent);
@@ -91,6 +93,12 @@ export class ObservationConsumer {
         pending.issues.push('dwell_capacity');
         pendingBytes=Buffer.byteLength(JSON.stringify(pending));
       }
+      // Derived heat and dwell go first. Only then is group window state restarted; an alarm this frame already raised is kept.
+      if(pendingBytes>7*1024*1024&&pending.checkpoint.groups){
+        delete pending.checkpoint.groups;
+        pending.issues.push('group_state_capacity');
+        pendingBytes=Buffer.byteLength(JSON.stringify(pending));
+      }
       // Optional evidence must never turn an otherwise valid frame into a retry loop.
       if(pendingBytes>7*1024*1024){
         pending.capture_intents=[];
@@ -106,7 +114,7 @@ export class ObservationConsumer {
       doc=await this.finish(prepared,validFence);
       this.dwellStarted.add(channel);
       if(this.dwellStarted.size>1024)this.dwellStarted.delete(this.dwellStarted.values().next().value);
-      return {durable:true,outcome:'consumed',offset:doc.offset,events:[...new Set(result.events.filter(e=>e.rule.snapshot.alarm_enabled!==false).map(e=>e.episode_id??e.alarm_id))],behavior_events:result.events.map(e=>behaviorEvent(e).event_id),issues:result.issues};
+      return {durable:true,outcome:'consumed',offset:doc.offset,events:[...new Set(pending.events.filter(e=>e.rule.snapshot.alarm_enabled!==false).map(e=>e.episode_id??e.alarm_id))],behavior_events:pending.events.flatMap(e=>(e.group_members??[e]).map(member=>behaviorEvent(member).event_id)),issues:result.issues};
     } finally {
       await this.collection.updateOne(fence,{$set:{lease_until:0},$unset:{lease_token:''}});
     }
@@ -118,6 +126,18 @@ export class ObservationConsumer {
       await this.repository.captureJobs.updateOne({_id:id},{$setOnInsert:{...intent,state:'queued',next_at:0,created_at:Date.now()}},{upsert:true});
     }
     for(const event of p.events){
+      if(event.group_members){
+        const {group_members:members,...alarm}=event;
+        if(await this.repository.isCleared?.(alarm))continue;
+        const ids=[];
+        for(const member of members){
+          const id=await this.repository.behaviors.insert(member);
+          ids.push(id);
+          await this.repository.evidenceVault?.enqueue(id,member);
+        }
+        await this.repository.insert({...alarm,behavior_event_ids:ids});
+        continue;
+      }
       const behaviorId=await this.repository.behaviors.insert(event);
       await this.hook('behavior_inserted');
       if(event.rule.snapshot.alarm_enabled!==false&&!await this.repository.isCleared?.(event)){

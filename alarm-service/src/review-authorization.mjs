@@ -19,7 +19,12 @@ export function parseAuthorization(value){
  if(value.mode==='confirm_or_reject'&&(value.secondary?.version!==SECONDARY_REVIEW_VERSION||
   value.labels.some(label=>label!=='person')||!Number.isFinite(value.secondary.confirm_above)||value.secondary.confirm_above<.99||value.secondary.confirm_above>1||
   !Number.isFinite(value.secondary.reject_below)||value.secondary.reject_below<0||value.secondary.reject_below>.01))return null;
- const policy={schema:value.schema,mode:value.mode,model_sha256:value.model_sha256,layout:value.layout,
+ const groupLabels=value.group_labels;
+ if(groupLabels!==undefined&&(!Array.isArray(groupLabels)||!groupLabels.length||groupLabels.length>100||
+   groupLabels.some(label=>typeof label!=='string'||!label.trim()||label.length>128||/[<>\r\n]/.test(label))||new Set(groupLabels).size!==groupLabels.length))return null;
+ // The exclusion path was only validated for people: a group grant cannot extend it to other categories.
+ if(groupLabels&&value.mode==='confirm_or_reject'&&groupLabels.some(label=>label!=='person'))return null;
+ const policy={...(groupLabels?{group_labels:[...groupLabels].sort()}:{}),schema:value.schema,mode:value.mode,model_sha256:value.model_sha256,layout:value.layout,
   prompt_template:value.prompt_template,caller_template:value.caller_template,labels:[...value.labels].sort(),
   approve_above:value.approve_above,minimum_frame_score:value.minimum_frame_score??value.approve_above,authorized_by:value.authorized_by,authorized_at:value.authorized_at,...(value.mode==='confirm_or_reject'?{secondary:{version:SECONDARY_REVIEW_VERSION,confirm_above:value.secondary.confirm_above,reject_below:value.secondary.reject_below}}:{})};
  return {...policy,id:createHash('sha256').update(JSON.stringify(policy)).digest('hex')};

@@ -21,7 +21,7 @@ const steps=['基本信息','检测目标','判定条件','布防与审核']
 export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initialStep=0,usageNames={},sources=[]}:Props){
  const [value,setValue]=useState<TriggerDefinitionInput>(()=>initial?{
   target_model:initial.target_model,trigger_id:initial.trigger_id,name:initial.name,behavior:initial.behavior,labels:structuredClone(initial.labels),
-  duration_ms:initial.duration_ms,...(initial.approach_width_percent!==undefined?{approach_width_percent:initial.approach_width_percent}:{}),
+  ...(initial.group?{group:{...initial.group}}:{}),duration_ms:initial.duration_ms,...(initial.approach_width_percent!==undefined?{approach_width_percent:initial.approach_width_percent}:{}),
   review:initial.review?structuredClone(initial.review):undefined,alarm_enabled:initial.alarm_enabled,state:initial.state,schedule:structuredClone(initial.schedule),
  }:{target_model:targetModel('yolo26x'),trigger_id:id,name:'',behavior:'appearance',labels:[],duration_ms:3000,review:defaultTriggerReview(),alarm_enabled:true,state:'enabled',schedule:{mode:'always'}})
  const [seconds,setSeconds]=useState(String((initial?.duration_ms??3000)/1000))
@@ -45,6 +45,8 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
  const validation=(n:number)=>{
   if(n===0&&(!value.name.trim()||value.name.trim().length>128))return '请填写名称，最多128个字符'
   if(n===1)return targetError(value)
+  const group=value.group
+  if(n===2&&group&&(!Number.isInteger(group.minimum)||group.minimum<1||group.minimum>16||(group.minimum===1&&(group.labels==='any'||value.labels.length<2))||(group.labels==='all'&&value.labels.length>16)||group.window_ms<0||group.window_ms>60000))return '请检查组合数量和时间；全部类别最多 16 类'
   if(n===2&&value.behavior==='appearance'&&(!seconds.trim()||!Number.isFinite(Number(seconds))||Number(seconds)<0||Number(seconds)>3600))return '持续时间须为0至3600秒'
   if(n===2&&value.behavior==='region_approach'&&(!percent.trim()||!Number.isFinite(Number(percent))||Number(percent)<=0||Number(percent)>100))return '接近距离须大于0且不超过画面宽度的100%'
   if(n===3&&value.review?.enabled&&(!value.review.description.trim()||value.review.description.length>500||value.review.description.includes('<|')))return '请填写审核说明，不使用保留标记'
@@ -100,6 +102,14 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
     </>}
     {step===1&&<TriggerTargetPicker value={value} legacyLabels={labels} sources={sources} onChange={patch}/>}
     {step===2&&<>
+     {value.alarm_enabled&&<section className="space-y-3 rounded-panel border border-line p-4">
+      <label className="block text-sm font-medium">触发方式<select className={field} value={value.group?'group':'single'} onChange={e=>{const enabled=e.target.value==='group';if(enabled&&!initial&&value.behavior==='appearance')setSeconds('0');patch({group:enabled?{labels:'any',minimum:2,window_ms:value.behavior==='region_traverse'?3000:0}:undefined})}}><option value="single">单目标 · 任一所选标签</option><option value="group">组合 · 多类别或数量条件</option></select></label>
+      {value.group&&<><div className="grid gap-3 sm:grid-cols-3">
+       <label>类别匹配<select className={field} value={value.group.labels} onChange={e=>patch({group:{...value.group!,labels:e.target.value as 'all'|'any'}})}><option value="any">任一类别（或）</option><option value="all">全部类别（与）</option></select></label>
+       <label>最少不同目标数<input className={field} type="number" min={1} max={16} value={value.group.minimum} onChange={e=>patch({group:{...value.group!,minimum:Number(e.target.value)}})}/></label>
+       <label>{value.behavior==='region_traverse'?'穿越窗口（秒）':'同时保持（秒）'}<input className={field} type="number" min={0} max={60} step="0.1" value={value.group.window_ms/1000} onChange={e=>patch({group:{...value.group!,window_ms:Math.round(Number(e.target.value)*1000)}})}/></label></div>
+       <p className="text-xs text-ink-subtle">{value.behavior==='region_traverse'?'窗口内按完成穿越的不同跟踪目标计数，同一目标只算一次，0 秒表示必须同帧完成穿越。':'只计同一帧中符合行为的不同目标；0 秒表示同帧达标即告警。先后出现但未同框不会累加。'} 全部类别要求每类至少一个。组合告警逐个核对目标。授权及证据满足时可自动确认或判误报，其他情况保留人工审核。</p></>}
+     </section>}
      {value.behavior==='appearance'?<>
       <label className="block text-sm font-medium text-ink">连续出现（秒）<input type="number" min="0" max="3600" step="0.1" inputMode="decimal" value={seconds}
        onChange={e=>{setSeconds(e.target.value);setError('')}} className={`${field} mt-1.5 sm:w-64`}/></label>

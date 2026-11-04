@@ -4,6 +4,7 @@ export interface TriggerTargetModel {name:string;adapter:string;mode:'fixed'|'op
 export interface TriggerDefinitionInput {
  target_model?:TriggerTargetModel;
  trigger_id:string;name:string;behavior:TriggerBehavior;labels:TriggerLabel[];
+ group?:{labels:'any'|'all';minimum:number;window_ms:number};
  duration_ms:number;approach_width_percent?:number;alarm_enabled:boolean;
  review?:{enabled:boolean;description:string;reject_below:number;approve_above:number};
  state:'draft'|'enabled'|'paused'|'archived';schedule:AlarmSchedule

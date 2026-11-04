@@ -10,6 +10,7 @@ import {isStorageBusy} from './review-storage.mjs';
 import {ReviewCheckpoint} from './review-checkpoint.mjs';
 export {isStorageBusy} from './review-storage.mjs';
 export function reviewFor(event){
+ if(event.analysis_evidence?.group)return {state:'skipped',attempt:0,reason:event.analysis_evidence.group.proof_version===2?'group_review_pending':'group_manual_review',policy:structuredClone(event.rule.snapshot.review)};
  const policy=event.rule?.snapshot?.review;
  const evidence=event.behavior_event_ids?.[0]??null;
  return policy?.enabled?{state:'queued',attempt:0,next_attempt_at:0,lease_until:0,

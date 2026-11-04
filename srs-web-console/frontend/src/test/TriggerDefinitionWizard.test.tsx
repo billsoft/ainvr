@@ -103,3 +103,15 @@ it('editing paused legacy recording rules never silently enables alarms or AI re
  expect(save.mock.calls[0]![0]).toMatchObject({alarm_enabled:false,state:'paused'})
  expect(save.mock.calls[0]![0].review).toBeUndefined()
 })
+
+it('saves distinct-person simultaneous count separately from individual appearance duration',async()=>{
+ const {save}=open()
+ fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'三人同框'}})
+ next();fireEvent.click(screen.getByRole('button',{name:'人员'}));next()
+ fireEvent.change(screen.getByLabelText('触发方式'),{target:{value:'group'}})
+ fireEvent.change(screen.getByLabelText('最少不同目标数'),{target:{value:'3'}})
+ fireEvent.change(screen.getByLabelText('同时保持（秒）'),{target:{value:'1'}})
+ next();fireEvent.click(screen.getByRole('button',{name:'保存'}))
+ await waitFor(()=>expect(save).toHaveBeenCalledOnce())
+ expect(save.mock.calls[0]?.[0]).toMatchObject({duration_ms:0,group:{labels:'any',minimum:3,window_ms:1000}})
+})

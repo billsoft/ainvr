@@ -9,6 +9,7 @@ const definitionSchema=z.object({
   trigger_id:id,name:z.string().trim().min(1).max(128),
   behavior:z.enum(['appearance','region_approach','region_enter','region_traverse']),
   labels:z.array(z.object({label_id:id,name:z.string().trim().min(1).max(256),description:z.string().trim().min(1).max(160).optional()}).strict()).min(1).max(128),
+  group:z.object({labels:z.enum(['any','all']),minimum:z.number().int().min(1).max(16),window_ms:z.number().int().min(0).max(60000)}).strict().optional(),
   duration_ms:z.number().int().min(0).max(3600000),
   approach_width_percent:percent.optional(),
   alarm_enabled:z.boolean(),state:z.enum(['draft','enabled','paused','archived']),
@@ -42,6 +43,7 @@ export function parseTriggerDefinition(input:unknown):TriggerDefinition {
   if(!parsed.success)return fail('invalid_trigger','触发器定义无效');
   const d=parsed.data;
   if(new Set(d.labels.map(l=>l.label_id)).size!==d.labels.length)return fail('invalid_trigger','目标不能重复');
+  if(d.group&&(!d.alarm_enabled||(d.group.labels==='all'&&d.labels.length>16)||(d.group.minimum===1&&(d.group.labels==='any'||d.labels.length<2))))return fail('invalid_group','组合条件需多个目标，全部类别最多 16 类');
   if(d.target_model){
     const open=['yoloe_bpu','locateanything_bpu'].includes(d.target_model.adapter);
     if(open!==(d.target_model.mode==='open')||d.labels.some(l=>open?!l.description:l.description!==undefined))return fail('invalid_trigger','模型类型与识别标签不匹配');
@@ -85,6 +87,7 @@ export function compileAssignment(
   if(source.channel_id!==a.processor_id||source.input_stream_id!==a.input_stream_id||
     source.geometry_revision!==a.geometry_revision||source.label_map_version!==a.label_map_version)return fail('source_changed','来源或模型目录已变化');
   if(!source.stream_fingerprint||!/^[a-f0-9]{64}$/.test(source.stream_fingerprint)||!source.observed_at||!Number.isFinite(Date.parse(source.observed_at)))return fail('source_unavailable','来源证据尚未确认');
+  if(d.group&&!source.tracking_available)return fail('tracking_required','组合条件需要支持跟踪的通道');
   if(!source.tracking_available&&!(source.detection_available&&d.alarm_enabled&&['appearance','region_approach'].includes(d.behavior)&&d.duration_ms===0&&!a.entry_edges.length&&!a.exit_edges.length&&!zone?.erp_wrap))
     return fail('tracking_required','此规则需要可靠跟踪；无跟踪仅支持无持续时间的出现、区内检出及接近带检出。');
   if(!Number.isSafeInteger(source.width)||source.width<=0||!Number.isSafeInteger(source.height)||source.height<=0)return fail('source_unavailable','原图尺寸尚未确认');
@@ -107,7 +110,7 @@ export function compileAssignment(
     channel_id:a.processor_id,input_stream_id:a.input_stream_id,
     labels:d.labels.map(({label_id,name})=>({label_id,name})),label_ids:d.labels.map(l=>l.label_id),label_map_version:a.label_map_version,geometry_revision:a.geometry_revision,
     zone_id:a.zone_id,zone_version:a.zone_version,points:zone?.points.map(p=>[...p]),...(zone?.erp_wrap?{erp_wrap:true}:{}),
-    behavior:d.behavior,anchor:'bottom_center',duration_ms:d.duration_ms,
+    ...(d.group?{group:d.group}:{}),behavior:d.behavior,anchor:'bottom_center',duration_ms:d.duration_ms,
     entry_edges:a.entry_edges.map(e=>zone!.edge_ids.indexOf(e)),exit_edges:a.exit_edges.map(e=>zone!.edge_ids.indexOf(e)),
     ...(distance!==undefined?{approach_px:source.width*distance/100,approach_width_percent:distance}:{}),
     alarm_enabled:d.alarm_enabled,schedule:d.schedule,review:d.review?.enabled?{...d.review,profile_id:'alarm-review-zh-v1',version:definitionVersion}:{enabled:false},

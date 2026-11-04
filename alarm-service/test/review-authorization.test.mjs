@@ -4,6 +4,7 @@ import {MongoClient} from 'mongodb';
 import {randomUUID} from 'node:crypto';
 import {parseAuthorization,authorizedResult,authorizedScores,confirmationAssessment} from '../src/review-authorization.mjs';
 import {REVIEW_PROMPT_VERSION} from '../src/review-prompt.mjs';
+import {SECONDARY_REVIEW_VERSION} from '../src/review-secondary.mjs';
 import {ReviewWorker} from '../src/review-worker.mjs';
 const config={schema:'ainvr.review-authorization.v1',enabled:true,mode:'confirm_only',model_sha256:'a'.repeat(64),layout:'target-crop-v1',prompt_template:'alarm-review-zh-v1',caller_template:REVIEW_PROMPT_VERSION,labels:['person'],approve_above:.99,authorized_by:'test operator',authorized_at:'2026-10-26T00:00:00Z'};
 const result={schema:'ainvr.alarm_review.v1',model:{package_sha256:config.model_sha256},prepared_image:{layout:config.layout},template:config.prompt_template,caller_template:REVIEW_PROMPT_VERSION,target_label:'person',real_score:.999};
@@ -67,4 +68,19 @@ test('confirmation diagnostics retain the exact failed frame without treating ma
  assert.equal(confirmationAssessment(null,[1],rule).outcome,'not_authorized');
  assert.deepEqual(confirmationAssessment(p,[NaN],rule).frame_scores,[]);
  assert.deepEqual(confirmationAssessment(p,[.97,1],{approve_above:.98}).failed_frame_indices,[0]);
+});
+
+test('group-only grants change the binding and preserve single-target authority',()=>{
+ const p=parseAuthorization({...config,group_labels:['backpack','person']});
+ assert.deepEqual(p.group_labels,['backpack','person']);
+ assert.notEqual(p.id,parseAuthorization(config).id);
+ assert.equal(authorizedResult(p,{...result,target_label:'backpack'}),false);
+ assert.equal(parseAuthorization({...config,group_labels:['person','person']}),null);
+});
+
+test('group grants cannot extend the person-only reject path',()=>{
+ const secondary={version:SECONDARY_REVIEW_VERSION,confirm_above:.995,reject_below:.005};
+ assert.equal(parseAuthorization({...config,mode:'confirm_or_reject',secondary,group_labels:['person','backpack']}),null);
+ assert.ok(parseAuthorization({...config,mode:'confirm_or_reject',secondary,group_labels:['person']}));
+ assert.ok(parseAuthorization({...config,group_labels:['person','backpack']}));
 });

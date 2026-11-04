@@ -39,7 +39,7 @@ export function TriggerTargetPicker({value,legacyLabels,sources,onChange}:Props)
     {SELECTABLE_AI_MODEL_PRESET_KEYS.map(k=><option key={k} value={k}>{AI_MODEL_PRESETS[k].displayName}</option>)}
    </select>
   </label>
-  <p className="text-xs leading-5 text-ink-subtle">{single?`该模型仅识别${labelDisplay(available[0]!.name)}，选择此目标后继续设置判定条件。`:'目标类别来自所选模型。可选择多个类别，任一类别符合行为条件即可触发。'}</p>
+  <p className="text-xs leading-5 text-ink-subtle">{single?`该模型仅识别${labelDisplay(available[0]!.name)}，选择此目标后继续设置判定条件。`:'目标类别来自所选模型。可多选。下一步可设置任一类别或全部类别，以及目标数量。'}</p>
   {pending&&<section role="alertdialog" aria-label="更换检测模型" className="space-y-2 rounded-panel border border-warning p-3"><p>切换模型会清除本次草稿的 {value.labels.length} 个已选目标，请重新选择；已有配置在保存前不变。</p><div className="flex gap-2"><button type="button" className="btn-secondary" onClick={()=>setPending(null)}>保留当前模型</button><button type="button" className="btn-primary" onClick={()=>changeModel(pending)}>切换并重新选择</button></div></section>}
   {selected==='locateanything-3b'&&<p className="rounded-base border border-warning bg-amber-50 p-3 text-sm">此模型用于低频检测，不支持可靠跟踪。关联时仅支持持续时间为 0 的出现或接近检出；侵入、穿过及持续停留需要可跟踪的 AI 通道。</p>}
   {open?<>

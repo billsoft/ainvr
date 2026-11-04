@@ -1,3 +1,4 @@
+import {createRecordingEvidence} from './recording-evidence.mjs';
 import {EvidenceImages} from './evidence-images.mjs';
 // Production reference executor, independent of the core alarm consumer.
 import {loadBootstrap,createConfigTransport} from './config-center.mjs';
@@ -28,9 +29,9 @@ try{while(!stop){
    const config=validateConfig({...docs[0].config,schema_version:'1.0',version:state.appliedVersion,operation_id:`reference-${state.appliedVersion}`});
    if(client)await client.close();client=new MongoClient(config.mongo_uri,{serverSelectionTimeoutMS:5000,maxPoolSize:2});await client.connect();
    const db=client.db(config.database);runtime=db.collection('alarm_reference_runtime');const rows=db.collection('alarms'),vault=new EvidenceVault(db,{root:'/mnt/ainvr-ssd/ainvr-alarm-evidence/'+config.database,policy:config.evidence,images:new EvidenceImages(db)});
-   context=new ReviewContext({db,events:rows},'/mnt/ainvr-ssd/ainvr-review-frames');context.policy=config.review;await context.images.initialize();
+   context=new ReviewContext({db,events:rows},'/mnt/ainvr-ssd/ainvr-review-frames');context.policy=config.review;context.recoverEvidence=createRecordingEvidence(bootstrap);await context.images.initialize();
    await rows.createIndex({'handling.state':1,'review.reference.state':1,occurred_at:1});
-   worker=new ReferenceReviewWorker({rows,invoke,image:async row=>{
+   worker=new ReferenceReviewWorker({rows,invoke,context,image:async row=>{
     try{return await retainedTarget(vault,row)}catch(error){if(error.message==='missing_context')throw Error('missing_evidence');throw error;}
    },prepare:async(row,original)=>{
     if(!/^[a-f0-9]{64}$/.test(row.alarm_id))throw Error('invalid_request');

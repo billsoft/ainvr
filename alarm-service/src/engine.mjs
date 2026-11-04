@@ -1,3 +1,4 @@
+import {groupEvents} from './group-events.mjs';
 import {counterContinuation} from './low-confidence.mjs';
 import {sampleOf,beginEvidence,sealEvidence} from './compact-evidence.mjs';
 // Copyright AINVR. Pure, checkpointable trigger evaluator. No model execution.
@@ -92,7 +93,7 @@ export function evaluate(checkpoint,input,rules) {
     if(r.source_binding&&Date.parse(f.captured_at)<Date.parse(r.source_binding.not_before))continue;
     if(r.input_stream_id!==undefined&&r.input_stream_id!==f.input_stream_id){issues.push(`rule_input_mismatch:${r.id}`);continue;}
     if(r.geometry_revision!==f.source.geometry_revision||r.label_map_version!==f.model.label_map_version){issues.push(`rule_config_mismatch:${r.id}`);continue;}
-    if(detectionOnly&&(r.alarm_enabled===false||!['appearance','region_approach'].includes(r.behavior)||r.duration_ms>0||r.entry_edges.length||r.exit_edges.length||r.erp_wrap)) {
+    if(detectionOnly&&(r.group||r.alarm_enabled===false||!['appearance','region_approach'].includes(r.behavior)||r.duration_ms>0||r.entry_edges.length||r.exit_edges.length||r.erp_wrap)) {
       issues.push(`tracking_required:${r.id}`);continue;
     }
     eligible.set(JSON.stringify([r.id,r.version]),r);
@@ -330,6 +331,7 @@ export function evaluate(checkpoint,input,rules) {
       e.rules_key!==rulesKey?'configuration_changed':e.window_key!==windowKey?'schedule_ended':null;
     if(reason){ended.push({episode_id:e.id,ended_at:f.captured_at,end_reason:reason});delete cp.episodes[track];}
   }
+  const grouped=groupEvents(cp,f,eligible,periods,out,sessionChanged||ptsReset||timeGap||seqGap||f.gap===true||issues.includes('view_changed'));
   for(const event of out){
     if(event.rule.snapshot.alarm_enabled===false)continue;
     if(detectionOnly){event.episode_id=event.alarm_id;event.episode_started_at=f.captured_at;continue;}
@@ -358,5 +360,5 @@ export function evaluate(checkpoint,input,rules) {
   }
   cp.passage_diagnostics=cp.passage_diagnostics.slice(-64);
   const coverage=coverageStep(cp,f,eligible.values(),sessionChanged||seqGap||ptsReset||timeGap||f.gap===true||(interval!==null&&cp.intervals?.length===1&&interval>1500));
-  return {checkpoint:cp,events:out,ended_episodes:ended,issues,coverage,capture_intents:captureIntents};
+  return {checkpoint:cp,events:out.concat(grouped),ended_episodes:ended,issues,coverage,capture_intents:captureIntents};
 }

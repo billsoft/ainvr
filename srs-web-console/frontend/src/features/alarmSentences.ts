@@ -26,7 +26,9 @@ export function describeAlarm(alarm:AlarmEvent,trigger:AlarmContext|undefined){
  const top=[...stages].reverse().find(s=>s.behavior===alarm.behavior)
  const at=(behavior:string)=>stages.find(s=>s.behavior===behavior)?.at
  let sentence:string
- if(!trigger)sentence=`目标${behaviorNames[alarm.behavior]??'触发'}${alarm.behavior==='appearance'?'':'热区'}。`
+ const group=alarm.group_summary??(alarm.analysis_evidence?.group?{...alarm.analysis_evidence.group,count:alarm.analysis_evidence.group.members.length}:undefined)
+ if(group)sentence=group.mode==='completed_in_window'?`${group.window_ms/1000} 秒内有 ${group.count} 个不同目标完成穿越。`:`同一画面中有 ${group.count} 个不同目标同时满足「${behaviorNames[alarm.behavior]??alarm.behavior}」条件。`
+ else if(!trigger)sentence=`目标${behaviorNames[alarm.behavior]??'触发'}${alarm.behavior==='appearance'?'':'热区'}。`
  else if(alarm.behavior==='appearance')sentence=`${target}在画面中连续出现 ${trigger.duration_ms/1000} 秒。`
  else if(alarm.behavior==='region_approach')sentence=`${target}靠近「${zone??'热区'}」${edge(edgeOf(top?.direction,'nearest_edge'))}一侧（${binding?.approach_px??'?'} 像素内）。`
  else if(alarm.behavior==='region_enter')sentence=`${target}从${edge(edgeOf(top?.direction,'entry_edge'))}进入「${zone??'热区'}」。`

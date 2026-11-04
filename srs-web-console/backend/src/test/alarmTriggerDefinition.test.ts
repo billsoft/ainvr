@@ -79,3 +79,10 @@ it('open vocabulary requires matching prompt as well as ID and name; metadata ne
  expect(()=>parseTriggerDefinition({...d,target_model:{...model,mode:'fixed'}})).toThrow();
  expect(()=>parseTriggerDefinition({...d,labels:Array.from({length:9},(_,i)=>({...labels[0],label_id:`label${i}`}))})).toThrow();
 });
+
+it('组合条件随执行规则冻结，检测模式不接受需要跨帧身份的组合',()=>{
+ const input={...definition(),duration_ms:0,group:{labels:'any' as const,minimum:3,window_ms:1000}};
+ expect(compileAssignment(input,1,assignment(),source,null,1)?.group).toEqual(input.group);
+ expect(()=>compileAssignment(input,1,assignment(),{...source,tracking_available:false,detection_available:true},null,1)).toThrow();
+ expect(()=>parseTriggerDefinition({...input,group:{...input.group,minimum:0}})).toThrow();
+});

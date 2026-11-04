@@ -15,7 +15,7 @@ export function sealEvidence(event,s,sample,r){
 export function compactProof(row){
  const c=row.analysis_evidence?.review_context,r=row.rule?.snapshot,no=reason=>({ok:false,reason,samples:[]});
  if(!r||r.erp_wrap)return no('panorama_review_unavailable');
- if(c?.truncated||digest(c?.trace)!==digest(c?.samples))return no('incomplete_trajectory');
+ if(!Array.isArray(c?.samples)||!Array.isArray(c.trace)||c.truncated||digest(c.trace)!==digest(c.samples))return no('incomplete_trajectory');
  if(!c?.proof||c.proof.method!=='production_evaluator_transition_v2'||!Array.isArray(c.samples)||!c.samples.length||c.samples.length>4)return no('incomplete_trajectory');
  if(c.integrity!==digest({samples:c.samples,proof:c.proof})||c.proof.rule_digest!==digest(r)||digest(c.proof.direction)!==digest(row.direction)||digest(c.proof.traversal)!==digest(row.analysis_evidence.traversal??null))return no('geometry_unconfirmed');
  if(c.samples.some(s=>!s.event_eligible||s.observation!=='detected'||s.track_id!==row.track_ids?.[0]||s.label_id!==row.analysis_evidence.track.label_id||s.source_frame_index==null)||c.samples.at(-1).frame_id!==row.frame_id)return no('incomplete_trajectory');

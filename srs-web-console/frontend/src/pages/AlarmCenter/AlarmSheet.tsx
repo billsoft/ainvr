@@ -1,3 +1,4 @@
+import {GroupEvidence} from './GroupEvidence'
 import {ReviewFrames} from './ReviewFrames'
 import {reviewDiagnostic,reviewLabel,reviewReason,referenceLabel,recoveryLabel,reviewStatusClass} from '@/features/alarmReview'
 import {useEffect,useRef,useState} from 'react'
@@ -31,7 +32,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
  const error=failedLoad?.id===id&&failedLoad.retry===retry
  const described=value?describeAlarm(value,trigger):null,look=levelLook[value?.behavior??'']??levelLook.appearance!
  const selected=value?.stages?.find(s=>s.event_id===stage)
- const showReviewFrames=!!value?.review?.frames?.length&&(!selected||selected.event_id===value?.stages?.at(-1)?.event_id)
+ const showReviewFrames=!value?.analysis_evidence?.group&&!!value?.review?.frames?.length&&(!selected||selected.event_id===value?.stages?.at(-1)?.event_id)
  const act=async(disposition:AckDisposition)=>{
   if(!value||busy)return
   setBusy(true);setFailed(false)
@@ -68,8 +69,9 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
    </div>:<div className="grid min-h-0 flex-1 overflow-y-auto md:grid-cols-[minmax(0,1fr)_18rem]">
     <div className="min-w-0 space-y-4 p-4 sm:p-5">
      <div className="rounded-base bg-surface-page px-3 py-2"><h3 className="text-xs text-ink-subtle">触发原因</h3><p className="text-sm leading-6 text-ink">{described?.sentence}</p></div>
+     {value.analysis_evidence?.group&&<GroupEvidence alarm={value}/>}
      {showReviewFrames&&<ReviewFrames key={`${id}:${stage}`} alarm={value}/>}
-     {showReviewFrames?<details className="text-sm"><summary className="cursor-pointer py-3">查看此阶段目标裁剪</summary>{selected?.behavior_event_ids?.[0]&&<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>}</details>:selected?.behavior_event_ids?.[0]?<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>:<p className="rounded-card bg-surface-page p-4 text-sm text-ink-subtle">此阶段没有截图。</p>}
+     {!value.analysis_evidence?.group&&(showReviewFrames?<details className="text-sm"><summary className="cursor-pointer py-3">查看此阶段目标裁剪</summary>{selected?.behavior_event_ids?.[0]&&<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>}</details>:selected?.behavior_event_ids?.[0]?<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>:<p className="rounded-card bg-surface-page p-4 text-sm text-ink-subtle">此阶段没有截图。</p>)}
      {playbackRange(value)&&smartSearchHref(value.playback_stream_id,playbackRange(value)!.from,playbackRange(value)!.to)&&<Link className="btn-secondary !min-h-11" to={smartSearchHref(value.playback_stream_id,playbackRange(value)!.from,playbackRange(value)!.to)!}><Search size={16} aria-hidden="true"/>搜索同一摄像头与时间</Link>}
      {playbackHref(value)?<div className="space-y-1"><Link to={playbackHref(value)!} target="_blank" rel="noopener noreferrer" className="btn-primary !min-h-11"><Play size={16} aria-hidden="true"/>查看录像（{clock(new Date(playbackRange(value)!.from).toISOString())}–{clock(new Date(playbackRange(value)!.to).toISOString())}）</Link><p className="text-xs text-ink-subtle">打开本告警所属 AI 输出录像，从行为开始前 2 秒播放，保留当前告警列表。</p></div>:<p className="text-sm text-ink-subtle">无法确定本告警对应的 AI 输出通道或有效时间，请检查 AI 输出关联；不会跳转到输入通道。</p>}
     </div>
@@ -77,7 +79,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
      <section aria-label="AI 审核结果" className="space-y-1 rounded-base border border-line p-3 text-sm">
       <h3 className={`inline-flex rounded border px-2 py-0.5 font-medium ${reviewStatusClass(value)}`}>{reviewLabel(value)}{value.handling.state==='acknowledged'?` · ${value.handling.disposition==='false_positive'?'误报':'确认'}`:''}</h3>
       {recoveryLabel(value.review)&&<p className="mt-1 text-xs text-ink-subtle">{recoveryLabel(value.review)}</p>}
-      {diagnostic?<div className="space-y-1 border-t border-line pt-2"><p>{diagnostic.summary}</p><details className="text-xs text-ink-subtle"><summary className="min-h-11 cursor-pointer py-3">查看审核诊断与模型分数</summary><ul className="space-y-2 break-words">{diagnostic.details.map((text,i)=><li key={i}>{text}</li>)}</ul>{value.review?.policy?.description&&<p className="mt-2">规则说明：{value.review.policy.description}</p>}</details><p className="text-xs text-ink-subtle">人工确认与标记误报可独立操作。</p></div>:value.review?.reference&&<div className="space-y-1 border-t border-line pt-2"><p>{referenceLabel(value.review.reference)}</p><p className="text-xs text-ink-subtle">{value.review.geometry_verified?'行为几何条件已核验；参考图片仅核对目标类别，请结合录像人工审核。':'参考分析仅核对保留截图的目标类别；行为证据请结合关键帧与录像核对。'}</p></div>}
+      {diagnostic?<div className="space-y-1 border-t border-line pt-2"><p>{diagnostic.summary}</p><details className="text-xs text-ink-subtle"><summary className="min-h-11 cursor-pointer py-3">查看审核诊断与模型分数</summary><ul className="space-y-2 break-words">{diagnostic.details.map((text,i)=><li key={i}>{text}</li>)}</ul>{value.review?.policy?.description&&<p className="mt-2">规则说明：{value.review.policy.description}</p>}</details><p className="text-xs text-ink-subtle">人工确认与标记误报可独立操作。</p></div>:!value.analysis_evidence?.group&&value.review?.reference&&<div className="space-y-1 border-t border-line pt-2"><p>{referenceLabel(value.review.reference)}</p><p className="text-xs text-ink-subtle">{value.review.geometry_verified?'行为几何条件已核验；参考图片仅核对目标类别，请结合录像人工审核。':'参考分析仅核对保留截图的目标类别；行为证据请结合关键帧与录像核对。'}</p></div>}
       {!diagnostic&&value.review?.score!==undefined&&!value.review.reference&&<p>目标类别匹配分数 {value.review.score.toFixed(3)}（不是概率）</p>}
       {!diagnostic&&value.review?.policy?.description&&<p className="text-ink-subtle">{value.review.policy.description}</p>}
       {(value.review?.completed_at||value.review?.reference?.completed_at||value.review?.model||value.review?.reference?.model)&&<p className="text-xs text-ink-subtle">{(value.review.completed_at||value.review.reference?.completed_at)?new Date((value.review.completed_at||value.review.reference?.completed_at)!).toLocaleString():''} · {value.review.model?.package_id??value.review.reference?.model?.package_id}</p>}

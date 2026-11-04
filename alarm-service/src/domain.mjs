@@ -43,6 +43,12 @@ export function validateRule(input) {
   if(!TRIGGER_BEHAVIORS.includes(r.behavior)) fail('unsupported_behavior','behavior');
   if(!['draft','enabled','paused','archived'].includes(r.state)) fail('invalid_state','state');
   if(!Array.isArray(r.label_ids)||!r.label_ids.length||r.label_ids.length>128) fail('invalid_labels','label_ids');
+  if(r.group!==undefined){
+    const g=r.group;
+    if(!g||!['any','all'].includes(g.labels)||!Number.isInteger(g.minimum)||g.minimum<1||g.minimum>16||
+       !Number.isInteger(g.window_ms)||g.window_ms<0||g.window_ms>60000||!r.alarm_enabled||
+       (g.labels==='all'&&r.label_ids.length>16)||(g.minimum===1&&(g.labels==='any'||r.label_ids.length<2)))fail('invalid_group','Invalid group trigger');
+  }
   r.label_ids.forEach(v=>identity(v,'label_id'));
   identity(r.geometry_revision,'geometry_revision'); identity(r.label_map_version,'label_map_version');
   if(r.source_binding!=null){
