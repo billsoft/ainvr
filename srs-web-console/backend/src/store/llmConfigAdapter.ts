@@ -7,7 +7,7 @@ export const llmSettingsSchema=z.object({
   enabled:z.boolean(),listen:z.object({host:z.literal('127.0.0.1'),port:z.literal(8300)}).strict(),
   api_keys:z.array(z.object({name:z.string().regex(/^[a-zA-Z0-9_-]{1,48}$/),scope:z.literal('inference'),key:secret}).strict()).min(1).max(16),
   admin_key:secret,
-  model:z.object({package_id:z.literal('qwen3vl-4b-review-v3'),load_policy:z.literal('resident'),ion_reserve_mb:z.literal(512)}).strict(),
+  model:z.object({package_id:z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),load_policy:z.literal('resident'),ion_reserve_mb:z.literal(512)}).strict(),
   tasks:z.object({'alarm-review-zh-v1':z.object({calibration_temperature:z.number().min(.05).max(10),aspect_policy:z.literal('reject')}).strict(),
     'search-verify-zh-v1':z.object({enabled:z.boolean(),aspect_policy:z.literal('letterbox'),decision_policy:z.literal('abc-visible-v1')}).strict().optional()}).strict(),
   scheduling:z.object({queue_size:z.number().int().min(1).max(32),queue_timeout_s:z.number().int().min(1).max(300),

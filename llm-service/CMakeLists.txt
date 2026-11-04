@@ -89,6 +89,14 @@ target_compile_options(ainvr_llm_search_configuration_test PRIVATE -UNDEBUG -Wal
 add_test(NAME llm_search_configuration COMMAND ainvr_llm_search_configuration_test)
 set_tests_properties(llm_search_configuration PROPERTIES TIMEOUT 15)
 
+# Manifest-driven model shape, layout helpers and installed-package inventory. Pure software.
+add_executable(ainvr_llm_model_shape_test tests/model_shape_test.cpp)
+target_include_directories(ainvr_llm_model_shape_test PRIVATE src)
+target_link_libraries(ainvr_llm_model_shape_test PRIVATE nlohmann_json::nlohmann_json)
+target_compile_options(ainvr_llm_model_shape_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME llm_model_shape COMMAND ainvr_llm_model_shape_test)
+set_tests_properties(llm_model_shape PROPERTIES TIMEOUT 15)
+
 # Manual token-capacity probe, software only; the tokenizer fixture is explicit.
 add_executable(ainvr_llm_search_tokenizer_probe tests/search_tokenizer_probe.cpp)
 target_include_directories(ainvr_llm_search_tokenizer_probe PRIVATE src)

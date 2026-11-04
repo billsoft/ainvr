@@ -83,29 +83,32 @@ inline nlohmann::json SearchTemplateDescriptor() {
 }
 inline std::string SearchTemplateHash() { return SearchHash(SearchTemplateDescriptor().dump()); }
 inline nlohmann::json SearchProfileMetadata(bool enabled, bool requested, bool loaded,
-                                           bool vocabulary_supported, const std::string& package_sha256) {
+                                           bool vocabulary_supported, const std::string& package_sha256,
+                                           const std::string& package_id = "qwen3vl-4b-review-v3") {
   const bool known_model = loaded && std::regex_match(package_sha256, std::regex("^[a-f0-9]{64}$"));
   return {{"template", kSearchTask}, {"template_sha256", SearchTemplateHash()},
     {"preprocessing_version", kSearchPreprocessing}, {"decision_policy", "abc-visible-v1"},
-    {"model", known_model ? nlohmann::json{{"package_id", "qwen3vl-4b-review-v3"}, {"package_sha256", package_sha256}} : nlohmann::json(nullptr)},
+    {"model", known_model ? nlohmann::json{{"package_id", package_id}, {"package_sha256", package_sha256}} : nlohmann::json(nullptr)},
     {"enabled", enabled}, {"available", enabled && requested && known_model && vocabulary_supported}, {"validated", false},
     {"reason", !enabled ? nlohmann::json("disabled") : !requested || !known_model ? nlohmann::json("model_not_loaded") :
       !vocabulary_supported ? nlohmann::json("decision_vocabulary_unavailable") : nlohmann::json(nullptr)}};
 }
-inline std::string SearchPrompt(const SearchRequest& request) {
+inline std::string SearchPrompt(const SearchRequest& request, int image_tokens = 392) {
   const auto spec = SearchTemplateDescriptor();
   return "<|im_start|>system\n" + spec.at("system").get<std::string>() +
     "<|im_end|>\n<|im_start|>user\n<|vision_start|>" +
-    [&] { std::string pads; for (int i = 0; i < 392; ++i) pads += "<|image_pad|>"; return pads; }() +
+    [&] { std::string pads; for (int i = 0; i < image_tokens; ++i) pads += "<|image_pad|>"; return pads; }() +
     "<|vision_end|>" + spec.at("user_prefix").get<std::string>() +
     (request.evidence_kind == "object" ? "目标截图" : "场景截图") +
     spec.at("query_prefix").get<std::string>() + nlohmann::json(request.query).dump() +
     "<|im_end|>\n<|im_start|>assistant\n";
 }
-template<class Tokenize> std::vector<int> EncodeSearchInput(const SearchRequest& request, Tokenize tokenize) {
-  auto ids = tokenize(SearchPrompt(request));
-  if (ids.size() > 1024) throw InputError("input_too_long", "Complete search image and text input exceeds 1024 tokens");
-  Positions(ids); return ids;
+template<class Tokenize> std::vector<int> EncodeSearchInput(const SearchRequest& request, Tokenize tokenize,
+                                                              const ModelShape& shape = ModelShape{}) {
+  auto ids = tokenize(SearchPrompt(request, shape.image_tokens));
+  if (int(ids.size()) > shape.context)
+    throw InputError("input_too_long", "Complete search image and text input exceeds " + std::to_string(shape.context) + " tokens");
+  Positions(ids, shape); return ids;
 }
 inline std::array<size_t, 3> SearchDecisionIndices(const nlohmann::json& vocabulary) {
   const auto words = vocabulary.at("words").get<std::vector<std::string>>();
@@ -143,7 +146,8 @@ inline nlohmann::json SearchDecision(const SearchRequest& request, const std::ve
     {"reference_scores", {{"A", scores[0]}, {"B", scores[1]}, {"C", scores[2]}}}};
 }
 inline nlohmann::json SearchResponse(const SearchRequest& request, const std::vector<float>& logits,
-    const nlohmann::json& vocabulary, const std::string& package_sha256) {
+    const nlohmann::json& vocabulary, const std::string& package_sha256,
+    const std::string& package_id = "qwen3vl-4b-review-v3") {
   auto output = SearchDecision(request, logits, SearchDecisionIndices(vocabulary));
   const auto input_sha256 = SearchHash(nlohmann::json{{"query", request.query}, {"question_scope", request.question_scope},
     {"kind", request.evidence_kind}, {"frame_id", request.frame_id}, {"evidence_sha256", request.evidence_sha256},
@@ -152,7 +156,7 @@ inline nlohmann::json SearchResponse(const SearchRequest& request, const std::ve
     {"frame_id", request.frame_id}, {"evidence_sha256", request.evidence_sha256}, {"query_sha256", SearchHash(request.query)},
     {"input_sha256", input_sha256}, {"question_scope", request.question_scope}, {"kind", request.evidence_kind},
     {"template", kSearchTask}, {"template_sha256", SearchTemplateHash()}, {"preprocessing_version", kSearchPreprocessing},
-    {"model", {{"package_id", "qwen3vl-4b-review-v3"}, {"package_sha256", package_sha256}}},
+    {"model", {{"package_id", package_id}, {"package_sha256", package_sha256}}},
     {"validated", false}, {"decision_policy", "abc-visible-v1"}, {"score_kind", "three_way_softmax_uncalibrated"}});
   return output;
 }

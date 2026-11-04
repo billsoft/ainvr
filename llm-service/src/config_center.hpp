@@ -1,5 +1,6 @@
 #pragma once
 #include "../../shared/cpp/config_center_client.hpp"
+#include "model_catalog.hpp"
 #include <cmath>
 #include <set>
 #include <regex>
@@ -8,7 +9,8 @@ using ainvr::config::ReadPrivateJson;
 using ainvr::config::ConfigTransport;
 inline nlohmann::json NormalizeSettings(const nlohmann::json& s,int version) {
   if(s.at("listen").at("host")!="127.0.0.1"||s.at("listen").at("port")!=8300||
-     s.at("model").at("package_id")!="qwen3vl-4b-review-v3")throw std::invalid_argument("unsupported endpoint or model");
+     !ValidPackageId(s.at("model").at("package_id").get<std::string>()))throw std::invalid_argument("unsupported endpoint or model");
+  const auto package_id=s.at("model").at("package_id").get<std::string>();
   auto admin=s.at("admin_key").get<std::string>();
   if(admin.size()<32||admin.size()>512)throw std::invalid_argument("invalid management key");
   std::set<std::string> keys{admin},names;
@@ -33,7 +35,7 @@ inline nlohmann::json NormalizeSettings(const nlohmann::json& s,int version) {
   }
   if(schedule.at("prefill_profile")!="s256"||s.at("model").at("load_policy")!="resident")throw std::invalid_argument("unsupported profile or loading policy");
   return {{"config_version",version},{"enabled",s.at("enabled").get<bool>()},
-    {"package_root","/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-4b-review-v3"},{"reservation_root","/run/ainvr"},
+    {"package_id",package_id},{"package_root",std::string(kModelsRoot)+"/"+package_id},{"reservation_root","/run/ainvr"},
     {"api_keys",callers},{"admin_key",admin},{"calibration_temperature",temperature},{"search_verify_enabled",search_enabled},
     {"queue_size",integer("queue_size",1,32)},{"queue_timeout_s",integer("queue_timeout_s",1,300)},
     {"exec_timeout_s",integer("exec_timeout_s",1,120)},

@@ -59,3 +59,12 @@ it('accepts the fixed task configuration and rejects unsupported profiles and du
   const listen = settings(); listen.listen.host = '0.0.0.0';
   expect(llmSettingsSchema.safeParse(listen).success).toBe(false);
 });
+
+it('accepts any well-formed installed package id and rejects ids that could escape the models directory', () => {
+  const next = settings(); next.model.package_id = 'qwen3vl-2b-review-v1';
+  expect(llmSettingsSchema.safeParse(next).success).toBe(true);
+  for (const id of ['', '../x', 'a/b', '.hidden', 'UPPER', 'a b', '-lead', 'x'.repeat(65)]) {
+    const bad = settings(); bad.model.package_id = id;
+    expect(llmSettingsSchema.safeParse(bad).success, id).toBe(false);
+  }
+});

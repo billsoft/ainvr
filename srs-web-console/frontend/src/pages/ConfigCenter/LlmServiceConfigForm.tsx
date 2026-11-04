@@ -1,12 +1,17 @@
-import {useRef,useState} from 'react'
+import {useEffect,useRef,useState} from 'react'
 import {Plus,Trash2,Play,Loader2} from 'lucide-react'
 import {request} from '@/api/httpClient'
 import type {ConfigDocument,ConfigChange} from '@/api/configService'
 type Caller={name:string;key:string;reference:string}
+type Pkg={id:string;title?:string;ready?:boolean;ion_bytes_measured?:number}
+const DEFAULT_PACKAGE='qwen3vl-4b-review-v3'
 export function LlmServiceConfigForm({document,onSaveBatch}:{document?:ConfigDocument;onSaveBatch:(changes:ConfigChange[])=>Promise<unknown>}){
   const config=document?.config??{}
   const schedule=config.scheduling as Record<string,number>|undefined
   const task=(config.tasks as Record<string,{calibration_temperature?:number}>|undefined)?.['alarm-review-zh-v1']
+  const savedPackage=(config.model as {package_id?:string}|undefined)?.package_id??DEFAULT_PACKAGE
+  const [packageId,setPackageId]=useState(savedPackage)
+  const [packages,setPackages]=useState<Pkg[]>([])
   const [enabled,setEnabled]=useState(config.enabled===true)
   const [temperature,setTemperature]=useState(String(task?.calibration_temperature??1))
   const [queue,setQueue]=useState(String(schedule?.queue_size??8)),[waiting,setWaiting]=useState(String(schedule?.queue_timeout_s??30))
@@ -17,8 +22,17 @@ export function LlmServiceConfigForm({document,onSaveBatch}:{document?:ConfigDoc
   const [image,setImage]=useState(''),[kind,setKind]=useState('人员'),[description,setDescription]=useState('画面中出现人员')
   const [result,setResult]=useState<{real_score:number;timing_ms:{total:number};validated:boolean}|null>(null)
   const imageSelection=useRef(0)
+  useEffect(()=>{
+    // Installed packages come from the service itself; a failure just leaves the saved package as the only choice.
+    let alive=true
+    void (async()=>{try{const r=await request('/llm/models') as {data?:unknown}|undefined
+      if(alive&&r&&Array.isArray(r.data))setPackages((r.data as Pkg[]).filter(p=>p&&typeof p.id==='string'&&p.ready===true))}catch{}})()
+    return ()=>{alive=false}
+  },[])
+  const selected=packages.find(p=>p.id===packageId)
+  const ionGb=selected?.ion_bytes_measured?(selected.ion_bytes_measured/1e9).toFixed(1):'5.5'
   const initialCallers=Array.isArray(config.api_keys)?config.api_keys.map(v=>({name:String(v.name),key:'',reference:String(v.key)})):[{name:'console-try',key:'',reference:''}]
-  const dirty=enabled!==(config.enabled===true)||admin!==''||temperature!==String(task?.calibration_temperature??1)||queue!==String(schedule?.queue_size??8)||waiting!==String(schedule?.queue_timeout_s??30)||execution!==String(schedule?.exec_timeout_s??30)||share!==String(schedule?.submit_time_share_cap_percent??40)||JSON.stringify(callers)!==JSON.stringify(initialCallers)
+  const dirty=packageId!==savedPackage||enabled!==(config.enabled===true)||admin!==''||temperature!==String(task?.calibration_temperature??1)||queue!==String(schedule?.queue_size??8)||waiting!==String(schedule?.queue_timeout_s??30)||execution!==String(schedule?.exec_timeout_s??30)||share!==String(schedule?.submit_time_share_cap_percent??40)||JSON.stringify(callers)!==JSON.stringify(initialCallers)
   function readImage(file?:File){
     const selection=++imageSelection.current
     setError('');setImage('');setResult(null)
@@ -39,7 +53,7 @@ export function LlmServiceConfigForm({document,onSaveBatch}:{document?:ConfigDoc
     try{
       await onSaveBatch([{service:'llm-service',group:'system',name:'settings',config:{enabled,
         listen:{host:'127.0.0.1',port:8300},admin_key:admin||config.admin_key,api_keys:keys,
-        model:{package_id:'qwen3vl-4b-review-v3',load_policy:'resident',ion_reserve_mb:512},
+        model:{package_id:packageId,load_policy:'resident',ion_reserve_mb:512},
         tasks:{...(config.tasks as Record<string,unknown>|undefined),'alarm-review-zh-v1':{calibration_temperature:t,aspect_policy:'reject'}},
         scheduling:{queue_size:q,queue_timeout_s:w,exec_timeout_s:e,submit_time_share_cap_percent:s,prefill_profile:'s256'},
         logging:{record_requests:false}}}])
@@ -65,8 +79,8 @@ export function LlmServiceConfigForm({document,onSaveBatch}:{document?:ConfigDoc
     <div><h2 className="text-base font-semibold text-ink">大模型微服务配置</h2><p className="mt-1 text-sm text-ink-subtle">为本机服务提供图片复审。触发器可选用异步 AI 审核；人工处理优先。本期不支持自由对话。</p></div>
     <fieldset disabled={busy} data-unsaved={dirty?'true':undefined} className="space-y-5">
       <label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>启用并常驻加载模型</label>
-      <dl className="grid gap-3 rounded-panel border border-line p-4 text-sm sm:grid-cols-2"><div><dt className="text-ink-subtle">本机调用地址</dt><dd>http://127.0.0.1:8300/v1</dd></div><div><dt className="text-ink-subtle">模型包</dt><dd>视觉语言模型 4B · 图片复审</dd></div></dl>
-      <p className="text-sm text-ink-subtle">模型需要约 5.5 GB 专用内存，与开放词汇试用模型互斥加载。资源冲突时会拒绝加载，不会自动停止已有识别通道。首次加载需要等待，以仪表盘“模型就绪”为准。</p>
+      <dl className="grid gap-3 rounded-panel border border-line p-4 text-sm sm:grid-cols-2"><div><dt className="text-ink-subtle">本机调用地址</dt><dd>http://127.0.0.1:8300/v1</dd></div><div><dt className="text-ink-subtle">模型包</dt><dd><select aria-label="模型包" className="form-input" value={packageId} onChange={e=>setPackageId(e.target.value)}>{!packages.some(p=>p.id===packageId)&&<option value={packageId}>当前模型包</option>}{packages.map(p=><option key={p.id} value={p.id}>{p.title??'模型包'}</option>)}</select></dd></div></dl>
+      <p className="text-sm text-ink-subtle">模型需要约 {ionGb} GB 专用内存，与开放词汇试用模型互斥加载。资源冲突时会拒绝加载，不会自动停止已有识别通道。首次加载需要等待，以仪表盘“模型就绪”为准。</p>
       <div><h3 className="mb-3 text-sm font-semibold">调用权限</h3>
         <label className="block text-sm">管理密钥<input className="form-input" type="password" autoComplete="new-password" value={admin} placeholder={config.admin_key?'已设置，留空保留':'至少 32 个字符'} onChange={e=>setAdmin(e.target.value)}/></label>
         <div className="mt-3 space-y-2">{callers.map((caller,index)=><div key={index} className="flex items-end gap-2"><label className="min-w-0 flex-1 text-sm">调用方<input className="form-input" value={caller.name} onChange={e=>setCallers(v=>v.map((c,i)=>i===index?{...c,name:e.target.value}:c))}/></label><label className="min-w-0 flex-[2] text-sm">推理密钥<input className="form-input" type="password" autoComplete="new-password" placeholder={caller.reference?'已设置，留空保留':'至少 32 个字符'} value={caller.key} onChange={e=>setCallers(v=>v.map((c,i)=>i===index?{...c,key:e.target.value}:c))}/></label><button type="button" className="btn-secondary min-h-11 min-w-11" aria-label={`移除调用方 ${caller.name}`} onClick={()=>setCallers(v=>v.filter((_,i)=>i!==index))}><Trash2 size={16}/></button></div>)}</div>

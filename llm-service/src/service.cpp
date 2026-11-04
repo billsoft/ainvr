@@ -48,7 +48,7 @@ struct Service {
   uint64_t ok=0,failed=0;
   Json callers=Json::object();
   std::deque<double> latencies;
-  std::string package_hash;
+  std::string package_hash,package_id;
   Json admission;  // last protocol-3 admission decision; null while no model is resident
   std::thread worker;
   explicit Service(Json c):config(std::move(c)) { worker=std::thread([this]{Loop();}); }
@@ -97,10 +97,18 @@ struct Service {
     latencies.push_back(std::chrono::duration<double,std::milli>(Clock::now()-job->queued).count());
     if(latencies.size()>256)latencies.pop_front();
   }
+  // Loaded package id, else the configured one, else the 4B default. Caller holds `mutex`.
+  std::string ActiveIdLocked() const {
+    if(!package_id.empty())return package_id;
+    return config.value("package_id",std::string(ainvr::llm::kDefaultPackageId));
+  }
+  std::string ActiveId(){std::lock_guard<std::mutex> lock(mutex);return ActiveIdLocked();}
+  Json Installed(){std::string id;{std::lock_guard<std::mutex> lock(mutex);id=state=="ready"?package_id:std::string();}
+    return ainvr::llm::InstalledModels(ainvr::llm::kModelsRoot,id);}
   Json SearchProfile() {
     std::lock_guard<std::mutex> lock(mutex);
     const bool enabled=config.value("enabled",false)&&ainvr::llm::kSearchVerificationEnabled;
-    return ainvr::llm::SearchProfileMetadata(enabled,desired,state=="ready",search_supported,package_hash);
+    return ainvr::llm::SearchProfileMetadata(enabled,desired,state=="ready",search_supported,package_hash,ActiveIdLocked());
   }
   Json Status() {
     std::lock_guard<std::mutex> lock(mutex);
@@ -110,7 +118,7 @@ struct Service {
             {"package_sha256",package_hash},{"active_request",active_job!=nullptr},
             {"latency_ms",{{"p50",percentile(.5)},{"p95",percentile(.95)},{"samples",times.size()},{"window","last_256_completed"}}},
             {"submit_time_share",{{"window_s",10},{"cap_percent",config.value("submit_time_share_cap_percent",90)}}},
-            {"ready",state=="ready"},{"model",state},{"config_version",configuration.committed()},{"package_id","qwen3vl-4b-review-v3"},
+            {"ready",state=="ready"},{"model",state},{"config_version",configuration.committed()},{"package_id",ActiveIdLocked()},
             {"tasks",{{"search-verify-zh-v1",{{"enabled",ainvr::llm::kSearchVerificationEnabled},
               {"template_sha256",ainvr::llm::SearchTemplateHash()},{"preprocessing_version",ainvr::llm::kSearchPreprocessing},{"validated",false}}}}},
             {"queue",{{"length",queue.size()},{"capacity",config.value("queue_size",8)}}},
@@ -137,6 +145,8 @@ struct Service {
       if(!engine) {
         try {
           auto next=std::make_unique<ainvr::llm::Engine>(settings.at("package_root"));
+          if(next->manifest().at("id")!=settings.value("package_id",std::string(ainvr::llm::kDefaultPackageId)))
+            throw std::runtime_error("package id does not match the configured model");
           const uint64_t total=ainvr::ReadBpuIonBudgetBytes();
           // Default margin 256 MiB; it is also the size of the post-load allocation probe below.
           const uint64_t min_free=uint64_t(settings.value("min_free_mib",256))*1024*1024;
@@ -151,7 +161,7 @@ struct Service {
           reservation->Loaded();
           bool supports_search=false;
           try{(void)ainvr::llm::SearchDecisionIndices(engine->manifest().at("decision_vocabulary"));supports_search=true;}catch(...){}
-          std::lock_guard<std::mutex> lock(mutex);search_supported=supports_search;admission=reservation->Decision().ToJson();admission["mode"]="byte_accounted_coexistence";admission["min_free_bytes"]=min_free;state="ready";last_error.clear();failed_config=Json();package_hash=engine->package_sha256();
+          std::lock_guard<std::mutex> lock(mutex);search_supported=supports_search;admission=reservation->Decision().ToJson();admission["mode"]="byte_accounted_coexistence";admission["min_free_bytes"]=min_free;state="ready";last_error.clear();failed_config=Json();package_hash=engine->package_sha256();package_id=engine->manifest().at("id").get<std::string>();
           if(desired)configuration.Commit(settings.value("config_version",0));
         }catch(const std::exception& e){engine.reset();image.reset();reservation.reset();std::lock_guard<std::mutex> lock(mutex);admission=Json();desired=false;state="fault";last_error=e.what();
           failed_config=settings;
@@ -173,7 +183,7 @@ struct Service {
         if(search&&search->question_scope=="temporal") {
           // Actual tokenizer/layout capacity is still checked above. A single
           // frame cannot establish a temporal claim; no hardware inference.
-          result=ainvr::llm::SearchResponse(*search,{},engine->manifest().at("decision_vocabulary"),engine->package_sha256());
+          result=ainvr::llm::SearchResponse(*search,{},engine->manifest().at("decision_vocabulary"),engine->package_sha256(),engine->manifest().at("id").get<std::string>());
           result["timing_ms"]={{"queue",std::chrono::duration<double,std::milli>(start-job->queued).count()},
             {"preprocess",0},{"total",std::chrono::duration<double,std::milli>(Clock::now()-start).count()}};
         } else {
@@ -197,13 +207,13 @@ struct Service {
             }
           });
           if(job->canceled)throw std::runtime_error("canceled");
-          if(search) result=ainvr::llm::SearchResponse(*search,logits,engine->manifest().at("decision_vocabulary"),engine->package_sha256());
+          if(search) result=ainvr::llm::SearchResponse(*search,logits,engine->manifest().at("decision_vocabulary"),engine->package_sha256(),engine->manifest().at("id").get<std::string>());
           else {
             result={{"schema","ainvr.alarm_review.v1"},{"request_id",input.id},
               {"real_score",ainvr::llm::Score(logits.at(0),logits.at(1),alarm->temperature)},
               {"score_kind","two_way_softmax_uncalibrated"},{"calibration_temperature",alarm->temperature},
               {"template","alarm-review-zh-v1"},{"validated",false},
-              {"model",{{"package_id","qwen3vl-4b-review-v3"},{"package_sha256",engine->package_sha256()}}},
+              {"model",{{"package_id",engine->manifest().at("id")},{"package_sha256",engine->package_sha256()}}},
               {"logits",{{"yes",logits[0]},{"no",logits[1]}}},{"decision_logits",Json::object()}};
             if(!actualImage.empty()){
               std::string encoded(4*((actualImage.size()+2)/3),'\0');EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),actualImage.data(),int(actualImage.size()));
@@ -269,7 +279,7 @@ int main(int argc,char** argv) {
     server.Get("/v1/status",[&](const auto& req,auto& res){if(!authorize(req,true)){Error(res,401,"unauthorized","Invalid service key");return;}res.set_content(service.Status().dump(),"application/json");});
     server.Get("/v1/models",[&](const auto& req,auto& res){
       if(!authorize(req,false)&&!authorize(req,true)){Error(res,401,"unauthorized","Invalid service key");return;}
-      res.set_content(Json({{"object","list"},{"data",Json::array({{{"id","qwen3vl-4b-review-v3"},{"object","model"},{"created",0},{"owned_by","ainvr"},{"capabilities",{"task:alarm-review-zh-v1","task:search-verify-zh-v1","decision_tokens"}}}})}}).dump(),"application/json");
+      res.set_content(Json({{"object","list"},{"data",service.Installed()}}).dump(),"application/json");
     });
     server.Post("/v1/admin/(load|unload)",[&](const auto& req,auto& res){
       if(!authorize(req,true)){Error(res,401,"unauthorized","Invalid management key");return;}
@@ -294,7 +304,7 @@ int main(int argc,char** argv) {
             Error(res,400,"capability_not_available","This model supports the fixed image review task, not free chat");return;}
           if(body.value("stream",false)||body.contains("logprobs")||body.contains("tools")||body.contains("temperature")||body.contains("top_p")||body.contains("max_tokens")||body.contains("max_completion_tokens")){
             Error(res,400,"unsupported_parameter","Streaming, logprobs and tools are not available for this review adapter");return;}
-          if(body.value("model",std::string("qwen3vl-4b-review-v3"))!="qwen3vl-4b-review-v3"){Error(res,404,"model_not_found","Unknown model");return;}
+          if(const auto active=service.ActiveId();body.value("model",active)!=active){Error(res,404,"model_not_found","Unknown model");return;}
           body=body.at("ainvr").at("decision");
         }
         auto job=std::make_shared<Job>();job->request=ainvr::llm::ParseReview(body);job->request_id=job->Image().id;
@@ -316,7 +326,7 @@ int main(int argc,char** argv) {
         if(future.wait_for(limit)!=std::future_status::ready){job->canceled=true;Error(res,504,"timeout","Request timed out");return;}
         auto result=future.get();
         if(openai)result=Json({{"id",job->Image().id},{"object","chat.completion"},{"created",time(nullptr)},
-          {"model","qwen3vl-4b-review-v3"},{"choices",Json::array({{{"index",0},{"message",{{"role","assistant"},{"content",result["real_score"].get<double>()>=0.5?"是":"否"}}},{"finish_reason","stop"}}})},{"ainvr",result}});
+          {"model",service.ActiveId()},{"choices",Json::array({{{"index",0},{"message",{{"role","assistant"},{"content",result["real_score"].get<double>()>=0.5?"是":"否"}}},{"finish_reason","stop"}}})},{"ainvr",result}});
         res.set_content(result.dump(),"application/json");
       }catch(const ainvr::llm::InputError& e){Error(res,422,e.code,e.what());}
       catch(const nlohmann::json::exception&){Error(res,400,"invalid_request","Invalid request fields");}
