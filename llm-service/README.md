@@ -33,7 +33,7 @@ Python OpenAI SDK 的决策扩展调用形式（3.36.1 已实测；Node SDK 7.42
 
 ```python
 result = client.chat.completions.create(
-    model="qwen3vl-4b-review-v3",
+    model="qwen3vl-2b-review-v1",
     messages=[],
     extra_body={"ainvr": {"decision": review_request}},
 )
@@ -96,8 +96,10 @@ Qwen3-VL 系列的任意尺寸（隐藏维、层数、每组层数、KV 头数�
 
 硬件测试必须串行、有时限、在 finally 中恢复原服务状态。已通过跨语言互斥、
 加载/卸载/重新加载、559 张独立 JPEG 质量验收、Python/Node SDK 任务调用、
-断连后有界清理与恢复、有界队列拒绝与超时恢复。559 张与 BF16 判定一致率
-97.67%；其中有业务标签的 408 张准确率 89.22%，两者不可混称。
+断连后有界清理与恢复、有界队列拒绝与超时恢复。质量数字必须标明模型，两类口径不可混称：
+- Qwen3-VL-4B（qwen3vl-4b-review-v3）：559 张与 BF16 判定一致率 97.67%；有业务标签的 408 张准确率 89.22%。
+- Qwen3-VL-2B（qwen3vl-2b-review-v1）：559 张与 BF16 判定一致率 96.6%；有业务标签的 408 张准确率 87.75%（清单记录；
+  2026-11-05 线上服务同口径复测 88.0%，AUC 0.950）。
 一小时稳定性与视频共存正在复测，完整部署和浏览器验收以进度文档为准。
 不得以单元测试通过代替这些发布条件。
 

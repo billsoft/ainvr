@@ -10,7 +10,7 @@ const sha = (value: Buffer | string) => createHash('sha256').update(value).diges
 const query = '红色外套的人', jpeg = Buffer.from([255,216,0,255,217]);
 function profile(): SearchVerificationProfile {
   const p = { task_id: 'search-verify-zh-v1' as const, template_sha256: 'a'.repeat(64), preprocessing_version: 'test-preprocessing-v1',
-    decision_policy: 'abc-visible-v1' as const, model_package_id: 'qwen3vl-4b-review-v3', model_package_sha256: 'b'.repeat(64) };
+    decision_policy: 'abc-visible-v1' as const, model_package_id: 'qwen3vl-2b-review-v1', model_package_sha256: 'b'.repeat(64) };
   return { ...p, profile_fp: searchVerificationProfileFingerprint(p) };
 }
 function fixture(count = 1) {

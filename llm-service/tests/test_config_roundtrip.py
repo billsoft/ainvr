@@ -16,7 +16,7 @@ def main(restart=False):
     key, admin, token = [secrets.token_hex(32) for _ in range(3)]
     config = dict(enabled=restart, listen=dict(host='127.0.0.1', port=8300),
                   api_keys=[dict(name='test-caller', scope='inference', key=key)], admin_key=admin,
-                  model=dict(package_id='qwen3vl-4b-review-v3', load_policy='resident', ion_reserve_mb=512),
+                  model=dict(package_id='qwen3vl-2b-review-v1', load_policy='resident', ion_reserve_mb=512),
                   tasks={'alarm-review-zh-v1': dict(calibration_temperature=1., aspect_policy='reject')},
                   scheduling=dict(queue_size=8, queue_timeout_s=30, exec_timeout_s=10,
                                   submit_time_share_cap_percent=40, prefill_profile='s256'),

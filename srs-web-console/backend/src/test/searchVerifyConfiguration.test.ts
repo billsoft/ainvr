@@ -3,7 +3,7 @@ import { llmSettingsSchema } from '../store/llmConfigAdapter.js';
 import { prepareSearchVerifyLlmConfiguration } from '../services/searchVerifyConfiguration.js';
 const settings = () => ({ enabled: false, listen: { host: '127.0.0.1', port: 8300 }, admin_key: '${secret:llm-service/admin/v1}',
   api_keys: [{ name: 'alarm-review', scope: 'inference', key: '${secret:llm-service/alarm/v1}' }],
-  model: { package_id: 'qwen3vl-4b-review-v3', load_policy: 'resident', ion_reserve_mb: 512 },
+  model: { package_id: 'qwen3vl-2b-review-v1', load_policy: 'resident', ion_reserve_mb: 512 },
   tasks: { 'alarm-review-zh-v1': { calibration_temperature: 1, aspect_policy: 'reject' } },
   scheduling: { queue_size: 8, queue_timeout_s: 30, exec_timeout_s: 10, submit_time_share_cap_percent: 40, prefill_profile: 's256' }, logging: { record_requests: false } });
 it('old LLM settings remain valid and the independent search task is optional and strict', () => {

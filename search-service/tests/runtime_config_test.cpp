@@ -230,7 +230,7 @@ int main() {
     Reject([&] { ainvr::config::ReadPrivateJson(path.string()); });
     Check(ModelCatalog(root.string()).at("items").empty(), "missing package fabricated");
     // LLM continues to use the same normalization and the shared transport alias.
-    Json llm{{"listen", {{"host", "127.0.0.1"}, {"port", 8300}}}, {"model", {{"package_id", "qwen3vl-4b-review-v3"}, {"load_policy", "resident"}}},
+    Json llm{{"listen", {{"host", "127.0.0.1"}, {"port", 8300}}}, {"model", {{"package_id", "qwen3vl-2b-review-v1"}, {"load_policy", "resident"}}},
       {"admin_key", std::string(48, 'a')}, {"enabled", false}, {"api_keys", {{{"name", "alarm"}, {"scope", "inference"}, {"key", std::string(48, 'b')}}}},
       {"scheduling", {{"prefill_profile", "s256"}, {"queue_size", 2}, {"queue_timeout_s", 30}, {"exec_timeout_s", 30}, {"submit_time_share_cap_percent", 50}}},
       {"tasks", {{"alarm-review-zh-v1", {{"calibration_temperature", 1.0}, {"aspect_policy", "reject"}}}}}};

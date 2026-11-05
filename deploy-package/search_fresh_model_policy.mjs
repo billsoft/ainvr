@@ -4,7 +4,10 @@ export const NEW_PACKAGE = 'siglip-so400m-i18n-full-int8';
 export const QWEN_PACKAGE = 'qwen3vl-embedding-2b-o2';
 // 2048-d vectors: 62,500 samples fill the 128M-float exact projection, so the default cap is 60,000.
 export const QWEN_MAX_SAMPLES = 60000;
-const PACKAGE_DIMENSIONS = Object.freeze({[OLD_PACKAGE]:768,[NEW_PACKAGE]:1152,[QWEN_PACKAGE]:2048});
+// SigLIP2 base stores 4 view vectors per scene sample (whole frame + 3 short-edge squares, shared/cpp/search_views.hpp): 4 x 768 floats.
+// 4 x 768 floats per sample: the 128M-float exact working set holds about 41,600 samples.
+export const SIGLIP2_MAX_SAMPLES = 40000;
+const PACKAGE_DIMENSIONS = Object.freeze({[OLD_PACKAGE]:3072,[NEW_PACKAGE]:1152,[QWEN_PACKAGE]:2048});
 // Both endpoints are explicit: a misspelled or same-model request must fail closed.
 export function freshModelTransition(sourcePackage, targetPackage) {
   if (!Object.hasOwn(PACKAGE_DIMENSIONS,sourcePackage) ||
@@ -25,13 +28,13 @@ export function freshModelSettings(settings, pin, models, transition) {
       models.some(model => model !== pin.model_version)) throw Error('fresh_switch_source_mismatch');
   const next = structuredClone(settings);
   next.model.package_id = targetPackage;
-  // Returning to SigLIP2 (~30 ms per image) undoes the Qwen-specific slowdowns: the product defaults for sampling rates and the 100,000 sample cap.
+  // Returning to SigLIP2 (~30 ms per image) undoes the Qwen-specific slowdowns: the product defaults for sampling rates; the sample cap follows the 4-view record size.
   if (targetPackage === OLD_PACKAGE) {
     next.sampling.object_interval_ms = Math.min(1000, next.sampling.object_interval_ms);
     next.sampling.scene_active_interval_ms = Math.min(10000, next.sampling.scene_active_interval_ms);
     next.sampling.scene_static_interval_ms = Math.min(60000, next.sampling.scene_static_interval_ms);
     next.sampling.scene_change_min_interval_ms = Math.min(3000, next.sampling.scene_change_min_interval_ms);
-    if (sourcePackage === QWEN_PACKAGE) next.limits.max_samples = Math.max(next.limits.max_samples, 100000);
+    if (Number.isFinite(next.limits.max_samples)) next.limits.max_samples = Math.min(next.limits.max_samples, SIGLIP2_MAX_SAMPLES);
     return next;
   }
   // Search sampling only; never changes detector FPS or tracking timing.

@@ -9,7 +9,7 @@
 
 namespace ainvr::llm {
 inline constexpr const char* kModelsRoot = "/home/sunrise/ainvr/ai-service/models/llm";
-inline constexpr const char* kDefaultPackageId = "qwen3vl-4b-review-v3";
+inline constexpr const char* kDefaultPackageId = "qwen3vl-2b-review-v1";
 // A package id is also a directory name under the models root: no separators, no dots at the start.
 inline bool ValidPackageId(const std::string& id) {
   return std::regex_match(id, std::regex("[a-z0-9][a-z0-9._-]{0,63}"));

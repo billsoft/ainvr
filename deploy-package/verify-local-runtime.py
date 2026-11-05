@@ -19,7 +19,7 @@ def verify(root):
   size=check_local(p,device);actual=digest(p)
   if expected is not None:assert actual==expected,'Checksum mismatch: '+str(p)
   rows.append({'path':str(p.relative_to(models)),'bytes':size,'sha256':actual})
- qwen=models/'llm/qwen3vl-4b-review-v3';manifest=qwen/'llm-package.ainvr.json'
+ qwen=models/'llm/qwen3vl-2b-review-v1';manifest=qwen/'llm-package.ainvr.json'
  check_local(manifest,device);package=json.loads(manifest.read_text())
  for f in package['files']:
   p=qwen/f['path'];assert p.resolve().is_relative_to(qwen.resolve()),'Out-of-package path'

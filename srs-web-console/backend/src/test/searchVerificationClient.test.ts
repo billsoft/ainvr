@@ -32,6 +32,12 @@ describe('exact native verification transport', () => {
     expect(validateSearchVerificationProfile(profile)).toEqual(profile);
     expect(() => validateSearchVerificationProfile({ ...profile, model_package_sha256: 'f'.repeat(64) })).toThrow();
   });
+  it('accepts the Qwen3-VL-2B package identity with its own fingerprint', () => {
+    const two = { ...baseProfile, model_package_id: 'qwen3vl-2b-review-v1' };
+    const fp = searchVerificationProfileFingerprint(two);
+    expect(fp).not.toBe(profile.profile_fp);
+    expect(validateSearchVerificationProfile({ ...two, profile_fp: fp })).toEqual({ ...two, profile_fp: fp });
+  });
   it('scans only bounded single-parent references and monotonic keyset cursors', async () => {
     const f = fixture({ refs: [target], cleanup_refs: [], next_cursor: { created_ms: 10, key: 'a'.repeat(64) } });
     expect((await f.client.scanVerification(profile.profile_fp)).refs).toEqual([target]);

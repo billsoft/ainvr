@@ -84,7 +84,7 @@ inline nlohmann::json SearchTemplateDescriptor() {
 inline std::string SearchTemplateHash() { return SearchHash(SearchTemplateDescriptor().dump()); }
 inline nlohmann::json SearchProfileMetadata(bool enabled, bool requested, bool loaded,
                                            bool vocabulary_supported, const std::string& package_sha256,
-                                           const std::string& package_id = "qwen3vl-4b-review-v3") {
+                                           const std::string& package_id = "qwen3vl-2b-review-v1") {
   const bool known_model = loaded && std::regex_match(package_sha256, std::regex("^[a-f0-9]{64}$"));
   return {{"template", kSearchTask}, {"template_sha256", SearchTemplateHash()},
     {"preprocessing_version", kSearchPreprocessing}, {"decision_policy", "abc-visible-v1"},
@@ -147,7 +147,7 @@ inline nlohmann::json SearchDecision(const SearchRequest& request, const std::ve
 }
 inline nlohmann::json SearchResponse(const SearchRequest& request, const std::vector<float>& logits,
     const nlohmann::json& vocabulary, const std::string& package_sha256,
-    const std::string& package_id = "qwen3vl-4b-review-v3") {
+    const std::string& package_id = "qwen3vl-2b-review-v1") {
   auto output = SearchDecision(request, logits, SearchDecisionIndices(vocabulary));
   const auto input_sha256 = SearchHash(nlohmann::json{{"query", request.query}, {"question_scope", request.question_scope},
     {"kind", request.evidence_kind}, {"frame_id", request.frame_id}, {"evidence_sha256", request.evidence_sha256},

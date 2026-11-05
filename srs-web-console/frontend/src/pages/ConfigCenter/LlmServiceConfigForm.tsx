@@ -4,7 +4,7 @@ import {request} from '@/api/httpClient'
 import type {ConfigDocument,ConfigChange} from '@/api/configService'
 type Caller={name:string;key:string;reference:string}
 type Pkg={id:string;title?:string;ready?:boolean;ion_bytes_measured?:number}
-const DEFAULT_PACKAGE='qwen3vl-4b-review-v3'
+const DEFAULT_PACKAGE='qwen3vl-2b-review-v1'
 export function LlmServiceConfigForm({document,onSaveBatch}:{document?:ConfigDocument;onSaveBatch:(changes:ConfigChange[])=>Promise<unknown>}){
   const config=document?.config??{}
   const schedule=config.scheduling as Record<string,number>|undefined

@@ -13,7 +13,7 @@ def main():
  a=argparse.ArgumentParser(description=__doc__);a.add_argument('--apply',action='store_true');args=a.parse_args()
  assert ROOT.resolve()==ROOT
  models=ROOT/'ai-service/models'
- for rel in ['derived/s100p/yolo26x.hbm','derived/s100p/yolo26x-face.hbm','gpen_bfr_256.hbm','derived/s100p/yoloe-26x-32.hbm','llm/qwen3vl-4b-review-v3/llm-package.ainvr.json']:
+ for rel in ['derived/s100p/yolo26x.hbm','derived/s100p/yolo26x-face.hbm','gpen_bfr_256.hbm','derived/s100p/yoloe-26x-32.hbm','llm/qwen3vl-2b-review-v1/llm-package.ainvr.json']:
   p=models/rel;assert p.is_file() and p.stat().st_dev==ROOT.stat().st_dev,'Install board-local runtime first: '+str(p)
  print(json.dumps({'ai_state_is_mounted':(ROOT/'data/ai').is_mount(),'apply':args.apply}))
  if not args.apply:return

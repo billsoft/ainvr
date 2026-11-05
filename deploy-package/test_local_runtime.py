@@ -8,13 +8,13 @@ class IntegrityTest(unittest.TestCase):
   def put(name,data):
    p=self.models/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data);return p
   self.put=put
-  q=put('llm/qwen3vl-4b-review-v3/embedding.bf16',b'embedding')
-  self.manifest=put('llm/qwen3vl-4b-review-v3/llm-package.ainvr.json',json.dumps({'files':[{'path':q.name,'bytes':q.stat().st_size,'sha256':hashlib.sha256(q.read_bytes()).hexdigest()}]}).encode())
+  q=put('llm/qwen3vl-2b-review-v1/embedding.bf16',b'embedding')
+  self.manifest=put('llm/qwen3vl-2b-review-v1/llm-package.ainvr.json',json.dumps({'files':[{'path':q.name,'bytes':q.stat().st_size,'sha256':hashlib.sha256(q.read_bytes()).hexdigest()}]}).encode())
   for name in ['gpen_bfr_256.hbm','derived/s100p/yolo26x.hbm','derived/s100p/yolo26x-face.hbm','derived/s100p/yoloe-26x.hbm','derived/s100p/yoloe-26x-32.hbm']:
    p=put(name,name.encode());put(name+'.ainvr.json',json.dumps({'hbm_sha256':hashlib.sha256(p.read_bytes()).hexdigest()}).encode())
  def test_valid_local_assets(self):self.assertTrue(module.verify(self.root)['passed'])
  def test_embedding_corruption_is_rejected(self):
-  self.put('llm/qwen3vl-4b-review-v3/embedding.bf16',b'corrupt!!')
+  self.put('llm/qwen3vl-2b-review-v1/embedding.bf16',b'corrupt!!')
   with self.assertRaises(AssertionError):module.verify(self.root)
  def test_detector_corruption_is_rejected(self):
   self.put('derived/s100p/yolo26x.hbm',b'corrupt')

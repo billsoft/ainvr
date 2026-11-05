@@ -4,7 +4,7 @@ import { SearchVerifyLlmClient, SearchVerifyLlmError, searchVerifyInputSha, sear
 import { searchVerificationProfileFingerprint, type SearchVerificationProfile, type SearchVerificationBinding } from '../services/searchVerificationContract.js';
 const sha = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 const profileBase = { task_id: 'search-verify-zh-v1' as const, template_sha256: '1'.repeat(64), preprocessing_version: 'jpeg420-vpu-gles-rgb-letterbox896x448-v1',
-  decision_policy: 'abc-visible-v1' as const, model_package_id: 'qwen3vl-4b-review-v3', model_package_sha256: '2'.repeat(64) };
+  decision_policy: 'abc-visible-v1' as const, model_package_id: 'qwen3vl-2b-review-v1', model_package_sha256: '2'.repeat(64) };
 const profile: SearchVerificationProfile = { ...profileBase, profile_fp: searchVerificationProfileFingerprint(profileBase) };
 const jpeg = Buffer.from([255, 216, 0, 255, 217]), query = '穿红衣服的人';
 const binding: SearchVerificationBinding = { actor: 'test-actor', search_id: randomUUID(), version: 'a'.repeat(64), sample_id: randomUUID(),

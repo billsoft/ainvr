@@ -5,7 +5,7 @@ int checks=0;
 void Check(bool condition){++checks;if(!condition)throw std::runtime_error("search_configuration_contract_failed");}
 template<class F> void Reject(F action){bool failed=false;try{action();}catch(...){failed=true;}Check(failed);}
 Json Config(){return {{"enabled",true},{"listen",{{"host","127.0.0.1"},{"port",8300}}},
-  {"model",{{"package_id","qwen3vl-4b-review-v3"},{"load_policy","resident"}}},
+  {"model",{{"package_id","qwen3vl-2b-review-v1"},{"load_policy","resident"}}},
   {"api_keys",Json::array({{{"name","search-verify"},{"scope","inference"},{"key",std::string(48,'s')}}})},
   {"admin_key",std::string(48,'a')},{"tasks",{{"alarm-review-zh-v1",{{"calibration_temperature",2.0},{"aspect_policy","reject"}}}}},
   {"scheduling",{{"queue_size",8},{"queue_timeout_s",30},{"exec_timeout_s",10},{"submit_time_share_cap_percent",90},{"prefill_profile","s256"}}}};}

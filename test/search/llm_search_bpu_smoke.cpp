@@ -23,7 +23,7 @@ using Json=nlohmann::json;
 using Clock=std::chrono::steady_clock;
 using namespace ainvr::llm;
 namespace {
-constexpr const char* kPackage="/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-4b-review-v3";
+constexpr const char* kPackage="/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-2b-review-v1";
 volatile std::sig_atomic_t stopped=0;
 void Stop(int){stopped=1;}
 const char* Usage(){return "Manual only: --run-bpu-search --samples FILE.jsonl --report test/results/NEW.json [--task-timeout-ms 1000..30000] [--total-timeout-ms 1000..300000]\n"

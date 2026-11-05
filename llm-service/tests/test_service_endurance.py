@@ -15,7 +15,7 @@ def snapshot(pid):
 def exercise(call,key,admin,process,report,save,request):
     client=openai.OpenAI(base_url='http://127.0.0.1:8300/v1',api_key=key,max_retries=0,timeout=75)
     def sdk():
-        response=client.chat.completions.create(model='qwen3vl-4b-review-v3',messages=[],extra_body={'ainvr':{'decision':request}})
+        response=client.chat.completions.create(model='qwen3vl-2b-review-v1',messages=[],extra_body={'ainvr':{'decision':request}})
         value=response.model_extra['ainvr']
         assert value['logits']==report['requests'][-1]['logits']
         return value

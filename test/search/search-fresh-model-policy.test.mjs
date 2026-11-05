@@ -15,8 +15,8 @@ test('slower user timing is retained',()=>{const s=structuredClone(settings);s.s
 test('reject mixed or changed vector spaces before deletion',()=>{assert.throws(()=>freshModelSettings(settings,pin,['other'],forward));assert.throws(()=>freshModelSettings(settings,null,[],forward));assert.throws(()=>freshModelSettings({...settings,model:{package_id:NEW_PACKAGE}},pin,[],forward))});
 
 test('transitions require the explicit supported source and target pair',()=>{
- assert.equal(forward.sourceDimensions,768);assert.equal(forward.targetDimensions,1152);
- assert.equal(reverse.sourceDimensions,1152);assert.equal(reverse.targetDimensions,768);
+ assert.equal(forward.sourceDimensions,3072);assert.equal(forward.targetDimensions,1152);
+ assert.equal(reverse.sourceDimensions,1152);assert.equal(reverse.targetDimensions,3072);
  for(const pair of [[OLD_PACKAGE,OLD_PACKAGE],[NEW_PACKAGE,NEW_PACKAGE],['unknown',OLD_PACKAGE],[OLD_PACKAGE,'unknown'],[undefined,undefined]])
   assert.throws(()=>freshModelTransition(...pair),/unsupported_fresh_model_transition/);
  assert.throws(()=>freshModelSettings(settings,pin,[]),/unsupported_fresh_model_transition/);
@@ -109,7 +109,7 @@ test('Qwen3-VL-Embedding target: 2048 dimensions, search-rate floors and the 60,
  const qwenPin={package_id:QWEN_PACKAGE,model_version:model};
  const manifest={dimensions:2048,model_version:model};
  validateFreshModelManifest(manifest,qwenPin,fromQwen);
- assert.throws(()=>validateFreshModelManifest({...manifest,dimensions:768},qwenPin,fromQwen),/mixed_index_space/);
+ assert.throws(()=>validateFreshModelManifest({...manifest,dimensions:3072},qwenPin,fromQwen),/mixed_index_space/);
  assert.throws(()=>freshModelTransition(QWEN_PACKAGE,QWEN_PACKAGE),/unsupported_fresh_model_transition/);
 });
 
@@ -117,5 +117,13 @@ test("returning from Qwen to SigLIP2 restores product sampling rates and the 100
  const slow=structuredClone(settings);slow.model.package_id=QWEN_PACKAGE;slow.sampling.object_interval_ms=4000;slow.sampling.scene_active_interval_ms=20000;slow.sampling.scene_change_min_interval_ms=5000;slow.limits.max_samples=60000;
  const back=freshModelSettings(slow,{package_id:QWEN_PACKAGE,model_version:pin.model_version},[],freshModelTransition(QWEN_PACKAGE,OLD_PACKAGE));
  assert.equal(back.model.package_id,OLD_PACKAGE);assert.equal(back.sampling.object_interval_ms,1000);assert.equal(back.sampling.scene_active_interval_ms,10000);
- assert.equal(back.sampling.scene_change_min_interval_ms,3000);assert.equal(back.limits.max_samples,100000);
+ assert.equal(back.sampling.scene_change_min_interval_ms,3000);assert.equal(back.limits.max_samples,40000);
+});
+
+test('returning to SigLIP2 from any source respects the four-view sample capacity',()=>{
+ for(const from of [NEW_PACKAGE,QWEN_PACKAGE]){
+  const current={...structuredClone(settings),model:{package_id:from},limits:{...settings.limits,max_samples:100000}};
+  const out=freshModelSettings(current,{...pin,package_id:from},[pin.model_version],freshModelTransition(from,OLD_PACKAGE));
+  assert.equal(out.limits.max_samples,40000,from);
+ }
 });

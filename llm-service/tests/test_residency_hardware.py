@@ -22,7 +22,7 @@ def main(extra=None):
         with tempfile.TemporaryDirectory(prefix='ainvr-llm-test-') as tmp:
             key,admin=secrets.token_hex(32),secrets.token_hex(32)
             path=Path(tmp)/'config.json'
-            path.write_text(json.dumps(dict(inference_key=key,admin_key=admin,package_root='/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-4b-review-v3',reservation_root='/run/ainvr',exec_timeout_s=30,submit_time_share_cap_percent=int(os.environ.get('AINVR_LLM_TEST_CAP','90')))))
+            path.write_text(json.dumps(dict(inference_key=key,admin_key=admin,package_root='/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-2b-review-v1',reservation_root='/run/ainvr',exec_timeout_s=30,submit_time_share_cap_percent=int(os.environ.get('AINVR_LLM_TEST_CAP','90')))))
             path.chmod(0o600)
             def call(endpoint,body=None,token=None):
                 request=urllib.request.Request('http://127.0.0.1:8300'+endpoint,data=None if body is None else json.dumps(body).encode(),headers={'Content-Type':'application/json',**({'Authorization':'Bearer '+token} if token else {})})
@@ -66,7 +66,7 @@ def main(extra=None):
                     result=call('/v1/ainvr/tasks/alarm-review-zh-v1',request,key)
                     assert result['request_id']==item['id'] and 0<=result['real_score']<=1
                     report['requests'].append(result);save()
-                compatible=call('/v1/chat/completions',dict(model='qwen3vl-4b-review-v3',ainvr={'decision':request}),key)
+                compatible=call('/v1/chat/completions',dict(model='qwen3vl-2b-review-v1',ainvr={'decision':request}),key)
                 assert compatible['ainvr']['logits']==report['requests'][-1]['logits']
                 report['compatibility_equal']=True
                 if extra:extra(call,key,admin,process,report,save,request)

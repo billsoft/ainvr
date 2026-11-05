@@ -16,7 +16,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='ainvr-llm-test-') as tmp:
         config=Path(tmp)/'config.json'
         config.write_text(json.dumps(dict(inference_key=key,admin_key=admin,
-             package_root='/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-4b-review-v3')))
+             package_root='/home/sunrise/ainvr/ai-service/models/llm/qwen3vl-2b-review-v1')))
         config.chmod(0o600)
         with open(result/'http-control.log','w') as log:
             process=subprocess.Popen(['/mnt/ainvr-ssd/llm-build/ainvr/ainvr_llm_service',str(config)],stdout=log,stderr=subprocess.STDOUT)
@@ -39,7 +39,7 @@ def main():
                 assert call('/v1/status',token=admin)[0]==200
                 status,models=call('/v1/models',token=key)
                 assert status==200 and models['object']=='list' and len(models['data'])==1
-                status,error=call('/v1/chat/completions',{'model':'qwen3vl-4b-review-v3','messages':[{'role':'user','content':'hello'}]},key)
+                status,error=call('/v1/chat/completions',{'model':'qwen3vl-2b-review-v1','messages':[{'role':'user','content':'hello'}]},key)
                 assert status==400 and error['error']['code']=='capability_not_available'
                 assert call('/v1/admin/load',{},key)[0]==401
                 assert call('/v1/ainvr/tasks/alarm-review-zh-v1',{'image':{'jpeg_base64':'bad'}},key)[0]==400

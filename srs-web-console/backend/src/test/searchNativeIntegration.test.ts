@@ -131,7 +131,7 @@ describe.skipIf(process.env.AINVR_SEARCH_TEST_MONGO !== '1')('native search busi
       verifyJobs = new SearchJobs(pg);
       const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
       const taskProfile = { template: 'search-verify-zh-v1', template_sha256: 'e'.repeat(64), preprocessing_version: 'fixture-letterbox-v1',
-        decision_policy: 'abc-visible-v1', model: { package_id: 'qwen3vl-4b-review-v3', package_sha256: 'f'.repeat(64) },
+        decision_policy: 'abc-visible-v1', model: { package_id: 'qwen3vl-2b-review-v1', package_sha256: 'f'.repeat(64) },
         enabled: true, available: true, reason: null, validated: false };
       const fakeKey = 'isolated-search-verify-key-20261028-only';
       fakeLlm.addHook('onRequest', async (request, reply) => { if (request.headers.authorization !== `Bearer ${fakeKey}`) return reply.code(403).send({ error: { code: 'forbidden' } }); });
