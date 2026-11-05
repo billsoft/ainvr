@@ -9,7 +9,7 @@ mountpoint -q /mnt/ainvr-ssd || { echo 'Expected SSD is not mounted'; exit 1; }
 result="test/results/reused-sei-$(date +%Y%m%d-%H%M%S)-$$"
 mkdir -- "$result"
 build=out/build/ai-api-compat
-node=/opt/ainvr/node-v24.20.0-linux-arm64/bin/node
+node=/opt/node-v26.13.0-linux-arm64/bin/node
 [[ -x "$node" ]] || { echo 'Configured Node runtime is unavailable'; exit 1; }
 cmake -S ai-service -B "$build" -DAINVR_S100P=ON -DBUILD_TESTING=ON >"$result/build.log" 2>&1
 cmake --build "$build" --target compressed_tap_test reused_publisher_test ainvr_reused_sei_probe -j2 >>"$result/build.log" 2>&1

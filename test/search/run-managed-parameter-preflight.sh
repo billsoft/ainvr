@@ -40,7 +40,7 @@ task_mongo="ainvr-managed-mongo-${task_run//_/-}"
 task_fixture_pid=''
 task_native_pid=''
 task_ssd_prepared=0
-task_node=/opt/ainvr/node-v24.20.0-linux-arm64/bin/node
+task_node=/opt/node-v26.13.0-linux-arm64/bin/node
 task_native="$task_root/out/search-text-integration/ainvr_search_service"
 task_client="$task_root/test/build/search-hardware-ai/build/ai/ainvr_search_bpu_integration_client"
 sunrise() { setpriv --reuid=sunrise --regid=sunrise --init-groups env HOME=/home/sunrise USER=sunrise LOGNAME=sunrise "$@"; }

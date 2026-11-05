@@ -18,7 +18,7 @@ import urllib.request
 
 ROOT=Path(__file__).resolve().parents[2]
 FFMPEG='/opt/ainvr/ffmpeg-8.1.2/bin/ffmpeg'
-NODE='/opt/ainvr/node-v24.20.0-linux-arm64/bin/node'
+NODE='/opt/node-v26.13.0-linux-arm64/bin/node'
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()

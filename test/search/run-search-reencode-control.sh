@@ -101,5 +101,5 @@ for ((task_n=0;task_n<100;++task_n));do
 done
 [[ $task_ready == 1 ]]||{ printf '%s\n' 'Owned probe did not become live.' >&2;exit 1; }
 timeout 80 setpriv --reuid=sunrise --regid=sunrise --init-groups env HOME=/home/sunrise USER=sunrise LOGNAME=sunrise \
-  /opt/ainvr/node-v24.20.0-linux-arm64/bin/node --import "$task_root/srs-web-console/backend/node_modules/tsx/dist/loader.mjs" \
+  /opt/node-v26.13.0-linux-arm64/bin/node --import "$task_root/srs-web-console/backend/node_modules/tsx/dist/loader.mjs" \
   "$task_root/test/search/reencode_control_steps.mts" --run-hardware "$task_directory"

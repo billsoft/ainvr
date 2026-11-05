@@ -613,9 +613,9 @@ RequiresMountsFor=/home/sunrise/ainvr /mnt/ainvr-ssd/ainvr/ai-service/models
 1. 记录 Git HEAD/status、每个 Node 服务的实际 `/proc/<PID>/exe`、完整 unit/drop-in 与原启动参数；确认不是只替换全局 node 链接。
 2. 将验证过的 ARM64 Node 26.13.0 安装到 `/opt/node-v26.13.0-linux-arm64`，核对来源和转移校验和。保留 `/opt/ainvr/node-v24.20.0-linux-arm64` 以供回滚，禁止将带密码的 runtime 或其他板授权状态一起复制。
 3. 在隔离测试目录使用该绝对路径及同版 npm，按 package-lock 执行 npm ci；前后端 build 含类型检查，然后运行前端、后端、告警测试。外部素材、数据库门控跳过、重试必须分别记账。
-4. 对 backend、alarm、review-reference 生成独立 systemd drop-in，只替换 ExecStart 的 Node 可执行文件，保持既有发布目录、bootstrap、取证工具、用户、沙箱及资源限制。变更前把原 drop-in/unit 配置放 SSD 的 ainvr-rollback/node-runtime/时间戳，每服务域最多 3 份。
+4. 对 backend、alarm、review-reference 的 unit 及已有 drop-in，只替换 ExecStart 的 Node 可执行文件，保持既有发布目录、bootstrap、取证工具、用户、沙箱及资源限制。不增加固定旧发布目录的高优先级覆盖，否则后续部署可能仍运行旧版本。变更前把原 drop-in/unit 配置放 SSD 的 ainvr-rollback/node-runtime/时间戳，每服务域最多 3 份。
 5. 仅重启 Node 业务服务，逐一检查进程实际可执行路径和业务健康。AI/C++、LLM、搜索、PG/Mongo/SRS 不因 Node 升级而重启。验证控制台鉴权请求、告警列表/审核状态和已有录像可访问。
-6. 保存部署清单、测试日志、重启前后状态与回滚说明。Node 升级失败时移除本次新增 drop-in 或恢复其旧内容、daemon-reload，按原路径重启；不要回滚客户数据库。
+6. 保存部署清单、测试日志、重启前后状态与回滚说明。Node 升级失败时恢复备份的 unit/drop-in 与 node/npm/npx 链接、daemon-reload，按原路径重启；不要回滚客户数据库。
 7. 提交仅包含审查过的源码、测试与文档。模型、密钥、node_modules、dist、客户视频/截图、临时测试日志与运行配置不进入 Git。
 
 ### 16.2 新板实施必查清单
@@ -627,3 +627,20 @@ RequiresMountsFor=/home/sunrise/ainvr /mnt/ainvr-ssd/ainvr/ai-service/models
 - [x] .190 实测推流、检测归档、搜索、录像和两次重启问题与最终结果已记录。
 - [ ] 通用可重入首次安装器：仍未交付，禁止直接把历史增量升级器当作它。
 - [ ] 多路/长稳、现场误报率、PTZ/国标外设以及新标签播放故障：仍需对应环境验收。
+### 16.3 .189 Node 26 实施结果（2026-11-05）
+
+用户授权本次提交、推送及旧板升级。.190 的源码修正和实施文档先提交为 `946a281` 并推送 GitHub；.189 快进到同一提交后进行隔离验证。原有未跟踪的旧手册已保存在 SSD 回滚目录，未混入提交。
+
+- 两板使用相同的 `/opt/node-v26.13.0-linux-arm64`。从 .190 已部署目录打包转移，包 SHA256 `94ae804d76b9e46b3363fdc8351b5451845c6653df0bffefb101f6718962b83c`，.189 解包前校验一致；Node 可执行文件 SHA256 `66f4a883c880ef336276e7730c01cbae2b92fb8e6a51f7371f920599cac824b7`。这是两板传输一致性校验，不声称重新核验了官方发布签名。
+- .189 在 SSD 独立 worktree 执行各项目 `npm ci`；前后端 build 含类型检查均通过。前端 207 文件、1574 测试通过；后端 846 通过、191 跳过；告警 324 通过、125 跳过，三套无失败。数据库/硬件门控跳过不算通过。
+- 线上告警与参考复核发布目录的 88 个 MJS 文件另外通过 Node26 语法检查。六个部署入口以及九个验收脚本的 Node24 固定路径已统一为 Node26；Python 编译检查和 shell `bash -n` 通过，未声称这些硬件/外部设备脚本都完整执行过。
+- 只修改三个 Node 服务既有 unit/drop-in 的解释器路径，并同步 `/usr/local/bin/node`、`npm`、`npx`。保留原发布目录、bootstrap、凭据及硬件取证程序，不新增锁定旧发布路径的 99 级覆盖。仅重启 backend、alarm、review-reference，三者 `/proc/<PID>/exe` 均指向 Node26，自动重启计数为 0。
+- 服务刚启动 5 秒时告警 HTTP 仍未监听；等配置中心应用完成后探活与真实鉴权查询通过。因此升级脚本应以有超时的 readiness 轮询验收，不能把 systemd active 或固定睡眠当作就绪。
+- 后端 `/api/health`、Web 入口、告警 `/livez`、`/readyz` 及带鉴权 `/v1/events?limit=1` 均成功，告警配置 v6 已应用、ready=true；返回告警未暴露 checkpoint/lease_token。参考复核日志持续 queue_idle。没有新造告警或修改已有人工结论来冒充审核验收。
+- AI、LLM、搜索、录像、接入 PID 与升级前一致；PG/Mongo/SRS 未重启；systemd failed 为 0。本次未做 .189 整板重启、浏览器交互/录像播放复测或长稳测试。
+- 回滚配置在 `/mnt/ainvr-ssd/ainvr-rollback/node-runtime/20261105/`，此服务域当前 1 份；旧 Node24 安装保留。恢复该目录中三个 unit 及各自 drop-in、按 runtime-links.json 恢复三个链接，daemon-reload 后重启三个 Node 服务即可回退，不回退数据库。
+- 完整测试日志与升级前后摘要在 `.189:/mnt/ainvr-ssd/ainvr-tests/node26-20261105/`，不把依赖、视频、私有配置或运行日志提交 Git。
+
+**源码与线上发布边界**：升级前发现 .189 告警运行目录的 `review-authorization.mjs`、`ingestion.mjs`、`group-events.mjs`、`group-review.mjs` 与 Git 最新源码不同。本次保留运行目录，只升级 Node；上面的全量测试指 Git 源码，不能等同于线上全部业务代码已更新。若需要发布这些既有群组告警改动，应独立审查、部署和验收。
+
+**Git 凭据**：板上只读拉取可用，.190 HTTPS 推送未配置凭据。本次在板上生成提交，经 Git bundle 转到已授权本机 Git Credential Manager 推送，未将 GitHub 凭据复制到板上。完成后两板 main 快进同步；以后仍仅在用户明确要求时提交/推送。

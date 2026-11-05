@@ -30,7 +30,7 @@ from fault_link import FaultLink, HOST, CAMERA, NAMESPACE
 from av_content import compare
 from soak import ContinuousDevice
 
-NODE = '/opt/ainvr/node-v24.20.0-linux-arm64/bin/node'
+NODE = '/opt/node-v26.13.0-linux-arm64/bin/node'
 BIN = ROOT/'out/gb28181/ffmpeg-runtime/bin'
 
 SYNC_PEER = '''import {readFile,writeFile} from 'node:fs/promises';

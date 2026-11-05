@@ -34,7 +34,7 @@ def main():
                         'rtmp://127.0.0.1:1935/live/xm', str(result/'transport.json')],
                        stdout=log, stderr=subprocess.STDOUT, check=True, timeout=75)
     with (result/'browser-parser.log').open('w') as log:
-        subprocess.run(['/opt/ainvr/node-v24.20.0-linux-arm64/bin/node', '--experimental-strip-types',
+        subprocess.run(['/opt/node-v26.13.0-linux-arm64/bin/node', '--experimental-strip-types',
                         str(ROOT/'test/ai_port/verify_browser_sei.mts'), str(result/'transport.json'),
                         str(result/'browser-parser.json')], stdout=log, stderr=subprocess.STDOUT,
                        check=True, timeout=30)

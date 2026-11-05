@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-NODE = '/opt/ainvr/node-v24.20.0-linux-arm64/bin/node'
+NODE = '/opt/node-v26.13.0-linux-arm64/bin/node'
 
 
 def sql(query):

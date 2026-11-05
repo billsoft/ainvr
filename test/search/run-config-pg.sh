@@ -36,5 +36,5 @@ if [[ "$ready" != true ]]; then echo 'Isolated PG did not become ready' >&2; exi
 cd -- "$root/srs-web-console/backend"
 AINVR_SEARCH_TEST_PG=1 npm run test:run -- "${tests[@]}"
 if [[ $seed == true ]]; then
-  AINVR_SEARCH_TEST_PG=1 /opt/ainvr/node-v24.20.0-linux-arm64/bin/node --test "$root/test/search/search-seed-migration-proof.test.mjs"
+  AINVR_SEARCH_TEST_PG=1 /opt/node-v26.13.0-linux-arm64/bin/node --test "$root/test/search/search-seed-migration-proof.test.mjs"
 fi
