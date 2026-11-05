@@ -40,7 +40,7 @@ def main():
         record('installing')
         # Existing credentials remain encrypted in the parameter store.
         run(['/usr/local/bin/node',str(R/'deploy-package/provision-alarm-review.mjs')],env=env)
-        for service,directory,command in [('ainvr-alarm',source,'/opt/ainvr/node-v24.20.0-linux-arm64/bin/node '+str(source/'src/main.mjs')+' --config-center '+str(R/'deploy/s100p/runtime/alarm-service-bootstrap.json')),('ainvr-llm',llm,str(llm/'ainvr_llm_service')+' --bootstrap '+str(R/'deploy/s100p/runtime/llm-service-bootstrap.json'))]:
+        for service,directory,command in [('ainvr-alarm',source,'/opt/node-v26.13.0-linux-arm64/bin/node '+str(source/'src/main.mjs')+' --config-center '+str(R/'deploy/s100p/runtime/alarm-service-bootstrap.json')),('ainvr-llm',llm,str(llm/'ainvr_llm_service')+' --bootstrap '+str(R/'deploy/s100p/runtime/llm-service-bootstrap.json'))]:
             text=(backup/(service+'.service')).read_text();text='\n'.join('ExecStart='+command if l.startswith('ExecStart=') else 'WorkingDirectory='+str(directory) if l.startswith('WorkingDirectory=') else l for l in text.splitlines())+'\n'
             if service=='ainvr-alarm':text=text.replace('ReadWritePaths=','ReadWritePaths='+str(cache)+' ')
             units[service].write_text(text)

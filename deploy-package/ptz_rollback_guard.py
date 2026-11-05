@@ -13,7 +13,7 @@ def supports_view_guards(target):
  return True
 
 def database_state(root):
- node=os.environ.get('AINVR_NODE','/opt/ainvr/node-v24.20.0-linux-arm64/bin/node')
+ node=os.environ.get('AINVR_NODE','/opt/node-v26.13.0-linux-arm64/bin/node')
  result=subprocess.run([node,str(Path(__file__).with_name('ptz-rollback-state.mjs')),str(root)],capture_output=True,text=True,timeout=15)
  if result.returncode:raise RuntimeError('Cannot verify persistent PTZ protection; downgrade refused')
  try:

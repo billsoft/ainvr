@@ -22,6 +22,9 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // Let jsdom own browser Storage; Node 26's native globals otherwise mask
+    // its per-window storage when no --localstorage-file was supplied.
+    execArgv: ['--no-experimental-webstorage'],
     globals: true,
     setupFiles: ['src/test/setup.ts'],
     css: false,

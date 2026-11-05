@@ -7,7 +7,7 @@ from pathlib import Path
 from release_common import validate as validate_console,files,ready as backend_ready,atomic_bytes
 from ptz_rollback_guard import preflight as ptz_preflight
 ROOT=Path(__file__).resolve().parents[1]
-NODE='/opt/ainvr/node-v24.20.0-linux-arm64/bin/node'
+NODE='/opt/node-v26.13.0-linux-arm64/bin/node'
 SSD=Path('/mnt/ainvr-ssd');BACKUPS=SSD/'ainvr-rollback'
 DROPIN=Path('/etc/systemd/system/ainvr-alarm.service.d/95-ptz-control.conf')
 TARGETS={'ai-service':ROOT/'deploy/s100p/bin/ainvr_ai_service','onvif':Path('/opt/ainvr/onvif/ainvr_onvif'),'gb28181':Path('/opt/ainvr/gb28181/gateway')}

@@ -97,7 +97,7 @@ void RunProfile(const Profile& profile) {
 }  // namespace
 int main() {
   try {
-    Check(std::string(DefaultPackageId()) == "qwen3vl-embedding-2b-o2", "default_is_qwen3vl");
+    Check(std::string(DefaultPackageId()) == "siglip2-base-full-int8", "default_is_siglip2");
     RunProfile({"siglip2-base-full-int8", "siglip2_base_text", 768, ainvr::text::kSiglip2EmbeddingRows,
                 kSiglip2BaseTextMeasuredSha256, kSiglip2BaseTextReservationBytes, 485359400});
     RunProfile({"siglip-so400m-i18n-full-int8", "siglip_text", 1152, ainvr::text::kSiglipEmbeddingRows,

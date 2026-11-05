@@ -33,7 +33,7 @@ def main():
     if not output.is_relative_to(ROOT/'out') or output.exists():raise RuntimeError('Use a new candidate directory inside out/')
     output.mkdir(parents=True)
     initial=sources(args.profile);(output/'source-manifest.json').write_text(json.dumps(initial,indent=2)+'\n')
-    env={**os.environ,'PATH':'/opt/ainvr/node-v24.20.0-linux-arm64/bin:'+os.environ['PATH'],'GOMAXPROCS':'2','GOTELEMETRY':'off'}
+    env={**os.environ,'PATH':'/opt/node-v26.13.0-linux-arm64/bin:'+os.environ['PATH'],'GOMAXPROCS':'2','GOTELEMETRY':'off'}
     def run(args,cwd,label):
         with (output/(label+'.log')).open('wb') as log:subprocess.run(args,cwd=cwd,env=env,stdout=log,stderr=log,check=True,timeout=300)
     try:
