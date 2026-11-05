@@ -17,6 +17,16 @@ class ArchiveTest(unittest.TestCase):
         self.assertNotIn('secret', json.dumps(result))
         self.assertNotIn('private', json.dumps(result))
 
+    def test_real_uppercase_srs7_errors_and_worker_restarts_are_not_lost(self):
+        event = observer.srs_error_summary('\x1b[31m[2026-11-05 12:22:19.670][ERROR][9481][047q0799][11] serve error code=1045(FileWrite) private-url')
+        self.assertEqual(event['severity'], 'Error')
+        self.assertEqual(event['codes'], ['1045'])
+        self.assertNotIn('private-url', json.dumps(event))
+        for marker in ['hls_worker_exit', 'hls_storage_recovered']:
+            event = observer.srs_error_summary('[srs-io] ' + marker + ' private-value')
+            self.assertEqual(event['signals'], [marker])
+            self.assertNotIn('private-value', json.dumps(event))
+
     def test_archive_rotates_and_preserves_latest_record(self):
         with tempfile.TemporaryDirectory() as folder:
             handler = observer.configure_archive(folder)

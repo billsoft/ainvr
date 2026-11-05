@@ -45,6 +45,7 @@ export default function PlaybackPage() {
   const [playNotice, setPlayNotice] = useState('')
   const [checking, setChecking] = useState(false)
   const [retry, setRetry] = useState(0)
+  const recoveredRequest = useRef<number | null>(null)
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({})
   const selectedChannel = channels.find(c => c.id === channelId) ?? null
   const rangeSegments = catalogue.segments
@@ -169,13 +170,28 @@ export default function PlaybackPage() {
   async function playbackFailed() {
     const selected = playingRef.current
     if (!selected || selected.request !== selectionRequest.current) return
-    try { await recordingService.preparePlayback(selected.segmentId) }
-    catch (error) {
+    if (recoveredRequest.current === selected.request) {
+      setPlayNotice('录像仍无法播放：请检查网络或浏览器解码支持，也可手动重新加载。')
+      return
+    }
+    recoveredRequest.current = selected.request
+    const target = playheadTs ?? (currentSegment ? currentSegment.startTs + selected.offsetMs : null)
+    setChecking(true); setPlayNotice('正在恢复媒体会话并核对录像…')
+    try {
+      await recordingService.preparePlayback(selected.segmentId)
+      if (selectionRequest.current !== selected.request || playingRef.current?.request !== selected.request || currentScope.current !== selected.scope) return
+      setPlaying({ ...selected, offsetMs: currentSegment && target !== null
+        ? Math.max(0, Math.min(currentSegment.durationMs - 1, target - currentSegment.startTs)) : selected.offsetMs })
+      setRetry(value => value + 1)
+      setPlayNotice('')
+    } catch (error) {
       if (selectionRequest.current !== selected.request || playingRef.current?.request !== selected.request || currentScope.current !== selected.scope) return
       if ([404, 410].includes((error as { status: number }).status)) removeUnavailable(selected.segmentId)
       else setPlayNotice(error instanceof Error ? error.message : '录像存储暂不可用')
+      catalogue.refresh()
+    } finally {
+      if (selectionRequest.current === selected.request && currentScope.current === selected.scope) setChecking(false)
     }
-    catalogue.refresh()
   }
   useEffect(() => {
     if (playing?.scope !== scope || !playing) { missingStreakRef.current = 0; return }
@@ -513,6 +529,7 @@ export default function PlaybackPage() {
                   }}
                   segment={currentSegment}
                   checking={checking}
+                  errorMessage={playNotice}
                   offsetMs={playing?.offsetMs ?? 0}
                   playUrl={playbackUrl ? `${playbackUrl}${playbackUrl.includes('?') ? '&' : '?'}retry=${retry}` : null}
                   seekVersion={playing?.request ?? 0}
@@ -527,7 +544,7 @@ export default function PlaybackPage() {
                   onNext={() => { if (playing?.request === selectionRequest.current) jump(1) }}
                   onSeek={seekTo}
                   onError={() => { void playbackFailed() }}
-                  onRetry={() => { setRetry(value => value + 1); void playbackFailed() }}
+                  onRetry={() => { recoveredRequest.current = null; void playbackFailed() }}
                 />
               </div>
             </div>

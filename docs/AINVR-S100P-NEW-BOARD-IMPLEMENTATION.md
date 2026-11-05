@@ -47,7 +47,7 @@
 | `ainvr-license` | license-service C++ | 单板身份、激活状态、签名授权租约，UDS `/run/ainvr-license/license.sock` |
 | `ainvr-license-enforcer` | shared/license-enforcer | 授权与 SRS 生命周期联动 |
 | `ainvr-backend` | backend/dist/server.js | 配置中心、鉴权、PG 迁移、各服务代理与任务协调，loopback:3001 |
-| `ainvr-web` | nginx + frontend/dist | 80/8088、静态页、接口/媒体代理 |
+| `ainvr-web` | nginx + frontend/dist | 80 默认入口 / 8088 兼容入口、静态页、接口/媒体代理 |
 | `ainvr-ai` | ainvr_s100p_control_service → bin/ainvr_ai_service | 硬解、BPU 检测/跟踪、输出视频、逐目标归档、观测/搜索采样；8000/TCP |
 | `ainvr-recorder` | recording-service Python | 分段录像、回放、原帧取证；8100，另有 SQLite 本地录像索引 |
 | `ainvr-ingest` | ingest-service Python | RTSP 等输入接入、FFmpeg 转封装；8120 |
@@ -384,9 +384,9 @@ sudo python3 deploy-package/deploy_ptz_release.py --profile search --apply out/s
 
 ## 10. 网络、日志和故障排查
 
-外部按场景开放：80/8088 TCP（管理）、1935 TCP（RTMP）、8000 UDP（WebRTC）、10080 UDP（SRT）、明确配置的 GB SIP/RTP 和 ONVIF 发现流量。8000/TCP 是 AI 管理接口，与 8000/UDP 的 WebRTC 不同。
+外部按场景开放：80 TCP（默认管理入口）、8088 TCP（兼容旧地址，可按现场策略限制）、1935 TCP（RTMP）、8000 UDP（WebRTC）、10080 UDP（SRT）、明确配置的 GB SIP/RTP 和 ONVIF 发现流量。8000/TCP 是 AI 管理接口，与 8000/UDP 的 WebRTC 不同。
 
-PG 5432、Mongo 27017、SRS 1985/8080、backend 3001、LLM/告警/搜索等管理接口保持本机或明确受控来源访问，不能为解决连接问题开放所有网段。S100 .190 的 HLS tmpfs 设为 256 MiB，SRS 容器 768 MiB；PG 容器 384 MiB（shared_buffers 64 MiB），Mongo 768 MiB（WiredTiger cache 0.25 GB）。上限不是预留，需测试实际并发余量；禁止沿用 S100P 的 2 GiB HLS tmpfs，也禁止落回 eMMC。
+PG 5432、Mongo 27017、SRS 1985/8080、backend 3001、LLM/告警/搜索等管理接口保持本机或明确受控来源访问，不能为解决连接问题开放所有网段。S100 .190 当前 HLS tmpfs 为 384 MiB，SRS 容器 768 MiB；PG 容器 384 MiB（shared_buffers 64 MiB），Mongo 1 GiB（WiredTiger cache 0.25 GB）；容量调整依据见第 18 节。上限不是预留，需测试实际并发余量；禁止沿用 S100P 的 2 GiB HLS tmpfs，也禁止落回 eMMC。
 
 常用只读检查：
 
@@ -603,7 +603,7 @@ RequiresMountsFor=/home/sunrise/ainvr /mnt/ainvr-ssd/ainvr/ai-service/models
 - 固定目录及持久挂载复核通过，临时编译 swap 文件已删除；基础设施回滚快照 2 份，日志配置回滚 1 份，均在 SSD。
 - 测试、硬件探针和状态记录：`test/results/s100-production-20261105/`。代码修改只有 Node26 的 Vitest worker 配置及过时默认模型测试断言，另外为实施文档；当次部署未提交或推送，后续提交范围见第 16 节。
 
-后续使用推流地址 `rtmp://192.168.100.190:1935/live/test-input`，控制台 `http://192.168.100.190:8088/`。现场告警规则、准确率、多路压力和新标签播放问题按 §15.8 边界继续验收。
+后续使用推流地址 `rtmp://192.168.100.190:1935/live/test-input`，控制台 `http://192.168.100.190/`。现场告警规则、准确率、多路压力和新标签播放问题按 §15.8 边界继续验收。
 ## 16. Node 26 统一升级与实施文档审计
 
 本节为后续维护入口，前面的 .190 时间点记录保留历史事实。主手册覆盖实际安装、配置与验证，但**不是可无人值守执行的一键安装器**：第 12 节所列新板供应缺口、现场授权和业务参数仍需工程人员处理。未执行的验收项不会因文档补全而变成已通过。
@@ -644,3 +644,62 @@ RequiresMountsFor=/home/sunrise/ainvr /mnt/ainvr-ssd/ainvr/ai-service/models
 **源码与线上发布边界**：升级前发现 .189 告警运行目录的 `review-authorization.mjs`、`ingestion.mjs`、`group-events.mjs`、`group-review.mjs` 与 Git 最新源码不同。本次保留运行目录，只升级 Node；上面的全量测试指 Git 源码，不能等同于线上全部业务代码已更新。若需要发布这些既有群组告警改动，应独立审查、部署和验收。
 
 **Git 凭据**：板上只读拉取可用，.190 HTTPS 推送未配置凭据。本次在板上生成提交，经 Git bundle 转到已授权本机 Git Credential Manager 推送，未将 GitHub 凭据复制到板上。完成后两板 main 快进同步；以后仍仅在用户明确要求时提交/推送。
+
+## 17. 默认 Web 入口：直接输入设备 IP（2026-11-05）
+
+交付地址统一使用 `http://设备IP/`，用户无需输入端口：
+
+- .189：`http://192.168.100.189/`
+- .190：`http://192.168.100.190/`
+
+HTTP 默认端口为 80。两板当前 AINVR nginx 和仓库 `deploy-package/prepare-s100p.py` 模板已在同一 server 内同时配置 `listen 80;`、`listen 8088;`，不是新增一套代理。8088 保留为旧书签兼容入口，默认交付说明不再要求输入 8088。实际配置持久保存在 `deploy/s100p/runtime/nginx.conf`，由已启用的 `ainvr-web.service` 加载；.190 的实际私有配置在 `/etc/ainvr/runtime`。
+
+新板部署应检查 80 是否被发行版 nginx 或其他服务占用；不要在已有业务占用时强行抢占，也不要并行启用默认 nginx。验证实际加载的配置与模板一致，执行指定 prefix/config 的 nginx -t，再通过设备 IP 检查首页、静态资源、前端深层路由与 API。同一入口继续复用现有接口、录像和媒体鉴权路由，保留 Host / X-Forwarded-Host；不能为省端口绕过鉴权。
+
+2026-11-05 从开发电脑访问两板实测：80 和 8088 的首页、`/alarms`、`/analytics`、`/api/auth/status`、`/api/health` 均为 HTTP 200，80 下引用的 JS/CSS 资源返回 200；同一板两个入口首页 SHA256 一致。两板 nginx 配置检查通过。这里的路由 200 是入口连通性检查，不等于已登录交互、录像播放或告警审核验收。现有运行配置已满足要求，本次未改端口配置、未重启服务。
+
+从 8088 切换到 80 属于浏览器来源变化，本地存储的登录状态可能需要重新登录，这是正常的来源隔离。当前入口为 HTTP，未配置 HTTPS 证书；不要把 `https://设备IP/` 作为已经可用的地址。以后配置域名与受信任证书时再启用 443，并单独验证 HTTPS、媒体协议及登录行为。
+
+## 18. .190 运行体检后的修复（2026-11-05，覆盖前文旧容量值）
+
+### 18.1 回放媒体会话与时间轴
+
+原故障是列表携带控制台请求头能成功，但原生 video 的媒体 Cookie 未通过验证；MP4 文件存在且授权 Range 返回 206，不能提示为循环覆盖。现在每次选择片段、手动重试及原有 30 秒保护续期均先 POST `/api/auth/media-session`，随后以纯 Cookie GET `/api/auth/media-check`，通过后再取得录像 availability/播放保护。保持 HttpOnly、同源和原服务鉴权，不把令牌放进 URL，不整段下载 blob。
+
+媒体播放失败时每次用户选择最多自动恢复一次，保留当时目标/已解码时间，核对请求身份防止切换通道或片段后的旧异步结果覆盖新选择。自动恢复仍失败时停止循环，展示错误原因并允许手动重试。404/410 才按明确缺失移出时间轴；401 提示登录，其他读取或解码问题不再笼统说已覆盖。已有完整片段发布、实测时长、播放保护和媒体时间校验继续复用，没有新增并行索引或重复采集。
+
+### 18.2 HLS 实际 GOP 与 tmpfs 容量
+
+.190 原 256 MiB HLS tmpfs 在两路约 20 Mbps 视频下发生 FileWrite 和 HLS 子进程反复恢复重启。`hls_fragment` 是目标值，不能突破上游关键帧边界；现场曾得到约 16.7 秒分片，不能按配置的 2 秒估算内存。
+
+最终 `.190:/etc/ainvr/infra/compose.yaml` 的 SRS `/run/srs-http` 为 **384m tmpfs**，容器内存上限仍 **768m**；内部 hls.conf 改为 `hls_fragment 2; hls_window 12; hls_dispose 30;`，两份仓库 HLS 模板同步。按实际分片、音频、码率、同时发布通道和静态资源计算峰值并留余量；本结果只覆盖当前两条流，不代表任意多路容量。
+
+仅修改磁盘上的 Compose 不会改变已创建容器的 tmpfs；应先 `docker compose -f /etc/ainvr/infra/compose.yaml config --quiet`，再在允许短暂推流重连的窗口执行 `docker compose -f /etc/ainvr/infra/compose.yaml up -d --no-deps srs`。本次执行了一次，输入、AI 输出和录像已恢复。不要清空录像目录或整套重启数据库。
+
+### 18.3 系统日志与蓝牙
+
+把 rsyslog 路径改到 SSD 还必须更新 AppArmor；仅 chmod 不够。仓库 `deploy-package/repair-s100-runtime.py` 在既有 rsyslog local include 中只增加 `/mnt/ainvr-ssd/logs/system/` 的读及子文件读写规则，重载 profile 并验证 rsyslog，保持 AppArmor 启用。SSD 挂载依赖和现有 logrotate 策略继续生效，备份在 SSD 的 host-logging 域，最多三份。
+
+`.190` 没有可用 hci 适配器，厂商蓝牙固件初始化持续超时，且 AINVR 当前不使用蓝牙。本次显式使用 `--disable-unused-bluetooth` 停用该初始化服务，未修改 Wi-Fi。脚本会拒绝对已有 hci 适配器执行此操作；其他新板不要无条件禁用。若以后需要蓝牙，先验证硬件、固件及串口，再恢复该服务，不能称本次已修好蓝牙驱动。
+
+验证日志时同时检查 `journalctl` 与 SSD 上实际文件。可用 `logger --socket /run/systemd/journal/syslog -t ainvr-health-fix 'SSD log verification'` 测试 rsyslog 路径，再核对文件内容；单看服务 active 不足以证明日志落盘。
+
+### 18.4 Mongo 余量和诊断方式
+
+原容器上限 768 MiB，体检曾观测到约 715 MiB；20:22 发生一次非正常重启，现存日志不足以确定根因。后续 serverStatus 的进程驻留约 480 MiB、WiredTiger 缓存约 173 MiB/256 MiB，说明容器统计不能直接等同于缓存超限。诊断 mongosh 和健康检查也消耗同一 cgroup 的内存。
+
+本次保留 WiredTiger 0.25 GB 缓存，把 .190 Mongo 的 `mem_limit`、`memswap_limit` 都改为 **1g**，并用 `docker update --memory 1g --memory-swap 1g ainvr-mongo` 在线应用，没有因该调整重启数据库。系统 swap 仍为 0。不要在紧配额容器里并发启动多个诊断 shell；优先复用现有驱动做有限查询。新板应按业务峰值与诊断开销验证内存，而不是只看空库启动。
+
+### 18.5 SRS 故障记录
+
+SRS7 的大写 `[WARN]/[ERROR]` 曾被采集器仅匹配大小写混合格式的正则漏掉。现已兼容大小写，并记录 `hls_worker_exit` / `hls_storage_recovered`，只保留错误码和固定信号，继续去除 URL、密钥和视频数据。部署文件为 `/opt/ainvr/srs-observer.py`，更新后只重启 `ainvr-srs-observer`。日志容量仍有边界，不把“13 个进程健康”当作全部业务链路验收。
+
+### 18.6 发布验收与边界
+
+本次前端全量 208 个测试文件、1578 项通过，类型检查及生产构建通过；录像服务针对定位、保护、鉴权、配额和索引异常的 43 项测试通过，SRS observer 19 项通过，git diff --check 通过。测试日志与构建位于 SSD `/mnt/ainvr-ssd/health-fix-20261105/`，不随源码提交。
+
+内置浏览器在已登录的 .190 控制台验证新版页面：20:39:09 片段成功解码为 1920×1080，点击进度条后定位到 20:39:42，随后视频继续前进；切换到 20:40:15 片段正常播放，播放器与时间轴均显示 20:40:32，识别框恢复显示，无播放错误。页面保留旧资源支持已打开的标签页，入口 index 原子替换；前端回滚包位于 SSD web 域，最多保留三份。
+
+20:50 复查：无 failed systemd 单元；PG、Mongo healthy，告警 livez/readyz 为 200；HLS tmpfs 114/384 MiB，SRS 重建后约 14 分钟无 FileWrite、StreamBusy 或 HLS worker 恢复重启；rsyslog 修复后无警告，系统可用内存约 1.5 GiB。Mongo restart_count=1 是 20:22 已发生的历史重启，调整后未新增，不能把此值写成 0。
+
+以上不等于长期或任意多路压力保证。本轮没有人为填满生产磁盘、删除录像或重启整板；异常清理依赖针对性测试，冷启动需独立窗口。当前未配置现场告警规则，不能把服务健康等同于群组触发或大模型准确率验收。画面原有烧录时间来自测试源，回放轴使用录入系统的录像时间，二者不应混为一项指标。

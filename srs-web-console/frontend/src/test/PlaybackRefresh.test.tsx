@@ -80,3 +80,27 @@ it('opens an alarm-linked recording automatically and does not restart on catalo
  await act(async()=>{vi.advanceTimersByTime(5000)})
  expect(prepare).toHaveBeenCalledTimes(1)
 })
+it('recovers media failure once at the selected position and stops retrying on persistent errors', async () => {
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined)
+  const prepare = vi.spyOn(recordingService, 'preparePlayback').mockResolvedValue(undefined)
+  const from=Date.now()-3600000,to=Date.now()-3000000
+  vi.spyOn(recordingService,'listSegments').mockResolvedValue([{id:'recovery',channelId:'demo-detect',startTs:from-20000,endTs:to+1000,playable:true,sizeBytes:1000,durationMs:to-from+21000} as import('@/types/recording').RecordingSegment])
+  const router=createMemoryRouter([{path:'/playback/:channelId',element:<PlaybackPage/>}],
+    {initialEntries:[`/playback/demo-detect?from=${from}&to=${to}&autoplay=1`]})
+  render(<RouterProvider router={router}/>)
+  await waitFor(()=>expect(document.querySelector('video')).not.toBeNull())
+  const first=document.querySelector('video')!
+  fireEvent.error(first)
+  await waitFor(()=>expect(document.querySelector('video')).not.toBe(first))
+  expect(prepare).toHaveBeenCalledTimes(2)
+  const second=document.querySelector('video')!
+  Object.defineProperties(second,{readyState:{configurable:true,value:4},duration:{configurable:true,value:621}})
+  fireEvent.loadedMetadata(second)
+  expect(second.currentTime).toBe(20)
+  fireEvent.error(second)
+  await screen.findAllByText(/录像仍无法播放/)
+  expect(prepare).toHaveBeenCalledTimes(2)
+  fireEvent.click(screen.getByRole('button',{name:'重新加载录像'}))
+  await waitFor(()=>expect(prepare).toHaveBeenCalledTimes(3))
+})

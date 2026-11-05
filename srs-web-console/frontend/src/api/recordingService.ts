@@ -32,6 +32,13 @@ export interface RecordingService {
 export function createHttpRecordingService(): RecordingService {
   return {
     async preparePlayback(segmentId) {
+      // Native video requests use the HttpOnly cookie, not the console header.
+      await request('/auth/media-session', { method: 'POST', signal: AbortSignal.timeout(12000) })
+      const media = await fetch('/api/auth/media-check', {
+        credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(12000),
+      })
+      if (!media.ok) throw Object.assign(new Error(media.status === 401
+        ? '媒体登录状态未恢复，请重新登录后播放' : '媒体鉴权服务暂不可用，请稍后重试'), { status: media.status })
       await request(`/v1/recordings/${encodeURIComponent(segmentId)}/availability`, {
         cache: 'no-store', signal: AbortSignal.timeout(12000),
       })

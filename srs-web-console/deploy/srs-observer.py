@@ -32,11 +32,15 @@ def configure_archive(directory):
 def srs_error_summary(line):
     # Do not persist raw URLs, stream keys, query strings or user log content.
     # Keep the SRS timestamp/session/code for correlation with original logs.
-    match = re.search(r'\[(Warn|Error)\](?:\[\d+\])?\[([A-Za-z0-9_-]{1,40})\]', line)
+    match = re.search(r'\[(Warn|Error)\](?:\[\d+\])?\[([A-Za-z0-9_-]{1,40})\]', line, re.IGNORECASE)
     if not match:
+        for signal in ('hls_worker_exit', 'hls_storage_recovered'):
+            if '[srs-io] ' + signal in line:
+                return {'severity': 'Warn', 'session': 'hls-worker', 'srs_time_utc': None,
+                        'codes': [], 'signals': [signal]}
         return None
     stamp = re.search(r'\[(\d{4}-\d{2}-\d{2} [0-9:.]+)\]', line)
-    return {'severity': match[1], 'session': match[2],
+    return {'severity': match[1].title(), 'session': match[2],
             'srs_time_utc': stamp[1] if stamp else None,
             'codes': re.findall(r'\bcode=(\d+)\b', line)[:8],
             'signals': [word for word in ('timeout', 'reset', 'closed', 'publish',

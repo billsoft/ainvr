@@ -32,6 +32,7 @@ interface Props {
   channelMeta?: PlayerChannelMeta
   segment: RecordingSegment | null
   checking?: boolean
+  errorMessage?: string
   /** 段内起播偏移 ms（点击时间轴跨段 seek 时非 0） */
   offsetMs: number
   playUrl: string | null
@@ -62,7 +63,7 @@ interface Props {
  */
 export function RecordingPlayer({
   channelName, channelMeta, segment, offsetMs, playUrl, downloadUrl, initiallyMuted = false,
-  isToday, onJumpNow, onTimeUpdate, onNext, onSeek, seekVersion, onError, onRetry, playbackRange, checking = false,
+  isToday, onJumpNow, onTimeUpdate, onNext, onSeek, seekVersion, onError, onRetry, playbackRange, checking = false, errorMessage,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const progressRef = useRef<HTMLDivElement>(null)
@@ -561,7 +562,7 @@ export function RecordingPlayer({
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/70 text-center text-sm text-white/80">
             <p className="font-medium">录像加载失败</p>
             <p className="text-xs text-white/50">
-              {segment?.playable === false ? '文件不存在或存储位置不可达' : '文件可能已循环覆盖，或读取暂时失败；正在核对列表。'}
+              {errorMessage || (segment?.playable === false ? '文件不存在或存储位置不可达' : '录像读取或解码失败，正在检查媒体会话与文件状态。')}
             </p>
             {onRetry && <button className="rounded border border-white/40 px-3 py-1.5 text-white" onClick={onRetry}>重新加载录像</button>}
           </div>
