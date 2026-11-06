@@ -6,9 +6,12 @@ const preparationReasons:Record<string,string>={
  source_evidence_failed:'触发已发生，但原始证据保存失败；请检查存储与采集服务，需人工核查',
  focused_person_confirmed:'指定目标的人员证据满足确认条件',
  focused_context_confirmed:'两种视图的人员证据一致，确认告警',
+ focused_context_rescued:'扩大图明确识别同一目标，结合特写确认告警',
  focused_non_person_confirmed:'两种视图均明确识别为非人员，判为误报',
  focused_unrecognizable:'关键帧无法辨认，保留人工审核',
- focused_class_inconclusive:'人员、非人员证据不足以形成一致结论，保留人工审核',
+ focused_class_inconclusive:'送审图片完整，指定目标分类分数未达到自动审核门槛',
+ focused_below_strong_threshold:'两种视图均支持人员，但未达到强证据分数门槛',
+ focused_class_conflict:'存在明显的非人员分类证据，尚不能一致结案，需人工核对',
  focused_evidence_incomplete:'三分类审核证据不完整，保留人工审核',
 
  paired_views_confirmed:'全部关键帧的特写与扩大范围均支持同一目标，AI 确认告警',
@@ -69,11 +72,11 @@ export function reviewDiagnostic(review:AlarmEvent['review']){
  const ruleThreshold=review.policy?.approve_above
  const validRuleThreshold=typeof ruleThreshold==='number'&&Number.isFinite(ruleThreshold)&&ruleThreshold>=0&&ruleThreshold<=1
  const visual=gate?.outcome==='frame_below_threshold'||gate?.outcome==='no_strong_frame'||(!gate&&pending&&validRuleThreshold&&scores.some(score=>Number.isFinite(score)&&score<ruleThreshold))
- const summary=gate?.outcome==='confirmed'?'自动确认条件已满足':gate?.outcome==='not_authorized'?'未获自动确认授权':!frames.length?'缺少可查看的关键帧':!scores.some(Number.isFinite)?'关键帧目标核对未记录模型分数':visual?'关键帧目标核对仍不确定':'未自动确认，待人工审核'
+ const summary=gate?.outcome==='confirmed'?'自动确认条件已满足':gate?.outcome==='not_authorized'?'未获自动确认授权':!frames.length?'缺少可查看的关键帧':!scores.some(Number.isFinite)?'关键帧目标核对未记录模型分数':visual?'目标分类分数未达到自动确认门槛':'未自动确认，待人工审核'
  const path=review.decision_path?({primary_confirmation:'特写主审确认',expanded_confirmation:'扩大范围复核确认',explicit_non_target:'明确非人员证据核验后判为误报'})[review.decision_path]:undefined
  const withPath=(text:string)=>path?`实际审核路径：${path} · ${text}`:text
  const details=[review.geometry_verified===true?'行为几何条件：已核验；图片用于核对目标类别。':review.geometry_verified===false?'行为几何条件：未核验通过。':'行为几何核验结果：未记录。']
- if(review.input_profile==='target-focus-v2')details.push('指定目标隔离视图：特写 1.15 倍、上下文 1.6 倍，保留原始目标中心和比例；灰边为无图像区域，不作为非人员证据。蓝线为真实布防区；模型输入不填色、不画人员框，以免标注干扰识别。')
+ if(review.input_profile==='target-focus-v2')details.push('指定目标隔离视图：特写 1.15 倍、上下文 1.6 倍，保留原始目标中心和比例；灰边为无图像区域，不作为非人员证据。蓝线为真实布防区；模型输入不填色。v7 审核用绿色细框指定目标，避免把旁边设备或人员当成审核对象；旧记录以实际留存图片为准。')
  if(path)details.push(`实际审核路径：${path}。`)
  if(review.decision_basis){
   const basis=({operator_authorized_group_review:'组合候选和共同画面审核',validated_model:'已验证模型策略',operator_authorized_primary_review:'用户授权的特写主审策略',operator_authorized_dual_review:'用户授权的复核策略',operator_authorized_confirm_only:'用户授权的仅确认策略',reference_only:'仅参考分析，不自动处理'})[review.decision_basis]

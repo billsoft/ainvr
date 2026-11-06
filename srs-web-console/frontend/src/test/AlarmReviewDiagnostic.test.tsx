@@ -7,7 +7,7 @@ import type {AlarmEvent} from '@/api/alarmEventService'
 const review={state:'uncertain',reason:'manual_review_required',geometry_verified:true,reference:{state:'completed',reason:'manual_review_required'},frames:[{key:'a',roles:['entry_before']},{key:'b',roles:['entry_after']}],frame_scores:[.728597,.999974],policy:{approve_above:.95}} as NonNullable<AlarmEvent['review']>
 it('explains the historical row without inventing authorization or missing behavior',()=>{
  const d=reviewDiagnostic(review)!
- expect(d.summary).toBe('关键帧目标核对仍不确定')
+ expect(d.summary).toBe('目标分类分数未达到自动确认门槛')
  const text=d.details.join(' ')
  expect(text).toContain('行为几何条件：已核验')
  expect(text).toContain('进入前：模型分数 0.728597（不是概率）')
@@ -31,7 +31,7 @@ it.each(['confirmed','frame_below_threshold','no_strong_frame','not_authorized']
 it('leaves both manual actions enabled for the historical pending row',()=>{
  const alarm={alarm_id:'a',behavior:'appearance',occurred_at:'2026-10-30T00:00:00Z',rule:{id:'r',name:'r'},lifecycle:{state:'ended'},handling:{state:'unacknowledged',revision:0},review} as AlarmEvent
  render(<AlarmRow alarm={alarm} trigger={undefined} channelName="测试" onHandle={vi.fn()} onOpen={vi.fn()}/> )
- expect(screen.getByText(/关键帧目标核对仍不确定/)).toBeInTheDocument()
+ expect(screen.getByText(/目标分类分数未达到自动确认门槛/)).toBeInTheDocument()
  expect(screen.getByRole('button',{name:'确认'})).toBeEnabled()
  expect(screen.getByRole('button',{name:'标记误报'})).toBeEnabled()
 })

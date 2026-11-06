@@ -8,6 +8,21 @@ import type {AlarmEvent} from '@/api/alarmEventService'
 const {request}=vi.hoisted(()=>({request:vi.fn().mockResolvedValue({jpeg_base64:'expanded-image'})}))
 vi.mock('@/api/httpClient',()=>({request}))
 afterEach(()=>{cleanup();vi.clearAllMocks()})
+it('shows a completed focused context rescue as confirmed rather than waiting for a verdict',()=>{
+ const value=alarm();value.review!.input_profile='target-focus-v2';
+ value.review!.secondary!.reason='focused_context_rescued';
+ expect(reviewDiagnostic(value.review)!.summary).toContain('结合特写确认告警');
+ expect(reviewDiagnostic(value.review)!.summary).not.toContain('等待');
+});
+it.each([
+ ['focused_below_strong_threshold','强证据分数门槛'],
+ ['focused_class_conflict','非人员分类证据'],
+ ['focused_class_inconclusive','送审图片完整'],
+])('distinguishes focused decision reason %s from missing evidence',(reason,label)=>{
+ const value=alarm();value.review!.input_profile='target-focus-v2';
+ value.review!.secondary!.reason=reason;value.review!.secondary!.outcome='uncertain';
+ expect(reviewDiagnostic(value.review)!.summary).toContain(label);
+});
 const frame={frame_id:'before',key:'original',captured_at:'2026-10-30T00:00:00Z',source_pts_ns:'1',bbox:{x:0,y:0,w:20,h:20}}
 const primary={state:'uncertain',reason:'manual_review_required',geometry_verified:true,frames:[frame,{...frame,frame_id:'after',key:'original-after'}],frame_scores:[.728597,.999974],policy:{approve_above:.95}} satisfies AlarmEvent['review']
 const secondary={version:'expanded-target-v1',state:'completed',outcome:'confirmed',frame_scores:[.987654],frames:[{frame_id:'before',key:'context-before',score:.987654}],prompt:'当次场景输入说明',completed_at:'2026-10-30T00:01:00Z',confirm_above:.95,reject_below:.1} as const
@@ -21,7 +36,7 @@ it.each(['confirmed','false_positive'] as const)('uses secondary %s over legacy 
  expect(d.details.join(' ')).toContain('扩大范围复核 · 关键帧 1：模型分数 0.987654（不是概率）')
 })
 it('preserves old diagnostics and keeps uncertain/unavailable pending',()=>{
- expect(reviewDiagnostic(primary)!.summary).toBe('关键帧目标核对仍不确定')
+ expect(reviewDiagnostic(primary)!.summary).toBe('目标分类分数未达到自动确认门槛')
  const value=alarm();value.review!.secondary!.outcome='uncertain'
  expect(reviewDiagnostic(value.review)!.summary).toContain('结论不确定，待人工审核')
  value.review!.secondary!.state='unavailable';value.review!.secondary!.outcome='false_positive'

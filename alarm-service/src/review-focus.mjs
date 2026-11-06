@@ -30,15 +30,19 @@ export function focusAssessment({primary,context,policy,rule,complete,pairedSupp
  // wider frame, and no non-person/ambiguity conflict in any tight frame.
  // This never permits a strong frame to outvote another weak wider frame.
  if(validPairedSupport(pairedSupport)&&
-    primary.every(s=>s.person>=pairedSupport.minimum_frame_score&&s.non_person<=.05&&s.uncertain<=.15)&&
+    primary.every(s=>s.person>=pairedSupport.minimum_frame_score&&s.non_person<=.10&&s.uncertain<=.15)&&
     context.every(s=>s.person>=Math.max(.99,strong,pairedSupport.strong_frame_score)))
-   return {outcome:'confirmed',reason:'focused_context_rescued',context_rescue:{minimum_primary_person:pairedSupport.minimum_frame_score,maximum_primary_non_person:.05,maximum_primary_uncertain:.15,minimum_context_person:Math.max(.99,strong,pairedSupport.strong_frame_score)}};
+   return {outcome:'confirmed',reason:'focused_context_rescued',context_rescue:{minimum_primary_person:pairedSupport.minimum_frame_score,maximum_primary_non_person:.10,maximum_primary_uncertain:.15,minimum_context_person:Math.max(.99,strong,pairedSupport.strong_frame_score)}};
  const both=[...primary,...context];
  if(both.every(s=>s.person>=floor)&&both.some(s=>s.person>=strong))return {outcome:'confirmed',reason:'focused_context_confirmed'};
  // Low person scores never imply non-person. Every real required frame in BOTH
  // views must affirm the non-person class, with ambiguity consuming its own score.
  if(both.every(s=>s.non_person>=policy.non_person_above))return {outcome:'false_positive',reason:'focused_non_person_confirmed'};
  if(both.some(s=>s.uncertain>=s.person&&s.uncertain>=s.non_person))return uncertain('focused_unrecognizable');
+ // Distinguish a policy gate from missing images and from visual disagreement.
+ // These scores are uncalibrated: a person plurality alone never settles a case.
+ if(both.every(s=>s.person>=floor))return uncertain('focused_below_strong_threshold');
+ if(both.some(s=>s.non_person>=s.person))return uncertain('focused_class_conflict');
  return uncertain('focused_class_inconclusive');
 }
 export function targetBox(sample, source) {
@@ -51,11 +55,15 @@ export function targetBox(sample, source) {
 }
 export function focusPreparation(sample,source,view='tight') {
   if(!['tight','context'].includes(view))throw Error('invalid_request');
-  return {version:1,layout:FOCUS_LAYOUT,view,show_target:false,target:targetBox(sample,source)};
+  // The model's fixed prompt identifies the green box. Keep that visual pointer
+  // in both views: "central subject" alone is ambiguous beside machinery/people.
+  // Pixels and prompt stay on the existing versioned hardware path; the worker
+  // decision version changes so old unhandled records are re-evaluated once.
+  return {version:1,layout:FOCUS_LAYOUT,view,show_target:true,target:targetBox(sample,source)};
 }
 export function validFocusResult(image,preparation) {
   return image?.layout===FOCUS_LAYOUT && image.view===preparation.view &&
-    image.width===896 && image.height===448 && image.marker==='no-target-box' &&
+    image.width===896 && image.height===448 && image.marker===(preparation.show_target?'green-target-box':'no-target-box') &&
     Array.isArray(image.region) && image.region.length===(preparation.region??[]).length &&
     image.region.every((p,i)=>Array.isArray(p)&&p.length===2&&p.every((v,j)=>Number.isFinite(v)&&Math.abs(v-preparation.region[i][j])<=1e-6)) &&
     Number.isFinite(image.expansion) && Math.abs(image.expansion-(preparation.view==='tight'?1.15:1.6))<1e-5 &&

@@ -13,8 +13,24 @@ test('focused preparation preserves original edge target in both views',()=>{
 });
 test('focus response must prove view, original target and canvas dimensions',()=>{
  const p=focusPreparation({bbox:{x:0,y:0,w:30,h:40}},{width:100,height:100});
- const valid={...p,width:896,height:448,expansion:1.15,marker:'no-target-box',region:[]};assert.ok(validFocusResult(valid,p));
+ const valid={...p,width:896,height:448,expansion:1.15,marker:'green-target-box',region:[]};assert.ok(validFocusResult(valid,p));
+ assert.equal(p.show_target,true);assert.equal(validFocusResult({...valid,marker:'no-target-box'},p),false);
  for(const patch of [{view:'context'},{target:[0,0,.4,.4]},{expansion:1.5},{width:448},{layout:'target-crop-v1'}])assert.equal(validFocusResult({...valid,...patch},p),false);
+});
+
+test('diagnostics separate strong-score gate from contradictory class and unreadable evidence',()=>{
+ assert.equal(classify([person(.9882)],[person(.9834)]).reason,'focused_below_strong_threshold');
+ assert.equal(classify([person(.96)],[other(.98)]).reason,'focused_class_conflict');
+ assert.equal(classify([{person:.01,non_person:.02,uncertain:.97}],[person(.98)]).reason,'focused_unrecognizable');
+ assert.equal(classify([person(.98)],[],false).reason,'focused_evidence_incomplete');
+});
+
+test('marked equipment and floor controls cannot be confirmed by a high wider person score',()=>{
+ const run=(primary,context)=>focusAssessment({primary:[primary],context:[context],complete:true,policy:FOCUS_DEFAULTS,rule:{approve_above:.95},pairedSupport:{minimum_frame_score:.85,strong_frame_score:.95}});
+ for(const [primary,context] of [
+  [{person:.641849,non_person:.279425,uncertain:.078726},{person:.986283,non_person:.007848,uncertain:.005869}],
+  [{person:.892396,non_person:.075227,uncertain:.032377},{person:.971375,non_person:.018480,uncertain:.010145}],
+ ])assert.equal(run(primary,context).outcome,'uncertain');
 });
 test('focus authorization is explicit, version bound and preserves legacy group input',()=>{
  const p=parseAuthorization(grant);assert.ok(p);const old=parseAuthorization({...grant,focus:undefined});assert.ok(old);assert.notEqual(p.id,old.id);
@@ -49,7 +65,8 @@ test('wider context rescues weak tight evidence only under explicit paired grant
  const run=(primary,context,extra={})=>focusAssessment({primary,context,complete:true,policy:FOCUS_DEFAULTS,rule:{approve_above:.95},pairedSupport:{minimum_frame_score:.85,strong_frame_score:.95},...extra});
  assert.equal(run([{person:.878,non_person:.012,uncertain:.110},person(.9996)],[person(.9966),person(.9989)]).reason,'focused_context_rescued');
  for(const patch of [{pairedSupport:undefined},{pairedSupport:{minimum_frame_score:.84,strong_frame_score:.95}},{complete:false}])assert.equal(run([{person:.878,non_person:.012,uncertain:.110}],[person(.999)],patch).outcome,'uncertain');
- for(const scores of [[{person:.86,non_person:.1,uncertain:.04}], [{person:.84,non_person:.01,uncertain:.15}], [{person:.80,non_person:.01,uncertain:.19}]])assert.equal(run(scores,[person(.999)]).outcome,'uncertain');
+ for(const scores of [[{person:.86,non_person:.11,uncertain:.03}], [{person:.84,non_person:.01,uncertain:.15}], [{person:.80,non_person:.01,uncertain:.19}]])assert.equal(run(scores,[person(.999)]).outcome,'uncertain');
+ assert.equal(run([{person:.906081,non_person:.081229,uncertain:.012690}],[person(.996169)]).reason,'focused_context_rescued');
  assert.equal(run([{person:.878,non_person:.012,uncertain:.110},person(.999)],[person(.999),person(.94)]).outcome,'uncertain');
  assert.equal(run([{person:.878,non_person:.012,uncertain:.110}],[person(.995)],{rule:{approve_above:.999}}).outcome,'uncertain');
  assert.equal(run([other(.999)],[person(.999)]).outcome,'uncertain');

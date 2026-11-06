@@ -28,7 +28,7 @@ async function fixture(fn,{scores=actual,limited=false,authorization=config}={})
   const index=calls.length;calls.push(body);
   assert.ok(index<scores.length,'unexpected extra model invocation');
   const focused=body.preparation?.layout===FOCUS_LAYOUT;
-  const result={...(focused?{class_scores:{person:scores[index],non_person:1-scores[index],uncertain:0},score_kind:'three_way_softmax_uncalibrated',submitted_prompt:'fixture ABC task'}:{}),schema:'ainvr.alarm_review.v1',model:{package_sha256:config.model_sha256},template:focused?FOCUS_TEMPLATE:config.prompt_template,prepared_image:{layout:body.preparation?.layout??config.layout,...(body.preparation?.layout===FOCUS_LAYOUT?{view:body.preparation.view,marker:'no-target-box',region:body.preparation.region??[],expansion:body.preparation.view==='context'?1.6:1.15}:{}),target:body.preparation?[...body.preparation.target]:undefined,jpeg_base64:'aW1hZ2U=',width:body.preparation?.layout===FOCUS_LAYOUT?896:64,height:body.preparation?.layout===FOCUS_LAYOUT?448:64},real_score:scores[index]};
+  const result={...(focused?{class_scores:{person:scores[index],non_person:1-scores[index],uncertain:0},score_kind:'three_way_softmax_uncalibrated',submitted_prompt:'fixture ABC task'}:{}),schema:'ainvr.alarm_review.v1',model:{package_sha256:config.model_sha256},template:focused?FOCUS_TEMPLATE:config.prompt_template,prepared_image:{layout:body.preparation?.layout??config.layout,...(body.preparation?.layout===FOCUS_LAYOUT?{view:body.preparation.view,marker:body.preparation.show_target?'green-target-box':'no-target-box',region:body.preparation.region??[],expansion:body.preparation.view==='context'?1.6:1.15}:{}),target:body.preparation?[...body.preparation.target]:undefined,jpeg_base64:'aW1hZ2U=',width:body.preparation?.layout===FOCUS_LAYOUT?896:64,height:body.preparation?.layout===FOCUS_LAYOUT?448:64},real_score:scores[index]};
   if(index>=4)delete result.prepared_image;
   corrupt(result,index,body);await effect(index,body);return result;
  }});
@@ -174,3 +174,20 @@ test('spatial audit preserves the storage metadata returned by the image store',
  f.setCorrupt((r,i,body)=>{if(i===4){r.template='spatial-review-abc-v1';r.review_scope='single_frame_spatial_shadow';r.spatial_scores={supported:.2,contradicted:.3,uncertain:.5};r.prepared_image={layout:'scene-review-v1',marker:'green-target-box',width:896,height:448,target:body.preparation.target,region:points};}});
  await f.worker.step();const r=await f.read();pending(r);assert.equal(f.calls.length,5);assert.equal(r.review.spatial.state,'completed');assert.equal(r.review.spatial_frames[0].storage,undefined);assert.equal(r.review.spatial_frames[0].layout,'scene-review-v1');assert.deepEqual(r.review.spatial_frames[0],r.review.spatial.frame);
 },{authorization:focusGrant,scores:[.6,.7,.6,.7,.2]}));
+
+test('marked views bind the exact target and reject a missing model-input marker',mongo,()=>fixture(async f=>{
+ f.setCorrupt((r,i)=>{if(i===2)r.prepared_image.marker='no-target-box';});
+ await f.worker.step();const row=await f.read();pending(row);
+ assert.equal(row.review.reason,'invalid_model_result');
+ assert.ok(f.calls.every(body=>body.preparation.show_target===true));
+ assert.deepEqual(f.calls[0].preparation.target,f.calls[2].preparation.target);
+},{authorization:focusGrant,scores:[.98,.98,.999,.999]}));
+
+test('marked wider view supports an otherwise below-strong primary without lowering thresholds',mongo,()=>fixture(async f=>{
+ await f.worker.step();const row=await f.read();
+ assert.equal(row.handling.reviewed_by_kind,'ai');
+ assert.equal(row.review.decision_version,REVIEW_DECISION_VERSION);
+ assert.equal(row.review.secondary.reason,'focused_context_rescued');
+ assert.equal(row.review.authorization.focus.strong_frame_score,.99);
+ assert.ok(f.calls.every(body=>body.preparation.show_target===true));
+},{authorization:focusGrant,scores:[.9882,.9834,.9996,.996]}));
