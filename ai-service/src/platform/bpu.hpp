@@ -24,6 +24,7 @@ class BpuModel {
   using Demand = ConfiguredResidency<BpuModel>::Demand;
   static std::string ResidencyKey(const std::string& path, const std::string& name = "");
   static void ConfigureResidency(Demand demand);
+  static void DrainRetiredResidency();
   ~BpuModel();
   BpuModel(const BpuModel&) = delete;
   BpuModel& operator=(const BpuModel&) = delete;

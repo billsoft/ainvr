@@ -1,3 +1,4 @@
+#include <future>
 // AuDelayBuffer / AdaptiveDelayController —— 行为锁定,逐条对应
 // Python tests/test_au_buffer.py(364 行,22 个用例)。这是三方解耦缓存
 // 的核心接缝,"识别结果永远打在它自己那一帧上"这个性质成不成立全看这
@@ -615,4 +616,41 @@ TEST(AdaptiveDelayController, ExplicitColdStartBudgetDecaysWithoutFabricatedMiss
   auto output=buffer.pop_ready(103.1);
   ASSERT_TRUE(output);
   EXPECT_EQ(output->pts_ns,frame.pts_ns);
+}
+
+
+TEST(AuMemoryBudget, ConcurrentReservationsAreAtomicAndReleased) {
+  ainvr::ByteBudget pool(100);
+  std::vector<std::future<std::shared_ptr<ainvr::ByteBudget::Ticket>>> requests;
+  for(int i=0;i<20;++i)requests.push_back(std::async(std::launch::async,[&]{
+    try{return pool.Acquire(20,"channel");}catch(const ainvr::MemoryBudgetExceeded&){return std::shared_ptr<ainvr::ByteBudget::Ticket>{};}
+  }));
+  std::vector<std::shared_ptr<ainvr::ByteBudget::Ticket>> held;
+  for(auto& f:requests)if(auto t=f.get())held.push_back(std::move(t));
+  EXPECT_EQ(held.size(),5u);EXPECT_EQ(pool.Snapshot().reserved,100u);
+  EXPECT_EQ(pool.Snapshot().rejected,15u);held.clear();EXPECT_EQ(pool.Snapshot().reserved,0u);
+}
+TEST(AuMemoryBudget, BufferOwnsReservationUntilLastReferenceIsGone) {
+  ainvr::ByteBudget pool(100);
+  auto ticket=pool.Acquire(100,"a");
+  auto buffer=std::make_shared<AuDelayBuffer>(nullptr,1.6,100,8192,nullptr,ticket);
+  ticket.reset();EXPECT_EQ(pool.Snapshot().reserved,100u);
+  buffer->clear();EXPECT_EQ(pool.Snapshot().reserved,100u);
+  buffer.reset();EXPECT_EQ(pool.Snapshot().reserved,0u);
+  EXPECT_THROW(AuDelayBuffer(nullptr,1.6,101,8192,nullptr,pool.Acquire(100,"bad")),std::invalid_argument);
+  EXPECT_EQ(pool.Snapshot().reserved,0u);
+}
+TEST(AuMemoryBudget, OversizedPacketNeverEntersQueueOrRaisesDelay) {
+  AuDelayBuffer buffer(nullptr,1.6,100);
+  BufferedAu a;a.pts_ns=1;a.arrived_mono=0;a.is_keyframe=true;a.data.assign(101,1);
+  buffer.put(a);EXPECT_EQ(buffer.size(),0u);EXPECT_EQ(buffer.stats().byte_limit_events,1);
+  EXPECT_EQ(buffer.stamp(1,[](const auto& b){return b;},1),StampResult::kDropped);
+  EXPECT_EQ(buffer.controller()->stats().miss_events,0);
+}
+TEST(AuMemoryBudget, SeiGrowthEnforcesByteLimitWithoutMissFeedback) {
+  AuDelayBuffer buffer(nullptr,1.6,100);
+  BufferedAu a;a.pts_ns=1;a.arrived_mono=0;a.is_keyframe=true;a.data.assign(80,1);
+  buffer.put(a);
+  EXPECT_EQ(buffer.stamp(1,[](const auto& b){auto r=b;r.resize(120);return r;},.01),StampResult::kDropped);
+  EXPECT_LE(buffer.stats().bytes,100);EXPECT_EQ(buffer.controller()->stats().miss_events,0);
 }

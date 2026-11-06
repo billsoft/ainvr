@@ -18,6 +18,7 @@ int main(int argc,char** argv){try{
  auto second=std::async(std::launch::async,[&]{for(int i=0;i<3;++i)if(b->Run(y)!=expected_y)throw std::runtime_error("second client output mismatch");});
  first.get();second.get();auto status=ainvr::BpuModel::SharedStatus();a.reset();if(b->Run(y)!=expected_y)throw std::runtime_error("remaining client broken");b.reset();
  if(configured){if(ainvr::BpuModel::SharedStatus()["instances"]!=1)throw std::runtime_error("configured weights were unloaded");ainvr::BpuModel::ConfigureResidency({});}
+ ainvr::BpuModel::DrainRetiredResidency();
  if(ainvr::BpuModel::SharedStatus()["instances"]!=0)throw std::runtime_error("last lease not released");
  std::cout<<nlohmann::json({{"configured_lifecycle_verified",configured},{"same_instance",true},{"ion_before",before},{"ion_one_client",single},{"ion_two_clients",shared},{"second_client_ion_delta",int64_t(shared)-int64_t(single)},{"ion_after_release",Ion()},{"runtime",status},{"independent_outputs_verified",true}}).dump()<<'\n';
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

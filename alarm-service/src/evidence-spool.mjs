@@ -2,16 +2,21 @@
 import {open,mkdir,readdir,rename,unlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
+const metrics={writes:0,failures:0,total_ms:0,max_ms:0,buckets:{le_1:0,le_5:0,le_20:0,le_100:0,gt_100:0}};
+export function evidenceSyncStatus(){return structuredClone(metrics);}
 const hash=s=>createHash('sha256').update(s).digest('hex');
 export const frameKey=(channel,session,s)=>hash([channel,session,s.source_pts_ns,s.source_frame_index].join('\n'));
 export async function durableFile(path,data){
+ const started=performance.now();
  const temporary=path+'.'+randomUUID()+'.tmp';
  try{
  const file=await open(temporary,'wx',0o600);
  try{await file.writeFile(data);await file.sync();}finally{await file.close();}
  await rename(temporary,path);
  const dir=await open(join(path,'..'),'r');try{await dir.sync();}finally{await dir.close();}
- }finally{await unlink(temporary).catch(e=>{if(e.code!=='ENOENT')throw e;});}
+ }catch(error){++metrics.failures;throw error;}finally{
+ const ms=performance.now()-started;++metrics.writes;metrics.total_ms+=ms;metrics.max_ms=Math.max(metrics.max_ms,ms);++metrics.buckets[ms<=1?'le_1':ms<=5?'le_5':ms<=20?'le_20':ms<=100?'le_100':'gt_100'];
+ await unlink(temporary).catch(e=>{if(e.code!=='ENOENT')throw e;});}
 }
 async function boundedRead(path,limit){
  const file=await open(path,'r');

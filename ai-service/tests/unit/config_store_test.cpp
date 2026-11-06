@@ -180,7 +180,61 @@ TEST(ConfigStore, ConcurrentWorkerCannotReadNewConfigBeforeRuntimeRegistration) 
 TEST(ConfigStore, FailedRuntimeSyncBlocksActivationUntilReconciliationSucceeds) {
   StoreFixture fx;bool fail=true;
   fx.store.SetRuntimeObserver([&](const AppConfig& c){if(c.server.port==8001&&fail)throw std::runtime_error("injected sync failure");});
-  EXPECT_THROW(fx.store.SaveOverlay({{"server",{{"port",8001}}}}),std::runtime_error);
+  EXPECT_THROW(fx.store.SaveOverlay({{"server",{{"port",8001}}}}),RuntimeSyncPending);
+  EXPECT_EQ(fx.store.LoadPersisted().server.port,8001);
+  EXPECT_EQ(fx.store.RuntimeStatus()["state"],"pending");
+  EXPECT_EQ(fx.store.RuntimeStatus()["synchronization_failures"],1);
   EXPECT_THROW(fx.store.Load(),std::runtime_error);
-  fail=false;fx.store.SynchronizeRuntime();EXPECT_EQ(fx.store.Load().server.port,8001);
+  fail=false;fx.store.SynchronizeRuntime();
+  EXPECT_TRUE(fx.store.ActivationRestartReady());
+  EXPECT_EQ(fx.store.RuntimeStatus()["state"],"restarting");
+  EXPECT_THROW(fx.store.Load(),std::runtime_error);
+  ConfigStore restarted(fx.base_path,fx.overlay_path);
+  EXPECT_EQ(restarted.Load().server.port,8001);
+}
+
+TEST(ConfigStore, PendingRuntimeDoesNotBlockCorrectiveConfiguration) {
+  StoreFixture fx;
+  fx.store.SetRuntimeObserver([](const AppConfig& c){if(c.server.port==8001)throw std::runtime_error("failure");});
+  EXPECT_THROW(fx.store.SaveOverlay({{"server",{{"port",8001}}}}),RuntimeSyncPending);
+  EXPECT_EQ(fx.store.LoadPersisted().server.port,8001);
+  EXPECT_THROW(fx.store.SaveOverlay({{"server",{{"port",8002}}}}),RuntimeSyncPending);
+  EXPECT_EQ(fx.store.LoadPersisted().server.port,8002);
+  EXPECT_TRUE(fx.store.ActivationRestartReady());
+  EXPECT_EQ(fx.store.RuntimeStatus()["state"],"restarting");
+}
+TEST(ConfigStore, CorruptOverlayNeverSilentlyFallsBackToBase) {
+  StoreFixture fx;fx.store.SaveOverlay({{"server",{{"port",8001}}}});
+  {std::ofstream f(fx.overlay_path);f<<"{broken";}
+  EXPECT_THROW(fx.store.SynchronizeRuntime(),std::runtime_error);
+  EXPECT_EQ(fx.store.RuntimeStatus()["state"],"pending");
+  EXPECT_THROW(fx.store.Load(),std::runtime_error);
+  EXPECT_THROW(fx.store.LoadPersisted(),std::runtime_error);
+  fx.store.ReplaceOverlay({{"server",{{"port",8002}}}});
+  EXPECT_EQ(fx.store.Load().server.port,8002);
+}
+
+TEST(ConfigStore, InterruptedChannelCreateAndUpdateSurviveRecoveryRestart) {
+  StoreFixture fx;bool fail=false;
+  fx.store.SetRuntimeObserver([&](const AppConfig&){if(fail)throw std::runtime_error("injected");});
+  json channel={{"id","recovery"},{"stream",{{"url","rtmp://localhost/live/test"}}}};
+  fail=true;
+  EXPECT_THROW(fx.store.SaveOverlay({{"channels",json::array({channel})}}),RuntimeSyncPending);
+  EXPECT_FALSE(fx.store.ActivationRestartReady());
+  fail=false;fx.store.SynchronizeRuntime();
+  EXPECT_TRUE(fx.store.ActivationRestartReady());
+  EXPECT_FALSE(fx.store.RuntimeStatus()["runtime_synchronized"].get<bool>());
+  ConfigStore restarted(fx.base_path,fx.overlay_path);
+  ASSERT_EQ(restarted.Load().channels.size(),1u);
+  EXPECT_EQ(restarted.Load().channels[0].id,"recovery");
+  restarted.SetRuntimeObserver([&](const AppConfig&){if(fail)throw std::runtime_error("injected");});
+  channel["name"]="updated";channel["inference_fps"]=2;
+  fail=true;
+  EXPECT_THROW(restarted.ReplaceOverlay({{"channels",json::array({channel})}}),RuntimeSyncPending);
+  fail=false;restarted.SynchronizeRuntime();
+  EXPECT_TRUE(restarted.ActivationRestartReady());
+  ConfigStore updated(fx.base_path,fx.overlay_path);
+  EXPECT_EQ(updated.Load().channels[0].name,"updated");
+  EXPECT_EQ(updated.Load().channels[0].inference_fps,2);
+  EXPECT_FALSE(updated.ActivationRestartReady());
 }

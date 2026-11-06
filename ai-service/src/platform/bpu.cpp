@@ -1,4 +1,5 @@
 #include "bpu.hpp"
+#include "model_digest.hpp"
 #include <cstring>
 #include <stdexcept>
 #include <limits>
@@ -15,20 +16,13 @@ namespace ainvr {
 namespace {
 SharedRuntimeCache<BpuModel>& Models(){static auto* cache=new SharedRuntimeCache<BpuModel>();return *cache;}
 ConfiguredResidency<BpuModel>& Residency(){static auto* state=new ConfiguredResidency<BpuModel>();return *state;}
+ModelDigestCache& Digests(){static auto* cache=new ModelDigestCache();return *cache;}
 struct ModelFile {
  int fd=-1;std::string hash;
  explicit ModelFile(const std::string& path){
   fd=open(path.c_str(),O_RDONLY|O_CLOEXEC);if(fd<0)throw std::runtime_error("Cannot open HBM");
   try{
-   struct stat before{},after{};if(fstat(fd,&before)||!S_ISREG(before.st_mode))throw std::runtime_error("Invalid HBM file");
-   std::unique_ptr<EVP_MD_CTX,decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(),EVP_MD_CTX_free);
-   if(!ctx||EVP_DigestInit_ex(ctx.get(),EVP_sha256(),nullptr)!=1)throw std::runtime_error("HBM digest initialization failed");
-   std::array<unsigned char,65536> buffer{};
-   for(;;){auto n=read(fd,buffer.data(),buffer.size());if(n<0&&errno==EINTR)continue;if(n<0)throw std::runtime_error("Cannot read HBM");if(!n)break;if(EVP_DigestUpdate(ctx.get(),buffer.data(),n)!=1)throw std::runtime_error("HBM digest failed");}
-   if(fstat(fd,&after)||before.st_size!=after.st_size||before.st_mtim.tv_sec!=after.st_mtim.tv_sec||before.st_mtim.tv_nsec!=after.st_mtim.tv_nsec||before.st_ctim.tv_sec!=after.st_ctim.tv_sec||before.st_ctim.tv_nsec!=after.st_ctim.tv_nsec)throw std::runtime_error("HBM changed during acquisition");
-   unsigned char bytes[EVP_MAX_MD_SIZE];unsigned int size=0;
-   if(EVP_DigestFinal_ex(ctx.get(),bytes,&size)!=1)throw std::runtime_error("HBM digest failed");
-   const char* hex="0123456789abcdef";for(unsigned int i=0;i<size;++i){hash+=hex[bytes[i]>>4];hash+=hex[bytes[i]&15];}
+   hash=Digests().Get(fd);
   }catch(...){close(fd);fd=-1;throw;}
  }
  ~ModelFile(){if(fd>=0)close(fd);}
@@ -58,6 +52,7 @@ std::string BpuModel::ResidencyKey(const std::string& path,const std::string& na
  return std::filesystem::weakly_canonical(path).string()+":"+name;
 }
 void BpuModel::ConfigureResidency(Demand demand){Residency().Update(std::move(demand));}
+void BpuModel::DrainRetiredResidency(){Residency().DrainRetired();}
 nlohmann::json BpuModel::SharedStatus(){
  auto rows=nlohmann::json::array(),configured=nlohmann::json::array();
  for(const auto& [key,model]:Models().LiveSnapshot()){
@@ -66,7 +61,8 @@ nlohmann::json BpuModel::SharedStatus(){
      {"active_calls",calls?1:0},{"waiting_calls",calls?calls-1:0}});
  }
  for(const auto& entry:Residency().Snapshot())configured.push_back({{"resource",entry.key},{"owners",entry.owners},{"resident",entry.resident}});
- return {{"instances",rows.size()},{"models",rows},{"configured",configured},{"scheduling","fifo"}};
+ const auto digest=Digests().Status();
+ return {{"digest_cache",{{"hits",digest.hits},{"misses",digest.misses},{"bytes_hashed",digest.bytes}}},{"instances",rows.size()},{"models",rows},{"configured",configured},{"scheduling","fifo"}};
 }
 BpuModel::BpuModel(const std::string& path, const std::string& name) {
   if(!BpuRuntimeHealthy())throw std::runtime_error("BPU runtime fault; service restart required");

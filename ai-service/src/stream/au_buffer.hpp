@@ -8,6 +8,7 @@
 //      门槛排序错了延迟就形同虚设(Python 版写这段时真的踩过)。
 //   3. 抛帧只从头部丢,有 I 帧就整段丢到它之前干净重同步。
 #pragma once
+#include "platform/byte_budget.hpp"
 
 #include <cstdint>
 #include <deque>
@@ -125,6 +126,8 @@ struct BufferStats {
   double held_s = 0.0;
   int64_t bytes = 0;
   int64_t resident_payload_bytes = 0;
+  int64_t limit_bytes = 0;
+  int64_t reserved_bytes = 0;
   int64_t ssd_allocated_bytes = 0;
   int64_t put = 0;
   int64_t popped = 0;
@@ -150,7 +153,8 @@ class AuDelayBuffer {
  public:
   explicit AuDelayBuffer(std::shared_ptr<AdaptiveDelayController> controller = nullptr,
                           double hold_factor = 1.6, int64_t max_bytes = 256 * 1024 * 1024,
-                          int64_t max_frames = 8192, std::shared_ptr<AuSpool> spool = nullptr);
+                          int64_t max_frames = 8192, std::shared_ptr<AuSpool> spool = nullptr,
+                          std::shared_ptr<ainvr::ByteBudget::Ticket> budget = nullptr);
 
   // ---- 拉流侧 ----
   void put(BufferedAu au);
@@ -188,6 +192,7 @@ class AuDelayBuffer {
   int64_t max_frames_;
   std::shared_ptr<AuSpool> spool_;
 
+  std::shared_ptr<ainvr::ByteBudget::Ticket> budget_; // released after queued payloads
   mutable std::mutex mutex_;
   std::deque<BufferedAu> items_;                       // 按到达(解码)顺序
   std::unordered_map<int64_t, BufferedAu*> index_;      // nullptr = 歧义

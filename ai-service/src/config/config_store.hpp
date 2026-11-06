@@ -12,6 +12,8 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <stdexcept>
+#include <cstdint>
 
 #include <nlohmann/json.hpp>
 
@@ -27,6 +29,11 @@ nlohmann::json DeepMerge(const nlohmann::json& base, const nlohmann::json& overl
 // config路径.parent.parent / "data" / "config_overlay.json"。
 std::filesystem::path DeriveOverlayPath(const std::filesystem::path& config_path);
 
+// Persistence succeeded, but runtime registration has not. Do not retry as a
+// fresh create operation or activate the newly persisted configuration yet.
+class RuntimeSyncPending : public std::runtime_error {
+ public: RuntimeSyncPending():std::runtime_error("配置已保存，运行时同步待完成；请检查状态，不要重复创建"){}
+};
 class ConfigStore {
  public:
   ConfigStore(std::filesystem::path base_path, std::filesystem::path overlay_path);
@@ -34,6 +41,9 @@ class ConfigStore {
   // base ⊕ overlay 深合并 → AppConfig 全量校验。校验失败抛
   // ConfigValidationError。
   AppConfig Load() const;
+  // Management/recovery may read desired config even while activation is fenced.
+  AppConfig LoadPersisted() const;
+  nlohmann::json RuntimeStatus() const;
 
   // 仅返回合并后的原始 json,不做结构化校验(只读展示/调试用)。
   nlohmann::json LoadRawMerged() const;
@@ -54,6 +64,9 @@ class ConfigStore {
   // not reenter ConfigStore. Save/Replace return only after runtime demand sync.
   void SetRuntimeObserver(std::function<void(const AppConfig&)> observer);
   void SynchronizeRuntime();
+  // Sticky after a persisted mutation could not reach its channel application.
+  // Only a fresh process can clear this fence by reconstructing every worker.
+  bool ActivationRestartReady() const;
 
  private:
   nlohmann::json ReadMergedRaw() const;
@@ -71,6 +84,8 @@ class ConfigStore {
   mutable std::mutex process_mutex_;
   std::function<void(const AppConfig&)> runtime_observer_;
   bool runtime_synchronized_ = true;
+  bool activation_restart_required_ = false;
+  uint64_t runtime_failures_ = 0;
   void NotifyRuntimeLocked(const AppConfig& config);
 };
 

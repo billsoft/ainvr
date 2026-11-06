@@ -8,7 +8,7 @@ import pytest
 from recorder.config import ConfigStore, QuotaConfig
 from recorder.index import SegmentIndex
 from recorder.quota import QuotaEnforcer
-from recorder.storage import StorageManager, StorageError
+from recorder.storage import external_local_mount, StorageManager, StorageError
 
 MIB = 1024 ** 2
 
@@ -23,6 +23,7 @@ def resources(tmp_path):
     storage.status.root = str(root)
     storage.status.kind = 'local'
     storage.status.healthy = True
+    storage._local_mount = external_local_mount(str(root))  # include the applied mount identity
     store.mutate().recording.quota = QuotaConfig(mode='gb', gb=1, onFull='overwrite')
     store.save()
     store.commit()

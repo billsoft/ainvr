@@ -1,3 +1,4 @@
+import {evidenceSyncStatus} from '../src/evidence-spool.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,readFile,readdir,rm,writeFile,truncate} from 'node:fs/promises';
@@ -53,5 +54,17 @@ test('concurrent durable ACK writes use separate temporary files',async()=>{
  const root=await mkdtemp(join(tmpdir(),'ainvr-spool-'));try{
   const target=join(root,'shared.ack');await Promise.all(Array.from({length:12},()=>durableFile(target,'1')));
   assert.equal(await readFile(target,'utf8'),'1');assert.deepEqual(await readdir(root),['shared.ack']);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('durable operation telemetry counts failures and exposes immutable bounded buckets',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ainvr-metrics-'));try{
+  const before=evidenceSyncStatus();
+  await durableFile(join(root,'ok'),'1');
+  await assert.rejects(durableFile(join(root,'missing','bad'),'1'));
+  const after=evidenceSyncStatus();assert.equal(after.writes-before.writes,2);
+  assert.equal(after.failures-before.failures,1);assert.ok(after.total_ms>=before.total_ms);
+  assert.equal(Object.values(after.buckets).reduce((a,b)=>a+b,0),after.writes);
+  after.buckets.le_1=-1;assert.notEqual(evidenceSyncStatus().buckets.le_1,-1);
  }finally{await rm(root,{recursive:true,force:true});}
 });

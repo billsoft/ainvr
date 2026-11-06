@@ -856,3 +856,66 @@ AI 启动工作线程前登记当前模型需求；配置 SaveOverlay/ReplaceOve
 - 人工审核也需要原图，关闭 AI 审核不能关闭证据交付。
 - 新规则使用有版本的持续风险去重；现有规则通过正式配置 API 保存升级，历史规则快照不重写。详见 `ALARM-INCIDENT-EVIDENCE-20261106.md`。
 - .190 实测暂停消费者后约 99 秒的 5 张原图仍完整且哈希一致；恢复后积压清零。SSD 损坏/耗尽时仍不能承诺物理事件 100% 保存，必须报告失败。
+
+
+### 2026-11-06：S100 低内存板编译与运行时修订
+
+- .190 的 Linux 可用物理内存约 4.4 GiB（另有 ION 保留）。实测即使 `-j1` 并已停 AI、搜索、大模型、告警，生产 Mongo 和其余服务仍可能使 `reused_channel_worker.cpp` 编译被 OOM 杀掉；不能把“串行编译”当成充分保证。
+- 所有构建目录、临时目录（`TMPDIR`）、日志、回滚产物放 SSD。先记录运行中的服务和容器；维护窗口内先停业务依赖，再停 Mongo/PG，确认可用内存。编译完先恢复数据库并等待健康检查就绪（不能只看 docker start 返回），再恢复原有服务，最后核对通道、录像、告警输入、审核队列和内核 OOM 日志。不要自动启动原本停用的服务。用户不能接受停机时，应使用匹配 SDK 的独立构建环境。
+- 配置持久化与运行时登记状态分开：健康数据和配置读取增加 `runtime_configuration`。保存已经落盘但登记失败时返回 `configuration_saved_pending`（HTTP 503，`persisted:true`），不得按“未保存”重复创建；激活仍禁止使用未同步配置，配置中心可读取已持久化配置并再次校准。损坏的 overlay 明确报错，不再静默退回基础配置；需修复文件或通过经校验的完整替换恢复。
+- 模型卸载改为有界后台回收，常规配置登记不等待 SDK 释放；同模型重新加载仍等待旧实例释放，退出时等待回收完成。极端连续变更超过 64 个待回收批次会施加背压，不能保证 SDK 永久卡死时配置调用无限畅通。保留每秒校准，以覆盖外部配置和模型依赖文件变更。
+- 告警 `GET /v1/status` 新增 `evidence_sync`：进程启动以来 durableFile 操作尝试数、失败数、总耗时、最大耗时和互斥时延区间（≤1、1–5、5–20、20–100、>100 ms）。这是文件写入、fsync、rename 和目录 fsync 的整体操作耗时，不是单次 fsync 延迟或多通道容量证明。正常摄入去掉同一 pending 的第二次保护写入；崩溃恢复仍重新保护，证据持久化完成前不能 ACK。
+
+- 真实 Mongo 集成测试应使用独立端口和随机测试库。大量创建索引的摄入/仓储套件会耗尽 256 MiB tmpfs；本次改用 SSD 专用临时目录后通过。测试结束停止并删除测试容器，核对目录归属后删除该专用目录，绝不能连接生产库清理。
+
+
+### 2026-11-06：模型哈希缓存与依赖故障指标
+
+- BPU 获取模型仍以内容 SHA256 和模型名称作为共享实例键；新增进程内最多 128 项 LRU 哈希缓存。每次打开文件，通过文件描述符读取设备号、inode、大小、纳秒级 mtime/ctime，身份不变且 ctime 已稳定至少两秒才复用摘要；近期变更或未来时间戳仍重新扫描，防止低精度时间戳导致邻近写入误命中。并发冷请求合并为一次扫描；身份变化重新计算，并在计算后再次校验。缓存不替代模型共享、SDK 串行执行或卸载互斥。
+- 模型升级必须写临时文件、校验后原子替换，禁止边推理边覆盖原文件内容。文件元数据不是密码学完整性证明；本缓存针对受控本地文件系统，不能抵御能伪造元数据的恶意存储。
+- AI `/health` 的 `bpu.shared_runtime.digest_cache` 展示 hits、misses、bytes_hashed，用于核对反复获取模型是否仍扫描整文件。冷扫描串行，避免多路初始化同时争抢 SSD；状态读取不等待哈希锁。
+- 新增 `model_dependency_health`：state（healthy/degraded/unknown）、current_invalid_dependencies、check_failed、checks、failed_checks、incidents、recoveries。相同 sidecar 持续损坏只增加失败检查次数，不反复制造新故障；恢复后再次损坏才计为新故障。检查本身异常时保留最后已知依赖状态并标 unknown，不能当健康。
+- 原 `model_residency_failures` 保留兼容，其累计值不是当前故障数量。告警应使用当前状态和持续时间；事件统计使用 incidents/recoveries。每秒配置与 sidecar 校准保留，不能仅因 overlay 未变化就跳过依赖检查或失败重试。
+
+## 2026-11-06 .190 通道增长与 CPU 内存保护
+
+本节仅适用于 S100 12GB、ION约7GB 的 .190；不得直接套用到 .189。Linux可见内存约4.31GiB，memory控制器为cgroup v1。
+
+在 `/etc/systemd/system/ainvr-ai.service.d/30-memory-budget.conf` 配置：
+
+```ini
+[Service]
+Environment=AINVR_AI_ACTIVE_CHANNELS=2
+Environment=AINVR_AI_AU_TOTAL_MIB=192
+Environment=AINVR_AI_AU_CHANNEL_MIB=96
+MemoryAccounting=yes
+```
+
+在 `/etc/systemd/system/ainvr-recorder.service.d/30-memory-budget.conf` 配置：
+
+```ini
+[Service]
+Environment=AINVR_RECORDER_BUFFER_MIB=256
+MemoryAccounting=yes
+```
+
+执行 daemon-reload 并重启对应服务后，核对 AI `/health` 的 memory 字段，以及录像 `/v1/recorder/health` 的 memory 字段。活动名额含关闭输出的通道；手工停止只释放运行时资源，停用配置才释放启用承诺。源代码默认容量并非此板部署值，新板必须显式选择容量档。现有 SRS 768MiB容器、384MiB tmpfs、Mongo 1GiB继续保留。缓冲预算不包含全部RSS、GPU/驱动与子进程常驻，不可当作整机绝对内存上界；tmpfs不得与已包含它的容器用量重复相加。
+
+构建目录、TMPDIR与回滚备份放SSD，C++用 `-j1`。4.31GiB可用物理内存的板子应先暂停业务及数据库，完成构建后启动PG/Mongo并等待探活成功，再恢复原来运行的服务清单。保留暂停清单，不要重复覆盖。部署前备份二进制、前端dist和既有drop-in。
+
+测试注意：AuSpool软件测试要求SSD夹具父目录存在；录像跨语言SEI测试依赖 `test/results/locateanything-point-sei-fixtures-v1.json` 原始夹具。录像配额测试在SSD执行时必须记录真实mount identity；不能将整个录像套件移到不足5GB的tmpfs后误判为实现故障，更不能因此放宽生产低空间或换盘保护。
+
+本次验收：C++五组通过、录像344项通过、运维助手89项通过、前端相关11项通过，TypeScript与生产构建通过；同源双AI通道运行、第三路409且不落配置、停止/重启/删除后额度归还均通过。17个服务恢复运行。只是短期同源双路验收，尚不构成4K/8K或24小时容量认证。内置浏览器因Work设置禁用，未完成视觉截图验收。
+
+设计与边界见 `docs/CHANNEL-MEMORY-BUDGET.md`；可复核记录在 `test/results/channel-memory-20261106/`，回滚在 `/mnt/ainvr-ssd/ainvr-rollback/channel-memory/20261106-pre/`。未自动提交Git。
+
+
+## 2026-11-06 配置应用中断恢复补充
+
+若 SaveOverlay/ReplaceOverlay 已落盘，但模型需求登记抛异常，通道创建或更新的后续步骤可能未执行。因此 `runtime_configuration` 不得仅凭下一次模型登记成功就显示 applied。
+
+现在该异常会设置本进程不可清除的 restart_required 标记：登记未恢复时为 pending；登记恢复后为 restarting，runtime_synchronized 仍为 false，禁止通过 Load 激活半应用配置。即使用户随后保存修正配置，标记也不清除；最新校验通过的配置仍会持久化。
+
+后台检测到可恢复后，走原有 StopAll、服务停止和模型排空流程，以退出码75结束；部署必须保持 `Restart=on-failure`（.190已核对）。新进程读取最新落盘配置并重建通道，才恢复 applied。正常保存不触发整服务重启。此故障恢复会短暂中断AI分析输出；独立录像、SRS、数据库服务不随它重启。持久损坏的配置仍明确报错，不静默回退。
+
+测试覆盖：新建配置登记失败、后台恢复仍禁止假报 applied、修正保存保留恢复标记、重建ConfigStore读取唯一新通道、更新后的名称和帧率在新实例生效。测试没有向在线服务注入模型登记异常，线上验证采用构建产物一致性、systemd恢复策略和正常业务探活。

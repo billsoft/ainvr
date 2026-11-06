@@ -1,5 +1,6 @@
 import { request } from './httpClient'
-export interface ServiceMetric { id:string; state:string; healthy?:boolean; cpuPercent:number|null; memoryBytes:number|null; connections:number|null; restarts?:number; oomKilled?:boolean; detail?:string; logPolicy?:Record<string,string> }
+export interface MemoryBudget {scope:'encoded_packet_buffer_reservations'|'recording_gop_buffer'|'container';budget_bytes:number;reserved_bytes?:number;retiring_bytes?:number;rejected?:number;active_channels?:number;active_channel_limit?:number}
+export interface ServiceMetric { id:string; state:string; healthy?:boolean; cpuPercent:number|null; memoryBytes:number|null; connections:number|null; restarts?:number; oomKilled?:boolean; detail?:string; logPolicy?:Record<string,string>; memoryBudget?:MemoryBudget }
 export interface Snapshot { ts:number; sampleSeconds:number; host:{cpuPercent:number|null;memoryBytes:number;memoryTotalBytes:number;gpuPercent:number|null;bpuPercent?:number|null;bpuMemoryBytes?:number|null;ionMemoryBytes?:number|null;ionMemoryTotalBytes?:number|null;cores:number;swapBytes:number;diskUsedBytes?:number;diskTotalBytes?:number;temperatureC?:number|null;network?:{name:string;rxBytesPerSecond:number|null;txBytesPerSecond:number|null}[]};services:ServiceMetric[] }
 export interface LogSettings {fileMiB:number;files:number;historyHours:number;level:string;repeatSeconds:number}
 export interface LogEntry {ts:number;source:string;level:string;module:string;category:string;message:string;count:number}

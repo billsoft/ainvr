@@ -39,7 +39,13 @@ STABLE_RUN_SEC = 60
 FAIL_LIMIT = 5
 # 每路内存 GOP 缓冲：全局预算按在录通道均分，单路封顶/保底。4K≈21Mbps 时
 # 100Mbps 时 384MiB 软阈值约容纳 30s；实际内存按需使用，全局仍封顶 1.5GiB。
-GLOBAL_BUFFER_BYTES = 1536 << 20
+def _memory_budget_bytes():
+    value = os.environ.get("AINVR_RECORDER_BUFFER_MIB", "1536")
+    if not value.isascii() or not value.isdecimal() or not 32 <= int(value) <= 65536:
+        raise ValueError("AINVR_RECORDER_BUFFER_MIB must be integer MiB in [32,65536]")
+    return int(value) << 20
+
+GLOBAL_BUFFER_BYTES = _memory_budget_bytes()
 CHANNEL_BUFFER_MAX = 512 << 20
 CHANNEL_BUFFER_MIN = 32 << 20
 SOFT_CAP_RATIO = 0.75
@@ -191,6 +197,20 @@ class Supervisor:
             "droppedMsLastHour": sum(r["droppedMsLastHour"] for r in rows.values()),
             "writeDegradedChannels": sum(1 for r in rows.values() if r["writeState"] != "ok"),
         }
+
+    def memory_status(self) -> dict:
+        # Called on the same event loop as tick; no await while taking this snapshot.
+        rows = []
+        for cid, state in self.states.items():
+            gate = getattr(state.proc, "gate", None)
+            if gate is not None:
+                rows.append({"channel_id": cid, "reserved_bytes": max(gate.hard_cap, gate.queued_bytes),
+                             "queued_bytes": gate.queued_bytes, "limit_bytes": gate.hard_cap})
+        retiring = self._retiring_bytes()
+        return {"scope": "recording_gop_buffer", "budget_bytes": GLOBAL_BUFFER_BYTES,
+                "reserved_bytes": retiring + sum(r["reserved_bytes"] for r in rows),
+                "retiring_bytes": retiring, "queued_bytes": sum(r["queued_bytes"] for r in rows),
+                "channels": rows, "includes_process_overhead": False}
 
     def _record_drop(self, event: dict) -> None:
         self.index.record_drop(event)

@@ -438,6 +438,7 @@ def create_app(store: ConfigStore, data_dir: str, guard_factory=build_guard) -> 
         return {
             "ok": True,
             "version": __version__,
+            "memory": supervisor.memory_status(),
             "storageHealthy": st.healthy and not st.quota_stopped and not st.space_low,
             "storageKind": st.kind,
             "message": st.message or None,

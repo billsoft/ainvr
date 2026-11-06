@@ -64,9 +64,9 @@ nlohmann::json ConfigStore::ReadJson(const std::filesystem::path& path) {
     f >> j;
     return j.is_null() ? json::object() : j;
   } catch (...) {
-    // overlay 损坏:视为空 overlay 而不是让整个服务起不来——base 仍然
-    // 有效,最坏情况退回"没有运行时改动"(config_store.py 原有语义)。
-    return json::object();
+    // Never silently activate the base configuration when the desired overlay
+    // is unreadable. Do not include file contents or credentials in the error.
+    throw std::runtime_error("configuration overlay unreadable or invalid");
   }
 }
 
@@ -76,8 +76,26 @@ nlohmann::json ConfigStore::ReadMergedRaw() const {
 
 AppConfig ConfigStore::Load() const {
   std::lock_guard<std::mutex> lock(process_mutex_);
-  if (!runtime_synchronized_) throw std::runtime_error("runtime configuration synchronization pending");
+  if (!runtime_synchronized_ || activation_restart_required_) throw std::runtime_error("runtime configuration synchronization pending");
   return AppConfigFromJson(ReadMergedRaw());
+}
+
+AppConfig ConfigStore::LoadPersisted() const {
+  std::lock_guard<std::mutex> lock(process_mutex_);
+  return AppConfigFromJson(ReadMergedRaw());
+}
+
+nlohmann::json ConfigStore::RuntimeStatus() const {
+  std::lock_guard<std::mutex> lock(process_mutex_);
+  return {{"state",activation_restart_required_?(runtime_synchronized_?"restarting":"pending"):(runtime_synchronized_?"applied":"pending")},
+          {"runtime_synchronized",runtime_synchronized_ && !activation_restart_required_},
+          {"model_demands_synchronized",runtime_synchronized_},
+          {"restart_required",activation_restart_required_},{"synchronization_failures",runtime_failures_}};
+}
+
+bool ConfigStore::ActivationRestartReady() const {
+  std::lock_guard<std::mutex> lock(process_mutex_);
+  return activation_restart_required_ && runtime_synchronized_;
 }
 
 nlohmann::json ConfigStore::LoadRawMerged() const { return ReadMergedRaw(); }
@@ -119,7 +137,8 @@ class FileLock {
 
 void ConfigStore::NotifyRuntimeLocked(const AppConfig& config) {
   runtime_synchronized_ = false;
-  if (runtime_observer_) runtime_observer_(config);
+  try { if (runtime_observer_) runtime_observer_(config); }
+  catch (...) { ++runtime_failures_; throw RuntimeSyncPending(); }
   runtime_synchronized_ = true;
 }
 
@@ -127,12 +146,14 @@ void ConfigStore::SetRuntimeObserver(std::function<void(const AppConfig&)> obser
   std::lock_guard<std::mutex> lock(process_mutex_);
   FileLock file_lock(lock_path_);
   runtime_observer_ = std::move(observer);
+  runtime_synchronized_ = false;
   NotifyRuntimeLocked(ValidateOrRaise(ReadJson(overlay_path_)));
 }
 
 void ConfigStore::SynchronizeRuntime() {
   std::lock_guard<std::mutex> lock(process_mutex_);
   FileLock file_lock(lock_path_);
+  runtime_synchronized_ = false;
   NotifyRuntimeLocked(ValidateOrRaise(ReadJson(overlay_path_)));
 }
 
@@ -148,7 +169,10 @@ AppConfig ConfigStore::SaveOverlay(const nlohmann::json& patch) {
   json new_overlay = DeepMerge(current_overlay, patch);
   AppConfig cfg = ValidateOrRaise(new_overlay);  // 校验失败在这里抛,磁盘不动
   AtomicWriteJson(overlay_path_, new_overlay);
-  NotifyRuntimeLocked(cfg);
+  try { NotifyRuntimeLocked(cfg); }
+  catch (...) { activation_restart_required_ = true; throw; }
+  // A later successful write must not hide a previously interrupted application.
+  if (activation_restart_required_) throw RuntimeSyncPending();
   return cfg;
 }
 
@@ -158,7 +182,10 @@ AppConfig ConfigStore::ReplaceOverlay(const nlohmann::json& new_overlay) {
 
   AppConfig cfg = ValidateOrRaise(new_overlay);
   AtomicWriteJson(overlay_path_, new_overlay);
-  NotifyRuntimeLocked(cfg);
+  try { NotifyRuntimeLocked(cfg); }
+  catch (...) { activation_restart_required_ = true; throw; }
+  // A later successful write must not hide a previously interrupted application.
+  if (activation_restart_required_) throw RuntimeSyncPending();
   return cfg;
 }
 

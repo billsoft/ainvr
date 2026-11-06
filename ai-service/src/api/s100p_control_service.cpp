@@ -1,3 +1,5 @@
+#include "platform/byte_budget.hpp"
+#include "platform/model_dependency_health.hpp"
 #include "platform/configured_models.hpp"
 // Copyright AINVR. Original business controller with explicit S100P runtime gating.
 #include "control_server.hpp"
@@ -50,6 +52,9 @@ int main(int argc, char** argv) {
     ai_service::log::EnableWarningFileLog((std::filesystem::path(argv[2]).parent_path()/"diagnostics").string());
     auto store = std::make_shared<cfg::ConfigStore>(argv[1], argv[2]);
     auto config = store->Load();
+    (void)ainvr::ActiveChannels();
+    if(ainvr::EncodedChannelLimit()>ainvr::EncodedBudget().Snapshot().limit)
+      throw std::invalid_argument("AI per-channel encoded buffer exceeds process budget");
     // Configuration and bounded retry state stay local; history is stored in MongoDB.
     std::filesystem::current_path(std::filesystem::path(argv[2]).parent_path());
     ai_service::output::RegisterFaceEnhancerBpu(argv[3]);
@@ -64,7 +69,7 @@ int main(int argc, char** argv) {
     // boot configuration, even if the same changed value was already persisted.
     auto config_client=cfg::ClientFromEnv("ai-service",
       [store,config](const nlohmann::json& patch)->cfg::ApplyResult {
-        const auto old_config=store->Load();
+        const auto old_config=store->LoadPersisted();
         cfg::ValidateSnapshotStoreConnection(old_config,patch);
         cfg::ApplyConfigCenterPatch(*store,patch);
         return {true,cfg::SnapshotStoreRestartRequired(config,patch)};
@@ -79,11 +84,14 @@ int main(int argc, char** argv) {
     auto search_owner = std::make_shared<ai_service::output::SearchSamplingOwner>(search_reader, search_port);
     std::atomic<uint64_t> search_control_failures{0};
     auto model_residency_failures=std::make_shared<std::atomic<uint64_t>>(0);
-    auto reconcile_models = [model_root=std::string(argv[3]),model_residency_failures](const cfg::AppConfig& snapshot) {
+    auto dependency_health=std::make_shared<ainvr::ModelDependencyHealth>();
+    auto reconcile_models = [model_root=std::string(argv[3]),model_residency_failures,dependency_health](const cfg::AppConfig& snapshot) {
       auto configured = ainvr::CollectConfiguredModels(snapshot, model_root);
       model_residency_failures->fetch_add(configured.invalid_dependencies);
-      ainvr::BpuModel::ConfigureResidency(std::move(configured.demand));
+      // Drop wrapper references while old BPU residency still owns the models.
       ai_service::output::RetainConfiguredFaceEnhancers(configured.enhancement_paths);
+      ainvr::BpuModel::ConfigureResidency(std::move(configured.demand));
+      dependency_health->Observe(configured.invalid_dependency_paths);
     };
     store->SetRuntimeObserver(reconcile_models);
     auto manager = std::make_shared<ai_service::api::ChannelManager>(config, store,
@@ -164,9 +172,18 @@ int main(int argc, char** argv) {
       business["license_phase"] = license.Phase();
       business["license_error"] = license.LastError();
       const auto decode=ainvr::GetDetectionDecodeStats();
-      return nlohmann::json{{"version",kServiceVersion},
+      const auto au=ainvr::EncodedBudget().Snapshot();auto reservations=nlohmann::json::array();
+      for(const auto& entry:au.entries)reservations.push_back({{"channel_id",entry.owner},{"bytes",entry.bytes}});
+      return nlohmann::json{{"memory",{{"scope","encoded_packet_buffer_reservations"},
+        {"budget_bytes",au.limit},{"reserved_bytes",au.reserved},{"peak_reserved_bytes",au.peak},
+        {"rejected",au.rejected},{"channel_limit_bytes",ainvr::EncodedChannelLimit()},
+        {"reservations",reservations},{"active_channels",ainvr::ActiveChannels().Snapshot().reserved},
+        {"active_channel_limit",ainvr::ActiveChannelLimit()},{"includes_process_overhead",false}}},
+        {"version",kServiceVersion},
         {"bpu",{{"healthy",ainvr::BpuRuntimeHealthy()},{"quarantined_bytes",ainvr::BpuQuarantinedBytes()},{"shared_runtime",ainvr::BpuModel::SharedStatus()}}},
         {"model_residency_failures",model_residency_failures->load()},
+        {"model_dependency_health",dependency_health->Status()},
+        {"runtime_configuration",store->RuntimeStatus()},
         {"warning_file_failures",ai_service::log::WarningFileFailures()},
         {"detection_decode",{{"clamped_probabilities",decode.clamped_probabilities},
           {"clamped_distances",decode.clamped_distances},{"rejected_geometry",decode.rejected_geometry}}},
@@ -185,13 +202,21 @@ int main(int argc, char** argv) {
       [&]{return license.IsLicensed();},[]{return !stopping;}));
     if(config_client)config_client->Start();
     std::signal(SIGTERM, Signal); std::signal(SIGINT, Signal);
+    std::atomic<bool> configuration_recovery_restart{false};
     std::thread control([&] {
       auto next_search_reconcile = std::chrono::steady_clock::now();
       auto next_model_reconcile = next_search_reconcile;
       while (!stopping) {
         const bool licensed = license.IsLicensed();
         if (std::chrono::steady_clock::now() >= next_model_reconcile) {
-          try { store->SynchronizeRuntime(); } catch (...) { ++(*model_residency_failures); }
+          try { store->SynchronizeRuntime(); } catch (...) { ++(*model_residency_failures); dependency_health->Failed(); }
+          if (store->ActivationRestartReady()) {
+            // Save/Replace may have interrupted channel creation or hot application.
+            // Rebuild from durable configuration instead of declaring partial state applied.
+            configuration_recovery_restart = true;
+            stopping = 1;
+            break;
+          }
           next_model_reconcile = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         }
         try {
@@ -223,8 +248,11 @@ int main(int argc, char** argv) {
     if(config_client)config_client->Stop();
     stopping = 1; control.join(); search_owner->Stop(); search_hardware->Stop();
     ai_service::output::RetainConfiguredFaceEnhancers({});
-    ainvr::BpuModel::ConfigureResidency({}); license.Stop();
-    return listened ? 0 : 1;
+    ainvr::BpuModel::ConfigureResidency({});
+    ai_service::output::DrainRetiredFaceEnhancers();
+    ainvr::BpuModel::DrainRetiredResidency(); license.Stop();
+    // systemd Restart=on-failure reconstructs workers after graceful drainage.
+    return configuration_recovery_restart ? 75 : listened ? 0 : 1;
   } catch (const std::exception& e) {
     std::cerr << "AINVR control service: " << e.what() << '\n';
     return 1;

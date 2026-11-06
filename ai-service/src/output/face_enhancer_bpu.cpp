@@ -107,6 +107,7 @@ std::shared_ptr<FaceEnhancer> CreateFaceEnhancerBpu(const std::string& model,con
 namespace {
 struct EnhancerRegistry {
   std::mutex mutex;
+  ainvr::ConfiguredResidency<FaceEnhancer> retirement;
   std::map<std::string,std::pair<std::string,std::shared_ptr<FaceEnhancer>>> current;
 };
 EnhancerRegistry& Enhancers(){static auto* registry=new EnhancerRegistry();return *registry;}
@@ -122,7 +123,9 @@ void RetainConfiguredFaceEnhancers(const std::set<std::string>& paths){
       }else ++it;
     }
   }
+  for(auto& value:retired)registry.retirement.RetireResource(std::move(value));
 }
+void DrainRetiredFaceEnhancers(){Enhancers().retirement.DrainRetired();}
 void RegisterFaceEnhancerBpu(const std::filesystem::path& root){
   RegisterFaceEnhancerFactory([root](const std::string& model,const std::string& raw){
     auto path=std::filesystem::path(raw);if(path.is_relative())path=root/path;

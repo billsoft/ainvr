@@ -88,12 +88,14 @@ ControllerStats AdaptiveDelayController::stats() const {
 
 AuDelayBuffer::AuDelayBuffer(std::shared_ptr<AdaptiveDelayController> controller,
                               double hold_factor, int64_t max_bytes, int64_t max_frames,
-                              std::shared_ptr<AuSpool> spool)
+                              std::shared_ptr<AuSpool> spool, std::shared_ptr<ainvr::ByteBudget::Ticket> budget)
     : controller_(controller ? std::move(controller)
                               : std::make_shared<AdaptiveDelayController>()),
       hold_factor_(hold_factor),
       max_bytes_(max_bytes),
-      max_frames_(max_frames),spool_(std::move(spool)) {
+      max_frames_(max_frames),spool_(std::move(spool)),budget_(std::move(budget)) {
+  if(max_bytes<=0||max_frames<=0)throw std::invalid_argument("buffer limits must be positive");
+  if(budget_&&!spool_&&budget_->Bytes()<static_cast<uint64_t>(max_bytes_))throw std::invalid_argument("buffer exceeds its reserved memory");
   if (hold_factor <= 1.0) {
     throw std::invalid_argument("hold_factor 必须 > 1:容量要留在延迟上方");
   }
@@ -113,6 +115,11 @@ void AuDelayBuffer::put(BufferedAu au) {
   int64_t pts_ns = au.pts_ns;
   double arrived_mono = au.arrived_mono;
   int64_t data_size = static_cast<int64_t>(au.data.size());
+  if(data_size>max_bytes_){
+    ++put_count_;++dropped_count_;++drop_events_;++byte_limit_events_;
+    last_put_mono_=arrived_mono;remember_gone_locked(pts_ns,StampResult::kDropped);
+    return; // no queue allocation, no delay growth for capacity loss
+  }
   if(spool_){
     au.disk_payload=spool_->Store(au.data);
     std::vector<uint8_t>().swap(au.data);
@@ -185,9 +192,14 @@ StampResult AuDelayBuffer::stamp(int64_t pts_ns, const SeiTransform& transform, 
     found->disk_payload=std::move(stored);
   }else found->data = std::move(new_data);
   bytes_ += PayloadSize(*found)-size_before;
+  const auto lag=now_mono-found->arrived_mono;
   found->stamped = true;
+  if(bytes_>max_bytes_){
+    evict_locked(now_mono);
+    if(!index_.count(pts_ns))return StampResult::kDropped;
+  }
   stamped_count_++;
-  controller_->on_stamp(now_mono - found->arrived_mono);
+  controller_->on_stamp(lag);
   return StampResult::kStamped;
 }
 
@@ -310,6 +322,7 @@ BufferStats AuDelayBuffer::stats() const {
   }
   s.bytes = bytes_;
   s.resident_payload_bytes=spool_?0:bytes_;
+  s.limit_bytes=max_bytes_;s.reserved_bytes=budget_?budget_->Bytes():0;
   s.ssd_allocated_bytes=spool_?spool_->AllocatedBytes():0;
   s.put = put_count_;
   s.popped = popped_count_;

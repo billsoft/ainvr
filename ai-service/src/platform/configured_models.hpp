@@ -10,6 +10,7 @@ struct ConfiguredModels {
   ConfiguredResidency<int>::Demand demand;
   std::set<std::string> enhancement_paths;
   size_t invalid_dependencies = 0;
+  std::set<std::string> invalid_dependency_paths;
 };
 inline ConfiguredModels CollectConfiguredModels(
     const ai_service::config::AppConfig& config, const std::filesystem::path& root) {
@@ -35,8 +36,8 @@ inline ConfiguredModels CollectConfiguredModels(
           if (dependency.is_relative()) dependency = std::filesystem::path(path).parent_path() / dependency;
           result.demand[resolve(dependency) + ":"].insert(owner + "/" + name);
         }
-      } else ++result.invalid_dependencies;
-      } catch (const std::exception&) { ++result.invalid_dependencies; }
+      } else {++result.invalid_dependencies;result.invalid_dependency_paths.insert(path+".ainvr.json");}
+      } catch (const std::exception&) { {++result.invalid_dependencies;result.invalid_dependency_paths.insert(path+".ainvr.json");} }
     }
     const auto& snapshot = channel.snapshot;
     if (snapshot.enabled && snapshot.face_enhance_model != "none") {

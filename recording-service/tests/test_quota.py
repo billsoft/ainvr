@@ -5,7 +5,7 @@ import time
 from recorder.config import ConfigStore, QuotaConfig
 from recorder.index import SegmentIndex
 from recorder.quota import QuotaEnforcer
-from recorder.storage import StorageManager
+from recorder.storage import external_local_mount, StorageManager
 
 MB = 1024 ** 2
 GB = 1024 ** 3
@@ -21,6 +21,7 @@ def _setup(tmp_path, quota: QuotaConfig):
     sm.status.root = root
     sm.status.kind = "local"
     sm.status.healthy = True
+    sm._local_mount = external_local_mount(root)  # fixture simulates applied local storage
     cfg = store.mutate()
     cfg.recording.quota = quota
     store.save()

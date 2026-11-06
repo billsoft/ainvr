@@ -223,6 +223,7 @@ class ReusedChannelWorker : public ChannelWorker {
   std::shared_ptr<stream::StreamPublisher> LoadPublisher() const;
   mutable std::mutex publisher_mutex_;
   std::shared_ptr<stream::StreamPublisher> publisher_;
+  std::shared_ptr<ainvr::ByteBudget::Ticket> channel_slot_;
   std::shared_ptr<stream::AuDelayBuffer> au_buffer_;
   std::shared_ptr<SnapshotSink> snapshot_sink_;
   int64_t sei_stamp_errors_ = 0;

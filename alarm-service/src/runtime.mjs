@@ -1,3 +1,4 @@
+import {evidenceSyncStatus} from './evidence-spool.mjs';
 import {EvidenceImages} from './evidence-images.mjs';
 // Copyright AINVR. Independent service lifecycle; never starts or stops the AI service.
 import {ReviewContext} from './review-context.mjs';
@@ -89,6 +90,7 @@ export async function startService(input,{evidenceSource,reviewInvoke,recoverEvi
       process:{pid:process.pid,rss_bytes:process.memoryUsage().rss,cpu_microseconds:process.cpuUsage(cpuStart)},
       input:{...counters,last_received_at:lastInputAt,last_persisted_at:lastPersistedAt,lag_ms:null,
         lag_reason:'Producer watermark not connected'},
+      evidence_sync:evidenceSyncStatus(),
       observation_journal:pump?structuredClone(pump.status):{state:'disabled'},
       evidence_vault:vault?await vault.status():{enabled:false,state:'not_configured'},
       review:review?await review.status():{available:false},notifications:{available:false}}));

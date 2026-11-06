@@ -179,6 +179,7 @@ void ReusedChannelWorker::Start() {
   // 整个进程(所有通道)就没了。
   if (capture_thread_.joinable()) capture_thread_.join();
   if (infer_thread_.joinable()) infer_thread_.join();
+  channel_slot_.reset(); // capture and inference have both joined before returning the slot
   if (search_sampling_source_) search_sampling_source_->Reset();
   if(!std::atomic_load(&observation_journal_)){
     if(const char* root=std::getenv("AINVR_OBSERVATION_SPOOL_ROOT");root&&*root)
@@ -302,6 +303,7 @@ void ReusedChannelWorker::Start() {
       SetLastError("启动超时(30s 内拉流/模型加载未完成)");
       stop_event_.store(true);
       if (capture_thread_.joinable()) capture_thread_.join();
+      channel_slot_.reset();
       SetState(ChannelState::kError);
       return;
     }
@@ -311,6 +313,7 @@ void ReusedChannelWorker::Start() {
       log::Error(kLogModule, "[" + channel_id_ + "] 启动失败:" + err);
       stop_event_.store(true);
       if (capture_thread_.joinable()) capture_thread_.join();
+      channel_slot_.reset();
       SetState(ChannelState::kError);
       return;
     }
@@ -341,6 +344,7 @@ void ReusedChannelWorker::Stop() {
 
   if (capture_thread_.joinable()) capture_thread_.join();
   if (infer_thread_.joinable()) infer_thread_.join();
+  channel_slot_.reset(); // capture and inference have both joined before returning the slot
   notification_worker_.reset();
   review_worker_.reset();
   std::atomic_store(&event_outbox_,std::shared_ptr<analytics::EventOutbox>{});
@@ -498,6 +502,7 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
              {"held_s", ps.buffer.held_s},
              {"bytes", ps.buffer.bytes},
              {"resident_payload_bytes", ps.buffer.resident_payload_bytes},
+             {"limit_bytes",ps.buffer.limit_bytes},{"reserved_bytes",ps.buffer.reserved_bytes},
              {"ssd_allocated_bytes", ps.buffer.ssd_allocated_bytes},
              {"put", ps.buffer.put},
              {"popped", ps.buffer.popped},
@@ -557,6 +562,7 @@ void ReusedChannelWorker::CaptureLoop() {
       }
       StoreStream(nullptr);
     }
+    channel_slot_.reset();
     {
       std::lock_guard<std::mutex> lock(init_mutex_);
       init_error_ = utils::UserFacingError(e.what());  // 会作为启动失败原因返回网页；原文已记日志
@@ -1381,6 +1387,10 @@ void ReusedChannelWorker::StampSei(const FrameResult& result, std::optional<int6
 void ReusedChannelWorker::InitComponents() {
   if (!LicenseAllowed()) throw std::runtime_error("LICENSE_REQUIRED");
   auto cfg = LoadCfg();
+  // Reserve before stream startup, so concurrent starts cannot spend the same budget.
+  auto encoded_budget=cfg->publish.enabled?ainvr::EncodedBudget().Acquire(
+      ainvr::EncodedReservation(cfg->model.adapter),channel_id_):nullptr;
+  channel_slot_=ainvr::AcquireChannelSlot(channel_id_);
   bool need_es_branch = cfg->publish.enabled;
 
   auto new_stream =
@@ -1416,24 +1426,25 @@ void ReusedChannelWorker::InitComponents() {
             retention->maximum_bytes+int64_t(128)*1024*1024);
         au_buffer_=std::make_shared<stream::AuDelayBuffer>(
             std::make_shared<stream::AdaptiveDelayController>(retention->delay_seconds,retention->delay_seconds),
-            1.2,retention->maximum_bytes,retention->maximum_frames,std::move(spool));
+            1.2,retention->maximum_bytes,retention->maximum_frames,std::move(spool),encoded_budget);
       } else if (cfg->model.adapter == "locateanything_trt") {
         // 推理请求最多 28 秒；40 秒固定延迟从第一帧开始生效。
         // 768 MiB 支持 100 Mbps 约 48 秒压缩包及余量，绝不改动原始编码。
         au_buffer_ = std::make_shared<stream::AuDelayBuffer>(
             std::make_shared<stream::AdaptiveDelayController>(40.0, 40.0),
-            1.2, int64_t(768) * 1024 * 1024);
+            1.2, int64_t(768) * 1024 * 1024,8192,nullptr,encoded_budget);
       } else if (cfg->model.adapter == "yoloe_pt") {
         // 执行器往返与首次文本编码留足余量，随后按实际滞后自适应。
         au_buffer_ = std::make_shared<stream::AuDelayBuffer>(
-            std::make_shared<stream::AdaptiveDelayController>(3.0, 3.0));
+            std::make_shared<stream::AdaptiveDelayController>(3.0, 3.0),1.6,ainvr::EncodedChannelLimit(),8192,nullptr,encoded_budget);
       } else {
         // S100P capture/preprocess/archive contention exceeds the generic
         // 100 ms initial budget. Begin with 3 s for cold contexts, then
         // adapt to measured P99 lag with a 750 ms floor and slower decay.
         // Preserve compressed video, exact PTS and the existing 3 s ceiling.
         au_buffer_ = std::make_shared<stream::AuDelayBuffer>(
-            std::make_shared<stream::AdaptiveDelayController>(0.75, 3.0, 1.6, 240, 0.99, 1.3, 0.01, 3.0));
+            std::make_shared<stream::AdaptiveDelayController>(0.75, 3.0, 1.6, 240, 0.99, 1.3, 0.01, 3.0),
+            1.6,ainvr::EncodedChannelLimit(),8192,nullptr,encoded_budget);
       }
       stream::StreamPublisher::Config pub_cfg;
       pub_cfg.wait_for_initial_buffer = true;
@@ -1528,6 +1539,8 @@ void ReusedChannelWorker::Cleanup() {
       log::Error(kLogModule, "[" + channel_id_ + "] 发布支路停止失败: " + e.what());
     }
   }
+
+  au_buffer_.reset(); // release queued bytes and reservation after publisher has stopped
 
   // SnapshotSink 生命周期由拥有它的一方(control_server::ChannelManager)
   // 管理,ReusedChannelWorker 不负责 stop 它——跟 v1 不同(v1 的 SnapshotStore

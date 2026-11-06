@@ -117,7 +117,7 @@ export class ObservationConsumer {
       const prepared=await this.collection.findOneAndUpdate({...validFence(),pending:null},{$set:{pending}},{returnDocument:'after'});
       if(!prepared)fail('lease_expired','Input lease expired; retry same input',503);
       await this.hook('prepared');
-      doc=await this.finish(prepared,validFence);
+      doc=await this.finish(prepared,validFence,true);
       this.dwellStarted.add(channel);
       if(this.dwellStarted.size>1024)this.dwellStarted.delete(this.dwellStarted.values().next().value);
       return {durable:true,outcome:'consumed',offset:doc.offset,events:[...new Set(pending.events.filter(e=>e.rule.snapshot.alarm_enabled!==false).map(e=>e.episode_id??e.alarm_id))],behavior_events:pending.events.flatMap(e=>(e.group_members??[e]).map(member=>behaviorEvent(member).event_id)),issues:result.issues};
@@ -125,10 +125,12 @@ export class ObservationConsumer {
       await this.collection.updateOne(fence,{$set:{lease_until:0},$unset:{lease_token:''}});
     }
   }
-  async finish(doc,fence) {
+  async finish(doc,fence,protectedInThisAttempt=false) {
     const p=doc.pending;
     // Prepared outcomes can be recovered by a different lease generation.
-    await this.spool?.protect(p,doc.channel_id,p.checkpoint.session,doc.generation);
+    // The normal path already fsynced these exact immutable pending keys before
+    // storing pending. Recovery in a new attempt/generation must protect again.
+    if(!protectedInThisAttempt)await this.spool?.protect(p,doc.channel_id,p.checkpoint.session,doc.generation);
     if(this.repository.captureJobs)for(const intent of evidenceCaptureIntents(p)){
       const id=digest([intent.channel_id,intent.stream_session_id,intent.sample.frame_id]);
       await this.repository.captureJobs.updateOne({_id:id},{$setOnInsert:{...intent,state:'queued',next_at:0,created_at:Date.now()}},{upsert:true});

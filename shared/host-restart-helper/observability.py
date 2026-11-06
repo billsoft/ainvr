@@ -644,6 +644,8 @@ class Observer:
                        'backend': 'http://127.0.0.1:3001/api/branding',
                        'frontend': 'http://127.0.0.1:8088/api/branding'}[source]
                 health=http_json(url)
+                budget=memory_budget_view(health)
+                if budget is not None:row['memoryBudget']=budget
                 if source == 'ai-service':
                     row['healthy'], row['detail'] = ai_service_health(health)
                 elif source == 'alarm-service':
@@ -693,6 +695,9 @@ class Observer:
                            restarts=d.get('RestartCount',0),oomKilled=state.get('OOMKilled',False),
                            detail='OOM 终止' if state.get('OOMKilled') else state.get('Error',''),
                            logPolicy=d.get('HostConfig',{}).get('LogConfig',{}).get('Config',{}))
+                memory_limit=d.get('HostConfig',{}).get('Memory',0)
+                if type(memory_limit) is int and memory_limit>0:
+                    row['memoryBudget']={'scope':'container','budget_bytes':memory_limit}
                 if source == 'srs' and row['healthy']:
                     try:
                         row['healthy'] = srs_health()
@@ -809,3 +814,16 @@ def llm_service_health(state, health):
                'ion_insufficient': '专用内存不足，模型未加载',
                'verify_failed': '模型文件校验失败'}
     return ready, '模型就绪；提供图片复审接口' if ready else details.get(health.get('model'), '大模型服务未就绪')
+
+
+def memory_budget_view(health):
+    value=health.get('memory') if isinstance(health,dict) else None
+    if not isinstance(value,dict) or value.get('scope') not in ('encoded_packet_buffer_reservations','recording_gop_buffer'):
+        return None
+    keys=('budget_bytes','reserved_bytes','retiring_bytes','queued_bytes','peak_reserved_bytes','rejected','channel_limit_bytes','active_channels','active_channel_limit')
+    result={'scope':value['scope']}
+    for key in keys:
+        item=value.get(key)
+        if type(item) is int and 0<=item<=2**53-1:result[key]=item
+    if result.get('budget_bytes',0)<=0 or 'reserved_bytes' not in result:return None
+    return result

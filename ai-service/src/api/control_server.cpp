@@ -1,3 +1,4 @@
+#include "platform/byte_budget.hpp"
 #include "../analytics/event_store.hpp"
 #include "control_server.hpp"
 #include "search_reencode_http_contract.hpp"
@@ -28,6 +29,25 @@ namespace ai_service::api {
 using nlohmann::json;
 
 namespace {
+uint64_t EncodedDemand(const json& channels){
+ uint64_t total=0;
+ for(const auto& row:channels){auto c=config::ChannelConfigFromJson(row);
+  if(c.enabled&&!c.deletion_pending&&c.publish.enabled)total+=ainvr::EncodedReservation(c.model.adapter);
+ }
+ return total;
+}
+void CheckEncodedAdmission(const json& before,const json& after){
+ auto count=[](const json& channels){uint64_t n=0;for(const auto& row:channels){auto c=config::ChannelConfigFromJson(row);if(c.enabled&&!c.deletion_pending)++n;}return n;};
+ const auto next=count(after),old=count(before);
+ if(next>ainvr::ActiveChannelLimit()&&next>old)
+  throw ApiError(409,"memory_capacity_exceeded","启用AI通道数超过部署容量档 "+std::to_string(ainvr::ActiveChannelLimit())+"；请停用其他通道，配置未保存");
+ const auto requested=EncodedDemand(after),previous=EncodedDemand(before);
+ const auto limit=ainvr::EncodedBudget().Snapshot().limit;
+ // Allow repairs/reductions of existing oversubscription, never add to it.
+ if(requested>limit&&requested>previous)
+  throw ApiError(409,"memory_capacity_exceeded","AI输出编码缓冲额度不足：启用配置需要 "+std::to_string(requested)+
+    " 字节，部署预算 "+std::to_string(limit)+" 字节；请停用其他AI输出或调整部署预算，配置未保存");
+}
 double NowWall() {
   return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch())
       .count();
@@ -776,6 +796,7 @@ nlohmann::json ChannelManager::CreateChannel(const nlohmann::json& patch) {
     channels.push_back(patch);
     try {
       RejectOutputConflicts(channels, channel_id);
+      CheckEncodedAdmission(current.value("channels",json::array()),channels);
       new_app_cfg = store.SaveOverlay(json{{"channels", channels}});
     } catch (const config::ConfigValidationError& e) {
       throw ApiError(422, "invalid_config", e.what());
@@ -957,6 +978,7 @@ nlohmann::json ChannelManager::UpdateChannelConfig(const std::string& channel_id
         // worker untouched. Stopped channels may still save preparation drafts.
         worker->ValidateSnapshotResources(config::ChannelConfigFromJson(channels[idx]));
       }
+      CheckEncodedAdmission(current.value("channels",json::array()),channels);
       new_app_cfg = store.SaveOverlay(json{{"channels", channels}});
     } catch (const config::ConfigValidationError& e) {
       throw ApiError(422, "invalid_config", e.what());
@@ -1064,6 +1086,11 @@ httplib::Server::Handler Wrap(std::shared_ptr<ChannelManager> manager, AuthedHan
       fn(req, res);
     } catch (const ApiError& e) {
       WriteError(res, e);
+    } catch (const ainvr::MemoryBudgetExceeded& e) {
+      WriteJson(res,409,json{{"error",{{"code","memory_capacity_exceeded"},{"message",e.what()}}}});
+    } catch (const config::RuntimeSyncPending& e) {
+      WriteJson(res, 503, json{{"error",{{"code","configuration_saved_pending"},{"message",e.what()}}},
+                              {"persisted",true},{"runtime_synchronized",false}});
     } catch (const output::SnapshotUnavailable& e) {
       WriteJson(res, 503, json{{"error", {{"code", "SNAPSHOT_UNAVAILABLE"}, {"message", e.what()}}}});
     } catch (const config::ConfigValidationError& e) {
@@ -1403,7 +1430,7 @@ void RegisterRoutes(httplib::Server& server, std::shared_ptr<ChannelManager> man
                                              !server_view["api_key"].is_null();
                server_view.erase("api_key");
                WriteJson(res, 200,
-                         json{{"server", server_view},
+                         json{{"runtime_configuration",store->RuntimeStatus()},{"server", server_view},
                               {"channels", merged.value("channels", json::array())}});
              }));
 
