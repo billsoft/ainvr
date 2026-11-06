@@ -66,7 +66,22 @@ int main(){
   wrapper->release=wrapperRelease.get_future().share();
   delayed.RetireResource(std::move(wrapper));
   assert(wrapperEntered.get_future().wait_for(std::chrono::seconds(2))==std::future_status::ready);
-  wrapperRelease.set_value();delayed.DrainRetired();
+  // A different model must not cold-load while the wrapper retirement is pending.
+  assert(!ainvr::SharedRetirementBarrier().WaitFor(std::chrono::milliseconds(20)));
+  std::atomic<bool> coldLoaded{false};
+  auto different=std::async(std::launch::async,[&]{
+    ainvr::SharedRetirementBarrier().BeforeColdLoad();coldLoaded=true;
+  });
+  assert(different.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout);
+  assert(!coldLoaded);
+  wrapperRelease.set_value();delayed.DrainRetired();different.get();
+  assert(coldLoaded && ainvr::SharedRetirementBarrier().Pending()==0);
+  ainvr::SharedRetirementBarrier().Begin();
+  bool refused=false;
+  try { ainvr::SharedRetirementBarrier().BeforeColdLoad(); }
+  catch(const std::runtime_error&) { refused=true; }
+  ainvr::SharedRetirementBarrier().End();assert(refused);
+
   const auto root=std::filesystem::path(std::getenv("TMPDIR")?std::getenv("TMPDIR"):"/tmp")/("ainvr-demand-"+std::to_string(getpid()));
   std::filesystem::create_directories(root);
   {std::ofstream file(root/"vision.hbm.ainvr.json");file<<R"({"dynamic_text":{"text_hbm":"text.hbm","reprta_hbm":"reprta.hbm"}})";}

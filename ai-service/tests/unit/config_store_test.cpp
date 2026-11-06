@@ -238,3 +238,37 @@ TEST(ConfigStore, InterruptedChannelCreateAndUpdateSurviveRecoveryRestart) {
   EXPECT_EQ(updated.Load().channels[0].inference_fps,2);
   EXPECT_FALSE(updated.ActivationRestartReady());
 }
+
+#include "../../src/api/control_lifecycle.hpp"
+#include <sys/wait.h>
+#include <unistd.h>
+TEST(ControlLifecycle, RecoveryChildDrainsThenClosesListenerAndExits75) {
+  int fds[2];ASSERT_EQ(pipe(fds),0);
+  const auto pid=fork();ASSERT_GE(pid,0);
+  if(pid==0) {
+    close(fds[0]);
+    const bool drained=ai_service::api::StopControlPlane(
+      [&]{if(write(fds[1],"D",1)!=1)_exit(3);},[&]{if(write(fds[1],"L",1)!=1)_exit(3);});
+    close(fds[1]);_exit(ai_service::api::ControlExitCode(true,true,drained));
+  }
+  close(fds[1]);std::string order;char c;
+  while(read(fds[0],&c,1)==1)order+=c;
+  close(fds[0]);int status=0;ASSERT_EQ(waitpid(pid,&status,0),pid);
+  ASSERT_TRUE(WIFEXITED(status));EXPECT_EQ(WEXITSTATUS(status),75);EXPECT_EQ(order,"DL");
+}
+TEST(ControlLifecycle, DrainFailureStillClosesListenerAndReportsFailure) {
+  bool closed=false;
+  const bool drained=ai_service::api::StopControlPlane(
+    []{throw std::runtime_error("drain failed");},[&]{closed=true;});
+  EXPECT_TRUE(closed);EXPECT_FALSE(drained);
+  EXPECT_EQ(ai_service::api::ControlExitCode(true,true,drained),1);
+  EXPECT_EQ(ai_service::api::ControlExitCode(false,true,true),0);
+  EXPECT_EQ(ai_service::api::ControlExitCode(false,false,true),1);
+}
+
+TEST(ControlLifecycle, RecoveryNeverFeedsWatchdogEvenWithResponsiveHttp) {
+  EXPECT_FALSE(ai_service::api::ControlPlaneMayHeartbeat(true,true,true));
+  EXPECT_TRUE(ai_service::api::ControlPlaneMayHeartbeat(false,true,true));
+  EXPECT_FALSE(ai_service::api::ControlPlaneMayHeartbeat(false,false,true));
+  EXPECT_FALSE(ai_service::api::ControlPlaneMayHeartbeat(false,true,false));
+}

@@ -919,3 +919,19 @@ MemoryAccounting=yes
 后台检测到可恢复后，走原有 StopAll、服务停止和模型排空流程，以退出码75结束；部署必须保持 `Restart=on-failure`（.190已核对）。新进程读取最新落盘配置并重建通道，才恢复 applied。正常保存不触发整服务重启。此故障恢复会短暂中断AI分析输出；独立录像、SRS、数据库服务不随它重启。持久损坏的配置仍明确报错，不静默回退。
 
 测试覆盖：新建配置登记失败、后台恢复仍禁止假报 applied、修正保存保留恢复标记、重建ConfigStore读取唯一新通道、更新后的名称和帧率在新实例生效。测试没有向在线服务注入模型登记异常，线上验证采用构建产物一致性、systemd恢复策略和正常业务探活。
+
+
+## 2026-11-06 评审补充：回收屏障、退出测试和容量边界
+
+- 通过BpuModel共享入口进行的新模型冷加载前，等待进程内已排队的异步回收，包括增强包装器与BPU驻留引用；等待超过5秒则拒绝该次冷加载，沿用通道退避重试，不能带着未释放的退役资源继续分配。缓存命中不经过该等待，不阻塞正在使用的同模型。健康数据 `bpu.shared_runtime.retiring_batches` 表示尚未完成的回收批次数。该屏障不卸载活跃任务持有的模型，不保证不同有效模型的总ION峰值自动适配硬件容量，也不跨服务协调LLM/搜索模型。
+- `model_residency_failures` 改为依赖故障事件次数，与 `model_dependency_health.incidents` 一致；每次检查失败数仍读取 `failed_checks`。相同故障不再每秒冒充一次新事故。依赖和配置的周期检查暂保留，避免漏掉sidecar外部修改；未经完整的配置及依赖版本检测，不只看overlay的mtime跳过校准。
+- 运行退出共用可测试的StopControlPlane：排空异常时仍尝试关闭监听，主线程继续既有清理。子进程测试核对调用顺序和退出75；排空失败返回1，正常停止返回0。此测试覆盖生产使用的退出辅助函数，不是对全部硬件SDK退出行为的无限时保证。
+- `AINVR_AI_ACTIVE_CHANNELS` 单独按1到64的整数通道数解析，不再借用MiB参数解析器；非法值错误明确表示通道数。子进程测试覆盖0、65、负数、小数、空串、非数字及有效2。
+- .189当前仍须单独确定容量档并显式配置 `AINVR_AI_ACTIVE_CHANNELS`、`AINVR_AI_AU_TOTAL_MIB`、`AINVR_AI_AU_CHANNEL_MIB` 与 `AINVR_RECORDER_BUFFER_MIB`。仅拉取源码不会更新二进制；本轮只编译测试，不部署，不复制.190的两路档到.189。应先核对实际systemd EnvironmentFile/drop-in及运行进程环境，再在相机开启时测8K实际码率、GOP、缓冲峰值、超限丢包及重连峰值。100Mbps×3秒约37.5MB，乘1.6约60MB只是估算，不含突发/GOP和其他CPU内存，不能作为路数认证。
+- LocateAnything旧TRT分支的768MiB不是所有LocateAnything的统一需求。当前S100/S100P服务先校验可用适配器，未开放的模型应明确拒绝；BPU研究实现另有SSD帧保留契约。未来开放模型时必须同时完成适配器能力声明、模型清单、缓冲准入和真实硬件验收，不能只调大环境变量解除限制。
+- cgroup版本应检查memory控制器挂载，不根据/sys/fs/cgroup根目录是tmpfs推断。当前两板memory为v1；不配置仅适用于v2的MemoryHigh作为保护依据。
+- 不进行无压测依据的fsync批量化、不削减整帧截图预留、不放宽paired_support审核阈值。4K/8K多路和24小时稳定性仍为容量认证条件，软件测试不能代替。
+
+- 配置恢复一旦启动，即使HTTP仍响应，也不再发送WATCHDOG=1；这防止SDK排空卡住时不断续健康心跳。部署必须配置WatchdogSec和Restart=on-failure；.190实查WatchdogSec=30s、TimeoutStopSec=30s。看门狗是故障兜底，不保证SDK本身一定能正常退出；被迫结束时仍依赖既有SSD持久交付恢复。
+
+- 本轮最终验证：SSD串行编译AI服务成功；config_store、config_center、au_buffer、systemd_watchdog、shared_runtime、shared_bpu、configured_residency、model_loading_contract八组测试全部通过（0失败）。测试记录位于 test/results/runtime-followup-20261106/。本轮仅编译测试，维护结束恢复原服务，不替换部署二进制、不提交Git。

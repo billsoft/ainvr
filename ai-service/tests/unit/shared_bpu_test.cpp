@@ -46,5 +46,14 @@ int main(){try{
    int input=open(item.c_str(),O_RDONLY|O_CLOEXEC);VERIFY(input>=0);digests.Get(input);close(input);}
  const auto misses=digests.Status().misses;VERIFY(digests.Get(fd)==changed);VERIFY(digests.Status().misses==misses+1);close(fd);
  bool invalid=false;try{digests.Get(-1);}catch(...){invalid=true;}VERIFY(invalid);
+ auto warm=ainvr::BpuModel::Acquire(path.string());
+ auto coldPath=dir/"cold.hbm";{std::ofstream f(coldPath);f<<"separate cold model";}
+ ainvr::SharedRetirementBarrier().Begin();
+ auto warmAgain=ainvr::BpuModel::Acquire(path.string());VERIFY(warmAgain==warm);
+ auto cold=std::async(std::launch::async,[&]{return ainvr::BpuModel::Acquire(coldPath.string());});
+ const bool blocked=cold.wait_for(std::chrono::milliseconds(50))==std::future_status::timeout;
+ ainvr::SharedRetirementBarrier().End();
+ VERIFY(blocked);auto loaded=cold.get();VERIFY(loaded!=warm);
+ loaded.reset();warmAgain.reset();warm.reset();
  std::filesystem::remove_all(dir);std::cout<<"PASS shared model identity, one load, 320 isolated outputs, release and version replacement\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

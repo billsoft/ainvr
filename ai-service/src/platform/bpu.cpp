@@ -44,7 +44,7 @@ struct BpuModel::Quarantine {
 std::shared_ptr<BpuModel> BpuModel::Acquire(const std::string& path,const std::string& name){
  if(!BpuRuntimeHealthy())throw std::runtime_error("BPU runtime fault; service restart required");
  ModelFile file(path);
- auto model=Models().Acquire(file.hash+":"+name,[&]{return std::unique_ptr<BpuModel>(new BpuModel("/proc/self/fd/"+std::to_string(file.fd),name));});
+ auto model=Models().Acquire(file.hash+":"+name,[&]{SharedRetirementBarrier().BeforeColdLoad();return std::unique_ptr<BpuModel>(new BpuModel("/proc/self/fd/"+std::to_string(file.fd),name));});
  Residency().Observe(ResidencyKey(path,name),model);
  return model;
 }
@@ -62,7 +62,7 @@ nlohmann::json BpuModel::SharedStatus(){
  }
  for(const auto& entry:Residency().Snapshot())configured.push_back({{"resource",entry.key},{"owners",entry.owners},{"resident",entry.resident}});
  const auto digest=Digests().Status();
- return {{"digest_cache",{{"hits",digest.hits},{"misses",digest.misses},{"bytes_hashed",digest.bytes}}},{"instances",rows.size()},{"models",rows},{"configured",configured},{"scheduling","fifo"}};
+ return {{"retiring_batches",SharedRetirementBarrier().Pending()},{"digest_cache",{{"hits",digest.hits},{"misses",digest.misses},{"bytes_hashed",digest.bytes}}},{"instances",rows.size()},{"models",rows},{"configured",configured},{"scheduling","fifo"}};
 }
 BpuModel::BpuModel(const std::string& path, const std::string& name) {
   if(!BpuRuntimeHealthy())throw std::runtime_error("BPU runtime fault; service restart required");

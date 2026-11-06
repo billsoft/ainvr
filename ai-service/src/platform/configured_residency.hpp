@@ -1,4 +1,5 @@
 #pragma once
+#include "retirement_barrier.hpp"
 #include <map>
 #include <memory>
 #include <mutex>
@@ -81,7 +82,9 @@ template<class T> class ConfiguredResidency {
     // Explicit backpressure for extreme churn; never create unbounded threads
     // or allow unlimited queued model allocations during a stuck SDK release.
     retire_cv_.wait(lock,[this]{return retired_.size()<64;});
-    retired_.push_back(std::move(batch));lock.unlock();retire_cv_.notify_all();
+    retired_.push_back(std::move(batch));
+    SharedRetirementBarrier().Begin();
+    lock.unlock();retire_cv_.notify_all();
   }
   void Reap(){
     for(;;){
@@ -94,6 +97,7 @@ template<class T> class ConfiguredResidency {
       }
       retire_cv_.notify_all();
       batch.clear(); // no residency/configuration/retirement lock during SDK calls
+      SharedRetirementBarrier().End();
       {std::lock_guard lock(retire_mutex_);releasing_=false;}
       retire_cv_.notify_all();
     }

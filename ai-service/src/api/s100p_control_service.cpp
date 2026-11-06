@@ -1,3 +1,4 @@
+#include "control_lifecycle.hpp"
 #include "platform/byte_budget.hpp"
 #include "platform/model_dependency_health.hpp"
 #include "platform/configured_models.hpp"
@@ -83,11 +84,9 @@ int main(int argc, char** argv) {
     auto search_port = ai_service::output::MakeSearchExecutionPort(search_hardware);
     auto search_owner = std::make_shared<ai_service::output::SearchSamplingOwner>(search_reader, search_port);
     std::atomic<uint64_t> search_control_failures{0};
-    auto model_residency_failures=std::make_shared<std::atomic<uint64_t>>(0);
     auto dependency_health=std::make_shared<ainvr::ModelDependencyHealth>();
-    auto reconcile_models = [model_root=std::string(argv[3]),model_residency_failures,dependency_health](const cfg::AppConfig& snapshot) {
+    auto reconcile_models = [model_root=std::string(argv[3]),dependency_health](const cfg::AppConfig& snapshot) {
       auto configured = ainvr::CollectConfiguredModels(snapshot, model_root);
-      model_residency_failures->fetch_add(configured.invalid_dependencies);
       // Drop wrapper references while old BPU residency still owns the models.
       ai_service::output::RetainConfiguredFaceEnhancers(configured.enhancement_paths);
       ainvr::BpuModel::ConfigureResidency(std::move(configured.demand));
@@ -181,7 +180,7 @@ int main(int argc, char** argv) {
         {"active_channel_limit",ainvr::ActiveChannelLimit()},{"includes_process_overhead",false}}},
         {"version",kServiceVersion},
         {"bpu",{{"healthy",ainvr::BpuRuntimeHealthy()},{"quarantined_bytes",ainvr::BpuQuarantinedBytes()},{"shared_runtime",ainvr::BpuModel::SharedStatus()}}},
-        {"model_residency_failures",model_residency_failures->load()},
+        {"model_residency_failures",dependency_health->Status().at("incidents")},
         {"model_dependency_health",dependency_health->Status()},
         {"runtime_configuration",store->RuntimeStatus()},
         {"warning_file_failures",ai_service::log::WarningFileFailures()},
@@ -203,13 +202,14 @@ int main(int argc, char** argv) {
     if(config_client)config_client->Start();
     std::signal(SIGTERM, Signal); std::signal(SIGINT, Signal);
     std::atomic<bool> configuration_recovery_restart{false};
+    std::atomic<bool> control_drained{true};
     std::thread control([&] {
       auto next_search_reconcile = std::chrono::steady_clock::now();
       auto next_model_reconcile = next_search_reconcile;
       while (!stopping) {
         const bool licensed = license.IsLicensed();
         if (std::chrono::steady_clock::now() >= next_model_reconcile) {
-          try { store->SynchronizeRuntime(); } catch (...) { ++(*model_residency_failures); dependency_health->Failed(); }
+          try { store->SynchronizeRuntime(); } catch (...) { dependency_health->Failed(); }
           if (store->ActivationRestartReady()) {
             // Save/Replace may have interrupted channel creation or hot application.
             // Rebuild from durable configuration instead of declaring partial state applied.
@@ -234,10 +234,12 @@ int main(int argc, char** argv) {
         else manager->StopAll();
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
       }
-      manager->StopAll(); server.stop();
+      control_drained = ai_service::api::StopControlPlane(
+          [&]{manager->StopAll();}, [&]{server.stop();});
     });
     ai_service::utils::SystemdWatchdog watchdog([&] {
-      if(!server.is_running() || !ainvr::BpuRuntimeHealthy())return false;
+      if(!ai_service::api::ControlPlaneMayHeartbeat(configuration_recovery_restart,
+          server.is_running(),ainvr::BpuRuntimeHealthy()))return false;
       httplib::Client probe(config.server.host,config.server.port);
       probe.set_connection_timeout(1,0);probe.set_read_timeout(2,0);probe.set_write_timeout(1,0);
       const auto response=probe.Get("/livez");
@@ -252,7 +254,7 @@ int main(int argc, char** argv) {
     ai_service::output::DrainRetiredFaceEnhancers();
     ainvr::BpuModel::DrainRetiredResidency(); license.Stop();
     // systemd Restart=on-failure reconstructs workers after graceful drainage.
-    return configuration_recovery_restart ? 75 : listened ? 0 : 1;
+    return ai_service::api::ControlExitCode(configuration_recovery_restart, listened, control_drained);
   } catch (const std::exception& e) {
     std::cerr << "AINVR control service: " << e.what() << '\n';
     return 1;

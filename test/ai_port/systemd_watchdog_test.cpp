@@ -55,3 +55,18 @@ TEST(SystemdWatchdog,StopInterruptsLongNotificationWait){
   const double elapsed_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-before).count();
   EXPECT_LT(elapsed_ms,100);
 }
+
+#include "api/control_lifecycle.hpp"
+TEST(SystemdWatchdog,RecoveryStopsRealHeartbeatsEvenWhenHttpIsResponsive){
+  Environment env;Receiver receiver;std::atomic<bool> recovery=false;
+  ai_service::utils::SystemdWatchdog watchdog([&]{
+    return ai_service::api::ControlPlaneMayHeartbeat(recovery,true,true);
+  });
+  bool heartbeat=false;
+  for(int i=0;i<10&&!heartbeat;++i)heartbeat=receiver.Get().find("WATCHDOG=1")!=std::string::npos;
+  ASSERT_TRUE(heartbeat);recovery=true;
+  bool pending=false;
+  for(int i=0;i<10&&!pending;++i)pending=receiver.Get().find("unresponsive")!=std::string::npos;
+  ASSERT_TRUE(pending);
+  for(int i=0;i<3;++i)EXPECT_EQ(receiver.Get().find("WATCHDOG=1"),std::string::npos);
+}

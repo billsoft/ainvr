@@ -654,3 +654,24 @@ TEST(AuMemoryBudget, SeiGrowthEnforcesByteLimitWithoutMissFeedback) {
   EXPECT_EQ(buffer.stamp(1,[](const auto& b){auto r=b;r.resize(120);return r;},.01),StampResult::kDropped);
   EXPECT_LE(buffer.stats().bytes,100);EXPECT_EQ(buffer.controller()->stats().miss_events,0);
 }
+
+#include <sys/wait.h>
+#include <unistd.h>
+TEST(AuMemoryBudget, ChannelCountRejectsInvalidValuesWithCorrectUnit) {
+  for(const char* raw : {"0", "65", "-1", "2.5", "", "abc", "2"}) {
+    const auto pid=fork();ASSERT_GE(pid,0);
+    if(pid==0) {
+      setenv("AINVR_AI_ACTIVE_CHANNELS",raw,1);
+      try {
+        const auto n=ainvr::ActiveChannelLimit();
+        _exit(std::string(raw)=="2" && n==2 ? 0 : 1);
+      } catch(const std::invalid_argument& e) {
+        const std::string message=e.what();
+        _exit(std::string(raw)!="2" && message.find("channel count")!=std::string::npos &&
+          message.find("MiB")==std::string::npos ? 0 : 2);
+      }
+    }
+    int status=0;ASSERT_EQ(waitpid(pid,&status,0),pid);
+    ASSERT_TRUE(WIFEXITED(status));EXPECT_EQ(WEXITSTATUS(status),0)<<raw;
+  }
+}

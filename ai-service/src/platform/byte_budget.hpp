@@ -54,8 +54,14 @@ class ByteBudget {
 inline ByteBudget& EncodedBudget(){static ByteBudget pool(MemorySetting("AINVR_AI_AU_TOTAL_MIB",384ULL<<20));return pool;}
 inline uint64_t EncodedChannelLimit(){static auto value=MemorySetting("AINVR_AI_AU_CHANNEL_MIB",96ULL<<20);return value;}
 inline uint64_t ActiveChannelLimit(){
- static const auto count=[](){const auto n=MemorySetting("AINVR_AI_ACTIVE_CHANNELS",8ULL<<20)>>20;
-   if(n>64)throw std::invalid_argument("AINVR_AI_ACTIVE_CHANNELS must be in [1,64]");return n;}();return count;
+ static const auto count=[]()->uint64_t {
+   const char* raw=std::getenv("AINVR_AI_ACTIVE_CHANNELS");if(!raw)return 8;
+   std::string value(raw);uint64_t n=0;
+   const auto [end,ec]=std::from_chars(value.data(),value.data()+value.size(),n);
+   if(ec!=std::errc{}||end!=value.data()+value.size()||n<1||n>64)
+     throw std::invalid_argument("AINVR_AI_ACTIVE_CHANNELS must be an integer channel count in [1,64]");
+   return n;
+ }();return count;
 }
 inline ByteBudget& ActiveChannels(){static ByteBudget pool(ActiveChannelLimit());return pool;}
 inline std::shared_ptr<ByteBudget::Ticket> AcquireChannelSlot(const std::string& owner){
