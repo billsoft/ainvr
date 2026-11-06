@@ -151,3 +151,26 @@ test('focus uncertain class cannot be converted to false-positive',mongo,()=>fix
 test('focus grant cannot accept a binary template disguised with an ABC layout',mongo,()=>fixture(async f=>{
  f.setCorrupt(r=>{r.template='alarm-review-zh-v1'});await f.worker.step();pending(await f.read());assert.equal((await f.read()).review.reason,'invalid_model_result');
 },{authorization:focusGrant,scores:[.999]}));
+
+test('rule evidence conflict blocks inference and preserves manual disposition',mongo,()=>fixture(async f=>{
+ await f.events.updateOne({alarm_id:f.row.alarm_id},{$set:{'analysis_evidence.review_context.trace.1.track_id':'wrong-target'}});
+ await f.worker.step();const row=await f.read();pending(row);assert.equal(f.calls.length,0);assert.equal(row.review.reason,'rule_evidence_conflict');assert.equal(row.review.rule_evidence.blocking,true);assert.equal(row.review.token,undefined);
+},{authorization:focusGrant,scores:[]}));
+
+test('zoned appearance keeps identical historical zone in tight and expanded inputs',mongo,()=>fixture(async f=>{
+ const points=[[0,0],[1,0],[1,1],[0,1]];
+ await f.events.updateOne({alarm_id:f.row.alarm_id},{$set:{'rule.snapshot.points':points,'rule.snapshot.zone_id':'zone','rule.snapshot.anchor':'center'}});
+ await f.worker.step();const r=await f.read();assert.equal(r.handling.reviewed_by_kind,'ai');assert.equal(f.calls.length,4);
+ for(const body of f.calls){assert.deepEqual(body.preparation.region,points);assert.equal(body.alarm.rule_context.region_required,true);}
+},{authorization:focusGrant,scores:[.979,.98,.995,.996]}));
+test('strong wider same-target evidence rescues a weak tight frame and audits the policy',mongo,()=>fixture(async f=>{
+ f.setCorrupt((r,i)=>{if(i===0)r.class_scores={person:r.real_score,non_person:.012,uncertain:1-r.real_score-.012}});
+ await f.worker.step();const r=await f.read();assert.equal(r.handling.reviewed_by_kind,'ai');assert.equal(r.review.secondary.reason,'focused_context_rescued');assert.equal(r.review.secondary.context_rescue.minimum_primary_person,.85);assert.equal(r.review.decision_path,'expanded_confirmation');
+},{authorization:focusGrant,scores:[.878,.9996,.9966,.9989]}));
+
+test('spatial audit preserves the storage metadata returned by the image store',mongo,()=>fixture(async f=>{
+ const points=[[0,0],[1,0],[1,1],[0,1]];
+ await f.events.updateOne({alarm_id:f.row.alarm_id},{$set:{'rule.snapshot.points':points,'rule.snapshot.zone_id':'zone','rule.snapshot.anchor':'center'}});
+ f.setCorrupt((r,i,body)=>{if(i===4){r.template='spatial-review-abc-v1';r.review_scope='single_frame_spatial_shadow';r.spatial_scores={supported:.2,contradicted:.3,uncertain:.5};r.prepared_image={layout:'scene-review-v1',marker:'green-target-box',width:896,height:448,target:body.preparation.target,region:points};}});
+ await f.worker.step();const r=await f.read();pending(r);assert.equal(f.calls.length,5);assert.equal(r.review.spatial.state,'completed');assert.equal(r.review.spatial_frames[0].storage,undefined);assert.equal(r.review.spatial_frames[0].layout,'scene-review-v1');assert.deepEqual(r.review.spatial_frames[0],r.review.spatial.frame);
+},{authorization:focusGrant,scores:[.6,.7,.6,.7,.2]}));

@@ -44,3 +44,13 @@ test('malformed or binary results cannot masquerade as three-way evidence',()=>{
  for(const patch of [{template:'alarm-review-zh-v1'},{score_kind:'two_way_softmax_uncalibrated'},{class_scores:{person:.99,non_person:.8,uncertain:0}},{real_score:.5},{submitted_prompt:''}])assert.equal(validFocusEnvelope({...valid,...patch}),false);
  assert.equal(classify([{person:.01,non_person:.99,uncertain:.9}],[]).outcome,'uncertain');
 });
+
+test('wider context rescues weak tight evidence only under explicit paired grant and per-frame safeguards',()=>{
+ const run=(primary,context,extra={})=>focusAssessment({primary,context,complete:true,policy:FOCUS_DEFAULTS,rule:{approve_above:.95},pairedSupport:{minimum_frame_score:.85,strong_frame_score:.95},...extra});
+ assert.equal(run([{person:.878,non_person:.012,uncertain:.110},person(.9996)],[person(.9966),person(.9989)]).reason,'focused_context_rescued');
+ for(const patch of [{pairedSupport:undefined},{pairedSupport:{minimum_frame_score:.84,strong_frame_score:.95}},{complete:false}])assert.equal(run([{person:.878,non_person:.012,uncertain:.110}],[person(.999)],patch).outcome,'uncertain');
+ for(const scores of [[{person:.86,non_person:.1,uncertain:.04}], [{person:.84,non_person:.01,uncertain:.15}], [{person:.80,non_person:.01,uncertain:.19}]])assert.equal(run(scores,[person(.999)]).outcome,'uncertain');
+ assert.equal(run([{person:.878,non_person:.012,uncertain:.110},person(.999)],[person(.999),person(.94)]).outcome,'uncertain');
+ assert.equal(run([{person:.878,non_person:.012,uncertain:.110}],[person(.995)],{rule:{approve_above:.999}}).outcome,'uncertain');
+ assert.equal(run([other(.999)],[person(.999)]).outcome,'uncertain');
+});

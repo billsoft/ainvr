@@ -1,3 +1,5 @@
+import {spatialShadow} from './review-spatial.mjs';
+import {buildReviewEvidence,reviewTaskContext} from './review-evidence.mjs';
 import {FOCUS_PROMPT_VERSION,FOCUS_PROMPT,focusPreparation,validFocusResult,validFocusEnvelope,focusAssessment} from './review-focus.mjs';
 import {REVIEW_DECISION_VERSION,SECONDARY_REVIEW_VERSION,secondaryPrompt,secondaryAssessment,expandedTarget,nonTargetPrompt} from './review-secondary.mjs';
 import {reviewAuthorization,authorizedResult,confirmationAssessment} from './review-authorization.mjs';
@@ -54,6 +56,8 @@ export class ReviewWorker{
    'review.policy':row.review.policy,rule:row.rule,analysis_evidence:row.analysis_evidence};
   try{
    if(row.review.attempt>this.policy.max_attempts)throw Error('retry_exhausted');
+   const evidence=buildReviewEvidence(row);row.review.rule_evidence=evidence;
+   if(evidence.blocking){await this.rows.updateOne(fence,{$set:{'review.rule_evidence':evidence,'review.state':'uncertain','review.reason':'rule_evidence_conflict','review.lease_until':0},$unset:{'review.token':'','review.checkpoint':''}});return true;}
    const proof=reviewSamples(row);if(!proof.ok||!proof.samples.length||proof.samples.length>4)throw Error('incomplete_trajectory');
    const plan=this.context.prepareInputs?await this.context.prepareInputs(row,proof):null;
    const limited=plan?.confirm_only===true;
@@ -79,11 +83,11 @@ export class ReviewWorker{
     const {data}=input.data?input:await this.context.image(row,sample);
     const prompt=focused?{label:'person',description:FOCUS_PROMPT}:reviewDescription(row,sample);
     const crop=input.source_kind==='retained_target';
-    const preparation=focused?{...focusPreparation(crop?{bbox:{x:0,y:0,w:1,h:1}}:sample,crop?{width:1,height:1}:row.analysis_evidence.source),region:crop||row.rule.snapshot.behavior==='appearance'?[]:row.rule.snapshot.points??[]}:null;
+    const preparation=focused?{...focusPreparation(crop?{bbox:{x:0,y:0,w:1,h:1}}:sample,crop?{width:1,height:1}:row.analysis_evidence.source),region:crop?[]:row.rule.snapshot.points??[]}:null;
     submittedPrompts.push({frame_id:sample.frame_id,label:prompt.label,description:prompt.description,caller_template:promptVersion,scope:'target_category_only',alarm_kind:prompt.label,source_kind:input.source_kind,input_sha256:digest(data.toString('base64'))});
     const result=await checkpoints.run('primary',sample.frame_id,{image:{jpeg_base64:data.toString('base64'),fit:'letterbox'},
       preparation:preparation??{version:1,layout:'target-crop-v1',region:crop?[]:row.rule.snapshot.points??[],approach_width_fraction:!crop&&row.rule.snapshot.behavior==='region_approach'?row.rule.snapshot.approach_px/row.analysis_evidence.source.width:0,target:crop?[0,0,1,1]:[sample.bbox.x/row.analysis_evidence.source.width,sample.bbox.y/row.analysis_evidence.source.height,(sample.bbox.x+sample.bbox.w)/row.analysis_evidence.source.width,(sample.bbox.y+sample.bbox.h)/row.analysis_evidence.source.height]},
-      alarm:{kind:prompt.label,description:prompt.description}},async result=>{
+      alarm:{kind:prompt.label,description:prompt.description,...(focused?{rule_context:reviewTaskContext(row,sample)}:{})}},async result=>{
       if(result?.schema!=='ainvr.alarm_review.v1'||!/^[a-f0-9]{64}$/.test(result?.model?.package_sha256??''))throw Error('invalid_model_result');
       classify(result.real_score,row.review.policy);
       if(focused&&(!validFocusResult(result.prepared_image,preparation)||!validFocusEnvelope(result)))throw Error('invalid_model_result');
@@ -122,9 +126,9 @@ export class ReviewWorker{
       if(!await this.rows.findOne(fence,{projection:{alarm_id:1}}))return true;
       if((await this.authorization())?.id!==authorizationId){stillAuthorized=false;break;}
       const {data}=input.data?input:await this.context.image(row,input.sample);
-      const preparation=focused?{...focusPreparation(input.sample,row.analysis_evidence.source,'context'),region:row.rule.snapshot.behavior==='appearance'?[]:row.rule.snapshot.points??[]}:null;
+      const preparation=focused?{...focusPreparation(input.sample,row.analysis_evidence.source,'context'),region:row.rule.snapshot.points??[]}:null;
       const target=preparation?.target??expandedTarget(input.sample,row.analysis_evidence.source);
-      const second=await checkpoints.run('expanded',input.sample.frame_id,{image:{jpeg_base64:data.toString('base64'),fit:'letterbox'},preparation:preparation??{version:1,layout:'target-crop-v1',region:[],target},alarm:{kind:label,description:review.secondary.prompt}},async second=>{
+      const second=await checkpoints.run('expanded',input.sample.frame_id,{image:{jpeg_base64:data.toString('base64'),fit:'letterbox'},preparation:preparation??{version:1,layout:'target-crop-v1',region:[],target},alarm:{kind:label,description:review.secondary.prompt,...(focused?{rule_context:reviewTaskContext(row,input.sample)}:{})}},async second=>{
        if(second?.schema!=='ainvr.alarm_review.v1'||second.model?.package_sha256!==result.model.package_sha256||!authorizedResult(authorization,{...second,caller_template:promptVersion,target_label:label})||second.prepared_image?.target?.length!==4||second.prepared_image.target.some((v,i)=>!Number.isFinite(v)||Math.abs(v-target[i])>1e-6))throw Error('invalid_model_result');
        classify(second.real_score,row.review.policy);
        if(focused&&(!validFocusResult(second.prepared_image,preparation)||!validFocusEnvelope(second)))throw Error('invalid_model_result');
@@ -153,11 +157,13 @@ export class ReviewWorker{
       }
      }
      if(stillAuthorized){
-      Object.assign(review.secondary,focused?focusAssessment({primary:results.map(r=>r.class_scores),context:review.secondary.frame_class_scores,policy:authorization.focus,rule:row.review.policy,complete}):secondaryAssessment({primaryScores:scores,contextScores:review.secondary.frame_scores,negativeEvidenceScores:review.secondary.non_target_evidence?.frame_scores,rule:{...row.review.policy,approve_above:Math.max(row.review.policy.approve_above,authorization.approve_above)},policy:authorization.secondary,complete,pairedRule:row.review.policy}),{state:'completed',completed_at:new Date(this.clock()).toISOString()});
+      Object.assign(review.secondary,focused?focusAssessment({primary:results.map(r=>r.class_scores),context:review.secondary.frame_class_scores,policy:authorization.focus,rule:row.review.policy,complete,pairedSupport:authorization.secondary.paired_support}):secondaryAssessment({primaryScores:scores,contextScores:review.secondary.frame_scores,negativeEvidenceScores:review.secondary.non_target_evidence?.frame_scores,rule:{...row.review.policy,approve_above:Math.max(row.review.policy.approve_above,authorization.approve_above)},policy:authorization.secondary,complete,pairedRule:row.review.policy}),{state:'completed',completed_at:new Date(this.clock()).toISOString()});
       operatorConfirmed=review.secondary.outcome==='confirmed';operatorRejected=review.secondary.outcome==='false_positive';
      }else review.secondary.reason='authorization_changed';
     }
    }
+   // Shadow spatial task has a single-frame budget and no authority to settle an alarm.
+   if(focused&&!limited&&!operatorConfirmed&&!operatorRejected&&row.rule.snapshot.points?.length&&stillAuthorized&&await this.rows.findOne(fence,{projection:{alarm_id:1}})){review.spatial=await spatialShadow({row,evidence,input:inputs.at(-1),context:this.context,invoke:this.invoke,modelHash:result.model.package_sha256});if(review.spatial.key)review.spatial_frames=[review.spatial.frame];}
    // Authorization can be revoked while either pass runs. The human/generation
    // fence is checked again atomically by the final database update.
    stillAuthorized=stillAuthorized&&(await this.authorization())?.id===authorizationId;
@@ -171,7 +177,7 @@ export class ReviewWorker{
    review.decision_path=handled?(validatedDecision?(state==='supported'?'primary_confirmation':null):operatorRejected?'explicit_non_target':review.auto_confirmation.outcome==='confirmed'?'primary_confirmation':'expanded_confirmation'):null;
    // Durable results are only for incomplete attempts, not permanent alarm blobs.
    delete review.checkpoint;
-   if((operatorConfirmed||operatorRejected)&&!validatedDecision)review.authorization={...(focused?{focus:authorization.focus}:{}),id:authorizationId,mode:authorization.mode,authorized_by:authorization.authorized_by,authorized_at:authorization.authorized_at,threshold:Math.max(focused?authorization.focus.strong_frame_score:authorization.approve_above,row.review.policy.approve_above),minimum_frame_score:Math.max(focused?authorization.focus.minimum_frame_score:authorization.minimum_frame_score??authorization.approve_above,row.review.policy.approve_above),...(authorization.secondary?{secondary:authorization.secondary}:{}),accuracy_validated:false};
+   if((operatorConfirmed||operatorRejected)&&!validatedDecision)review.authorization={...(review.secondary?.context_rescue?{context_rescue:review.secondary.context_rescue}:{}),...(focused?{focus:authorization.focus}:{}),id:authorizationId,mode:authorization.mode,authorized_by:authorization.authorized_by,authorized_at:authorization.authorized_at,threshold:Math.max(focused?authorization.focus.strong_frame_score:authorization.approve_above,row.review.policy.approve_above),minimum_frame_score:Math.max(focused?authorization.focus.minimum_frame_score:authorization.minimum_frame_score??authorization.approve_above,row.review.policy.approve_above),...(authorization.secondary?{secondary:authorization.secondary}:{}),accuracy_validated:false};
    if(handled)delete review.reference;
    if((!validated||focused)&&!handled){
     review.state='waiting_validation';review.reason=stillAuthorized?'manual_review_required':'unvalidated_profile';review.attempt=0;

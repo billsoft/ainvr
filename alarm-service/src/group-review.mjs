@@ -1,3 +1,4 @@
+import {buildReviewEvidence} from './review-evidence.mjs';
 // A group is a claim about a set. Keep uncertainty in the upper bound.
 import {createHash} from 'node:crypto';
 import {missingVisual} from './review-visual-evidence.mjs';
@@ -34,6 +35,7 @@ function separate(a,b){
   return a.label_id!==b.label_id||iou(a.bbox,b.bbox)<=SAME_LABEL_IOU;
 }
 export function groupDecision(row,scores,auth){
+  if(buildReviewEvidence(row).blocking)return 'uncertain';
   const rule=row.rule.snapshot,g=row.analysis_evidence.group;
   if(!auth||g.proof_version!==2||row.analysis_evidence.group_digest!==digest([rule,g,row.frame_id,row.stream_session_id])||
      g.members.length!==scores.length||!enough(g.members,rule)||new Set(g.members.map(m=>m.sample.track_id)).size!==g.members.length)return 'uncertain';

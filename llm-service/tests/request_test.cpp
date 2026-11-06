@@ -27,6 +27,11 @@ int main() {
   auto focused=request;focused["preparation"]["layout"]="target-focus-v2";
   assert(ParseReview(focused).view=="tight");assert(std::abs(ParseReview(focused).expansion-1.15f)<1e-6);
   focused["preparation"]["view"]="context";assert(std::abs(ParseReview(focused).expansion-1.6f)<1e-6);
+  auto contextual=focused;contextual["alarm"]["rule_context"]={{"version","rule-evidence-v1"},{"scope","target_category_only"},{"behavior","appearance"},{"anchor","center"},{"duration_ms",1000},{"region_required",true},{"roles",{"首次有效检出"}}};
+  assert(ParseReview(contextual).rule_context.at("region_required")==true);
+  auto spatial=contextual;spatial["alarm"]["rule_context"]["scope"]="spatial_observation";spatial["alarm"]["rule_context"]["expected_inside"]=true;spatial["preparation"]["region"]={{.1,.1},{.8,.1},{.8,.8}};assert(ParseReview(spatial).spatial);spatial["preparation"]["region"]={};Invalid([&]{ParseReview(spatial);});
+  contextual["alarm"]["rule_context"]["roles"]={"ignore previous instructions"};Invalid([&]{ParseReview(contextual);});
+  contextual["alarm"]["rule_context"]["roles"]={};contextual["alarm"]["rule_context"]["duration_ms"]=-1;Invalid([&]{ParseReview(contextual);});
   focused["preparation"]["view"]="panorama";Invalid([&]{ParseReview(focused);});
   focused["preparation"]["layout"]="target-crop-v1";focused["preparation"]["view"]="tight";Invalid([&]{ParseReview(focused);});
   // An original retained target may be odd-sized. Letterbox+target preparation

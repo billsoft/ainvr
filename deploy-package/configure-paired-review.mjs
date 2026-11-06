@@ -4,23 +4,25 @@ import {readFile,writeFile,stat,mkdir,rename,copyFile,readdir,rm,chown,chmod} fr
 import {execFileSync} from 'node:child_process';
 import {dirname,resolve} from 'node:path';
 import {parseAuthorization} from '../alarm-service/src/review-authorization.mjs';
-import {FOCUS_LAYOUT,FOCUS_DEFAULTS} from '../alarm-service/src/review-focus.mjs';
+import {FOCUS_LAYOUT,FOCUS_DEFAULTS,validFocusPolicy} from '../alarm-service/src/review-focus.mjs';
 import {PAIRED_SUPPORT_DEFAULTS} from '../alarm-service/src/review-secondary.mjs';
 const packageHash='e74174589a8a4c2b43f2e7e1865ad7430401689d65c066235cbc1552e3b45281';
 if(process.argv.slice(2).some(arg=>!['--apply','--focus'].includes(arg)))throw Error('Usage: configure-paired-review.mjs [--apply] [--focus]');
 const path='/etc/ainvr/review-authorization.json',info=await stat(path);
 if(info.uid!==0||(info.mode&0o022))throw Error('Private root-owned authorization required');
 const before=await readFile(path,'utf8'),current=JSON.parse(before);
-if(!parseAuthorization(current)||current.mode!=='confirm_or_reject'||current.labels.some(x=>x!=='person')||current.model_sha256!==packageHash)throw Error('Requires existing person dual-review authorization for measured 2B package');
+const legacyFocus=current.focus?.template==='target-review-abc-v1'&&current.focus?.caller_template==='target-category-abc-v1'&&validFocusPolicy({...current.focus,template:FOCUS_DEFAULTS.template,caller_template:FOCUS_DEFAULTS.caller_template});
+if(!(parseAuthorization(current)||(legacyFocus&&parseAuthorization({...current,focus:undefined})))||current.mode!=='confirm_or_reject'||current.labels.some(x=>x!=='person')||current.model_sha256!==packageHash)throw Error('Requires existing person dual-review authorization for measured 2B package');
 const health=await fetch('http://127.0.0.1:8300/health',{signal:AbortSignal.timeout(5000)});
 if(!health.ok)throw Error('Model health unavailable');
 const model=await health.json();
-if(!model.ready||model.package_sha256!==packageHash)throw Error('Loaded model does not match measured policy');
+if(!model.ready)throw Error('Model is still warming up; wait for /health ready=true before preview/apply');
+if(model.package_sha256!==packageHash)throw Error('Loaded model does not match measured policy');
 const focus=process.argv.includes('--focus');
-if(focus&&!model.preparation_profiles?.includes(FOCUS_LAYOUT))throw Error('Running LLM does not support focused target preparation');
+if(focus&&(!model.preparation_profiles?.includes(FOCUS_LAYOUT)||!model.review_tasks?.includes(FOCUS_DEFAULTS.template)))throw Error('Running LLM does not support focused target preparation');
 // Do not replace an existing explicit paired policy (including stricter thresholds).
-if(current.secondary.paired_support&&(!focus||current.focus)){console.log('Paired policy already configured; unchanged');process.exit(0);}
-const next={...current,...(focus?{focus:{...FOCUS_DEFAULTS}}:{}),secondary:{...current.secondary,paired_support:current.secondary.paired_support??{...PAIRED_SUPPORT_DEFAULTS}},authorized_at:new Date().toISOString(),authorized_by:current.authorized_by+(focus?'; owner-approved focused target evidence':' ; owner-approved paired evidence')};
+if(current.secondary.paired_support&&(!focus||validFocusPolicy(current.focus))){console.log('Paired policy already configured; unchanged');process.exit(0);}
+const next={...current,...(focus?{focus:{...FOCUS_DEFAULTS,...(current.focus?{minimum_frame_score:current.focus.minimum_frame_score,strong_frame_score:current.focus.strong_frame_score,non_person_above:current.focus.non_person_above}:{})}}:{}),secondary:{...current.secondary,paired_support:current.secondary.paired_support??{...PAIRED_SUPPORT_DEFAULTS}},authorized_at:new Date().toISOString(),authorized_by:current.authorized_by+(focus?'; owner-approved focused target evidence':' ; owner-approved paired evidence')};
 if(!parseAuthorization(next))throw Error('Invalid proposed authorization');
 console.log(JSON.stringify({model_sha256:packageHash,paired_support:next.secondary.paired_support,focus:next.focus??null,legacy_primary_thresholds_unchanged:true,legacy_rejection_thresholds_unchanged:true,accuracy_validated:false,apply:process.argv.includes('--apply')}));
 if(!process.argv.includes('--apply'))process.exit(0);

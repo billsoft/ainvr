@@ -7,8 +7,8 @@ import {request} from '@/api/httpClient'
 import {reviewTrajectorySegments} from '@/features/reviewTrajectory'
 
 const roleNames:Record<string,string>={start:'开始',before:'进入前',after:'进入后',trigger:'触发时刻',entry_before:'进入前',entry_after:'进入后',exit_before:'离开前',exit_after:'离开后',first:'首次检出',entered:'进入后',exited:'离开后'}
-type ImageMode='original'|'marked'|'model'|'context'
-const modeNames={original:'原图',marked:'区域与目标',model:'模型输入预览',context:'扩大范围复核输入'}
+type ImageMode='original'|'marked'|'model'|'context'|'spatial'
+const modeNames={original:'原图',marked:'区域与目标',model:'模型输入预览',context:'扩大范围复核输入',spatial:'空间核对输入'}
 function imageRatio(size:{width?:number;height?:number}|undefined){
  return size&&Number.isFinite(size.width)&&Number.isFinite(size.height)&&size.width!>0&&size.height!>0?`${size.width}/${size.height}`:undefined
 }
@@ -16,18 +16,19 @@ function imageRatio(size:{width?:number;height?:number}|undefined){
 export function ReviewFrames({alarm}:{alarm:AlarmEvent}){
  const [mode,setMode]=useState<ImageMode>('marked')
  const [showTarget,setShowTarget]=useState(true)
+ const [showFill,setShowFill]=useState(true)
  const [selected,setSelected]=useState<string|null>(null)
  const [failed,setFailed]=useState<Record<string,boolean>>({})
  const [images,setImages]=useState<Record<string,string>>({})
  useEffect(()=>{
   let active=true;setImages({});setFailed({})
-  for(const f of [...(alarm.review?.frames??[]),...(alarm.review?.prepared_frames??[]),...(alarm.review?.secondary_frames??[])]){
+  for(const f of new Map([...(alarm.review?.frames??[]),...(alarm.review?.prepared_frames??[]),...(alarm.review?.secondary_frames??[]),...(alarm.review?.spatial_frames??[])].map(f=>[f.key,f])).values()){
    void request<{jpeg_base64:string}>(`/alarms/events/${encodeURIComponent(alarm.alarm_id)}/review-frames/${f.key}`)
     .then(v=>{if(active)setImages(old=>({...old,[f.key]:`data:image/jpeg;base64,${v.jpeg_base64}`}))})
     .catch(()=>{if(active)setFailed(old=>({...old,[f.key]:true}))})
   }
   return()=>{active=false}
- },[alarm.alarm_id,alarm.review?.frames,alarm.review?.prepared_frames,alarm.review?.secondary_frames])
+ },[alarm.alarm_id,alarm.review?.frames,alarm.review?.prepared_frames,alarm.review?.secondary_frames,alarm.review?.spatial_frames])
  const source=alarm.analysis_evidence?.source,context=alarm.analysis_evidence?.review_context
  const frames=alarm.review?.frames??[]
  const activeKey=frames.some(f=>f.key===selected)?selected:frames.at(-1)?.key
@@ -42,26 +43,28 @@ export function ReviewFrames({alarm}:{alarm:AlarmEvent}){
  const prepared=alarm.review?.prepared_frames?.slice().reverse().find(p=>p.frame_id===frame.frame_id)
  const recorded=alarm.review?.secondary?.frames.find(f=>f.frame_id===frame.frame_id)
  const contextInput=recorded?alarm.review?.secondary_frames?.find(f=>f.frame_id===recorded.frame_id&&f.key===recorded.key):undefined
- const key=displayMode==='context'?contextInput?.key:displayMode==='model'?prepared?.key:frame.key
- const size=displayMode==='context'?contextInput:displayMode==='model'?prepared:fullFrame?source:frame
+ const spatialInput=alarm.review?.spatial_frames?.find(f=>f.frame_id===frame.frame_id)
+ const key=displayMode==='spatial'?spatialInput?.key:displayMode==='context'?contextInput?.key:displayMode==='model'?prepared?.key:frame.key
+ const size=displayMode==='spatial'?spatialInput:displayMode==='context'?contextInput:displayMode==='model'?prepared:fullFrame?source:frame
  const submitted=alarm.review?.submitted_prompts?.find(p=>p.frame_id===frame.frame_id)
- const hasRegion=alarm.behavior!=='appearance'&&!!context?.region
+ const hasRegion=!!context?.region?.points?.length
  const limited=alarm.review?.evidence_mode==='verified_behavior_available_visuals'
  const href=keyframePlaybackHref(alarm,frame.captured_at)
  return <section aria-label="审核关键帧" className="space-y-2">
   <h3 className="text-sm font-medium">审核关键帧 · 区域与目标位置</h3>
   {limited&&<p role="note" className="rounded-base border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">部分全景关键帧未留存{alarm.review?.missing_frame_ids?.length?`（${alarm.review.missing_frame_ids.length} 帧）`:''}。行为由规则引擎的完整观测证据核验，现有图片只核对目标类别；此模式只能用于确认，不能自动判为误报。</p>}
   <div className="flex flex-wrap gap-2" role="group" aria-label="证据图像类型">
-   {(['original','marked',...(alarm.review?.prepared_frames?.length?['model' as const]:[]),...(alarm.review?.secondary||alarm.review?.secondary_frames?.length?['context' as const]:[])] as const).map(value=><button key={value} type="button" className="btn-secondary min-h-11" disabled={value==='marked'&&!fullFrame} aria-pressed={displayMode===value} onClick={()=>setMode(value)}>{modeNames[value]}</button>)}
+   {(['original','marked',...(alarm.review?.prepared_frames?.length?['model' as const]:[]),...(alarm.review?.secondary||alarm.review?.secondary_frames?.length?['context' as const]:[]),...(alarm.review?.spatial_frames?.length?['spatial' as const]:[])] as const).map(value=><button key={value} type="button" className="btn-secondary min-h-11" disabled={value==='marked'&&!fullFrame} aria-pressed={displayMode===value} onClick={()=>setMode(value)}>{modeNames[value]}</button>)}
+   {displayMode==='marked'&&fullFrame&&hasRegion&&<button type="button" className="btn-secondary min-h-11" aria-pressed={showFill} onClick={()=>setShowFill(v=>!v)}>区域填充</button>}
    {displayMode==='marked'&&fullFrame&&<button type="button" className="btn-secondary min-h-11" aria-pressed={showTarget} onClick={()=>setShowTarget(v=>!v)}>目标与轨迹</button>}
   </div>
   {retainedTarget&&<p className="text-xs text-ink-subtle">目标原始特写 · 对应本次触发帧。全景热区和轨迹不叠加在特写上，避免混用坐标。</p>}
   <figure className="overflow-hidden rounded-base border border-line">
    <div className="relative mx-auto bg-slate-950" style={{aspectRatio:imageRatio(size),maxHeight:'48dvh'}}>
-    {key&&images[key]?<img src={images[key]} alt={`关键帧 ${index+1}`} className="h-full max-h-[48dvh] w-full object-contain"/>:<p className="p-4 text-sm text-ink-subtle">{displayMode==='context'&&!contextInput?'未记录此关键帧的扩大范围复核输入':displayMode==='model'&&!prepared?'尚未生成模型输入':key&&failed[key]?'关键帧暂不可用或已过保留期':'正在读取关键帧…'}</p>}
+    {key&&images[key]?<img src={images[key]} alt={`关键帧 ${index+1}`} className="h-full max-h-[48dvh] w-full object-contain"/>:<p className="p-4 text-sm text-ink-subtle">{displayMode==='spatial'&&!spatialInput?'本次只抽取一个关键时刻进行空间核对，请选择对应关键帧':displayMode==='context'&&!contextInput?'未记录此关键帧的扩大范围复核输入':displayMode==='model'&&!prepared?'尚未生成模型输入':key&&failed[key]?'关键帧暂不可用或已过保留期':'正在读取关键帧…'}</p>}
     {displayMode==='marked'&&fullFrame&&source&&images[frame.key]&&<svg viewBox={`0 0 ${source.width} ${source.height}`} className="pointer-events-none absolute inset-0 h-full w-full" preserveAspectRatio="xMidYMid meet">
      {hasRegion&&context?.region&&context.approach_px!=null&&<ApproachBand points={context.region.points} width={source.width} height={source.height} percent={context.approach_px/source.width*100}/>}
-     {hasRegion&&context?.region&&<polygon points={context.region.points.map(p=>`${p[0]*source.width},${p[1]*source.height}`).join(' ')} fill="#2563eb" fillOpacity="0.15" stroke="#60a5fa" strokeWidth="2" vectorEffect="non-scaling-stroke"/>}
+     {hasRegion&&context?.region&&<polygon points={context.region.points.map(p=>`${p[0]*source.width},${p[1]*source.height}`).join(' ')} fill="#2563eb" fillOpacity={showFill?.12:0} stroke="#60a5fa" strokeWidth="2" vectorEffect="non-scaling-stroke"/>}
      {showTarget&&(context?.schema_version==='2.0'?(context.trace??[]).filter(s=>BigInt(s.source_pts_ns)<=BigInt(frame.source_pts_ns)).map(s=><circle key={s.frame_id} cx={s.bbox.x+s.bbox.w/2} cy={s.bbox.y+s.bbox.h*(context.anchor==='center'?.5:1)} r={source.width/400} fill="#fbbf24"/>):reviewTrajectorySegments(context?.trace??[],frame.source_pts_ns,context?.anchor).map((points,i)=><polyline key={i} points={points} fill="none" stroke="#fbbf24" strokeWidth="2" vectorEffect="non-scaling-stroke"/>))}
      {showTarget&&<><circle aria-label="当前判定点" cx={frame.bbox.x+frame.bbox.w/2} cy={frame.bbox.y+frame.bbox.h*(context?.anchor==='center'?.5:1)} r={source.width/160} fill="#fbbf24" stroke="#0f172a" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
      <rect x={frame.bbox.x} y={frame.bbox.y} width={frame.bbox.w} height={frame.bbox.h} fill="none" stroke="#34d399" strokeWidth="2" vectorEffect="non-scaling-stroke"/></>}
@@ -78,6 +81,7 @@ export function ReviewFrames({alarm}:{alarm:AlarmEvent}){
   {fullFrame&&<p className="text-xs text-ink-subtle">{hasRegion?'蓝色边界与淡蓝填充是布防区；':'本告警没有布防区；'}绿框是本次目标（可关闭显示）；黄色大点是当前判定点（{context?.anchor==='center'?'框中心':'底边中点'}），小点是关键帧位置，虚线是接近范围。框的重叠本身不等于侵入，连续过程以规则证据和录像为准。</p>}
   <p className="text-xs text-ink-subtle">{alarm.review?.input_profile==='target-focus-v2'?'模型实际输入保留蓝色布防边界，不填充以免改变原始颜色；灰边表示无图像区域。':'此标记图供人工核对。'}绿框如有表示本次目标；特写核对目标类别，{alarm.review?.secondary?'扩大截图范围补充周围线索，仍核对同一个目标。':''}越界、区域与持续时间等行为几何条件仍由规则引擎判断。</p>
   {displayMode==='context'&&(alarm.review?.secondary?.prompt?<details className="rounded-base border border-line p-2 text-xs"><summary className="min-h-11 cursor-pointer py-2">当次扩大范围复核说明</summary><p className="whitespace-pre-wrap break-words">{alarm.review.secondary.system_prompt??alarm.review.secondary.prompt}</p></details>:<p className="text-xs">未记录当次扩大范围复核说明。</p>)}
+  {alarm.review?.spatial&&<details className="rounded-base border border-line p-2 text-xs"><summary className="min-h-11 cursor-pointer py-2">空间关系独立核对 · 旁路验证</summary><p>此结果尚未参与自动处理，只核对一帧的区域关系，不代表完整进入或穿越过程已由模型确认。</p>{alarm.review.spatial.scores?<p className="my-2">支持 {alarm.review.spatial.scores.supported.toFixed(3)} · 矛盾 {alarm.review.spatial.scores.contradicted.toFixed(3)} · 无法确定 {alarm.review.spatial.scores.uncertain.toFixed(3)}（模型分数，不是概率）</p>:<p>本次空间核对不可用；原审核依据仍单独保留。</p>}<p className="whitespace-pre-wrap break-words">{alarm.review.spatial.prompt}</p></details>}
   {submitted?<details className="rounded-base border border-line p-2 text-xs"><summary className="min-h-11 cursor-pointer py-2">当次提交给 AI 的说明</summary><p className="mt-2 whitespace-pre-wrap break-words">{submitted.system_prompt??submitted.description}</p></details>:<p className="text-xs text-ink-subtle">此记录尚无留存的当次 AI 说明；不会用当前配置替代历史输入。</p>}
  </section>
 }

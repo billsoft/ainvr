@@ -1,3 +1,4 @@
+import {buildReviewEvidence} from './review-evidence.mjs';
 // Legacy reference scores remain advisory. Only evidence-v2 groups enter adjudication.
 import {assessMember,groupDecision,sharedWitness,inconclusiveReason} from './group-review.mjs';
 import {reviewAuthorization} from './review-authorization.mjs';
@@ -7,6 +8,8 @@ export class ReferenceReviewWorker {
  constructor({rows,image,prepare,invoke,context,authorization=reviewAuthorization,clock=()=>Date.now()}){Object.assign(this,{rows,image,prepare,invoke,context,authorization,clock});}
  async groupStep(row,member,index,fence){
   const group=row.analysis_evidence.group;
+  const evidence=buildReviewEvidence(row);
+  if(evidence.blocking){await this.rows.updateOne(fence,{$set:{'review.rule_evidence':evidence,'review.state':'uncertain','review.reason':'rule_evidence_conflict','review.reference.state':'completed','review.reference.lease_until':0}});return;}
   Object.assign(fence,{rule:row.rule,analysis_evidence:row.analysis_evidence,'review.policy':row.review.policy,
     'review.group_scores':row.review.group_scores??{$exists:false}});
   const auth=await this.authorization();
@@ -43,7 +46,7 @@ export class ReferenceReviewWorker {
   if(verdict!=='uncertain'&&(await this.authorization())?.id!==current.id)verdict='uncertain';
   const auto=verdict!=='uncertain',at=new Date(this.clock()).toISOString();
   const frames=[...new Map([...(row.review.frames??[]),...refs].map(r=>[r.key,r])).values()];
-  const set={'review.group_scores':scores,'review.frames':frames,'review.reference':{state:complete?'completed':'queued',attempt:0,next_attempt_at:0,scope:'group_visual_evidence',automatic_decision:auto}};
+  const set={'review.rule_evidence':evidence,'review.group_scores':scores,'review.frames':frames,'review.reference':{state:complete?'completed':'queued',attempt:0,next_attempt_at:0,scope:'group_visual_evidence',automatic_decision:auto}};
   const update={$set:set,$inc:{version:1}};
   if(complete){
     if(scene)set['review.group_scene']=scene;

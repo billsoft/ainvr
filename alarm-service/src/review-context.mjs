@@ -262,21 +262,21 @@ export class ReviewContext {
   return {capture_counts:Object.fromEntries(rows.map(r=>[r._id,r.count])),cache,last_error:this.lastError,retention_days:this.policy?.retention_days??7,max_bytes:this.policy?.max_bytes??1024**3};
  }
  async savePrepared(row,sample,image,{secondary=false}={}){
-  if(!['target-crop-v1','target-focus-v2','context-marked-v1'].includes(image.layout)||typeof image.jpeg_base64!=='string'||image.jpeg_base64.length>2*1024*1024)throw Error('invalid_model_result');
+  if(!['target-crop-v1','target-focus-v2','scene-review-v1','context-marked-v1'].includes(image.layout)||typeof image.jpeg_base64!=='string'||image.jpeg_base64.length>2*1024*1024)throw Error('invalid_model_result');
   const data=Buffer.from(image.jpeg_base64,'base64');jpegDimensions(data);
   const key=hash(data),path=join(this.root,'pinned',key+'.jpg');
   if(this.images)await this.images.put('context',key,data,this.imagePolicy(row));
   else {await writeFile(path+'.tmp',data,{mode:0o600});await rename(path+'.tmp',path);}
   const meta={frame_id:sample.frame_id,key,...(this.images?{storage:'mongodb',content_sha256:key}:{}),layout:image.layout,target:image.target,width:image.width,height:image.height,...(image.layout!=='context-marked-v1'?{expansion:image.expansion,...(image.view?{view:image.view,marker:image.marker,region:image.region,target_canvas:image.target_canvas}:{})}:{region:image.region,approach_width_fraction:image.approach_width_fraction,fit:image.fit})};
-  const field=secondary?'review.secondary_frames':image.layout==='context-marked-v1'?'review.context_frames':'review.prepared_frames';
+  const field=image.layout==='scene-review-v1'?'review.spatial_frames':secondary?'review.secondary_frames':image.layout==='context-marked-v1'?'review.context_frames':'review.prepared_frames';
   await this.repository.events.updateOne({alarm_id:row.alarm_id,'review.generation':row.review.generation},{$addToSet:{[field]:meta}});
   return meta;
  }
  async retained(alarmId,key){
   if(!/^[a-f0-9]{64}$/.test(key))throw Error('missing_context');
-  const row=await this.repository.events.findOne({alarm_id:alarmId,$or:[{'review.frames.key':key},{'review.prepared_frames.key':key},{'review.context_frames.key':key},{'review.secondary_frames.key':key}]});if(!row)throw Error('missing_context');
+  const row=await this.repository.events.findOne({alarm_id:alarmId,$or:[{'review.frames.key':key},{'review.prepared_frames.key':key},{'review.context_frames.key':key},{'review.secondary_frames.key':key},{'review.spatial_frames.key':key}]});if(!row)throw Error('missing_context');
   let data=this.images?await this.images.get('context',key):null;
-  const refs=['frames','prepared_frames','context_frames','secondary_frames'].flatMap(field=>row.review?.[field]??[]).filter(f=>f.key===key);
+  const refs=['frames','prepared_frames','context_frames','secondary_frames','spatial_frames'].flatMap(field=>row.review?.[field]??[]).filter(f=>f.key===key);
   if(!data){
    if(refs.some(f=>f.storage==='mongodb'))throw Error('missing_context');
    data=await readFile(join(this.root,'pinned',key+'.jpg'));
@@ -289,7 +289,7 @@ export class ReviewContext {
  imagePolicy(row,candidate=false){return {maxBytes:candidate?(this.policy?.candidate_max_bytes??128*1024**2):(this.policy?.max_bytes??1024**3),retentionMs:candidate?86400000:(this.policy?.retention_days??7)*86400000,occurredAt:row.occurred_at??row.sample?.captured_at};}
  validateRetained(data,refs){if(data.length>8*1024**2||refs.some(f=>(f.content_sha256??(f.layout?f.key:null))&&(f.content_sha256??f.key)!==hash(data)))throw Error('evidence_integrity_mismatch');jpegDimensions(data);}
  async markMongo(row,key){
-  for(const field of ['frames','prepared_frames','context_frames','secondary_frames'])if(row.review?.[field]?.some(f=>f.key===key))
+  for(const field of ['frames','prepared_frames','context_frames','secondary_frames','spatial_frames'])if(row.review?.[field]?.some(f=>f.key===key))
    await this.repository.events.updateOne({alarm_id:row.alarm_id,'review.generation':row.review.generation},{$set:{[`review.${field}.$[frame].storage`]:'mongodb'}},{arrayFilters:[{'frame.key':key}]});
  }
  async mongoImage(row,sample,candidate){

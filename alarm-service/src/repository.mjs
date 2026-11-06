@@ -1,3 +1,4 @@
+import {buildReviewEvidence} from './review-evidence.mjs';
 import {reviewAuthorization} from './review-authorization.mjs';
 // Copyright AINVR. Mongo single-document atomic operations (no replica-set assumption).
 import {reviewFor} from './review-worker.mjs';
@@ -14,7 +15,7 @@ import {acknowledge, digest, fail, identity, validateRule} from './domain.mjs';
 // review.checkpoint (raw model responses kept for retry reuse) and the worker
 // lease token are internal; clients never receive them.
 const withoutInternal=d=>{if(!d)return null;const {_id,operations,...publicDoc}=d;
-  if(publicDoc.review&&typeof publicDoc.review==='object'){const {checkpoint,token,...review}=publicDoc.review;if(review.reference){const {token:lease,...reference}=review.reference;review.reference=reference;}publicDoc.review=review;}
+  if(publicDoc.review&&typeof publicDoc.review==='object'){const {checkpoint,token,rule_evidence,...review}=publicDoc.review;if(review.reference){const {token:lease,...reference}=review.reference;review.reference=reference;}publicDoc.review=review;}
   return publicDoc;};
 const pendingFilter=()=>({'handling.state':'unacknowledged','handling.disposition':{$ne:'false_positive'}});
 const zoneFilter=zone_id=>({$or:[{'rule.snapshot.zone_id':zone_id},{'stages.zone_id':zone_id}]});
@@ -151,7 +152,7 @@ export class AlarmRepository {
   }
   async get(id) {
     identity(id,'alarm_id');const d=await this.events.findOne({alarm_id:id});
-    if(!d) fail('not_found','Alarm not found',404);return withoutInternal(d);
+    if(!d) fail('not_found','Alarm not found',404);return {...withoutInternal(d),review_evidence:d.review?.rule_evidence??buildReviewEvidence(d)};
   }
   async confirm(id,request,actor,key) {
     identity(id,'alarm_id');identity(actor,'actor');identity(key,'Idempotency-Key');
@@ -253,8 +254,8 @@ export class AlarmRepository {
       {$match:{$and:[query,analyticsFilter(analyticsScope,page.as_of)]}},
       {$sort:{occurred_at:-1,alarm_id:-1}},{$limit:limit+1},
       {$set:{rule:{$mergeObjects:['$rule',{snapshot:{zone_id:{$ifNull:['$rule.snapshot.zone_id',null]}}}]}}},
-      {$project:{_id:0,operations:0,logs:0,analysis_evidence:0,model_snapshot:0,'review.checkpoint':0,'review.token':0,'review.reference.token':0,'review.group_scores':0}}
-    ],{maxTimeMS:5000,allowDiskUse:false}).toArray():await this.events.find(query,{projection:{_id:0,operations:0,logs:0,'rule.snapshot':0,analysis_evidence:0,model_snapshot:0,'review.checkpoint':0,'review.token':0,'review.reference.token':0,'review.group_scores':0}})
+      {$project:{_id:0,operations:0,logs:0,analysis_evidence:0,model_snapshot:0,'review.checkpoint':0,'review.token':0,'review.reference.token':0,'review.group_scores':0,'review.rule_evidence':0,'review.spatial.prompt':0,'review.spatial_frames':0}}
+    ],{maxTimeMS:5000,allowDiskUse:false}).toArray():await this.events.find(query,{projection:{_id:0,operations:0,logs:0,'rule.snapshot':0,analysis_evidence:0,model_snapshot:0,'review.checkpoint':0,'review.token':0,'review.reference.token':0,'review.group_scores':0,'review.rule_evidence':0,'review.spatial.prompt':0,'review.spatial_frames':0}})
       .sort({occurred_at:-1,alarm_id:-1}).limit(limit+1).toArray();
     const more=rows.length>limit;const items=rows.slice(0,limit),last=items.at(-1);
     return {items,next_cursor:more?Buffer.from(JSON.stringify({signature,as_of:page.as_of,occurred_at:last.occurred_at,alarm_id:last.alarm_id})).toString('base64url'):null,as_of:page.as_of};

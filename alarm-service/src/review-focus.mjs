@@ -1,9 +1,10 @@
+import {validPairedSupport} from './review-secondary.mjs';
 // Version the image geometry and prompt together. This is an explicit operator
 // opt-in; old single/group review policies keep their existing input contract.
 export const FOCUS_LAYOUT = 'target-focus-v2';
-export const FOCUS_PROMPT_VERSION = 'target-category-abc-v1';
-export const FOCUS_TEMPLATE = 'target-review-abc-v1';
-export const FOCUS_PROMPT = '只核对指定主体的类别；蓝色线条为布防区，出现类没有布防区。使用人员、非人员、无法辨认三分类固定任务。';
+export const FOCUS_PROMPT_VERSION = 'target-category-abc-v2-rule';
+export const FOCUS_TEMPLATE = 'target-review-abc-v2-rule';
+export const FOCUS_PROMPT = '只核对指定主体的类别；蓝色线条为布防区，无区域规则不需要布防区。使用人员、非人员、无法辨认三分类固定任务。';
 export const FOCUS_DEFAULTS = Object.freeze({layout:FOCUS_LAYOUT,caller_template:FOCUS_PROMPT_VERSION,template:FOCUS_TEMPLATE,minimum_frame_score:.95,strong_frame_score:.99,non_person_above:.99});
 const unit = v => Number.isFinite(v)&&v>=0&&v<=1;
 export function validFocusPolicy(v) {
@@ -17,13 +18,21 @@ export function validFocusEnvelope(result) {
  return result?.template===FOCUS_TEMPLATE&&result.score_kind==='three_way_softmax_uncalibrated'&&validClassScores(result.class_scores)&&
   unit(result.real_score)&&Math.abs(result.real_score-result.class_scores.person)<1e-6&&typeof result.submitted_prompt==='string'&&result.submitted_prompt.length>0&&Buffer.byteLength(result.submitted_prompt)<=8192;
 }
-export function focusAssessment({primary,context,policy,rule,complete}={}) {
+export function focusAssessment({primary,context,policy,rule,complete,pairedSupport}={}) {
  const uncertain=reason=>({outcome:'uncertain',reason});
  if(!validFocusPolicy(policy)||!unit(rule?.approve_above))return uncertain('invalid_thresholds');
  if(!Array.isArray(primary)||!primary.length||primary.length>4||!primary.every(validClassScores))return uncertain('invalid_scores');
  const floor=Math.max(policy.minimum_frame_score,rule.approve_above),strong=Math.max(policy.strong_frame_score,rule.approve_above);
  if(primary.every(s=>s.person>=floor)&&primary.some(s=>s.person>=strong))return {outcome:'confirmed',reason:'focused_person_confirmed'};
  if(!complete||!Array.isArray(context)||context.length!==primary.length||!context.every(validClassScores))return uncertain('focused_evidence_incomplete');
+ // A same-target wider view may recover missing body context. Require the
+ // existing explicit paired-evidence authorization, strong evidence in EVERY
+ // wider frame, and no non-person/ambiguity conflict in any tight frame.
+ // This never permits a strong frame to outvote another weak wider frame.
+ if(validPairedSupport(pairedSupport)&&
+    primary.every(s=>s.person>=pairedSupport.minimum_frame_score&&s.non_person<=.05&&s.uncertain<=.15)&&
+    context.every(s=>s.person>=Math.max(.99,strong,pairedSupport.strong_frame_score)))
+   return {outcome:'confirmed',reason:'focused_context_rescued',context_rescue:{minimum_primary_person:pairedSupport.minimum_frame_score,maximum_primary_non_person:.05,maximum_primary_uncertain:.15,minimum_context_person:Math.max(.99,strong,pairedSupport.strong_frame_score)}};
  const both=[...primary,...context];
  if(both.every(s=>s.person>=floor)&&both.some(s=>s.person>=strong))return {outcome:'confirmed',reason:'focused_context_confirmed'};
  // Low person scores never imply non-person. Every real required frame in BOTH

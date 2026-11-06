@@ -90,8 +90,8 @@ std::vector<int> Engine::EncodeSearch(const SearchRequest& request) {
   (void)SearchDecisionIndices(manifest_.at("decision_vocabulary"));
   return EncodeSearchInput(request, [&](const auto& prompt) { return tokenizer_->Encode(prompt); }, shape_);
 }
-std::vector<int> Engine::EncodeFocus() {
-  auto ids=tokenizer_->Encode(FocusInput(shape_));
+std::vector<int> Engine::EncodeFocus(const nlohmann::json& context) {
+  auto ids=tokenizer_->Encode(FocusInput(shape_,context));
   if(int(ids.size())>shape_.context)throw InputError("input_too_long","Focus task exceeds model token capacity");
   Positions(ids,shape_);return ids;
 }

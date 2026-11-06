@@ -1,3 +1,4 @@
+import {RuleEvidence} from './RuleEvidence';
 import {GroupEvidence} from './GroupEvidence'
 import {ReviewFrames} from './ReviewFrames'
 import {reviewDiagnostic,reviewLabel,reviewReason,referenceLabel,recoveryLabel,reviewStatusClass} from '@/features/alarmReview'
@@ -69,6 +70,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
    </div>:<div className="grid min-h-0 flex-1 overflow-y-auto md:grid-cols-[minmax(0,1fr)_18rem]">
     <div className="min-w-0 space-y-4 p-4 sm:p-5">
      <div className="rounded-base bg-surface-page px-3 py-2"><h3 className="text-xs text-ink-subtle">触发原因</h3><p className="text-sm leading-6 text-ink">{described?.sentence}</p></div>
+     {(!selected||selected.event_id===value.stages?.at(-1)?.event_id)&&<RuleEvidence alarm={value}/>}
      {value.analysis_evidence?.group&&<GroupEvidence alarm={value}/>}
      {showReviewFrames&&<ReviewFrames key={`${id}:${stage}`} alarm={value}/>}
      {!value.analysis_evidence?.group&&(showReviewFrames?<details className="text-sm"><summary className="cursor-pointer py-3">查看此阶段目标裁剪</summary>{selected?.behavior_event_ids?.[0]&&<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>}</details>:selected?.behavior_event_ids?.[0]?<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>:<p className="rounded-card bg-surface-page p-4 text-sm text-ink-subtle">此阶段没有截图。</p>)}

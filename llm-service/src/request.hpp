@@ -2,6 +2,7 @@
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <array>
+#include <algorithm>
 #include <optional>
 #include <cmath>
 #include <string>
@@ -10,7 +11,7 @@
 namespace ainvr::llm {
 struct InputError:std::invalid_argument{std::string code;InputError(std::string c,std::string m):std::invalid_argument(m),code(std::move(c)) {}};
 struct ImageRequest { std::string id; std::vector<uint8_t> jpeg; int width=0,height=0; bool letterbox=false; };
-struct ReviewRequest : ImageRequest { std::string kind,description; double temperature=1; std::string layout="target-crop-v1",view="tight"; float expansion=1.5f; bool show_target=true; std::optional<std::array<float,4>> target; std::vector<std::array<float,2>> region; float approach=0; };
+struct ReviewRequest : ImageRequest { nlohmann::json rule_context; bool spatial=false; std::optional<std::array<float,4>> scene_bounds; std::string kind,description; double temperature=1; std::string layout="target-crop-v1",view="tight"; float expansion=1.5f; bool show_target=true; std::optional<std::array<float,4>> target; std::vector<std::array<float,2>> region; float approach=0; };
 inline std::vector<uint8_t> DecodeBase64(const std::string& text) {
   if(text.empty()||text.size()>12*1024*1024||text.size()%4)throw std::invalid_argument("invalid image encoding or size");
   size_t padding=text.back()=='=' ? 1:0;
@@ -81,8 +82,33 @@ inline ReviewRequest ParseReview(const nlohmann::json& j) {
     if(box[2]<=box[0]||box[3]<=box[1])throw InputError("invalid_request","Empty target");
     if((box[2]-box[0])*r.width<16||(box[3]-box[1])*r.height<16)throw InputError("insufficient_target_pixels","Target has insufficient source detail");
     r.target=box;
-    if(p.contains("region")){r.region=p.at("region").get<std::vector<std::array<float,2>>>();if(r.region.size()>32||(!r.region.empty()&&r.region.size()<3))throw InputError("invalid_request","Invalid region");for(auto xy:r.region)for(auto v:xy)if(!std::isfinite(v)||v<0||v>1)throw InputError("invalid_request","Invalid region coordinate");}
+    if(p.contains("region")){if(!p.at("region").is_array())throw InputError("invalid_request","Region must be an array");r.region=p.at("region").get<std::vector<std::array<float,2>>>();if(r.region.size()>32||(!r.region.empty()&&r.region.size()<3))throw InputError("invalid_request","Invalid region");for(auto xy:r.region)for(auto v:xy)if(!std::isfinite(v)||v<0||v>1)throw InputError("invalid_request","Invalid region coordinate");}
     r.approach=p.value("approach_width_fraction",0.f);if(!std::isfinite(r.approach)||r.approach<0||r.approach>1)throw InputError("invalid_request","Invalid approach distance");
+  }
+  if(j.at("alarm").contains("rule_context")){
+    const auto& c=j.at("alarm").at("rule_context");
+    if(r.layout!="target-focus-v2"||!c.is_object()||c.value("version",std::string())!="rule-evidence-v1"||(c.value("scope",std::string())!="target_category_only"&&c.value("scope",std::string())!="spatial_observation"))throw InputError("invalid_request","Invalid review task context");
+    const auto behavior=c.at("behavior").get<std::string>(),anchor=c.at("anchor").get<std::string>();
+    if(behavior!="appearance"&&behavior!="region_approach"&&behavior!="region_enter"&&behavior!="region_traverse")throw InputError("invalid_request","Invalid behavior");
+    if(anchor!="center"&&anchor!="bottom_center")throw InputError("invalid_request","Invalid anchor");
+    const auto duration=c.at("duration_ms").get<double>();if(!std::isfinite(duration)||duration<0||duration>3600000)throw InputError("invalid_request","Invalid duration");
+    if(!c.at("roles").is_array())throw InputError("invalid_request","Roles must be an array");
+    const auto roles=c.at("roles").get<std::vector<std::string>>();if(roles.size()>4)throw InputError("invalid_request","Too many roles");
+    const std::vector<std::string> allowed={"开始前","首次有效检出","触发前","达到持续条件","进入接近带前","进入接近带后","进入前","进入后","离开前","离开后","当帧检出"};
+    for(const auto& role:roles)if(std::find(allowed.begin(),allowed.end(),role)==allowed.end())throw InputError("invalid_request","Unknown evidence role");
+    const bool zone=c.at("region_required").get<bool>();
+    r.spatial=c.at("scope")=="spatial_observation";
+    if(r.spatial&&(!zone||r.region.empty()||!c.contains("expected_inside")||!c.at("expected_inside").is_boolean()))throw InputError("invalid_request","Spatial task requires zone and observed relation");
+    r.rule_context={{"behavior",behavior},{"anchor",anchor},{"duration_ms",duration},{"region_required",zone},{"roles",roles}};
+    if(r.spatial){
+      auto bounds=j.at("preparation").value("scene_bounds",std::array<float,4>{0,0,1,1});
+      for(auto v:bounds)if(!std::isfinite(v)||v<0||v>1)throw InputError("invalid_request","Invalid spatial bounds");
+      if(bounds[2]<=bounds[0]||bounds[3]<=bounds[1]||bounds[0]>(*r.target)[0]||bounds[1]>(*r.target)[1]||bounds[2]<(*r.target)[2]||bounds[3]<(*r.target)[3])throw InputError("invalid_request","Spatial bounds exclude target");
+      for(const auto& p:r.region)if(p[0]<bounds[0]||p[1]<bounds[1]||p[0]>bounds[2]||p[1]>bounds[3])throw InputError("invalid_request","Spatial bounds exclude zone");
+      r.scene_bounds=bounds;
+    }
+    if(r.spatial){r.rule_context["scope"]="spatial_observation";r.rule_context["expected_inside"]=c.at("expected_inside");}
+    if(behavior=="region_approach"){const auto distance=c.at("approach_px").get<double>();if(!std::isfinite(distance)||distance<=0||distance>8192)throw InputError("invalid_request","Invalid approach distance");r.rule_context["approach_px"]=distance;}
   }
   return r;
 }
