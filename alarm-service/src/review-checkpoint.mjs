@@ -45,8 +45,9 @@ export class ReviewCheckpoint {
 
   matches(result, stage) {
     return result?.model?.package_sha256 === this.authorization?.model_sha256 &&
-      result?.template === this.authorization?.prompt_template &&
-      (stage === 'non_target' || result?.prepared_image?.layout === this.authorization?.layout);
+      (result?.template === this.authorization?.prompt_template || (result?.prepared_image?.layout===this.authorization?.focus?.layout&&result?.template===this.authorization?.focus?.template)) &&
+      (stage === 'non_target' || (result?.prepared_image?.layout === this.authorization?.layout ||
+       (this.authorization?.focus && result?.prepared_image?.layout === this.authorization.focus.layout)));
   }
 
   async run(stage, frameId, request, validate) {

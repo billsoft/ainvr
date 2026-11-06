@@ -1,3 +1,4 @@
+#include "focus_task.hpp"
 // Independent review service. No AI channel or alarm state is modified here.
 #include "engine.hpp"
 #include "image_pipeline.hpp"
@@ -116,6 +117,7 @@ struct Service {
     auto percentile=[&](double q)->Json{return times.empty()?Json(nullptr):Json(times[size_t(std::ceil(q*times.size()))-1]);};
     return {{"admission",admission.is_null()?Json({{"mode","byte_accounted_coexistence"},{"ok",nullptr}}):admission},
             {"package_sha256",package_hash},{"active_request",active_job!=nullptr},
+            {"preparation_profiles",Json::array({"target-crop-v1","target-focus-v2"})},
             {"latency_ms",{{"p50",percentile(.5)},{"p95",percentile(.95)},{"samples",times.size()},{"window","last_256_completed"}}},
             {"submit_time_share",{{"window_s",10},{"cap_percent",config.value("submit_time_share_cap_percent",90)}}},
             {"ready",state=="ready"},{"model",state},{"config_version",configuration.committed()},{"package_id",ActiveIdLocked()},
@@ -177,7 +179,7 @@ struct Service {
         auto* alarm=std::get_if<ainvr::llm::ReviewRequest>(&job->request);
         auto* search=std::get_if<ainvr::llm::SearchRequest>(&job->request);
         const auto& input=job->Image();
-        auto ids=search?engine->EncodeSearch(*search):engine->Encode(alarm->kind,alarm->description);
+        auto ids=search?engine->EncodeSearch(*search):(alarm->layout=="target-focus-v2"?engine->EncodeFocus():engine->Encode(alarm->kind,alarm->description));
         if(job->canceled)throw std::runtime_error("canceled");
         Json result;
         if(search&&search->question_scope=="temporal") {
@@ -195,7 +197,7 @@ struct Service {
           auto frame=jpeg.Receive(3000);if(!frame)throw std::runtime_error("image_decode_timeout");
           if(frame->visible_width!=input.width||frame->visible_height!=input.height)throw std::runtime_error("image_visible_geometry_mismatch");
           std::vector<float> patches;std::vector<uint8_t> actualImage;
-          if(alarm&&alarm->target){auto preparedImage=image->RunTarget(frame->pixels,frame->width,frame->height,*alarm->target,input.width,input.height);patches=std::move(preparedImage.first);actualImage=std::move(preparedImage.second);}
+          if(alarm&&alarm->target){auto preparedImage=image->RunTarget(frame->pixels,frame->width,frame->height,*alarm->target,input.width,input.height,alarm->layout=="target-focus-v2",alarm->expansion,alarm->region,alarm->show_target);patches=std::move(preparedImage.first);actualImage=std::move(preparedImage.second);}
           else patches=image->RunNv12(frame->pixels,frame->width,frame->height,false,true,input.letterbox,input.width,input.height);
           auto prepared=Clock::now();
           auto logits=engine->Infer(ids,patches,[&]{
@@ -215,9 +217,22 @@ struct Service {
               {"template","alarm-review-zh-v1"},{"validated",false},
               {"model",{{"package_id",engine->manifest().at("id")},{"package_sha256",engine->package_sha256()}}},
               {"logits",{{"yes",logits[0]},{"no",logits[1]}}},{"decision_logits",Json::object()}};
+            if(alarm->layout=="target-focus-v2"){
+              result["class_scores"]=ainvr::llm::FocusScores(logits,engine->manifest().at("decision_vocabulary"));
+              result["real_score"]=result["class_scores"]["person"];
+              result["score_kind"]="three_way_softmax_uncalibrated";
+              result["template"]=ainvr::llm::kFocusTemplate;
+              result["submitted_prompt"]=ainvr::llm::FocusPrompt();
+            }
             if(!actualImage.empty()){
               std::string encoded(4*((actualImage.size()+2)/3),'\0');EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),actualImage.data(),int(actualImage.size()));
-              result["prepared_image"]={{"layout","target-crop-v1"},{"jpeg_base64",encoded},{"width",896},{"height",448},{"target",*alarm->target},{"expansion",1.5}};
+              result["prepared_image"]={{"layout",alarm->layout},{"jpeg_base64",encoded},{"width",896},{"height",448},{"target",*alarm->target},{"expansion",alarm->expansion}};
+              if(alarm->layout=="target-focus-v2"){
+                result["prepared_image"]["view"]=alarm->view;
+                result["prepared_image"]["marker"]=alarm->show_target?"green-target-box":"no-target-box";
+                result["prepared_image"]["region"]=alarm->region;
+                result["prepared_image"]["target_canvas"]=ainvr::TargetCanvas(*alarm->target,input.width,input.height,alarm->expansion);
+              }
               const auto marked=image->RunContext(frame->pixels,frame->width,frame->height,*alarm->target,alarm->region,alarm->approach,input.width,input.height);
               std::string context64(4*((marked.size()+2)/3),'\0');EVP_EncodeBlock(reinterpret_cast<unsigned char*>(context64.data()),marked.data(),int(marked.size()));
               result["context_image"]={{"layout","context-marked-v1"},{"jpeg_base64",context64},{"width",896},{"height",448},{"target",*alarm->target},{"region",alarm->region},{"approach_width_fraction",alarm->approach},{"fit","letterbox"}};

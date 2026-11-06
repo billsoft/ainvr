@@ -3,6 +3,15 @@ export function reviewLabel(alarm:AlarmEvent){
  return alarm.handling.state==='acknowledged'?(alarm.handling.reviewed_by_kind==='ai'?'已 AI 审核':'已人工审核'):'未审核'
 }
 const preparationReasons:Record<string,string>={
+ focused_person_confirmed:'指定目标的人员证据满足确认条件',
+ focused_context_confirmed:'两种视图的人员证据一致，确认告警',
+ focused_non_person_confirmed:'两种视图均明确识别为非人员，判为误报',
+ focused_unrecognizable:'关键帧无法辨认，保留人工审核',
+ focused_class_inconclusive:'人员、非人员证据不足以形成一致结论，保留人工审核',
+ focused_evidence_incomplete:'三分类审核证据不完整，保留人工审核',
+
+ paired_views_confirmed:'全部关键帧的特写与扩大范围均支持同一目标，AI 确认告警',
+ pending_secondary:'等待扩大范围复核',
  secondary_class_confirmed:'扩大范围复核支持目标类别，AI 确认告警',
  secondary_class_rejected:'扩大范围复核不支持目标类别，AI 判为误报',
  insufficient_class_evidence:'目标类别证据不足，保留人工审核',
@@ -63,6 +72,7 @@ export function reviewDiagnostic(review:AlarmEvent['review']){
  const path=review.decision_path?({primary_confirmation:'特写主审确认',expanded_confirmation:'扩大范围复核确认',explicit_non_target:'明确非人员证据核验后判为误报'})[review.decision_path]:undefined
  const withPath=(text:string)=>path?`实际审核路径：${path} · ${text}`:text
  const details=[review.geometry_verified===true?'行为几何条件：已核验；图片用于核对目标类别。':review.geometry_verified===false?'行为几何条件：未核验通过。':'行为几何核验结果：未记录。']
+ if(review.input_profile==='target-focus-v2')details.push('指定目标隔离视图：特写 1.15 倍、上下文 1.6 倍，保留原始目标中心和比例；灰边为无图像区域，不作为非人员证据。蓝线为真实布防区；模型输入不填色、不画人员框，以免标注干扰识别。')
  if(path)details.push(`实际审核路径：${path}。`)
  if(review.decision_basis){
   const basis=({operator_authorized_group_review:'组合候选和共同画面审核',validated_model:'已验证模型策略',operator_authorized_primary_review:'用户授权的特写主审策略',operator_authorized_dual_review:'用户授权的复核策略',operator_authorized_confirm_only:'用户授权的仅确认策略',reference_only:'仅参考分析，不自动处理'})[review.decision_basis]
@@ -87,6 +97,10 @@ export function reviewDiagnostic(review:AlarmEvent['review']){
   if(validRuleThreshold)details.push(`规则阈值：${number(ruleThreshold)}（不代表当次自动确认授权）。`)
   details.push('历史记录未保存自动确认门槛与授权结果，无法还原具体未通过条件。')
  }
+ if(review.input_profile==='target-focus-v2'){
+  review.frame_class_scores?.forEach((v,i)=>details.push(`特写 ${i+1} 三分类分数：人员 ${number(v.person)}；非人员 ${number(v.non_person)}；无法辨认 ${number(v.uncertain)}（不是概率）。`))
+  if(review.focus_policy)details.push(`人员确认：每帧至少 ${number(review.focus_policy.minimum_frame_score)}，且有一帧至少 ${number(review.focus_policy.strong_frame_score)}；误报必须两种视图每帧的非人员分数至少 ${number(review.focus_policy.non_person_above)}。`)
+ }
  const secondary=review.secondary
  if(secondary){
   details.unshift(`特写主审：${summary}。`)
@@ -96,6 +110,11 @@ export function reviewDiagnostic(review:AlarmEvent['review']){
    details.push(`扩大范围复核 · ${label}：模型分数 ${number(f.score)}（不是概率）`)
   })
   if(!secondary.frames.length)secondary.frame_scores.forEach((score,i)=>details.push(`扩大范围复核分数 ${i+1}（未记录关键帧对应关系）：模型分数 ${number(score)}（不是概率）`))
+  if(review.input_profile==='target-focus-v2'){
+   secondary.frame_class_scores?.forEach((v,i)=>details.push(`上下文 ${i+1} 三分类分数：人员 ${number(v.person)}；非人员 ${number(v.non_person)}；无法辨认 ${number(v.uncertain)}（不是概率）。`))
+   details.push('误报需要明确非人员证据；无法辨认与低人员分数不等于误报。')
+   return {summary:withPath(`指定目标三分类复核 · ${reviewReason(secondary.reason)||'等待复核结论'}`),details}
+  }
   const nonTarget=secondary.non_target_evidence
   if(nonTarget){
    nonTarget.frame_scores.forEach((score,i)=>{
@@ -115,8 +134,9 @@ export function reviewDiagnostic(review:AlarmEvent['review']){
   const negativeFloor=validThreshold(authReject)?number(Math.max(.99,1-authReject!)):'未记录（至少 0.99；需当次授权误报阈值确定）'
   details.push(`自动误报须同时满足全部关键帧三道门槛：特写人员分数 ≤ ${primaryCeiling}；扩大范围人员分数 ≤ ${expandedCeiling}；明确非人员证据分数 ≥ ${negativeFloor}。缺帧、分数无效或无法清晰排除人员时保留人工审核。`)
   details.push(`扩大范围复核阈值：确认 ${number(secondary.confirm_above)}；误报 ${number(secondary.reject_below)}。`)
+  if(secondary.paired_support)details.push(`双视图一致支持策略：每张关键帧的特写及扩大范围分数均 ≥ ${number(secondary.paired_support.minimum_frame_score)}，且至少一项 ≥ ${number(Math.max(secondary.paired_support.strong_frame_score,review.policy?.approve_above??0))}；行为几何已独立核验，分数不是准确率。`)
   if(secondary.reason)details.push(`扩大范围复核原因：${reviewReason(secondary.reason)||secondary.reason}`)
-  return {summary:withPath(`特写 + 扩大范围复核 · ${secondary.state==='unavailable'?'扩大范围复核不可用，待人工审核':({confirmed:'AI复核结果：确认',false_positive:'AI复核结果：误报',uncertain:'结论不确定，待人工审核'})[secondary.outcome]}`),details}
+  return {summary:withPath(`特写 + 扩大范围复核 · ${secondary.reason==='conflicting_or_weak_primary'?'首轮门槛未满足，旧策略未执行扩大复核':secondary.state==='not_run'?`扩大范围复核未执行：${reviewReason(secondary.reason)||'待核对'}`:secondary.state==='unavailable'?'扩大范围复核不可用，待人工审核':({confirmed:'AI复核结果：确认',false_positive:'AI复核结果：误报',uncertain:'结论不确定，待人工审核'})[secondary.outcome]}`),details}
  }
  return {summary:withPath(summary),details}
 }

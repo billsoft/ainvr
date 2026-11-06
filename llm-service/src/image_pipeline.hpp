@@ -5,6 +5,7 @@
 // Reference: https://github.com/python-pillow/Pillow/blob/9.3.0/src/libImaging/Resample.c
 #pragma once
 #include "gles_context.h"
+#include "target_crop.hpp"
 #include "jpeg_encoder.hpp"
 #include "gles_preprocess.hpp"
 #include <algorithm>
@@ -106,28 +107,31 @@ class QwenReviewImagePipeline final {
     return RunRgba(color_->RunNv12Rgba(nv12,width,height,t),width,height);
   }
 
-  std::pair<std::vector<float>,std::vector<uint8_t>> RunTarget(const std::vector<uint8_t>& nv12,int width,int height,const std::array<float,4>& box,int visible_width=0,int visible_height=0){
+  std::pair<std::vector<float>,std::vector<uint8_t>> RunTarget(const std::vector<uint8_t>& nv12,int width,int height,const std::array<float,4>& box,int visible_width=0,int visible_height=0,bool focused=false,float expansion=1.15f,const std::vector<std::array<float,2>>& region={},bool show_target=true){
     if(!color_)color_=std::make_unique<GlesPreprocessor>();
     const bool visible=HasVisibleCrop(width,height,visible_width,visible_height);
     std::vector<uint8_t> original;
     if(visible)original=VisibleRgba(nv12,width,height,visible_width,visible_height,false,true);
     const int crop_width=visible?visible_width:width,crop_height=visible?visible_height:height;
     const float cx=(box[0]+box[2])*crop_width/2,cy=(box[1]+box[3])*crop_height/2;
-    float w=(box[2]-box[0])*crop_width*1.5f,h=(box[3]-box[1])*crop_height*1.5f;
-    w=std::max(w,2*h);h=w/2;
-    ImageTransform crop;crop.width=896;crop.height=448;crop.letterbox=false;crop.yuv_bt709=false;crop.yuv_full_range=true;
+    const auto geometry=TargetCrop(box,crop_width,crop_height,focused,expansion);
+    const float w=geometry[2],h=geometry[3];
+    ImageTransform crop;crop.width=896;crop.height=448;crop.letterbox=focused;crop.yuv_bt709=false;crop.yuv_full_range=true;
     crop.source_region=std::array<float,4>{cx-w/2,cy-h/2,w,h};
     crop.source_region_padding=true; // Never fabricate stretched image-edge content.
     auto rgba=visible?color_->RunRgbaRgba(original,crop_width,crop_height,crop):color_->RunNv12Rgba(nv12,width,height,crop);
     ImageTransform jpeg;jpeg.width=896;jpeg.height=448;jpeg.letterbox=false;
     auto encoded=color_->RunRgbaJpegNv12(rgba,896,448,jpeg);
     if(!jpeg_)jpeg_=std::make_unique<JpegEncoder>(896,448,90);
-    auto bytes=jpeg_->EncodeFullRangeNv12(encoded);
+    // The neural input and audit JPEG carry the SAME target marker. Never ask
+    // the model to infer which neighbouring person a text-only centre means.
+    auto bytes=focused?RunContext(encoded,896,448,TargetCanvas(box,crop_width,crop_height,expansion),RegionCanvas(region,box,crop_width,crop_height,expansion),0,0,0,&rgba,show_target,VisibleCanvas(box,crop_width,crop_height,expansion)):jpeg_->EncodeFullRangeNv12(encoded);
     return {RunRgba(rgba,896,448),std::move(bytes)};
   }
-  // Context-only annotation. Neural input remains the untouched target crop.
+  // Full-frame context annotation; focused review also reuses this GPU marker.
+  // The legacy target-crop-v1 neural input remains unchanged.
   std::vector<uint8_t> RunContext(const std::vector<uint8_t>& nv12,int width,int height,
-      const std::array<float,4>& target,const std::vector<std::array<float,2>>& region,float approach,int visible_width=0,int visible_height=0){
+      const std::array<float,4>& target,const std::vector<std::array<float,2>>& region,float approach,int visible_width=0,int visible_height=0,std::vector<uint8_t>* marked_rgba=nullptr,bool show_target=true,std::array<float,4> annotation_clip={0,0,1,1}){
     if(owner_!=std::this_thread::get_id())throw std::logic_error("Context GPU thread mismatch");
     if(region.size()>32)throw std::invalid_argument("Context polygon too large");
     if(!color_)color_=std::make_unique<GlesPreprocessor>();
@@ -147,16 +151,16 @@ layout(local_size_x=16,local_size_y=8) in;
 layout(binding=0) uniform highp usampler2D source_image;
 layout(std430,binding=2) writeonly buffer Output {uint pixels[];};
 uniform vec2 source_size;
-uniform vec4 image_rect,target;
+uniform vec4 image_rect,target,annotation_clip;
 uniform vec2 vertices[32];
-uniform int count;
+uniform int count,show_target;
 uniform float approach;
 float segment(vec2 p,vec2 a,vec2 b){vec2 d=b-a;return length(p-a-clamp(dot(p-a,d)/max(dot(d,d),.000001),0.,1.)*d);}
 void main(){
  ivec2 ip=ivec2(gl_GlobalInvocationID.xy);if(ip.x>=896||ip.y>=448)return;
  vec2 p=vec2(ip)+.5;uvec4 color=texelFetch(source_image,ip,0);
  vec2 uv=(p-image_rect.xy)/image_rect.zw;
- if(all(greaterThanEqual(uv,vec2(0)))&&all(lessThanEqual(uv,vec2(1)))){
+ if(all(greaterThanEqual(uv,vec2(0)))&&all(lessThanEqual(uv,vec2(1)))&&all(greaterThanEqual(p/vec2(896,448),annotation_clip.xy))&&all(lessThanEqual(p/vec2(896,448),annotation_clip.zw))){
   vec2 q=uv*source_size;float d=1e30;bool inside=false;
   for(int i=0;i<count;i++){vec2 a=vertices[i]*source_size,b=vertices[(i+1)%count]*source_size;d=min(d,segment(q,a,b));if((a.y>q.y)!=(b.y>q.y)&&q.x<(b.x-a.x)*(q.y-a.y)/(b.y-a.y)+a.x)inside=!inside;}
   float scale=image_rect.z/source_size.x;
@@ -164,7 +168,7 @@ void main(){
   else if(count>0&&!inside&&approach>0.&&abs(d-approach*source_size.x)*scale<1.4&&mod(p.x+p.y,12.)<7.)color=uvec4(251,191,36,255);
   vec2 lo=target.xy*source_size,hi=target.zw*source_size;
   float bd=min(min(segment(q,lo,vec2(hi.x,lo.y)),segment(q,vec2(hi.x,lo.y),hi)),min(segment(q,hi,vec2(lo.x,hi.y)),segment(q,vec2(lo.x,hi.y),lo)));
-  if(bd*scale<1.4)color=uvec4(52,211,153,255);
+  if(show_target!=0&&bd*scale<1.4)color=uvec4(52,211,153,255);
  }
  pixels[ip.y*896+ip.x]=color.r|(color.g<<8)|(color.b<<16)|0xff000000u;
 })GLSL";
@@ -177,10 +181,11 @@ void main(){
     const float scale=std::min(896.f/width,448.f/height),w=width*scale,h=height*scale;
     glUniform2f(glGetUniformLocation(context_program_,"source_size"),width,height);
     glUniform4f(glGetUniformLocation(context_program_,"image_rect"),(896-w)/2,(448-h)/2,w,h);
-    glUniform4fv(glGetUniformLocation(context_program_,"target"),1,target.data());glUniform1i(glGetUniformLocation(context_program_,"count"),region.size());
+    glUniform4fv(glGetUniformLocation(context_program_,"annotation_clip"),1,annotation_clip.data());glUniform4fv(glGetUniformLocation(context_program_,"target"),1,target.data());glUniform1i(glGetUniformLocation(context_program_,"count"),region.size());glUniform1i(glGetUniformLocation(context_program_,"show_target"),show_target?1:0);
     if(!region.empty())glUniform2fv(glGetUniformLocation(context_program_,"vertices[0]"),region.size(),region[0].data());
     glUniform1f(glGetUniformLocation(context_program_,"approach"),approach);glDispatchCompute(56,56,1);glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);Check();
     glBindBuffer(GL_SHADER_STORAGE_BUFFER,buffers_[2]);const void* data=glMapBufferRange(GL_SHADER_STORAGE_BUFFER,0,rgba.size(),GL_MAP_READ_BIT);if(!data)throw std::runtime_error("Context readback failed");std::memcpy(rgba.data(),data,rgba.size());if(!glUnmapBuffer(GL_SHADER_STORAGE_BUFFER))throw std::runtime_error("Context readback invalid");
+    if(marked_rgba)*marked_rgba=rgba;
     ImageTransform j;j.width=896;j.height=448;j.letterbox=false;auto pixels=color_->RunRgbaJpegNv12(rgba,896,448,j);if(!jpeg_)jpeg_=std::make_unique<JpegEncoder>(896,448,90);return jpeg_->EncodeFullRangeNv12(pixels);
   }
  private:

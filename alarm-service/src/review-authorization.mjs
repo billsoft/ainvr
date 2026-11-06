@@ -1,10 +1,11 @@
+import {validFocusPolicy,FOCUS_LAYOUT,FOCUS_PROMPT_VERSION,FOCUS_TEMPLATE} from './review-focus.mjs';
 // Operator authorization is a deployment decision, not an accuracy certificate.
 // Keep it separate from signed model validation; dual decisions require an explicit bounded secondary policy.
 import {open} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {REVIEW_PROMPT_VERSION} from './review-prompt.mjs';
-import {SECONDARY_REVIEW_VERSION} from './review-secondary.mjs';
+import {SECONDARY_REVIEW_VERSION,validPairedSupport} from './review-secondary.mjs';
 
 export function parseAuthorization(value){
  if(value?.schema!=='ainvr.review-authorization.v1'||value.enabled!==true||!['confirm_only','confirm_or_reject'].includes(value.mode)||
@@ -19,14 +20,16 @@ export function parseAuthorization(value){
  if(value.mode==='confirm_or_reject'&&(value.secondary?.version!==SECONDARY_REVIEW_VERSION||
   value.labels.some(label=>label!=='person')||!Number.isFinite(value.secondary.confirm_above)||value.secondary.confirm_above<.99||value.secondary.confirm_above>1||
   !Number.isFinite(value.secondary.reject_below)||value.secondary.reject_below<0||value.secondary.reject_below>.01))return null;
+ if(value.secondary?.paired_support!==undefined&&(value.mode!=='confirm_or_reject'||!validPairedSupport(value.secondary.paired_support)))return null;
+ if(value.focus!==undefined&&(!validFocusPolicy(value.focus)||value.mode!=='confirm_or_reject'||value.labels.some(label=>label!=='person')))return null;
  const groupLabels=value.group_labels;
  if(groupLabels!==undefined&&(!Array.isArray(groupLabels)||!groupLabels.length||groupLabels.length>100||
    groupLabels.some(label=>typeof label!=='string'||!label.trim()||label.length>128||/[<>\r\n]/.test(label))||new Set(groupLabels).size!==groupLabels.length))return null;
  // The exclusion path was only validated for people: a group grant cannot extend it to other categories.
  if(groupLabels&&value.mode==='confirm_or_reject'&&groupLabels.some(label=>label!=='person'))return null;
- const policy={...(groupLabels?{group_labels:[...groupLabels].sort()}:{}),schema:value.schema,mode:value.mode,model_sha256:value.model_sha256,layout:value.layout,
+ const policy={...(value.focus?{focus:{layout:FOCUS_LAYOUT,caller_template:FOCUS_PROMPT_VERSION,template:FOCUS_TEMPLATE,minimum_frame_score:value.focus.minimum_frame_score,strong_frame_score:value.focus.strong_frame_score,non_person_above:value.focus.non_person_above}}:{}),...(groupLabels?{group_labels:[...groupLabels].sort()}:{}),schema:value.schema,mode:value.mode,model_sha256:value.model_sha256,layout:value.layout,
   prompt_template:value.prompt_template,caller_template:value.caller_template,labels:[...value.labels].sort(),
-  approve_above:value.approve_above,minimum_frame_score:value.minimum_frame_score??value.approve_above,authorized_by:value.authorized_by,authorized_at:value.authorized_at,...(value.mode==='confirm_or_reject'?{secondary:{version:SECONDARY_REVIEW_VERSION,confirm_above:value.secondary.confirm_above,reject_below:value.secondary.reject_below}}:{})};
+  approve_above:value.approve_above,minimum_frame_score:value.minimum_frame_score??value.approve_above,authorized_by:value.authorized_by,authorized_at:value.authorized_at,...(value.mode==='confirm_or_reject'?{secondary:{version:SECONDARY_REVIEW_VERSION,confirm_above:value.secondary.confirm_above,reject_below:value.secondary.reject_below,...(value.secondary.paired_support?{paired_support:{minimum_frame_score:value.secondary.paired_support.minimum_frame_score,strong_frame_score:value.secondary.paired_support.strong_frame_score}}:{})}}:{})};
  return {...policy,id:createHash('sha256').update(JSON.stringify(policy)).digest('hex')};
 }
 export async function reviewAuthorization(){
@@ -40,8 +43,9 @@ export async function reviewAuthorization(){
 }
 export function authorizedResult(policy,result){
  return !!policy&&result.model?.package_sha256===policy.model_sha256&&
-  result.prepared_image?.layout===policy.layout&&result.template===policy.prompt_template&&
-  result.caller_template===policy.caller_template&&policy.labels.includes(result.target_label);
+  policy.labels.includes(result.target_label)&&
+  ((result.template===policy.prompt_template&&result.prepared_image?.layout===policy.layout&&result.caller_template===policy.caller_template)||
+   (validFocusPolicy(policy.focus)&&result.template===FOCUS_TEMPLATE&&result.target_label==='person'&&result.prepared_image?.layout===FOCUS_LAYOUT&&result.caller_template===FOCUS_PROMPT_VERSION));
 }
 
 // Required frames must all support the class; one strong frame cannot outvote a

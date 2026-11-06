@@ -1,10 +1,11 @@
+import {FOCUS_LAYOUT,FOCUS_PROMPT_VERSION,FOCUS_DEFAULTS,FOCUS_TEMPLATE} from '../src/review-focus.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {MongoClient} from 'mongodb';
 import {randomUUID,createHash} from 'node:crypto';
 import {parseAuthorization} from '../src/review-authorization.mjs';
 import {REVIEW_PROMPT_VERSION} from '../src/review-prompt.mjs';
-import {SECONDARY_REVIEW_VERSION} from '../src/review-secondary.mjs';
+import {SECONDARY_REVIEW_VERSION,REVIEW_DECISION_VERSION} from '../src/review-secondary.mjs';
 import {ReviewWorker} from '../src/review-worker.mjs';
 const uri=process.env.AINVR_REVIEW_TEST_MONGO_URI;
 const config={schema:'ainvr.review-authorization.v1',enabled:true,mode:'confirm_or_reject',model_sha256:'a'.repeat(64),layout:'target-crop-v1',prompt_template:'alarm-review-zh-v1',caller_template:REVIEW_PROMPT_VERSION,labels:['person'],approve_above:.99,minimum_frame_score:.95,authorized_by:'dual test operator',authorized_at:'2026-10-31T00:00:00Z',secondary:{version:SECONDARY_REVIEW_VERSION,confirm_above:.99,reject_below:.01}};
@@ -26,7 +27,8 @@ async function fixture(fn,{scores=actual,limited=false,authorization=config}={})
  const worker=new ReviewWorker({events},{context,readiness:async()=>false,authorization:async()=>permission,invoke:async body=>{
   const index=calls.length;calls.push(body);
   assert.ok(index<scores.length,'unexpected extra model invocation');
-  const result={schema:'ainvr.alarm_review.v1',model:{package_sha256:config.model_sha256},template:config.prompt_template,prepared_image:{layout:config.layout,target:body.preparation?[...body.preparation.target]:undefined,jpeg_base64:'aW1hZ2U=',width:64,height:64},real_score:scores[index]};
+  const focused=body.preparation?.layout===FOCUS_LAYOUT;
+  const result={...(focused?{class_scores:{person:scores[index],non_person:1-scores[index],uncertain:0},score_kind:'three_way_softmax_uncalibrated',submitted_prompt:'fixture ABC task'}:{}),schema:'ainvr.alarm_review.v1',model:{package_sha256:config.model_sha256},template:focused?FOCUS_TEMPLATE:config.prompt_template,prepared_image:{layout:body.preparation?.layout??config.layout,...(body.preparation?.layout===FOCUS_LAYOUT?{view:body.preparation.view,marker:'no-target-box',region:body.preparation.region??[],expansion:body.preparation.view==='context'?1.6:1.15}:{}),target:body.preparation?[...body.preparation.target]:undefined,jpeg_base64:'aW1hZ2U=',width:body.preparation?.layout===FOCUS_LAYOUT?896:64,height:body.preparation?.layout===FOCUS_LAYOUT?448:64},real_score:scores[index]};
   if(index>=4)delete result.prepared_image;
   corrupt(result,index,body);await effect(index,body);return result;
  }});
@@ -61,9 +63,9 @@ test('negative primary and secondary require unanimous explicit nonperson proof 
  for(const request of f.calls.slice(4)){assert.equal(request.alarm.kind,'明确非人员目标');assert.equal(request.image.jpeg_base64,'aW1hZ2U=');assert.equal(request.image.fit,'strict');assert.equal(request.preparation,undefined);assert.match(request.alarm.description,/否/);assert.match(request.alarm.description,/昏暗|黑暗/);}
  assert.equal(f.saved.filter(x=>x.options?.secondary).length,2);assert.deepEqual(row.review.secondary.non_target_evidence.frame_scores,[.999997,.999999]);assert.deepEqual(row.review.secondary.non_target_evidence.frame_ids,['f1','f2']);assert.equal(row.review.decision_basis,'operator_authorized_dual_review');assert.equal(row.review.secondary.outcome,'false_positive');
 },{scores:[.01,.02,.001,.002,.999997,.999999]}));
-test('conflicting primary evidence stays manual without secondary calls',mongo,()=>fixture(async f=>{
- await f.worker.step();pending(await f.read());assert.equal(f.calls.length,2);
-},{scores:[.01,.99999]}));
+test('conflicting primary evidence receives bounded secondary review but cannot be outvoted',mongo,()=>fixture(async f=>{
+ await f.worker.step();pending(await f.read());assert.equal(f.calls.length,4);
+},{scores:[.01,.99999,.99999,.99999]}));
 test('conflicting secondary evidence stays manual',mongo,()=>fixture(async f=>{
  await f.worker.step();const row=await f.read();pending(row);assert.equal(f.calls.length,4);assert.equal(row.review.secondary.outcome,'uncertain');assert.equal(row.review.state,'waiting_validation');
 },{scores:[...actual.slice(0,2),.999999,.001]}));
@@ -102,3 +104,50 @@ for(const kind of ['missing_score','schema','model','template','invalid_score'])
  }});
  await f.worker.step();const row=await f.read();pending(row);assert.equal(f.calls.length,5);assert.equal(row.review.reason,'invalid_model_result');
 },{scores:[.01,.02,.001,.002,.999999,.999999]}));
+
+test('moderate complete primary evidence is no longer skipped; paired support is explicit and audited',mongo,()=>fixture(async f=>{
+ await f.worker.step();const row=await f.read();assert.equal(f.calls.length,4);
+ assert.equal(row.handling.disposition,'handled');assert.equal(row.review.secondary.reason,'paired_views_confirmed');
+ assert.equal(row.review.secondary.paired_support.minimum_frame_score,.85);
+ assert.equal(row.review.decision_version,REVIEW_DECISION_VERSION);
+ assert.equal(await f.worker.step(),false);
+},{scores:[.9764,.8809,.9805,.8824],authorization:{...config,approve_above:.999,minimum_frame_score:.99,secondary:{...config.secondary,confirm_above:.999,paired_support:{minimum_frame_score:.85,strong_frame_score:.95}}}}));
+test('old skipped evidence is reviewed once after decision version changes',mongo,()=>fixture(async f=>{
+ await f.events.updateOne({alarm_id:f.row.alarm_id},{$set:{'review.state':'waiting_validation','review.reference':{generation:f.row.review.generation,prompt_version:REVIEW_PROMPT_VERSION,authorization_id:parseAuthorization(config).id}}});
+ await f.worker.step();const row=await f.read();assert.equal(f.calls.length,4);
+ assert.equal(row.review.reference.decision_version,REVIEW_DECISION_VERSION);
+ assert.equal(await f.worker.step(),false);
+},{scores:[.7,.8,.7,.8]}));
+test('paired policy cannot be smuggled through invalid authorization or confirm-only',()=>{
+ const paired={minimum_frame_score:.85,strong_frame_score:.95};
+ const good={...config,secondary:{...config.secondary,paired_support:paired}};
+ assert.ok(parseAuthorization(good));assert.notEqual(parseAuthorization(good).id,parseAuthorization(config).id);
+ for(const p of [{minimum_frame_score:.8499},{strong_frame_score:.9499},{minimum_frame_score:NaN},{strong_frame_score:1.01},{minimum_frame_score:1}])assert.equal(parseAuthorization({...good,secondary:{...good.secondary,paired_support:{...paired,...p}}}),null);
+ assert.equal(parseAuthorization({...good,mode:'confirm_only'}),null);
+});
+
+const focusGrant={...config,focus:{...FOCUS_DEFAULTS},secondary:{...config.secondary,paired_support:{minimum_frame_score:.85,strong_frame_score:.95}}};
+test('focus policy uses exact same target in tight/context views, handles and audits',mongo,()=>fixture(async f=>{
+ await f.worker.step();const row=await f.read();assert.equal(f.calls.length,4);assert.equal(row.handling.state,'acknowledged');
+ assert.equal(f.calls[0].preparation.layout,FOCUS_LAYOUT);assert.equal(f.calls[0].preparation.view,'tight');assert.equal(f.calls[2].preparation.view,'context');
+ assert.deepEqual(f.calls[0].preparation.target,f.calls[2].preparation.target);assert.equal(f.calls[0].alarm.kind,'person');
+ assert.equal(row.review.caller_template,FOCUS_PROMPT_VERSION);assert.equal(row.review.input_profile,FOCUS_LAYOUT);assert.deepEqual(row.review.authorization.focus,focusGrant.focus);assert.equal(row.review.authorization.threshold,.99);assert.equal(row.review.authorization.minimum_frame_score,.95);assert.equal(row.review.secondary.confirm_above,.99);assert.equal(row.review.secondary.non_person_above,.99);assert.equal(row.review.secondary.reject_below,undefined);
+},{authorization:focusGrant,scores:[.979,.98,.995,.996]}));
+test('focus uncertain verdict is not reprocessed endlessly',mongo,()=>fixture(async f=>{
+ await f.worker.step();pending(await f.read());assert.equal(await f.worker.step(),false);assert.equal(f.calls.length,4);
+},{authorization:focusGrant,scores:[.6,.7,.6,.7]}));
+for(const field of ['target','view','expansion','width'])test(`focus rejects corrupt primary ${field} before saving or handling`,mongo,()=>fixture(async f=>{
+ f.setCorrupt((r,i)=>{if(i===0){if(field==='target')r.prepared_image.target[0]+=.1;else r.prepared_image[field]=field==='view'?'context':123;}});
+ await f.worker.step();const row=await f.read();pending(row);assert.equal(row.review.reason,'invalid_model_result');assert.equal(f.saved.length,0);
+},{authorization:focusGrant,scores:[.9999]}));
+
+test('focus non-person class settles only after both complete views agree',mongo,()=>fixture(async f=>{
+ await f.worker.step();const row=await f.read();assert.equal(f.calls.length,4);assert.equal(row.handling.disposition,'false_positive');assert.equal(row.review.secondary.reason,'focused_non_person_confirmed');assert.equal(row.review.secondary.non_target_evidence,undefined);
+},{authorization:focusGrant,scores:[.001,.002,.001,.002]}));
+test('focus uncertain class cannot be converted to false-positive',mongo,()=>fixture(async f=>{
+ f.setCorrupt((r)=>{r.class_scores={person:r.real_score,non_person:0,uncertain:1-r.real_score};});
+ await f.worker.step();pending(await f.read());assert.equal(f.calls.length,4);
+},{authorization:focusGrant,scores:[.001,.002,.001,.002]}));
+test('focus grant cannot accept a binary template disguised with an ABC layout',mongo,()=>fixture(async f=>{
+ f.setCorrupt(r=>{r.template='alarm-review-zh-v1'});await f.worker.step();pending(await f.read());assert.equal((await f.read()).review.reason,'invalid_model_result');
+},{authorization:focusGrant,scores:[.999]}));

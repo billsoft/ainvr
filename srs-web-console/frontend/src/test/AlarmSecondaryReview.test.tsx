@@ -115,3 +115,27 @@ it('uses supplied banner labels without claiming person-only support for every m
  expect(automaticReviewBanner('confirm_only')).toContain('仅对当前已授权的目标类别生效')
  expect(automaticReviewBanner('confirm_only')).not.toContain('人员')
 })
+
+it('does not mislabel a historical skipped pass as model unavailability',()=>{
+ const value=alarm();value.review!.secondary!.state='unavailable';value.review!.secondary!.reason='conflicting_or_weak_primary';
+ expect(reviewDiagnostic(value.review)!.summary).toContain('旧策略未执行扩大复核');
+ expect(reviewDiagnostic(value.review)!.summary).not.toContain('不可用');
+ value.review!.secondary!.state='not_run';value.review!.secondary!.reason='incomplete_frames';
+ expect(reviewDiagnostic(value.review)!.summary).toContain('审核关键帧不完整');
+});
+it('shows persisted paired thresholds without changing false-positive gates',()=>{
+ const value=alarm();value.review!.secondary!.reason='paired_views_confirmed';
+ value.review!.secondary!.paired_support={minimum_frame_score:.85,strong_frame_score:.95};
+ const text=reviewDiagnostic(value.review)!.details.join(' ');
+ expect(text).toContain('特写及扩大范围分数均 ≥ 0.85');
+ expect(text).toContain('不是准确率');expect(text).toContain('自动误报须同时满足全部关键帧三道门槛');
+});
+
+it('explains focused target geometry without changing historical review labels',()=>{
+ const row=alarm();row.review!.input_profile='target-focus-v2';
+ const diagnostic=reviewDiagnostic(row.review)!;
+ expect(diagnostic.summary).toContain('指定目标三分类复核');
+ expect(diagnostic.details.join(' ')).toContain('保留原始目标中心和比例');
+ expect(diagnostic.details.join(' ')).toContain('灰边为无图像区域');
+ expect(reviewDiagnostic(alarm().review)!.summary).toContain('特写 + 扩大范围复核');
+});

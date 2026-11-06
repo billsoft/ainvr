@@ -1,4 +1,5 @@
 #include "request.hpp"
+#include "focus_task.hpp"
 #include "engine.hpp"
 #include <openssl/sha.h>
 #include <filesystem>
@@ -88,6 +89,11 @@ std::vector<int> Engine::Encode(const std::string& kind,const std::string& descr
 std::vector<int> Engine::EncodeSearch(const SearchRequest& request) {
   (void)SearchDecisionIndices(manifest_.at("decision_vocabulary"));
   return EncodeSearchInput(request, [&](const auto& prompt) { return tokenizer_->Encode(prompt); }, shape_);
+}
+std::vector<int> Engine::EncodeFocus() {
+  auto ids=tokenizer_->Encode(FocusInput(shape_));
+  if(int(ids.size())>shape_.context)throw InputError("input_too_long","Focus task exceeds model token capacity");
+  Positions(ids,shape_);return ids;
 }
 void Engine::Load() {
   if(head_)return;

@@ -11,6 +11,7 @@ class Engine {
   ~Engine();
   std::vector<int> Encode(const std::string& kind,const std::string& description);
   std::vector<int> EncodeSearch(const SearchRequest& request);
+  std::vector<int> EncodeFocus();
   void Load();
   std::vector<float> Infer(const std::vector<int>& ids,const std::vector<float>& patches,
                            const std::function<void()>& before_submit = {});

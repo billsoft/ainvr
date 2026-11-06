@@ -10,7 +10,7 @@
 namespace ainvr::llm {
 struct InputError:std::invalid_argument{std::string code;InputError(std::string c,std::string m):std::invalid_argument(m),code(std::move(c)) {}};
 struct ImageRequest { std::string id; std::vector<uint8_t> jpeg; int width=0,height=0; bool letterbox=false; };
-struct ReviewRequest : ImageRequest { std::string kind,description; double temperature=1; std::optional<std::array<float,4>> target; std::vector<std::array<float,2>> region; float approach=0; };
+struct ReviewRequest : ImageRequest { std::string kind,description; double temperature=1; std::string layout="target-crop-v1",view="tight"; float expansion=1.5f; bool show_target=true; std::optional<std::array<float,4>> target; std::vector<std::array<float,2>> region; float approach=0; };
 inline std::vector<uint8_t> DecodeBase64(const std::string& text) {
   if(text.empty()||text.size()>12*1024*1024||text.size()%4)throw std::invalid_argument("invalid image encoding or size");
   size_t padding=text.back()=='=' ? 1:0;
@@ -67,7 +67,15 @@ inline ReviewRequest ParseReview(const nlohmann::json& j) {
   std::array<int,2> size;try{size=JpegDimensions(r.jpeg,r.letterbox);}catch(const std::invalid_argument& e){throw InputError("unsupported_image",e.what());} r.width=size[0];r.height=size[1];
   if(j.contains("preparation")){
     const auto& p=j.at("preparation");
-    if(p.at("version")!=1||p.at("layout")!="target-crop-v1")throw InputError("invalid_request","Unsupported preparation profile");
+    r.layout=p.at("layout").get<std::string>();
+    if(p.at("version")!=1||(r.layout!="target-crop-v1"&&r.layout!="target-focus-v2"))throw InputError("invalid_request","Unsupported preparation profile");
+    if(r.layout=="target-focus-v2"){
+      if(r.kind!="person")throw InputError("invalid_request","Focus task only supports person");
+      r.view=p.value("view",std::string("tight"));
+      if(r.view!="tight"&&r.view!="context")throw InputError("invalid_request","Unsupported target view");
+      r.expansion=r.view=="tight"?1.15f:1.6f;
+      r.show_target=p.value("show_target",true);
+    }else if(p.contains("view"))throw InputError("invalid_request","Target view requires focus profile");
     auto box=p.at("target").get<std::array<float,4>>();
     for(auto v:box)if(!std::isfinite(v)||v<0||v>1)throw InputError("invalid_request","Invalid normalized target");
     if(box[2]<=box[0]||box[3]<=box[1])throw InputError("invalid_request","Empty target");

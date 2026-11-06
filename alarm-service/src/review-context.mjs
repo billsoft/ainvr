@@ -262,12 +262,12 @@ export class ReviewContext {
   return {capture_counts:Object.fromEntries(rows.map(r=>[r._id,r.count])),cache,last_error:this.lastError,retention_days:this.policy?.retention_days??7,max_bytes:this.policy?.max_bytes??1024**3};
  }
  async savePrepared(row,sample,image,{secondary=false}={}){
-  if(!['target-crop-v1','context-marked-v1'].includes(image.layout)||typeof image.jpeg_base64!=='string'||image.jpeg_base64.length>2*1024*1024)throw Error('invalid_model_result');
+  if(!['target-crop-v1','target-focus-v2','context-marked-v1'].includes(image.layout)||typeof image.jpeg_base64!=='string'||image.jpeg_base64.length>2*1024*1024)throw Error('invalid_model_result');
   const data=Buffer.from(image.jpeg_base64,'base64');jpegDimensions(data);
   const key=hash(data),path=join(this.root,'pinned',key+'.jpg');
   if(this.images)await this.images.put('context',key,data,this.imagePolicy(row));
   else {await writeFile(path+'.tmp',data,{mode:0o600});await rename(path+'.tmp',path);}
-  const meta={frame_id:sample.frame_id,key,...(this.images?{storage:'mongodb',content_sha256:key}:{}),layout:image.layout,target:image.target,width:image.width,height:image.height,...(image.layout==='target-crop-v1'?{expansion:image.expansion}:{region:image.region,approach_width_fraction:image.approach_width_fraction,fit:image.fit})};
+  const meta={frame_id:sample.frame_id,key,...(this.images?{storage:'mongodb',content_sha256:key}:{}),layout:image.layout,target:image.target,width:image.width,height:image.height,...(image.layout!=='context-marked-v1'?{expansion:image.expansion,...(image.view?{view:image.view,marker:image.marker,region:image.region,target_canvas:image.target_canvas}:{})}:{region:image.region,approach_width_fraction:image.approach_width_fraction,fit:image.fit})};
   const field=secondary?'review.secondary_frames':image.layout==='context-marked-v1'?'review.context_frames':'review.prepared_frames';
   await this.repository.events.updateOne({alarm_id:row.alarm_id,'review.generation':row.review.generation},{$addToSet:{[field]:meta}});
   return meta;

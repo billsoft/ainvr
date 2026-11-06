@@ -24,6 +24,11 @@ int main() {
   std::string encoded(4*((jpeg.size()+2)/3),'\0');EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),jpeg.data(),int(jpeg.size()));
   nlohmann::json request={{"alarm",{{"kind","person"},{"description","target"}}},{"image",{{"jpeg_base64",encoded}}},{"preparation",{{"version",1},{"layout","target-crop-v1"},{"target",{.1,.1,.8,.8}}}}};
   assert(ParseReview(request).target.has_value());
+  auto focused=request;focused["preparation"]["layout"]="target-focus-v2";
+  assert(ParseReview(focused).view=="tight");assert(std::abs(ParseReview(focused).expansion-1.15f)<1e-6);
+  focused["preparation"]["view"]="context";assert(std::abs(ParseReview(focused).expansion-1.6f)<1e-6);
+  focused["preparation"]["view"]="panorama";Invalid([&]{ParseReview(focused);});
+  focused["preparation"]["layout"]="target-crop-v1";focused["preparation"]["view"]="tight";Invalid([&]{ParseReview(focused);});
   // An original retained target may be odd-sized. Letterbox+target preparation
   // keeps its exact visible geometry; strict model-ready JPEG stays unchanged.
   for(const auto size: {std::array<int,2>{191,223},{244,341},{437,599},{160,319}}){

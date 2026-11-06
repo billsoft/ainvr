@@ -1,4 +1,5 @@
-import {SECONDARY_REVIEW_VERSION,secondaryPrompt,secondaryAssessment,expandedTarget,nonTargetPrompt} from './review-secondary.mjs';
+import {FOCUS_PROMPT_VERSION,FOCUS_PROMPT,focusPreparation,validFocusResult,validFocusEnvelope,focusAssessment} from './review-focus.mjs';
+import {REVIEW_DECISION_VERSION,SECONDARY_REVIEW_VERSION,secondaryPrompt,secondaryAssessment,expandedTarget,nonTargetPrompt} from './review-secondary.mjs';
 import {reviewAuthorization,authorizedResult,confirmationAssessment} from './review-authorization.mjs';
 import {qualifiedReview,validationAvailable} from './review-qualification.mjs';
 // Durable single-document jobs. Model calls never run on observation ingestion.
@@ -40,8 +41,9 @@ export class ReviewWorker{
   const validated=await this.readiness();
   const authorization=await this.authorization();
   const authorizationId=authorization?.id??null;
+  const promptVersion=authorization?.focus?FOCUS_PROMPT_VERSION:REVIEW_PROMPT_VERSION;
   const row=await this.rows.findOneAndUpdate({'handling.state':'unacknowledged','handling.disposition':{$ne:'false_positive'},
-   'review.policy.enabled':true,'review.generation':{$exists:true},'review.context_state':'ready',...(!validated?{$expr:{$or:[{$ne:[{$ifNull:['$review.reference.generation',null]},'$review.generation']},{$ne:[{$ifNull:['$review.reference.prompt_version',null]},REVIEW_PROMPT_VERSION]},{$ne:[{$ifNull:['$review.reference.authorization_id',null]},authorizationId]}]}}:{}),$or:[{'review.state':'waiting_validation'},{'review.state':'queued','review.next_attempt_at':{$lte:now}}, {'review.state':'running','review.lease_until':{$lte:now}}]},
+   'review.policy.enabled':true,'review.generation':{$exists:true},'review.context_state':'ready',...(!validated||authorization?.focus?{$expr:{$or:[{$ne:[{$ifNull:['$review.reference.generation',null]},'$review.generation']},{$ne:[{$ifNull:['$review.reference.prompt_version',null]},promptVersion]},{$ne:[{$ifNull:['$review.reference.authorization_id',null]},authorizationId]},{$ne:[{$ifNull:['$review.reference.decision_version',null]},REVIEW_DECISION_VERSION]}]}}:{}),$or:[{'review.state':'waiting_validation'},{'review.state':'queued','review.next_attempt_at':{$lte:now}}, {'review.state':'running','review.lease_until':{$lte:now}}]},
    {$set:{'review.state':'running','review.token':token,'review.lease_until':now+(this.policy.timeout_s*12+30)*1000},$inc:{'review.attempt':1}},
    {sort:{occurred_at:-1,alarm_id:-1},returnDocument:'after'});
   if(!row)return false;
@@ -58,6 +60,7 @@ export class ReviewWorker{
    const labels=row.rule.snapshot.labels??row.analysis_evidence.review_context.labels;
    const label=labels.find(l=>l.label_id===row.analysis_evidence.track.label_id)?.name;
    if(!label)throw Error('missing_label');
+   const focused=!!authorization?.focus&&label==='person';
    const results=[],submittedPrompts=[];let authorized=!!authorization;
    row.review.prepared_frames=[];row.review.context_frames=[];row.review.secondary_frames=[];delete row.review.secondary;
    const inputs=plan?.items??proof.samples.map(sample=>({sample,source_kind:'full_frame'}));
@@ -68,25 +71,28 @@ export class ReviewWorker{
      context_frames:row.review.frames,evidence_id:row.review.evidence_id,proof,limited,
      mode:plan?.mode??'all_keyframes',missing_frame_ids:plan?.missing_frame_ids??[],
      inputs:inputs.map(i=>({sample:i.sample,source_kind:i.source_kind})),
-     primary_prompt:REVIEW_PROMPT_VERSION,secondary_prompt:SECONDARY_REVIEW_VERSION}});
+     decision_version:REVIEW_DECISION_VERSION,primary_prompt:promptVersion,secondary_prompt:SECONDARY_REVIEW_VERSION}});
    await checkpoints.initialize();
    for(const input of inputs){
     const sample=input.sample;
     if(!await this.rows.findOne(fence,{projection:{alarm_id:1}}))return true;
     const {data}=input.data?input:await this.context.image(row,sample);
-    const prompt=reviewDescription(row,sample);
+    const prompt=focused?{label:'person',description:FOCUS_PROMPT}:reviewDescription(row,sample);
     const crop=input.source_kind==='retained_target';
-    submittedPrompts.push({frame_id:sample.frame_id,label:prompt.label,description:prompt.description,caller_template:REVIEW_PROMPT_VERSION,scope:'target_category_only',source_kind:input.source_kind,input_sha256:digest(data.toString('base64'))});
+    const preparation=focused?{...focusPreparation(crop?{bbox:{x:0,y:0,w:1,h:1}}:sample,crop?{width:1,height:1}:row.analysis_evidence.source),region:crop||row.rule.snapshot.behavior==='appearance'?[]:row.rule.snapshot.points??[]}:null;
+    submittedPrompts.push({frame_id:sample.frame_id,label:prompt.label,description:prompt.description,caller_template:promptVersion,scope:'target_category_only',alarm_kind:prompt.label,source_kind:input.source_kind,input_sha256:digest(data.toString('base64'))});
     const result=await checkpoints.run('primary',sample.frame_id,{image:{jpeg_base64:data.toString('base64'),fit:'letterbox'},
-      preparation:{version:1,layout:'target-crop-v1',region:crop?[]:row.rule.snapshot.points??[],approach_width_fraction:!crop&&row.rule.snapshot.behavior==='region_approach'?row.rule.snapshot.approach_px/row.analysis_evidence.source.width:0,target:crop?[0,0,1,1]:[sample.bbox.x/row.analysis_evidence.source.width,sample.bbox.y/row.analysis_evidence.source.height,(sample.bbox.x+sample.bbox.w)/row.analysis_evidence.source.width,(sample.bbox.y+sample.bbox.h)/row.analysis_evidence.source.height]},
+      preparation:preparation??{version:1,layout:'target-crop-v1',region:crop?[]:row.rule.snapshot.points??[],approach_width_fraction:!crop&&row.rule.snapshot.behavior==='region_approach'?row.rule.snapshot.approach_px/row.analysis_evidence.source.width:0,target:crop?[0,0,1,1]:[sample.bbox.x/row.analysis_evidence.source.width,sample.bbox.y/row.analysis_evidence.source.height,(sample.bbox.x+sample.bbox.w)/row.analysis_evidence.source.width,(sample.bbox.y+sample.bbox.h)/row.analysis_evidence.source.height]},
       alarm:{kind:prompt.label,description:prompt.description}},async result=>{
       if(result?.schema!=='ainvr.alarm_review.v1'||!/^[a-f0-9]{64}$/.test(result?.model?.package_sha256??''))throw Error('invalid_model_result');
       classify(result.real_score,row.review.policy);
-      if(validated&&!await this.qualification({...result,caller_template:REVIEW_PROMPT_VERSION,target_label:prompt.label},row.review.policy))throw Error('unvalidated_profile');
+      if(focused&&(!validFocusResult(result.prepared_image,preparation)||!validFocusEnvelope(result)))throw Error('invalid_model_result');
+      if(validated&&!focused&&!await this.qualification({...result,caller_template:promptVersion,target_label:prompt.label},row.review.policy))throw Error('unvalidated_profile');
     });
+    if(focused)submittedPrompts.at(-1).system_prompt=result.submitted_prompt;
     if(result.prepared_image&&this.context.savePrepared){const prepared=await this.context.savePrepared(row,sample,result.prepared_image);row.review.prepared_frames=[...(row.review.prepared_frames??[]),prepared];}
     if(result.context_image&&this.context.savePrepared){const context=await this.context.savePrepared(row,sample,result.context_image);row.review.context_frames=[...(row.review.context_frames??[]),context];}
-    authorized=authorized&&authorizedResult(authorization,{...result,caller_template:REVIEW_PROMPT_VERSION,target_label:prompt.label});
+    authorized=authorized&&authorizedResult(authorization,{...result,caller_template:promptVersion,target_label:prompt.label});
     results.push(result);
    }
    // Multiple keyframes must agree. Mixed results cannot automatically hide an alarm.
@@ -94,33 +100,34 @@ export class ReviewWorker{
    const scores=results.map(r=>r.real_score),score=Math.max(...scores);
    let state=!limited&&scores.every(v=>v<=row.review.policy.reject_below)?'not_supported':scores.every(v=>v>=row.review.policy.approve_above)?'supported':'uncertain';
    const result={real_score:score,model:results[0].model};let at=new Date(this.clock()).toISOString();
-   const validatedDecision=validated&&(state==='supported'||state==='not_supported');
-   const review={...row.review,state,score:result.real_score,model:result.model,completed_at:at,frame_scores:scores,submitted_prompts:submittedPrompts,caller_template:REVIEW_PROMPT_VERSION,geometry_verified:true,verification:proof.verification,evidence_digest:digest(row.analysis_evidence.review_context),review_scope:'visual_target_with_verified_behavior',
+   const validatedDecision=validated&&!focused&&(state==='supported'||state==='not_supported');
+   const review={...row.review,decision_version:REVIEW_DECISION_VERSION,input_profile:focused?authorization.focus.layout:'target-crop-v1',state,score:result.real_score,model:result.model,completed_at:at,frame_scores:scores,...(focused?{frame_class_scores:results.map(r=>r.class_scores),focus_policy:authorization.focus}:{}),submitted_prompts:submittedPrompts,caller_template:promptVersion,geometry_verified:true,verification:proof.verification,evidence_digest:digest(row.analysis_evidence.review_context),review_scope:'visual_target_with_verified_behavior',
     lease_until:0,reason:state==='uncertain'?'ambiguous_result':null};
    delete review.token;
    review.evidence_mode=plan?.mode??'all_keyframes';review.missing_frame_ids=plan?.missing_frame_ids??[];
    review.required_frame_ids=proof.samples.map(s=>s.frame_id);review.reviewed_frame_ids=inputs.map(i=>i.sample.frame_id);
    // Re-read authorization after inference: disabling/replacing the policy wins.
    let stillAuthorized=authorized&&(await this.authorization())?.id===authorizationId;
-   review.auto_confirmation=confirmationAssessment(stillAuthorized?authorization:null,scores,row.review.policy);
+   review.auto_confirmation=confirmationAssessment(stillAuthorized?(focused?{...authorization,approve_above:authorization.focus.strong_frame_score,minimum_frame_score:authorization.focus.minimum_frame_score}:authorization):null,scores,row.review.policy);
    let operatorConfirmed=review.auto_confirmation.outcome==='confirmed',operatorRejected=false;
    // One bounded, different visual input per required frame. Never reroll the
    // same image or let another person elsewhere in the full scene vote for it.
    if(!operatorConfirmed&&stillAuthorized&&authorization.mode==='confirm_or_reject'){
     const complete=!limited&&inputs.length===proof.samples.length&&inputs.every((input,i)=>input.source_kind==='full_frame'&&input.sample.frame_id===proof.samples[i].frame_id);
-    const promising=scores.every(v=>v>Math.max(.5,row.review.policy.reject_below))&&scores.some(v=>v>=Math.max(.99,row.review.policy.approve_above,authorization.approve_above));
     const negative=scores.every(v=>v<=Math.min(.05,row.review.policy.reject_below));
-    review.secondary={version:SECONDARY_REVIEW_VERSION,state:'unavailable',outcome:'uncertain',reason:complete?'conflicting_or_weak_primary':'incomplete_frames',frame_scores:[],frames:[],prompt:secondaryPrompt(label),confirm_above:Math.max(authorization.secondary.confirm_above,row.review.policy.approve_above,authorization.approve_above),reject_below:Math.min(authorization.secondary.reject_below,row.review.policy.reject_below),completed_at:at};
-    if(complete&&(promising||negative)){
+    review.secondary={version:SECONDARY_REVIEW_VERSION,state:'not_run',outcome:'uncertain',reason:complete?'pending_secondary':'incomplete_frames',frame_scores:[],frames:[],prompt:focused?FOCUS_PROMPT:secondaryPrompt(label),confirm_above:focused?Math.max(authorization.focus.strong_frame_score,row.review.policy.approve_above):Math.max(authorization.secondary.confirm_above,row.review.policy.approve_above,authorization.approve_above),...(focused?{non_person_above:authorization.focus.non_person_above}:{reject_below:Math.min(authorization.secondary.reject_below,row.review.policy.reject_below)}),completed_at:at,...(focused?{frame_class_scores:[],focus_policy:authorization.focus}:authorization.secondary.paired_support?{paired_support:authorization.secondary.paired_support}:{})};
+    if(complete){
      const secondaryImages=[];
      for(const input of inputs){
       if(!await this.rows.findOne(fence,{projection:{alarm_id:1}}))return true;
       if((await this.authorization())?.id!==authorizationId){stillAuthorized=false;break;}
       const {data}=input.data?input:await this.context.image(row,input.sample);
-      const target=expandedTarget(input.sample,row.analysis_evidence.source);
-      const second=await checkpoints.run('expanded',input.sample.frame_id,{image:{jpeg_base64:data.toString('base64'),fit:'letterbox'},preparation:{version:1,layout:'target-crop-v1',region:[],target},alarm:{kind:label,description:review.secondary.prompt}},async second=>{
-       if(second?.schema!=='ainvr.alarm_review.v1'||second.model?.package_sha256!==result.model.package_sha256||!authorizedResult(authorization,{...second,caller_template:REVIEW_PROMPT_VERSION,target_label:label})||second.prepared_image?.target?.length!==4||second.prepared_image.target.some((v,i)=>!Number.isFinite(v)||Math.abs(v-target[i])>1e-6))throw Error('invalid_model_result');
+      const preparation=focused?{...focusPreparation(input.sample,row.analysis_evidence.source,'context'),region:row.rule.snapshot.behavior==='appearance'?[]:row.rule.snapshot.points??[]}:null;
+      const target=preparation?.target??expandedTarget(input.sample,row.analysis_evidence.source);
+      const second=await checkpoints.run('expanded',input.sample.frame_id,{image:{jpeg_base64:data.toString('base64'),fit:'letterbox'},preparation:preparation??{version:1,layout:'target-crop-v1',region:[],target},alarm:{kind:label,description:review.secondary.prompt}},async second=>{
+       if(second?.schema!=='ainvr.alarm_review.v1'||second.model?.package_sha256!==result.model.package_sha256||!authorizedResult(authorization,{...second,caller_template:promptVersion,target_label:label})||second.prepared_image?.target?.length!==4||second.prepared_image.target.some((v,i)=>!Number.isFinite(v)||Math.abs(v-target[i])>1e-6))throw Error('invalid_model_result');
        classify(second.real_score,row.review.policy);
+       if(focused&&(!validFocusResult(second.prepared_image,preparation)||!validFocusEnvelope(second)))throw Error('invalid_model_result');
       });
       if(!this.context.savePrepared)throw Error('missing_context');
       const prepared=await this.context.savePrepared(row,input.sample,second.prepared_image,{secondary:true});
@@ -128,11 +135,12 @@ export class ReviewWorker{
       review.secondary.frame_scores.push(second.real_score);
       review.secondary.frames.push({frame_id:input.sample.frame_id,key:prepared.key,score:second.real_score,preparation_target:target,input_sha256:digest(data.toString('base64'))});
       review.secondary.model=second.model;
+      if(focused){review.secondary.frame_class_scores.push(second.class_scores);review.secondary.system_prompt=second.submitted_prompt;}
       secondaryImages.push({frame_id:input.sample.frame_id,jpeg_base64:second.prepared_image.jpeg_base64});
      }
      // A low person score can mean darkness or missing detail. Dismiss only
      // after a separate explicit, high-confidence non-person evidence check.
-     if(stillAuthorized&&negative&&review.secondary.frame_scores.length===inputs.length&&review.secondary.frame_scores.every(v=>v<=Math.min(.01,authorization.secondary.reject_below,row.review.policy.reject_below))){
+     if(!focused&&stillAuthorized&&negative&&review.secondary.frame_scores.length===inputs.length&&review.secondary.frame_scores.every(v=>v<=Math.min(.01,authorization.secondary.reject_below,row.review.policy.reject_below))){
       review.secondary.non_target_evidence={frame_scores:[],frame_ids:[],prompt:nonTargetPrompt(label)};
       for(const image of secondaryImages){
        if(!await this.rows.findOne(fence,{projection:{alarm_id:1}}))return true;
@@ -145,7 +153,7 @@ export class ReviewWorker{
       }
      }
      if(stillAuthorized){
-      Object.assign(review.secondary,secondaryAssessment({primaryScores:scores,contextScores:review.secondary.frame_scores,negativeEvidenceScores:review.secondary.non_target_evidence?.frame_scores,rule:{...row.review.policy,approve_above:Math.max(row.review.policy.approve_above,authorization.approve_above)},policy:authorization.secondary,complete}),{state:'completed',completed_at:new Date(this.clock()).toISOString()});
+      Object.assign(review.secondary,focused?focusAssessment({primary:results.map(r=>r.class_scores),context:review.secondary.frame_class_scores,policy:authorization.focus,rule:row.review.policy,complete}):secondaryAssessment({primaryScores:scores,contextScores:review.secondary.frame_scores,negativeEvidenceScores:review.secondary.non_target_evidence?.frame_scores,rule:{...row.review.policy,approve_above:Math.max(row.review.policy.approve_above,authorization.approve_above)},policy:authorization.secondary,complete,pairedRule:row.review.policy}),{state:'completed',completed_at:new Date(this.clock()).toISOString()});
       operatorConfirmed=review.secondary.outcome==='confirmed';operatorRejected=review.secondary.outcome==='false_positive';
      }else review.secondary.reason='authorization_changed';
     }
@@ -159,15 +167,15 @@ export class ReviewWorker{
    if(operatorConfirmed)state='supported';if(operatorRejected)state='not_supported';
    review.state=state;review.reason=state==='uncertain'?'ambiguous_result':null;
    const handled=validatedDecision||operatorConfirmed||operatorRejected;
-   review.decision_basis=handled?(validatedDecision?'validated_model':review.secondary?.state==='completed'?'operator_authorized_dual_review':'operator_authorized_confirm_only'):'reference_only';
+   review.decision_basis=handled?(validatedDecision?'validated_model':review.secondary?.state==='completed'?'operator_authorized_dual_review':'operator_authorized_primary_review'):'reference_only';
    review.decision_path=handled?(validatedDecision?(state==='supported'?'primary_confirmation':null):operatorRejected?'explicit_non_target':review.auto_confirmation.outcome==='confirmed'?'primary_confirmation':'expanded_confirmation'):null;
    // Durable results are only for incomplete attempts, not permanent alarm blobs.
    delete review.checkpoint;
-   if((operatorConfirmed||operatorRejected)&&!validatedDecision)review.authorization={id:authorizationId,mode:authorization.mode,authorized_by:authorization.authorized_by,authorized_at:authorization.authorized_at,threshold:Math.max(authorization.approve_above,row.review.policy.approve_above),minimum_frame_score:Math.max(authorization.minimum_frame_score??authorization.approve_above,row.review.policy.approve_above),...(authorization.secondary?{secondary:authorization.secondary}:{}),accuracy_validated:false};
+   if((operatorConfirmed||operatorRejected)&&!validatedDecision)review.authorization={...(focused?{focus:authorization.focus}:{}),id:authorizationId,mode:authorization.mode,authorized_by:authorization.authorized_by,authorized_at:authorization.authorized_at,threshold:Math.max(focused?authorization.focus.strong_frame_score:authorization.approve_above,row.review.policy.approve_above),minimum_frame_score:Math.max(focused?authorization.focus.minimum_frame_score:authorization.minimum_frame_score??authorization.approve_above,row.review.policy.approve_above),...(authorization.secondary?{secondary:authorization.secondary}:{}),accuracy_validated:false};
    if(handled)delete review.reference;
-   if(!validated&&!handled){
+   if((!validated||focused)&&!handled){
     review.state='waiting_validation';review.reason=stillAuthorized?'manual_review_required':'unvalidated_profile';review.attempt=0;
-    review.reference={state:'completed',generation:row.review.generation,score,frame_scores:scores,model:result.model,completed_at:at,scope:'target_category_only',automatic_decision:false,reason:review.reason,authorization_id:authorizationId,prompt_version:REVIEW_PROMPT_VERSION,layout:'target-crop-v1'};
+    review.reference={state:'completed',generation:row.review.generation,score,frame_scores:scores,model:result.model,completed_at:at,scope:'target_category_only',automatic_decision:false,reason:review.reason,authorization_id:authorizationId,prompt_version:promptVersion,decision_version:REVIEW_DECISION_VERSION,layout:focused?authorization.focus.layout:'target-crop-v1'};
    }
    const disposition=state==='supported'?'handled':'false_positive';
    const handling=handled?{...row.handling,state:'acknowledged',revision:row.handling.revision+1,reviewed_by_kind:'ai',acknowledged_by:'AI',acknowledged_at:at,disposition,note:review.secondary?.state==='completed'&&handled?`AI 特写与扩大范围复核${operatorRejected?'均否定目标类别，判为误报':'通过，确认告警'}；行为条件由规则引擎核验，模型准确率尚未全面验证，可人工改判`:limited?'行为证明完整；AI 核对可用的同目标真实图像（含触发帧）。部分全景关键帧缺失，仅允许确认，不允许自动判误报，可人工改判':validated?'AI 核对关键帧目标，行为条件由共用引擎判定':'按用户授权策略自动确认：各关键帧目标类别一致，行为由规则引擎判定；准确率尚未全面验证，可人工改判'}:null;

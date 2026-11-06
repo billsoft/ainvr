@@ -161,3 +161,16 @@ test('assessment is deterministic and leaves inputs unchanged', () => {
   assert.deepEqual(secondaryAssessment(input), secondaryAssessment(input));
   assert.equal(secondaryAssessment(input).outcome, 'confirmed');
 });
+
+test('paired support confirms observed partial-body positives only with explicit opt-in',()=>{
+ const pairs=[[[.976408,.880907],[.980500,.882400]],[[.980335,.963810],[.898957,.931096]],[[.877255,.978307],[.993521,.976962]]];
+ const policy={confirm_above:.999,reject_below:.001,paired_support:{minimum_frame_score:.85,strong_frame_score:.95}};
+ for(const [primaryScores,contextScores] of pairs){
+  assert.equal(assess({primaryScores,contextScores,rule:{reject_below:.05,approve_above:.95},policy}).reason,'paired_views_confirmed');
+  outcome({primaryScores,contextScores},'uncertain');
+ }
+ for(const [primaryScores,contextScores] of [[[.144,.644],[.144,.644]],[[.055,.281],[.055,.281]],[[.99,.84],[.99,.99]],[[.9,.9],[.9,.9]]]) outcome({primaryScores,contextScores,policy},'uncertain');
+ outcome({primaryScores:[.99,.99],contextScores:[.99,.84],policy},'uncertain');
+ outcome({policy,complete:false},'uncertain');
+ outcome({policy:{...policy,paired_support:{minimum_frame_score:.2,strong_frame_score:.95}}},'uncertain');
+});

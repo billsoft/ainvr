@@ -1,3 +1,12 @@
+// Decision version is separate from the unchanged crop/prompt protocol.
+export const REVIEW_DECISION_VERSION = 'focused-evidence-v3';
+export const PAIRED_SUPPORT_DEFAULTS = Object.freeze({minimum_frame_score: .85, strong_frame_score: .95});
+export function validPairedSupport(value) {
+  return !!value && Number.isFinite(value.minimum_frame_score) && value.minimum_frame_score >= .85 &&
+    value.minimum_frame_score <= 1 && Number.isFinite(value.strong_frame_score) &&
+    value.strong_frame_score >= .95 && value.strong_frame_score <= 1 &&
+    value.minimum_frame_score <= value.strong_frame_score;
+}
 export const SECONDARY_REVIEW_VERSION = 'expanded-target-v1';
 
 export function secondaryPrompt(label) {
@@ -40,7 +49,7 @@ const uncertain = reason => ({outcome: 'uncertain', reason});
 // paired in order across both score arrays. Scores alone cannot prove provenance,
 // required-frame coverage, geometry, or behavior; those checks belong upstream.
 // This pure assessment does not authorize or persist a production verdict.
-export function secondaryAssessment({primaryScores, contextScores, negativeEvidenceScores, rule, policy, complete} = {}) {
+export function secondaryAssessment({primaryScores, contextScores, negativeEvidenceScores, rule, policy, complete, pairedRule = rule} = {}) {
   if (complete !== true) return uncertain('incomplete_frames');
   if (!scoresValid(primaryScores) || !scoresValid(contextScores) ||
       primaryScores.length !== contextScores.length) return uncertain('invalid_scores');
@@ -49,6 +58,18 @@ export function secondaryAssessment({primaryScores, contextScores, negativeEvide
       !probability(policy?.confirm_above) || !probability(policy?.reject_below) ||
       policy.reject_below >= policy.confirm_above) return uncertain('invalid_thresholds');
 
+  if (policy.paired_support !== undefined && !validPairedSupport(policy.paired_support)) return uncertain('invalid_thresholds');
+  // Explicit deployment opt-in. Both views of EVERY required frame must support
+  // the same target. Never average away a contradictory frame; require a strong
+  // witness as well. This is a score policy, not calibrated probability.
+  if (policy.paired_support) {
+    const floor = policy.paired_support.minimum_frame_score;
+    const strong = Math.max(policy.paired_support.strong_frame_score, pairedRule?.approve_above ?? rule.approve_above);
+    if (primaryScores.every(score => score >= floor) && contextScores.every(score => score >= floor) &&
+        [...primaryScores, ...contextScores].some(score => score >= strong)) {
+      return {outcome: 'confirmed', reason: 'paired_views_confirmed'};
+    }
+  }
   const contextFloor = Math.max(.99, policy.confirm_above, rule.approve_above);
   const primaryFloor = Math.max(.5, rule.reject_below);
   const strongFloor = Math.max(.99, rule.approve_above);

@@ -104,3 +104,9 @@ target_link_libraries(ainvr_llm_search_tokenizer_probe PRIVATE tokenizers_cpp nl
 target_compile_options(ainvr_llm_search_tokenizer_probe PRIVATE -Wall -Wextra -Werror)
 
 include(cmake/search_bpu_smoke.cmake)
+
+add_executable(ainvr_llm_target_crop_test tests/target_crop_test.cpp)
+target_include_directories(ainvr_llm_target_crop_test PRIVATE src)
+target_link_libraries(ainvr_llm_target_crop_test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
+target_compile_options(ainvr_llm_target_crop_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+add_test(NAME llm_target_crop COMMAND ainvr_llm_target_crop_test)
