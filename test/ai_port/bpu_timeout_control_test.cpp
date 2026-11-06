@@ -5,8 +5,11 @@
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <fstream>
+#include <filesystem>
+#include <unistd.h>
 namespace {
-int create_rc=0,wait_rc=0,release_rc=0,submit_rc=0,frees=0,releases=0,unloads=0,wait_ms=0,submits=0,creates=0;
+int loads=0,create_rc=0,wait_rc=0,release_rc=0,submit_rc=0,frees=0,releases=0,unloads=0,wait_ms=0,submits=0,creates=0;
 void Require(bool x){if(!x)throw std::runtime_error("BPU resource custody assertion failed");}
 void Properties(hbDNNTensorProperties* p){*p={};p->validShape.numDimensions=1;p->validShape.dimensionSize[0]=4;p->stride[0]=1;p->alignedByteSize=4;}
 }
@@ -14,7 +17,7 @@ extern "C" {
 const char* hbDNNGetVersion(){return "fake-test-only";}
 const char* hbUCPGetVersion(){return "fake-test-only";}
 const char* hbUCPGetSocName(){return "fake-test-only";}
-int32_t hbDNNInitializeFromFiles(hbDNNPackedHandle_t* p,const char**,int32_t){*p=reinterpret_cast<void*>(1);return 0;}
+int32_t hbDNNInitializeFromFiles(hbDNNPackedHandle_t* p,const char**,int32_t){++loads;*p=reinterpret_cast<void*>(1);return 0;}
 int32_t hbDNNGetModelNameList(const char*** names,int32_t* count,hbDNNPackedHandle_t){static const char* a[]={"fake"};*names=a;*count=1;return 0;}
 int32_t hbDNNGetModelHandle(hbDNNHandle_t* p,hbDNNPackedHandle_t,const char*){*p=reinterpret_cast<void*>(2);return 0;}
 int32_t hbDNNGetInputCount(int32_t* n,hbDNNHandle_t){*n=1;return 0;}
@@ -27,11 +30,12 @@ int32_t hbUCPMallocCached(hbUCPSysMem* p,uint64_t n,int32_t){p->virAddr=std::cal
 int32_t hbUCPMemFlush(const hbUCPSysMem*,int32_t){return 0;}
 int32_t hbUCPFree(hbUCPSysMem* p){++frees;std::free(p->virAddr);p->virAddr=nullptr;return 0;}
 int32_t hbDNNRelease(hbDNNPackedHandle_t){++unloads;return 0;}
-int32_t hbDNNInferV2(hbUCPTaskHandle_t* p,hbDNNTensor*,const hbDNNTensor*,hbDNNHandle_t){++creates;*p=reinterpret_cast<void*>(3);return create_rc;}
+int32_t hbDNNInferV2(hbUCPTaskHandle_t* p,hbDNNTensor* output,const hbDNNTensor* input,hbDNNHandle_t){std::memcpy(output->sysMem.virAddr,input->sysMem.virAddr,4);++creates;*p=reinterpret_cast<void*>(3);return create_rc;}
 int32_t hbUCPSubmitTask(hbUCPTaskHandle_t,hbUCPSchedParam*){++submits;return submit_rc;}
 int32_t hbUCPWaitTaskDone(hbUCPTaskHandle_t,int32_t ms){wait_ms=ms;return wait_rc;}
 int32_t hbUCPReleaseTask(hbUCPTaskHandle_t){++releases;return release_rc;}
 }
+#ifndef AINVR_FAKE_SDK_LIBRARY
 int main(int argc,char** argv){try{
   Require(argc==2);const std::string mode=argv[1];
   if(mode=="timeout")wait_rc=HB_UCP_TASK_TIMEOUT;
@@ -43,10 +47,12 @@ int main(int argc,char** argv){try{
   else if(mode=="submit_releasefail"){submit_rc=HB_UCP_TASK_NUMBER_EXCEED_LIMIT;release_rc=HB_UCP_API_USE_ERROR;}
   else Require(mode=="success");
   const bool fault=mode=="timeout"||mode=="unknown"||mode=="release"||mode=="create_releasefail"||mode=="submit_releasefail";
-  {ainvr::BpuModel model("fake-never-opened");
-    bool threw=false;try{auto out=model.Run({{1,2,3,4}});Require(out.size()==1&&out[0].size()==4);}catch(const std::runtime_error&){threw=true;}
+  const auto path=(std::filesystem::path(std::getenv("TMPDIR")?std::getenv("TMPDIR"):"/tmp")/("ainvr-fake-"+std::to_string(getpid()))).string();
+  {std::ofstream f(path);f<<"fake-test-only";}
+  {auto model=ainvr::BpuModel::Acquire(path);std::filesystem::remove(path);
+    bool threw=false;try{auto out=model->Run({{1,2,3,4}});Require(out.size()==1&&out[0].size()==4);}catch(const std::runtime_error&){threw=true;}
     Require(threw==(mode!="success"));Require(ainvr::BpuRuntimeHealthy()!=fault);
-    if(fault){const int before=submits,created=creates;try{model.Run({{1,2,3,4}});Require(false);}catch(const std::runtime_error&){}Require(submits==before&&creates==created);}
+    if(fault){const int before=submits,created=creates;try{model->Run({{1,2,3,4}});Require(false);}catch(const std::runtime_error&){}Require(submits==before&&creates==created);}
   }
   const bool create_failed=mode=="createfail"||mode=="create_releasefail";
   const bool submit_failed=mode=="submit"||mode=="submit_releasefail";
@@ -55,6 +61,8 @@ int main(int argc,char** argv){try{
   Require(frees==(fault?0:2));Require(unloads==(fault?0:1));
   Require(releases==((mode=="timeout"||mode=="unknown")?0:1));
   Require(ainvr::BpuQuarantinedBytes()==(fault?8u:0u));
-  if(fault){bool rejected=false;try{ainvr::BpuModel blocked("fake");}catch(const std::runtime_error&){rejected=true;}Require(rejected);}
+  if(fault){bool rejected=false;try{auto blocked=ainvr::BpuModel::Acquire("fake");}catch(const std::runtime_error&){rejected=true;}Require(rejected);}
   std::cout<<"PASS "<<mode<<"; fake SDK, zero neural calls\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
+
+#endif

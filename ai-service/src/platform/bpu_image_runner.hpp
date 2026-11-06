@@ -26,7 +26,7 @@ class BpuImageRunner {
                     const std::map<std::string,std::vector<float>>& auxiliary={});
   const nlohmann::json& Description() const { return description_; }
  private:
-  BpuModel model_;
+  std::shared_ptr<BpuModel> model_;
   BpuImageContract contract_;
   nlohmann::json description_;
   std::string image_input_name_;

@@ -38,9 +38,9 @@ class RemoteTextEncoder final : public TextEncoder {
   bool Healthy() const override { return true; }
   std::vector<float> Encode(const std::string& text) override;
  private:
-  RemoteTextEncoder(std::string package, std::string version, size_t dimensions, Options options);
+  RemoteTextEncoder(std::string package, std::string version, size_t dimensions, Options options, std::string lease);
   void Heartbeat();
-  std::string package_id_, model_version_;
+  std::string package_id_, model_version_, lease_id_;
   size_t dimensions_;
   Options options_;
   std::mutex mutex_;

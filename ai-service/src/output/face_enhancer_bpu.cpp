@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <openssl/evp.h>
@@ -44,7 +45,7 @@ class BpuFaceEnhancer final : public FaceEnhancer {
   void EnsureLoaded() override {
     std::lock_guard lock(mutex_);if(model_)return;
     auto contract=ValidateFaceEnhanceBpuManifest(name_,path_);
-    auto model=std::make_unique<ainvr::BpuModel>(path_);
+    auto model=ainvr::BpuModel::Acquire(path_);
     auto description=model->Describe();
     if(description.at("inputs").size()!=1||description.at("outputs").size()!=1)
       throw std::runtime_error("Export restoration with one image input and one image output");
@@ -70,7 +71,7 @@ class BpuFaceEnhancer final : public FaceEnhancer {
  private:
   std::string name_,path_;int size_;
   std::mutex mutex_;
-  std::unique_ptr<ainvr::BpuModel> model_;
+  std::shared_ptr<ainvr::BpuModel> model_;
   nlohmann::json description_;
 };
 }
@@ -103,23 +104,33 @@ nlohmann::json ValidateFaceEnhanceBpuManifest(const std::string& model,
 std::shared_ptr<FaceEnhancer> CreateFaceEnhancerBpu(const std::string& model,const std::string& path){
   return std::make_shared<BpuFaceEnhancer>(model,path);
 }
+namespace {
+struct EnhancerRegistry {
+  std::mutex mutex;
+  std::map<std::string,std::pair<std::string,std::shared_ptr<FaceEnhancer>>> current;
+};
+EnhancerRegistry& Enhancers(){static auto* registry=new EnhancerRegistry();return *registry;}
+}
+void RetainConfiguredFaceEnhancers(const std::set<std::string>& paths){
+  std::vector<std::shared_ptr<FaceEnhancer>> retired;
+  auto& registry=Enhancers();
+  {
+    std::lock_guard lock(registry.mutex);
+    for(auto it=registry.current.begin();it!=registry.current.end();){
+      if(!paths.count(it->second.first)){
+        retired.push_back(std::move(it->second.second));it=registry.current.erase(it);
+      }else ++it;
+    }
+  }
+}
 void RegisterFaceEnhancerBpu(const std::filesystem::path& root){
-  struct Registry {
-    std::mutex mutex;
-    std::unordered_map<std::string,std::pair<std::string,std::shared_ptr<FaceEnhancer>>> current;
-  };
-  // Preserve the reference's process-lifetime registry, avoiding SDK teardown
-  // order during global destruction. At most one current entry per task.
-  auto owned=std::make_unique<Registry>();
-  auto registry=owned.get();
-  RegisterFaceEnhancerFactory([registry,root](const std::string& model,const std::string& raw){
+  RegisterFaceEnhancerFactory([root](const std::string& model,const std::string& raw){
     auto path=std::filesystem::path(raw);if(path.is_relative())path=root/path;
-    const auto key=path.lexically_normal().string();
-    std::lock_guard lock(registry->mutex);
-    auto& entry=registry->current[model];
-    if(!entry.second||entry.first!=key)entry={key,CreateFaceEnhancerBpu(model,key)};
+    const auto canonical=std::filesystem::weakly_canonical(path).string();
+    auto& registry=Enhancers();std::lock_guard lock(registry.mutex);
+    auto& entry=registry.current[model+":"+canonical];
+    if(!entry.second)entry={canonical,CreateFaceEnhancerBpu(model,canonical)};
     return entry.second;
   });
-  owned.release();
 }
 }

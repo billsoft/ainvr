@@ -9,6 +9,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -49,6 +50,11 @@ class ConfigStore {
   // 整体替换 overlay(不与现有 overlay 合并),同样先校验再落盘。
   AppConfig ReplaceOverlay(const nlohmann::json& new_overlay);
 
+  // Register before starting workers. Runs under the store commit lock and must
+  // not reenter ConfigStore. Save/Replace return only after runtime demand sync.
+  void SetRuntimeObserver(std::function<void(const AppConfig&)> observer);
+  void SynchronizeRuntime();
+
  private:
   nlohmann::json ReadMergedRaw() const;
   static nlohmann::json ReadYaml(const std::filesystem::path& path);
@@ -63,6 +69,9 @@ class ConfigStore {
   // control_server 的多个请求处理线程可能同时调 SaveOverlay)——两层锁
   // 不冲突,flock 本身可重入安全性由文件句柄的生命周期保证。
   mutable std::mutex process_mutex_;
+  std::function<void(const AppConfig&)> runtime_observer_;
+  bool runtime_synchronized_ = true;
+  void NotifyRuntimeLocked(const AppConfig& config);
 };
 
 }  // namespace ai_service::config

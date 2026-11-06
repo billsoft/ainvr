@@ -6,6 +6,7 @@
 #include <atomic>
 #include <iostream>
 #include <thread>
+#include <future>
 
 using namespace ai_service::output;
 static int failures = 0;
@@ -59,6 +60,20 @@ int main() {
   CHECK(ErrorOf([&] { ainvr::EmbedIpcCall(path, {{"op", "query"}, {"text", "x"}, {"expect", "search-v1-" + std::string(64, 'z')}}, 2000); }) == "search_model_changed");
   CHECK(ErrorOf([&] { ainvr::EmbedIpcCall(path, {{"op", "bogus"}}, 2000); }) == "invalid_request");
 
+  // Independent configured clients: removing one must preserve the other.
+  host.Release("legacy");
+  CHECK(host.Ensure(kPackage,std::chrono::seconds(90),"client-a").ready);
+  CHECK(host.Ensure(kPackage,std::chrono::seconds(90),"client-b").ready);
+  host.Release("client-a");CHECK(host.Loaded()!=nullptr);
+  host.Release("client-b");CHECK(host.Loaded()!=nullptr); // sampler task still owns it
+  shared.reset();CHECK(!host.Loaded());
+
+  // Revoking while a load is in flight must not leave a permanent residency pin.
+  host.Ensure(kPackage,std::chrono::seconds(90),"revoked-during-load");
+  host.Release("revoked-during-load");
+  std::this_thread::sleep_for(std::chrono::milliseconds(650));
+  CHECK(!host.Loaded());
+
   // Nobody holds the weights any more: a query that finds nothing resident answers pending and restarts the load.
   shared.reset();
   host.ResetForTest();
@@ -84,6 +99,27 @@ int main() {
   host.Ensure(kPackage, std::chrono::seconds(0));
   for (int i = 0; i < 40 && host.Loaded(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(250));
   CHECK(!host.Loaded());
+
+  // A synchronous load may finish while a different background request waits.
+  // The background entry must recheck the live identity under the loading lock.
+  host.ResetForTest();std::promise<void> entered,proceed;auto gate=proceed.get_future().share();
+  std::atomic<int> competing_loads{0};
+  host.SetLoaderForTest([&](const std::string& id,const auto&,const auto&){
+    ++competing_loads;if(id=="test-B"){entered.set_value();gate.wait();}
+    return QwenEmbeddingHost::FakeForTest({id,kVersion,"spec"});
+  });
+  auto pending_b=std::async(std::launch::async,[&]{return host.Acquire("test-B",std::nullopt,[]{return true;});});
+  entered.get_future().wait();host.Ensure("test-A",std::chrono::seconds(90),"owner-A");
+  proceed.set_value();auto b=pending_b.get();bool background_finished=false;
+  for(int i=0;i<200;++i){
+    if(host.Ensure("test-B",std::chrono::seconds(90),"owner-B").ready){background_finished=true;break;}
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(background_finished&&competing_loads==1&&host.Loaded()==b);
+  host.Release("owner-B");b.reset();
+  CHECK(!host.Loaded()); // Pending A's lease must never keep B resident.
+  CHECK(ErrorOf([&]{host.Ensure("test-C",std::chrono::seconds(90),"owner-A");})=="invalid_request");
+  host.Release("owner-A");host.ResetForTest();
 
   if (failures) { std::cerr << failures << " failures\n"; return 1; }
   std::cout << "qwen runtime host checks passed\n";

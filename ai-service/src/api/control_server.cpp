@@ -298,7 +298,7 @@ std::shared_ptr<output::SnapshotStore> ChannelManager::BuildSnapshotStore(
   if (cfg.deletion_pending || cancelling_starts_.load() || !LicenseAllowed()) return nullptr;
   auto store = std::make_shared<output::SnapshotStore>(
       cfg.snapshot, ss.mongo_uri, ss.db_name, cfg.id, cfg.name, ss.face_enhance_engine,
-      ss.face_enhance_codeformer_engine, /*queue_maxsize=*/64, NeedsFaceEnhancer(cfg),
+      ss.face_enhance_codeformer_engine, /*queue_maxsize=*/64, /*preload_face_enhancer=*/false,
       output::SnapshotStore::PendingDirectory(cfg.id));
   store->Start(/*keep_history_access=*/true);  // Disabled capture still exposes existing history.
   if (cancelling_starts_.load() || !LicenseAllowed()) return nullptr;

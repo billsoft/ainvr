@@ -11,7 +11,7 @@ double Ms(Clock::duration d){return std::chrono::duration<double,std::milli>(d).
 }
 BpuImageRunner::BpuImageRunner(const std::string& path,BpuImageContract contract,
                                const std::string& image_input_name,const std::string& program_name)
-    :model_(path,program_name),contract_(contract),description_(model_.Describe()),
+    :model_(BpuModel::Acquire(path,program_name)),contract_(contract),description_(model_->Describe()),
      image_input_name_(image_input_name),images_({true,true,false}) {
   if(contract_==BpuImageContract::FloatNchw)
     image_input_index_=BpuFloatImageInputIndex(description_["inputs"],image_input_name_);
@@ -48,7 +48,7 @@ std::future<BpuImageResult> BpuImageRunner::RunAsync(const Nv12Frame& frame,cons
   const double preprocess_ms=Ms(Clock::now()-begin);
   return std::async(std::launch::async,[this,inputs=std::move(inputs),backend=std::move(prepared.backend),preprocess_ms]() {
     std::lock_guard lock(inference_mutex_);
-    const auto start=Clock::now();auto bytes=model_.Run(inputs);auto inferred=Clock::now();
+    const auto start=Clock::now();auto bytes=model_->Run(inputs);auto inferred=Clock::now();
     BpuImageResult result;result.image_backend=backend;
     for(size_t i=0;i<bytes.size();++i)result.outputs.push_back(DecodeTensor(bytes[i],description_["outputs"][i]));
     result.preprocess_ms=preprocess_ms;result.inference_ms=Ms(inferred-start);

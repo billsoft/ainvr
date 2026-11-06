@@ -58,7 +58,7 @@ std::vector<float> EncodeReferenceInput(const std::vector<float>& input, const s
   struct Custody {
     std::unique_ptr<ainvr::BpuCoexistReservation> reservation;
     ainvr::search::VerifiedPackage package;
-    std::unique_ptr<ainvr::BpuModel> model;
+    std::shared_ptr<ainvr::BpuModel> model;
   };
   auto held = std::make_unique<Custody>();
   try {
@@ -70,7 +70,7 @@ std::vector<float> EncodeReferenceInput(const std::vector<float>& input, const s
       ainvr::search::BpuVisionReservationBytes(held->package),policy);
     if (!ainvr::search::VerifyStillCurrent(held->package)) throw std::runtime_error("probe_reference_model_changed");
     const auto& spec = *held->package.spec;
-    held->model = std::make_unique<ainvr::BpuModel>("/proc/self/fd/" + std::to_string(
+    held->model = ainvr::BpuModel::Acquire("/proc/self/fd/" + std::to_string(
       held->package.BorrowedFileDescriptor("hbm/" + spec.vision.file)),spec.vision.program);
     const auto description = held->model->Describe();
     ainvr::search::ValidateBpuVisionDescription(description,spec);

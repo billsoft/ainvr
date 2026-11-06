@@ -15,7 +15,7 @@ class BpuPromptEngine {
   std::vector<float> Encode(const std::vector<std::string>& phrases, size_t slots=8);
  private:
   BpuPromptResources resources_;
-  BpuModel text_,reprta_;
+  std::shared_ptr<BpuModel> text_,reprta_;
   nlohmann::json text_description_,reprta_description_;
 };
 }

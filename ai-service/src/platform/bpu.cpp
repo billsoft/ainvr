@@ -3,9 +3,36 @@
 #include <stdexcept>
 #include <limits>
 #include <atomic>
+#include <openssl/evp.h>
+#include <array>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <cerrno>
+#include <filesystem>
 
 namespace ainvr {
 namespace {
+SharedRuntimeCache<BpuModel>& Models(){static auto* cache=new SharedRuntimeCache<BpuModel>();return *cache;}
+ConfiguredResidency<BpuModel>& Residency(){static auto* state=new ConfiguredResidency<BpuModel>();return *state;}
+struct ModelFile {
+ int fd=-1;std::string hash;
+ explicit ModelFile(const std::string& path){
+  fd=open(path.c_str(),O_RDONLY|O_CLOEXEC);if(fd<0)throw std::runtime_error("Cannot open HBM");
+  try{
+   struct stat before{},after{};if(fstat(fd,&before)||!S_ISREG(before.st_mode))throw std::runtime_error("Invalid HBM file");
+   std::unique_ptr<EVP_MD_CTX,decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(),EVP_MD_CTX_free);
+   if(!ctx||EVP_DigestInit_ex(ctx.get(),EVP_sha256(),nullptr)!=1)throw std::runtime_error("HBM digest initialization failed");
+   std::array<unsigned char,65536> buffer{};
+   for(;;){auto n=read(fd,buffer.data(),buffer.size());if(n<0&&errno==EINTR)continue;if(n<0)throw std::runtime_error("Cannot read HBM");if(!n)break;if(EVP_DigestUpdate(ctx.get(),buffer.data(),n)!=1)throw std::runtime_error("HBM digest failed");}
+   if(fstat(fd,&after)||before.st_size!=after.st_size||before.st_mtim.tv_sec!=after.st_mtim.tv_sec||before.st_mtim.tv_nsec!=after.st_mtim.tv_nsec||before.st_ctim.tv_sec!=after.st_ctim.tv_sec||before.st_ctim.tv_nsec!=after.st_ctim.tv_nsec)throw std::runtime_error("HBM changed during acquisition");
+   unsigned char bytes[EVP_MAX_MD_SIZE];unsigned int size=0;
+   if(EVP_DigestFinal_ex(ctx.get(),bytes,&size)!=1)throw std::runtime_error("HBM digest failed");
+   const char* hex="0123456789abcdef";for(unsigned int i=0;i<size;++i){hash+=hex[bytes[i]>>4];hash+=hex[bytes[i]&15];}
+  }catch(...){close(fd);fd=-1;throw;}
+ }
+ ~ModelFile(){if(fd>=0)close(fd);}
+};
 std::atomic<bool> runtime_healthy{true};
 std::atomic<uint64_t> quarantined_bytes{0};
 void Check(int rc, const char* operation) {
@@ -20,6 +47,27 @@ struct BpuModel::Quarantine {
   hbUCPTaskHandle_t task=nullptr;
   std::vector<hbDNNTensor> inputs,outputs;
 };
+std::shared_ptr<BpuModel> BpuModel::Acquire(const std::string& path,const std::string& name){
+ if(!BpuRuntimeHealthy())throw std::runtime_error("BPU runtime fault; service restart required");
+ ModelFile file(path);
+ auto model=Models().Acquire(file.hash+":"+name,[&]{return std::unique_ptr<BpuModel>(new BpuModel("/proc/self/fd/"+std::to_string(file.fd),name));});
+ Residency().Observe(ResidencyKey(path,name),model);
+ return model;
+}
+std::string BpuModel::ResidencyKey(const std::string& path,const std::string& name){
+ return std::filesystem::weakly_canonical(path).string()+":"+name;
+}
+void BpuModel::ConfigureResidency(Demand demand){Residency().Update(std::move(demand));}
+nlohmann::json BpuModel::SharedStatus(){
+ auto rows=nlohmann::json::array(),configured=nlohmann::json::array();
+ for(const auto& [key,model]:Models().LiveSnapshot()){
+   const auto calls=model->ActiveAndWaitingCalls();
+   rows.push_back({{"identity",key},{"users",model.use_count()-1},
+     {"active_calls",calls?1:0},{"waiting_calls",calls?calls-1:0}});
+ }
+ for(const auto& entry:Residency().Snapshot())configured.push_back({{"resource",entry.key},{"owners",entry.owners},{"resident",entry.resident}});
+ return {{"instances",rows.size()},{"models",rows},{"configured",configured},{"scheduling","fifo"}};
+}
 BpuModel::BpuModel(const std::string& path, const std::string& name) {
   if(!BpuRuntimeHealthy())throw std::runtime_error("BPU runtime fault; service restart required");
   // Reserve custody before submitting work; timeout cleanup must not allocate.
@@ -111,7 +159,7 @@ nlohmann::json BpuModel::Describe() const {
   return j;
 }
 std::vector<std::vector<unsigned char>> BpuModel::Run(const std::vector<std::vector<unsigned char>>& data) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<FifoMutex> lock(mutex_);
   if(!BpuRuntimeHealthy())throw std::runtime_error("BPU runtime fault; service restart required");
   if (data.size() != inputs_.size()) throw std::invalid_argument("HBM input count mismatch");
   for (size_t i = 0; i < data.size(); ++i) {

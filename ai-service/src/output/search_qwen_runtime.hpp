@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <functional>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -58,7 +59,8 @@ class QwenEmbeddingHost {
   std::shared_ptr<QwenEmbeddingRuntime> Acquire(const std::string& package_id,
       const std::optional<ainvr::search::RuntimeModelPin>& expected, const SearchSamplingCurrent& current);
   // Non-blocking: loads in the background if needed and keeps the runtime for `keep` after the last request.
-  Status Ensure(const std::string& package_id, std::chrono::seconds keep);
+  Status Ensure(const std::string& package_id, std::chrono::seconds keep, const std::string& owner = "legacy");
+  void Release(const std::string& owner);
   std::shared_ptr<QwenEmbeddingRuntime> Loaded() const;
   // Test seam: how a runtime is produced (default QwenEmbeddingRuntime::Load).
   using Loader = std::function<std::shared_ptr<QwenEmbeddingRuntime>(const std::string&,
@@ -71,12 +73,14 @@ class QwenEmbeddingHost {
  private:
   QwenEmbeddingHost();
   void ReaperLoop();
+  bool HasOwnersLocked(const std::string& package_id) const;
   nlohmann::json Handle(const nlohmann::json& request, std::vector<float>& payload);
   mutable std::mutex mutex_;                // state below
   std::mutex load_mutex_;                   // one load at a time
   std::weak_ptr<QwenEmbeddingRuntime> runtime_;
   std::shared_ptr<QwenEmbeddingRuntime> keep_;
-  std::chrono::steady_clock::time_point keep_until_{};
+  struct Lease { std::string package_id; std::chrono::steady_clock::time_point expires; };
+  std::map<std::string,Lease> owners_;
   bool loading_ = false;
   std::string error_, loading_package_;
   Loader loader_;

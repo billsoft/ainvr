@@ -114,8 +114,8 @@ void Shape(const nlohmann::json& d,const std::string& name,const std::vector<int
 }
 }
 BpuPromptEngine::BpuPromptEngine(BpuPromptResources resources)
-    :resources_(std::move(resources)),text_(resources_.text_hbm),reprta_(resources_.reprta_hbm),
-     text_description_(text_.Describe()),reprta_description_(reprta_.Describe()) {
+    :resources_(std::move(resources)),text_(BpuModel::Acquire(resources_.text_hbm)),reprta_(BpuModel::Acquire(resources_.reprta_hbm)),
+     text_description_(text_->Describe()),reprta_description_(reprta_->Describe()) {
   for(const auto* d:{&text_description_,&reprta_description_})
     if(d->at("inputs").size()!=1||d->at("outputs").size()!=1)throw std::runtime_error("Unexpected text component input/output count");
   Shape(text_description_.at("inputs").at(0),"tokens",{1,77},HB_DNN_TENSOR_TYPE_S32);
@@ -135,12 +135,12 @@ std::vector<float> BpuPromptEngine::Encode(const std::vector<std::string>& phras
   for(size_t i=0;i<rows.size();++i) {
     const std::vector<int32_t> tokens(rows[i].begin(),rows[i].end());
     auto packed=PackBpuTokenIds(tokens,input,49408);
-    auto outputs=text_.Run({packed});auto encoded=DecodeTensor(outputs.at(0),text_description_.at("outputs").at(0));
+    auto outputs=text_->Run({packed});auto encoded=DecodeTensor(outputs.at(0),text_description_.at("outputs").at(0));
     if(encoded.size()!=512)throw std::runtime_error("Text embedding size mismatch");
     for(float x:encoded)if(!std::isfinite(x))throw std::runtime_error("Non-finite text embedding");
     std::copy(encoded.begin(),encoded.end(),embeddings.begin()+i*512);
   }
-  auto outputs=reprta_.Run({PackBpuFloatTensor(embeddings,reprta_description_.at("inputs").at(0))});
+  auto outputs=reprta_->Run({PackBpuFloatTensor(embeddings,reprta_description_.at("inputs").at(0))});
   auto prompts=DecodeTensor(outputs.at(0),reprta_description_.at("outputs").at(0));
   if(prompts.size()!=8*512)throw std::runtime_error("Final prompt size mismatch");
   for(float x:prompts)if(!std::isfinite(x))throw std::runtime_error("Non-finite prompt embedding");

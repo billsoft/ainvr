@@ -9,6 +9,7 @@
 
 namespace ai_service::output {
 namespace {
+ainvr::SharedRuntimeCache<QwenEmbeddingRuntime>& QwenModels(){static auto* cache=new ainvr::SharedRuntimeCache<QwenEmbeddingRuntime>();return *cache;}
 constexpr uint64_t kHeadroom = 256ULL << 20;
 constexpr std::chrono::seconds kKeepAlive{90};
 
@@ -97,13 +98,22 @@ QwenEmbeddingHost::QwenEmbeddingHost() {
   std::thread([this] { ReaperLoop(); }).detach();
 }
 
+bool QwenEmbeddingHost::HasOwnersLocked(const std::string& package_id) const {
+  const auto now=std::chrono::steady_clock::now();
+  for(const auto& [owner,lease]:owners_)
+    if(lease.package_id==package_id && lease.expires>now)return true;
+  return false;
+}
+
 void QwenEmbeddingHost::ReaperLoop() {
   for (;;) {
     std::this_thread::sleep_for(std::chrono::seconds(5));
     std::shared_ptr<QwenEmbeddingRuntime> drop;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (keep_ && std::chrono::steady_clock::now() > keep_until_) drop = std::move(keep_);
+      const auto now=std::chrono::steady_clock::now();
+      for(auto it=owners_.begin();it!=owners_.end();)if(it->second.expires<=now)it=owners_.erase(it);else ++it;
+      if (keep_ && !HasOwnersLocked(keep_->Space().package_id)) drop = std::move(keep_);
     }
     drop.reset();   // frees the weights when no sampling session still shares them
   }
@@ -111,7 +121,7 @@ void QwenEmbeddingHost::ReaperLoop() {
 
 void QwenEmbeddingHost::ResetForTest() {
   std::lock_guard<std::mutex> lock(mutex_);
-  runtime_.reset(); keep_.reset(); keep_until_ = {}; loading_ = false; error_.clear();
+  runtime_.reset(); keep_.reset(); owners_.clear(); loading_ = false; error_.clear();
 }
 
 std::shared_ptr<QwenEmbeddingRuntime> QwenEmbeddingHost::Loaded() const {
@@ -121,7 +131,9 @@ std::shared_ptr<QwenEmbeddingRuntime> QwenEmbeddingHost::Loaded() const {
 
 std::shared_ptr<QwenEmbeddingRuntime> QwenEmbeddingHost::Acquire(const std::string& package_id,
     const std::optional<ainvr::search::RuntimeModelPin>& expected, const SearchSamplingCurrent& current) {
+  if(!current||!current())throw std::runtime_error("search_hardware_stale");
   std::lock_guard<std::mutex> load(load_mutex_);   // waits for a background load already in flight
+  if(!current())throw std::runtime_error("search_hardware_stale");
   if (auto existing = Loaded()) {
     if (existing->Space().package_id == package_id) {
       if (expected && (expected->model_version != existing->Space().model_version ||
@@ -129,17 +141,36 @@ std::shared_ptr<QwenEmbeddingRuntime> QwenEmbeddingHost::Acquire(const std::stri
         throw std::runtime_error("search_hardware_model_pin_mismatch");
       return existing;
     }
+    throw std::runtime_error("search_model_pending"); // old configured/in-flight owner must drain first
   }
   Loader loader;
   { std::lock_guard<std::mutex> lock(mutex_); loader = loader_; }
-  auto fresh = loader(package_id, expected, current);
+  // One host slot also serializes destruction across package changes. A weak
+  // runtime may expire before the old SDK destructor has returned its ION.
+  auto fresh = QwenModels().Acquire("embedding-runtime",[&]{return loader(package_id, expected, current);});
+  if(fresh->Space().package_id!=package_id)throw std::runtime_error("search_model_pending");
+  if(!current())throw std::runtime_error("search_hardware_stale");
+  if(expected&&(expected->model_version!=fresh->Space().model_version||expected->package_sha256!=fresh->Space().model_version.substr(10)))
+    throw std::runtime_error("search_hardware_model_pin_mismatch");
   { std::lock_guard<std::mutex> lock(mutex_); runtime_ = fresh; }
   return fresh;
 }
 
-QwenEmbeddingHost::Status QwenEmbeddingHost::Ensure(const std::string& package_id, std::chrono::seconds keep) {
+void QwenEmbeddingHost::Release(const std::string& owner) {
+  std::shared_ptr<QwenEmbeddingRuntime> drop;
+  {std::lock_guard<std::mutex> lock(mutex_);owners_.erase(owner);if(keep_&&!HasOwnersLocked(keep_->Space().package_id))drop=std::move(keep_);}
+}
+
+QwenEmbeddingHost::Status QwenEmbeddingHost::Ensure(const std::string& package_id, std::chrono::seconds keep, const std::string& owner) {
   std::lock_guard<std::mutex> lock(mutex_);
-  keep_until_ = std::max(keep_until_, std::chrono::steady_clock::now() + keep);
+  if(owner.empty()||owner.size()>128||(!owners_.count(owner)&&owners_.size()>=64))throw std::runtime_error("invalid_request");
+  if(auto existing=runtime_.lock();existing&&existing->Space().package_id!=package_id)
+    return {false,false,"search_model_pending",{}};
+  if(loading_&&loading_package_!=package_id)return {false,false,"search_model_pending",{}};
+  const auto now=std::chrono::steady_clock::now();
+  if(auto it=owners_.find(owner);it!=owners_.end() && it->second.expires>now && it->second.package_id!=package_id)
+    throw std::runtime_error("invalid_request"); // A live lease cannot change model identity.
+  owners_[owner]={package_id,now+keep};
   if (auto existing = runtime_.lock(); existing && existing->Space().package_id == package_id) {
     keep_ = existing;
     return {true, false, {}, existing->Space()};
@@ -151,18 +182,17 @@ QwenEmbeddingHost::Status QwenEmbeddingHost::Ensure(const std::string& package_i
       std::shared_ptr<QwenEmbeddingRuntime> runtime;
       std::string error;
       try {
-        std::lock_guard<std::mutex> load(load_mutex_);
-        if (auto existing = Loaded(); existing && existing->Space().package_id == package_id) runtime = existing;
-        else {
-          Loader loader;
-          { std::lock_guard<std::mutex> lock(mutex_); loader = loader_; }
-          runtime = loader(package_id, std::nullopt, [] { return true; });
-        }
+        // Both entry points use the same locked identity check. Revalidate
+        // after waiting: another package may have loaded while we were queued.
+        runtime = Acquire(package_id, std::nullopt, [this, package_id] {
+          std::lock_guard<std::mutex> lock(mutex_);
+          return loading_ && loading_package_ == package_id && HasOwnersLocked(package_id);
+        });
       } catch (const std::exception& e) { error = std::string(e.what()).substr(0, 64); }
       catch (...) { error = "search_model_load_failed"; }
       std::lock_guard<std::mutex> lock(mutex_);
-      if (runtime) { runtime_ = runtime; keep_ = runtime; }
-      error_ = error;
+      if (runtime) { runtime_ = runtime; if(HasOwnersLocked(package_id))keep_ = runtime; }
+      error_ = HasOwnersLocked(package_id) ? error : std::string();
       loading_ = false;
     }).detach();
   }
@@ -177,6 +207,8 @@ nlohmann::json QwenEmbeddingHost::Handle(const nlohmann::json& request, std::vec
     if (ainvr::search::FindPackageSpec(id).kind != ainvr::search::PackageKind::QwenEmbedding) throw std::runtime_error("invalid_request");
     return id;
   };
+  const auto owner=request.value("lease_id",std::string("legacy"));
+  if(op=="release") {if(owner=="legacy")throw std::runtime_error("invalid_request");Release(owner);return {{"released",true}};}
   if (op == "hello") {
     auto runtime = Loaded();
     if (!runtime) throw std::runtime_error("search_model_pending");
@@ -185,7 +217,7 @@ nlohmann::json QwenEmbeddingHost::Handle(const nlohmann::json& request, std::vec
   if (op == "ensure") {
     const auto id = package_of();
     if (id.empty()) throw std::runtime_error("invalid_request");
-    const auto status = Ensure(id, kKeepAlive);
+    const auto status = Ensure(id, kKeepAlive, owner);
     nlohmann::json header = status.ready ? Identity(status.space) : nlohmann::json::object();
     header["state"] = status.ready ? "ready" : status.loading ? "loading" : "failed";
     if (!status.error.empty()) header["load_error"] = status.error;
@@ -195,12 +227,14 @@ nlohmann::json QwenEmbeddingHost::Handle(const nlohmann::json& request, std::vec
   if (!ainvr::BpuRuntimeHealthy()) throw std::runtime_error("search_bpu_runtime_fault");
   auto runtime = Loaded();
   if (!runtime) {
-    if (const auto id = package_of(); !id.empty()) Ensure(id, kKeepAlive);   // a query after idle unload restarts the load
+    if (const auto id = package_of(); !id.empty()) Ensure(id, kKeepAlive, owner);   // a query after idle unload restarts the load
     throw std::runtime_error("search_model_pending");
   }
+  if (const auto requested=package_of(); !requested.empty() && requested!=runtime->Space().package_id)
+    throw std::runtime_error("search_model_changed");
   if (const auto expect = request.value("expect", std::string()); !expect.empty() && expect != runtime->Space().model_version)
     throw std::runtime_error("search_model_changed");
-  Ensure(runtime->Space().package_id, kKeepAlive);   // queries keep the weights resident
+  Ensure(runtime->Space().package_id, kKeepAlive, owner);   // queries keep the weights resident
   try {
     payload = runtime->Embedder().EmbedQuery(request.at("text").get<std::string>());
   } catch (const ainvr::embedding::TokenizerError& error) {

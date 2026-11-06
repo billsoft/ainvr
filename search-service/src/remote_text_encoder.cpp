@@ -2,6 +2,8 @@
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
+#include <atomic>
+#include <unistd.h>
 
 namespace ainvr::search {
 namespace {
@@ -28,10 +30,16 @@ std::unique_ptr<RemoteTextEncoder> RemoteTextEncoder::Connect(const VerifiedPack
 
 std::unique_ptr<RemoteTextEncoder> RemoteTextEncoder::ConnectIdentity(const std::string& package_id, const std::string& model_version,
     size_t dimensions, const Options& options) {
+  static std::atomic<uint64_t> serial{0};
+  const auto lease=std::to_string(getpid())+"-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+"-"+std::to_string(++serial);
+  struct Guard {
+    const Options& options;const std::string& lease;bool active=true;
+    ~Guard(){if(active)try{(void)EmbedIpcCall(options.socket_path,{{"op","release"},{"lease_id",lease}},1000);}catch(...) {}}
+  } guard{options,lease};
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(options.load_wait_ms);
   for (;;) {
     EmbedIpcReply reply;
-    try { reply = EmbedIpcCall(options.socket_path, {{"op", "ensure"}, {"package_id", package_id}}, 5000); }
+    try { reply = EmbedIpcCall(options.socket_path, {{"op", "ensure"}, {"package_id", package_id}, {"lease_id", lease}}, 5000); }
     catch (const std::runtime_error& error) { Translate(error.what()); }
     catch (const std::exception&) { throw std::runtime_error("search_model_pending"); }
     const auto state = reply.header.value("state", std::string());
@@ -47,11 +55,12 @@ std::unique_ptr<RemoteTextEncoder> RemoteTextEncoder::ConnectIdentity(const std:
       throw std::runtime_error("search_model_pending");
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
   }
-  return std::unique_ptr<RemoteTextEncoder>(new RemoteTextEncoder(package_id, model_version, dimensions, options));
+  auto encoder=std::unique_ptr<RemoteTextEncoder>(new RemoteTextEncoder(package_id, model_version, dimensions, options, lease));
+  guard.active=false;return encoder;
 }
 
-RemoteTextEncoder::RemoteTextEncoder(std::string package, std::string version, size_t dimensions, Options options)
-    : package_id_(std::move(package)), model_version_(std::move(version)), dimensions_(dimensions), options_(std::move(options)) {
+RemoteTextEncoder::RemoteTextEncoder(std::string package, std::string version, size_t dimensions, Options options, std::string lease)
+    : package_id_(std::move(package)), model_version_(std::move(version)), lease_id_(std::move(lease)), dimensions_(dimensions), options_(std::move(options)) {
   heartbeat_ = std::thread([this] { Heartbeat(); });
 }
 
@@ -59,6 +68,7 @@ RemoteTextEncoder::~RemoteTextEncoder() {
   { std::lock_guard<std::mutex> lock(mutex_); stopping_ = true; }
   wake_.notify_all();
   if (heartbeat_.joinable()) heartbeat_.join();
+  try{(void)EmbedIpcCall(options_.socket_path,{{"op","release"},{"lease_id",lease_id_}},1000);}catch(...) {}
 }
 
 void RemoteTextEncoder::Heartbeat() {
@@ -67,14 +77,14 @@ void RemoteTextEncoder::Heartbeat() {
     if (wake_.wait_for(lock, std::chrono::milliseconds(options_.heartbeat_ms), [this] { return stopping_; })) break;
     lock.unlock();
     // Also restarts the load after an owner restart, so the first query after it is not the one that waits.
-    try { (void)EmbedIpcCall(options_.socket_path, {{"op", "ensure"}, {"package_id", package_id_}}, 5000); } catch (...) {}
+    try { (void)EmbedIpcCall(options_.socket_path, {{"op", "ensure"}, {"package_id", package_id_}, {"lease_id", lease_id_}}, 5000); } catch (...) {}
     lock.lock();
   }
 }
 
 std::vector<float> RemoteTextEncoder::Encode(const std::string& text) {
   EmbedIpcReply reply;
-  try { reply = EmbedIpcCall(options_.socket_path, {{"op", "query"}, {"text", text}, {"expect", model_version_}, {"package_id", package_id_}}, options_.call_timeout_ms); }
+  try { reply = EmbedIpcCall(options_.socket_path, {{"op", "query"}, {"text", text}, {"expect", model_version_}, {"package_id", package_id_}, {"lease_id", lease_id_}}, options_.call_timeout_ms); }
   catch (const QueryTextError&) { throw; }
   catch (const std::runtime_error& error) { Translate(error.what()); }
   if (reply.payload.size() != dimensions_) throw std::runtime_error("search_encoding_failed");

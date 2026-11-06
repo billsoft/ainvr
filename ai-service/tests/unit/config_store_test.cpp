@@ -5,6 +5,9 @@
 #include <gtest/gtest.h>
 
 #include <fstream>
+#include <future>
+#include <atomic>
+#include <chrono>
 
 #include "../../src/config/config_store.hpp"
 
@@ -147,4 +150,37 @@ TEST(ConfigStore, RealProductionOverlayLoadsUnchanged) {
   ASSERT_EQ(cfg.channels.size(), 1u);
   EXPECT_EQ(cfg.channels[0].snapshot.face_enhance_model, "gpen");
   EXPECT_EQ(cfg.server.api_key, "test-api-key-not-real");
+}
+
+TEST(ConfigStore, CommitRegistersRuntimeBeforeReturningAndReplacementAlsoSyncs) {
+  StoreFixture fx;std::vector<int> observed;
+  fx.store.SetRuntimeObserver([&](const AppConfig& c){observed.push_back(c.server.port);});
+  fx.store.SaveOverlay({{"server",{{"port",8001}}}});
+  EXPECT_EQ(observed,(std::vector<int>{8000,8001}));
+  fx.store.ReplaceOverlay({{"server",{{"port",8002}}}});
+  EXPECT_EQ(observed.back(),8002);
+  const auto count=observed.size();
+  json invalid = {{"channels", json::array({{{"id", "invalid"},
+      {"stream", {{"url", "not-a-url"}}}}})}};
+  EXPECT_THROW(fx.store.SaveOverlay(invalid),ConfigValidationError);
+  EXPECT_EQ(observed.size(),count);
+}
+TEST(ConfigStore, ConcurrentWorkerCannotReadNewConfigBeforeRuntimeRegistration) {
+  StoreFixture fx;std::promise<void> entered,release;auto gate=release.get_future().share();
+  std::atomic<int> runtime_port{0};
+  fx.store.SetRuntimeObserver([&](const AppConfig& c){
+    if(c.server.port==8001){entered.set_value();gate.wait();}runtime_port=c.server.port;
+  });
+  auto save=std::async(std::launch::async,[&]{fx.store.SaveOverlay({{"server",{{"port",8001}}}});});
+  entered.get_future().wait();
+  auto read=std::async(std::launch::async,[&]{auto c=fx.store.Load();return std::make_pair(c.server.port,runtime_port.load());});
+  EXPECT_EQ(read.wait_for(std::chrono::milliseconds(30)),std::future_status::timeout);
+  release.set_value();save.get();EXPECT_EQ(read.get(),(std::make_pair(8001,8001)));
+}
+TEST(ConfigStore, FailedRuntimeSyncBlocksActivationUntilReconciliationSucceeds) {
+  StoreFixture fx;bool fail=true;
+  fx.store.SetRuntimeObserver([&](const AppConfig& c){if(c.server.port==8001&&fail)throw std::runtime_error("injected sync failure");});
+  EXPECT_THROW(fx.store.SaveOverlay({{"server",{{"port",8001}}}}),std::runtime_error);
+  EXPECT_THROW(fx.store.Load(),std::runtime_error);
+  fail=false;fx.store.SynchronizeRuntime();EXPECT_EQ(fx.store.Load().server.port,8001);
 }

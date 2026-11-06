@@ -10,8 +10,8 @@
 int main(int argc, char** argv) {
   try {
     if (argc == 3 && std::string(argv[1]) == "--describe") {
-      ainvr::BpuModel model(argv[2]);
-      std::cout << model.Describe().dump() << '\n';
+      auto model=ainvr::BpuModel::Acquire(argv[2]);
+      std::cout << model->Describe().dump() << '\n';
       return 0;
     }
     if (argc == 3 && std::string(argv[1]) == "--validate") {

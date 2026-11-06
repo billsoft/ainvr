@@ -74,7 +74,11 @@ nlohmann::json ConfigStore::ReadMergedRaw() const {
   return DeepMerge(ReadYaml(base_path_), ReadJson(overlay_path_));
 }
 
-AppConfig ConfigStore::Load() const { return AppConfigFromJson(ReadMergedRaw()); }
+AppConfig ConfigStore::Load() const {
+  std::lock_guard<std::mutex> lock(process_mutex_);
+  if (!runtime_synchronized_) throw std::runtime_error("runtime configuration synchronization pending");
+  return AppConfigFromJson(ReadMergedRaw());
+}
 
 nlohmann::json ConfigStore::LoadRawMerged() const { return ReadMergedRaw(); }
 
@@ -113,6 +117,25 @@ class FileLock {
 };
 }  // namespace
 
+void ConfigStore::NotifyRuntimeLocked(const AppConfig& config) {
+  runtime_synchronized_ = false;
+  if (runtime_observer_) runtime_observer_(config);
+  runtime_synchronized_ = true;
+}
+
+void ConfigStore::SetRuntimeObserver(std::function<void(const AppConfig&)> observer) {
+  std::lock_guard<std::mutex> lock(process_mutex_);
+  FileLock file_lock(lock_path_);
+  runtime_observer_ = std::move(observer);
+  NotifyRuntimeLocked(ValidateOrRaise(ReadJson(overlay_path_)));
+}
+
+void ConfigStore::SynchronizeRuntime() {
+  std::lock_guard<std::mutex> lock(process_mutex_);
+  FileLock file_lock(lock_path_);
+  NotifyRuntimeLocked(ValidateOrRaise(ReadJson(overlay_path_)));
+}
+
 void ConfigStore::AtomicWriteJson(const std::filesystem::path& path, const nlohmann::json& data) {
   WriteDurableFile(path, data.dump(2));
 }
@@ -125,6 +148,7 @@ AppConfig ConfigStore::SaveOverlay(const nlohmann::json& patch) {
   json new_overlay = DeepMerge(current_overlay, patch);
   AppConfig cfg = ValidateOrRaise(new_overlay);  // 校验失败在这里抛,磁盘不动
   AtomicWriteJson(overlay_path_, new_overlay);
+  NotifyRuntimeLocked(cfg);
   return cfg;
 }
 
@@ -134,6 +158,7 @@ AppConfig ConfigStore::ReplaceOverlay(const nlohmann::json& new_overlay) {
 
   AppConfig cfg = ValidateOrRaise(new_overlay);
   AtomicWriteJson(overlay_path_, new_overlay);
+  NotifyRuntimeLocked(cfg);
   return cfg;
 }
 

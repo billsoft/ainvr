@@ -50,7 +50,7 @@ struct BpuTextEncoder::Impl {
   std::unique_ptr<ainvr::BpuCoexistReservation> reservation;
   VerifiedPackage package;
   std::unique_ptr<SiglipTextTokenizer> tokenizer;
-  std::unique_ptr<ainvr::BpuModel> model;
+  std::shared_ptr<ainvr::BpuModel> model;
   nlohmann::json description;
   std::mutex inference;
 };
@@ -90,7 +90,7 @@ std::unique_ptr<BpuTextEncoder> BpuTextEncoder::Load(VerifiedPackage package,
   const auto path = "hbm/" + impl->package.spec->text.file;
   const int descriptor = impl->package.BorrowedFileDescriptor(path);
   // SDK reopens an internal stable descriptor, not a replaceable pathname.
-  impl->model = std::make_unique<ainvr::BpuModel>("/proc/self/fd/" + std::to_string(descriptor),
+  impl->model = ainvr::BpuModel::Acquire("/proc/self/fd/" + std::to_string(descriptor),
                                                 impl->package.spec->text.program);
   impl->description = impl->model->Describe();
   ValidateBpuTextDescription(impl->description, *impl->package.spec);

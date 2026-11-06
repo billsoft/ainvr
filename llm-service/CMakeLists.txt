@@ -110,3 +110,15 @@ target_include_directories(ainvr_llm_target_crop_test PRIVATE src)
 target_link_libraries(ainvr_llm_target_crop_test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
 target_compile_options(ainvr_llm_target_crop_test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 add_test(NAME llm_target_crop COMMAND ainvr_llm_target_crop_test)
+
+# Explicit hardware lifecycle acceptance; requires an installed model path.
+add_executable(ainvr_llm_lifecycle_probe tests/lifecycle_probe.cpp)
+target_compile_options(ainvr_llm_lifecycle_probe PRIVATE -idirafter /usr/hobot/include)
+target_link_libraries(ainvr_llm_lifecycle_probe PRIVATE ainvr_llm_engine ainvr_llm_image PkgConfig::HTTP)
+set_target_properties(ainvr_llm_lifecycle_probe PROPERTIES BUILD_RPATH /usr/hobot/lib)
+
+if(BUILD_TESTING)
+  add_test(NAME llm_failure_after_disable COMMAND ainvr_llm_lifecycle_probe --failure-state)
+  add_test(NAME llm_success_after_reconfigure COMMAND ainvr_llm_lifecycle_probe --success-state)
+  set_tests_properties(llm_failure_after_disable llm_success_after_reconfigure PROPERTIES TIMEOUT 15 LABELS software)
+endif()

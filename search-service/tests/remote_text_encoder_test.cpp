@@ -29,12 +29,14 @@ int main() {
   CHECK(ErrorOf([&] { connect(); }) == "search_model_pending");   // owner not running
 
   std::string mode = "ok";
-  std::atomic<int> ensures{0}, loading_polls{0};
+  std::atomic<int> ensures{0}, loading_polls{0}, releases{0};
   {
     ainvr::EmbedIpcServer server(options.socket_path, [&](const nlohmann::json& request) {
       ainvr::EmbedIpcReply reply;
       const auto op = request.at("op").get<std::string>();
+      if(op=="release"){CHECK(!request.at("lease_id").get<std::string>().empty());++releases;return reply;}
       if (op == "ensure") {
+        CHECK(!request.at("lease_id").get<std::string>().empty());
         ++ensures;
         if (mode == "loading-then-ready" && loading_polls.fetch_add(1) < 2) { reply.header = {{"state", "loading"}}; return reply; }
         if (mode == "never-ready") { reply.header = {{"state", "loading"}}; return reply; }
@@ -76,6 +78,7 @@ int main() {
       CHECK(ErrorOf([&] { encoder->Encode("x"); }) == "search_encoding_failed");
       mode = "ok";
     }
+    CHECK(releases.load()==1);
     // After destruction the heartbeat is gone.
     const int settled = ensures.load();
     std::this_thread::sleep_for(std::chrono::milliseconds(250));

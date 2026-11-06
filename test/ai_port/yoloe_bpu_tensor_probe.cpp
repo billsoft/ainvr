@@ -23,10 +23,10 @@ int main(int argc,char** argv) {
   try {
     if(argc!=5)throw std::invalid_argument("Expected HBM, image tensor, prompt tensor, new output file");
     if(std::filesystem::exists(argv[4]))throw std::invalid_argument("Output file already exists");
-    ainvr::BpuModel model(argv[1]);auto description=model.Describe();
+    auto model=ainvr::BpuModel::Acquire(argv[1]);auto description=model->Describe();
     auto images=Read(argv[2],3*640*640),prompts=Read(argv[3],8*512);
     auto inputs=ainvr::PackBpuFloatInputs(images,description.at("inputs"),"images",{{"prompt_embeddings",prompts}});
-    auto start=std::chrono::steady_clock::now();auto raw=model.Run(inputs);
+    auto start=std::chrono::steady_clock::now();auto raw=model->Run(inputs);
     auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
     if(raw.size()!=1)throw std::invalid_argument("Expected one raw detection tensor");
     auto output=ainvr::DecodeTensor(raw[0],description.at("outputs").at(0));

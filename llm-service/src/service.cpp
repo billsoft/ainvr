@@ -38,21 +38,22 @@ struct Job : ainvr::llm::TaskIdentity {
   }
 };
 struct Service {
-  Json config,previous_config,failed_config;
+  Json config,previous_config,failed_config,loaded_config;
   ainvr::llm::ConfigurationState configuration;
   std::shared_ptr<Job> active_job;
   std::mutex mutex;
   std::condition_variable cv;
   std::deque<std::shared_ptr<Job>> queue;
   std::string state="unloaded",last_error;
-  bool desired=false,stop=false,previous_search=false,search_parsing=false,search_supported=false;
+  bool desired=false,stop=false,previous_search=false,search_parsing=false,search_supported=false,reload_requested=false;
   uint64_t ok=0,failed=0;
   Json callers=Json::object();
   std::deque<double> latencies;
   std::string package_hash,package_id;
   Json admission;  // last protocol-3 admission decision; null while no model is resident
   std::thread worker;
-  explicit Service(Json c):config(std::move(c)) { worker=std::thread([this]{Loop();}); }
+  // The no-worker form is used only by deterministic software lifecycle tests.
+  explicit Service(Json c,bool start_worker=true):config(std::move(c)) { if(start_worker)worker=std::thread([this]{Loop();}); }
   Json Settings(){std::lock_guard<std::mutex> lock(mutex);return config;}
   Json ConfigurationReport(){std::lock_guard<std::mutex> lock(mutex);return configuration.Report();}
   // Restore only the trusted management settings on restart. Do not report
@@ -60,8 +61,34 @@ struct Service {
   void SeedPrevious(Json previous){std::lock_guard<std::mutex> lock(mutex);
     if(config.empty())config=std::move(previous);
   }
+  bool LoadedMatchesLocked(const Json& next) const {
+    return loaded_config.is_object() &&
+      next.value("package_id",std::string())==loaded_config.value("package_id",std::string()) &&
+      next.value("package_root",std::string())==loaded_config.value("package_root",std::string());
+  }
+  // Called under mutex after the worker has installed the actual engine.
+  void FinishLoadSuccessLocked(const Json& attempted) {
+    loaded_config=attempted;
+    if(!desired || config.value("config_version",0)!=attempted.value("config_version",0) || !LoadedMatchesLocked(config)) {
+      state="draining";reload_requested=true;
+      return; // Never publish stale weights as ready or acknowledge a newer version.
+    }
+    state="ready";
+    configuration.Commit(attempted.value("config_version",0));
+  }
+  void ClearLoadedLocked() {
+    loaded_config=Json();package_hash.clear();package_id.clear();
+    admission=Json();search_supported=false;
+  }
   void Apply(Json next){std::lock_guard<std::mutex> lock(mutex);
-    if(state=="loading")throw std::runtime_error("configuration busy loading model");
+    if(state=="loading"&&next.value("enabled",false))throw std::runtime_error("configuration busy loading model");
+    const bool changed=!LoadedMatchesLocked(next);
+    if(changed&&state=="ready"){
+      reload_requested=true;state="draining";
+      if(active_job)active_job->canceled=true;
+      for(auto& job:queue)job->result.set_exception(std::make_exception_ptr(std::runtime_error("model_changed")));
+      queue.clear();
+    }
     previous_config=config;config=std::move(next);desired=config.value("enabled",false);failed_config=Json();
     configuration.Begin(config.at("config_version").get<int>());
     if(desired&&state=="ready")configuration.Commit(config.at("config_version").get<int>());
@@ -79,6 +106,25 @@ struct Service {
     if(!desired&&active_job)active_job->canceled=true;
     if(!desired){for(auto& job:queue)job->result.set_exception(std::make_exception_ptr(std::runtime_error("service_disabled")));queue.clear();}
     cv.notify_all();}
+  // Worker has already released failed resources. Caller holds mutex.
+  void FinishLoadFailureLocked(const Json& attempted, const std::string& error) {
+    ClearLoadedLocked();
+    const int version=attempted.value("config_version",0);
+    if(!config.value("enabled",false)) {
+      desired=false;reload_requested=false;state="unloaded";
+      last_error.clear();failed_config=Json();
+      configuration.Commit(config.value("config_version",0));
+      return;
+    }
+    if(config.value("config_version",0)!=version) {
+      desired=true;reload_requested=true;state="unloaded";
+      last_error.clear();failed_config=Json();
+      return;
+    }
+    desired=false;state="fault";last_error=error;failed_config=attempted;
+    configuration.Fail(version,"模型未能加载，配置未应用；请检查专用内存及模型校验状态");
+    if(version>0)config=previous_config;
+  }
   void RequestStop(){
     {std::lock_guard<std::mutex> lock(mutex);stop=true;desired=false;
       if(active_job)active_job->canceled=true;
@@ -86,7 +132,7 @@ struct Service {
       queue.clear();
     }cv.notify_all();
   }
-  ~Service() {RequestStop();worker.join();}
+  ~Service() {RequestStop();if(worker.joinable())worker.join();}
   void Record(const std::shared_ptr<Job>& job,bool success){
     std::lock_guard<std::mutex> lock(mutex);RecordLocked(job,success);
   }
@@ -117,11 +163,14 @@ struct Service {
     auto percentile=[&](double q)->Json{return times.empty()?Json(nullptr):Json(times[size_t(std::ceil(q*times.size()))-1]);};
     return {{"admission",admission.is_null()?Json({{"mode","byte_accounted_coexistence"},{"ok",nullptr}}):admission},
             {"package_sha256",package_hash},{"active_request",active_job!=nullptr},
+            {"residency",{{"owner","llm-service.enabled"},{"configured",config.value("enabled",false)},
+              {"desired",desired},{"draining",reload_requested||(!desired&&state!="unloaded")},
+              {"policy","configured-prewarm; single worker; drain before unload"}}},
             {"preparation_profiles",Json::array({"target-crop-v1","target-focus-v2"})},
             {"review_tasks",Json::array({"target-review-abc-v1","target-review-abc-v2-rule","spatial-review-abc-v1"})},
             {"latency_ms",{{"p50",percentile(.5)},{"p95",percentile(.95)},{"samples",times.size()},{"window","last_256_completed"}}},
             {"submit_time_share",{{"window_s",10},{"cap_percent",config.value("submit_time_share_cap_percent",90)}}},
-            {"ready",state=="ready"},{"model",state},{"config_version",configuration.committed()},{"package_id",ActiveIdLocked()},
+            {"ready",desired&&state=="ready"},{"model",state},{"config_version",configuration.committed()},{"package_id",ActiveIdLocked()},
             {"tasks",{{"search-verify-zh-v1",{{"enabled",ainvr::llm::kSearchVerificationEnabled},
               {"template_sha256",ainvr::llm::SearchTemplateHash()},{"preprocessing_version",ainvr::llm::kSearchPreprocessing},{"validated",false}}}}},
             {"queue",{{"length",queue.size()},{"capacity",config.value("queue_size",8)}}},
@@ -138,9 +187,10 @@ struct Service {
       std::shared_ptr<Job> job;
       Json settings;
       { std::unique_lock<std::mutex> lock(mutex);
-        cv.wait(lock,[&]{return stop||desired!=(engine!=nullptr)||!queue.empty();});
+        cv.wait(lock,[&]{return stop||reload_requested||desired!=(engine!=nullptr)||!queue.empty();});
         if(stop)break;
-        if(!desired) {engine.reset();image.reset();reservation.reset();admission=Json();search_supported=false;state="unloaded";configuration.Commit(config.value("config_version",0));continue;}
+        if(reload_requested){engine.reset();image.reset();reservation.reset();ClearLoadedLocked();reload_requested=false;state="unloaded";}
+        if(!desired) {engine.reset();image.reset();reservation.reset();ClearLoadedLocked();state="unloaded";configuration.Commit(config.value("config_version",0));continue;}
         if(!engine)state="loading";
         else if(!queue.empty()){job=ainvr::llm::TakeTask(queue,previous_search);previous_search=job->task==ainvr::llm::ReviewTask::Search;active_job=job;}
         settings=config;
@@ -164,13 +214,13 @@ struct Service {
           reservation->Loaded();
           bool supports_search=false;
           try{(void)ainvr::llm::SearchDecisionIndices(engine->manifest().at("decision_vocabulary"));supports_search=true;}catch(...){}
-          std::lock_guard<std::mutex> lock(mutex);search_supported=supports_search;admission=reservation->Decision().ToJson();admission["mode"]="byte_accounted_coexistence";admission["min_free_bytes"]=min_free;state="ready";last_error.clear();failed_config=Json();package_hash=engine->package_sha256();package_id=engine->manifest().at("id").get<std::string>();
-          if(desired)configuration.Commit(settings.value("config_version",0));
-        }catch(const std::exception& e){engine.reset();image.reset();reservation.reset();std::lock_guard<std::mutex> lock(mutex);admission=Json();desired=false;state="fault";last_error=e.what();
-          failed_config=settings;
-          const int version=settings.value("config_version",0);
-          configuration.Fail(version,"模型未能加载，配置未应用；请检查专用内存及模型校验状态");
-          if(config.value("config_version",0)==version&&version>0)config=previous_config;}
+          std::lock_guard<std::mutex> lock(mutex);search_supported=supports_search;admission=reservation->Decision().ToJson();admission["mode"]="byte_accounted_coexistence";admission["min_free_bytes"]=min_free;last_error.clear();failed_config=Json();package_hash=engine->package_sha256();package_id=engine->manifest().at("id").get<std::string>();
+          FinishLoadSuccessLocked(settings);
+        }catch(const std::exception& e){
+          engine.reset();image.reset();reservation.reset();
+          std::lock_guard<std::mutex> lock(mutex);
+          FinishLoadFailureLocked(settings,e.what());
+        }
         continue;
       }
       if(!job)continue;
@@ -303,6 +353,9 @@ int main(int argc,char** argv) {
       if(!authorize(req,true)){Error(res,401,"unauthorized","Invalid management key");return;}
       {std::lock_guard<std::mutex> lock(service.mutex);
         if(!service.queue.empty()||service.active_job){Error(res,409,"busy","Requests are running or queued");return;}
+        if(managed&&req.matches[1]=="unload"&&service.config.value("enabled",false)){
+          Error(res,409,"model_configured","Disable the configured LLM service before unloading its model");return;
+        }
         if(req.matches[1]=="load"&&!service.config.value("enabled",false)){
           if(service.state=="fault"&&service.failed_config.is_object()&&service.failed_config.value("enabled",false)){
             service.previous_config=service.config;service.config=service.failed_config;
@@ -460,4 +513,5 @@ int main(int argc,char** argv) {
     signal_done=true;shutdown.join();stop_config=true;if(polling.joinable())polling.join();
     if(!listened)throw std::runtime_error("cannot listen on loopback:8300");
   }catch(const std::exception& e){std::cerr<<e.what()<<std::endl;return 1;}
+  return 0;
 }

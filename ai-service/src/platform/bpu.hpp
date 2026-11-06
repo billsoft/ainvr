@@ -4,6 +4,8 @@
 #include <hobot/hb_ucp.h>
 #include <nlohmann/json.hpp>
 #include <mutex>
+#include "shared_runtime.hpp"
+#include "configured_residency.hpp"
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,7 +18,12 @@ void BpuMarkRuntimeFault() noexcept;
 uint64_t BpuQuarantinedBytes() noexcept;
 class BpuModel {
  public:
-  explicit BpuModel(const std::string& path, const std::string& name = "");
+  static std::shared_ptr<BpuModel> Acquire(const std::string& path, const std::string& name = "");
+  static nlohmann::json SharedStatus();
+  uint64_t ActiveAndWaitingCalls(){return mutex_.Waiting();}
+  using Demand = ConfiguredResidency<BpuModel>::Demand;
+  static std::string ResidencyKey(const std::string& path, const std::string& name = "");
+  static void ConfigureResidency(Demand demand);
   ~BpuModel();
   BpuModel(const BpuModel&) = delete;
   BpuModel& operator=(const BpuModel&) = delete;
@@ -26,6 +33,7 @@ class BpuModel {
   std::vector<std::vector<unsigned char>> Run(
       const std::vector<std::vector<unsigned char>>& inputs);
  private:
+  explicit BpuModel(const std::string& path, const std::string& name = "");
   void Clear() noexcept;
   struct Quarantine;
   std::unique_ptr<Quarantine> quarantine_;
@@ -35,6 +43,6 @@ class BpuModel {
   std::string name_;
   std::vector<hbDNNTensor> inputs_, outputs_;
   std::vector<std::string> input_names_, output_names_;
-  std::mutex mutex_;
+  FifoMutex mutex_;
 };
 }

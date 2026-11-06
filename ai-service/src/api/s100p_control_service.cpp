@@ -1,3 +1,4 @@
+#include "platform/configured_models.hpp"
 // Copyright AINVR. Original business controller with explicit S100P runtime gating.
 #include "control_server.hpp"
 #include "pipeline/reused_channel_worker.hpp"
@@ -77,6 +78,14 @@ int main(int argc, char** argv) {
     auto search_port = ai_service::output::MakeSearchExecutionPort(search_hardware);
     auto search_owner = std::make_shared<ai_service::output::SearchSamplingOwner>(search_reader, search_port);
     std::atomic<uint64_t> search_control_failures{0};
+    auto model_residency_failures=std::make_shared<std::atomic<uint64_t>>(0);
+    auto reconcile_models = [model_root=std::string(argv[3]),model_residency_failures](const cfg::AppConfig& snapshot) {
+      auto configured = ainvr::CollectConfiguredModels(snapshot, model_root);
+      model_residency_failures->fetch_add(configured.invalid_dependencies);
+      ainvr::BpuModel::ConfigureResidency(std::move(configured.demand));
+      ai_service::output::RetainConfiguredFaceEnhancers(configured.enhancement_paths);
+    };
+    store->SetRuntimeObserver(reconcile_models);
     auto manager = std::make_shared<ai_service::api::ChannelManager>(config, store,
       [model_root=std::string(argv[3])](const cfg::ChannelConfig& ch, const cfg::SnapshotStoreConfig& snapshots) {
         return std::make_shared<ai_service::pipeline::ReusedChannelWorker>(ch,snapshots,model_root);
@@ -156,7 +165,8 @@ int main(int argc, char** argv) {
       business["license_error"] = license.LastError();
       const auto decode=ainvr::GetDetectionDecodeStats();
       return nlohmann::json{{"version",kServiceVersion},
-        {"bpu",{{"healthy",ainvr::BpuRuntimeHealthy()},{"quarantined_bytes",ainvr::BpuQuarantinedBytes()}}},
+        {"bpu",{{"healthy",ainvr::BpuRuntimeHealthy()},{"quarantined_bytes",ainvr::BpuQuarantinedBytes()},{"shared_runtime",ainvr::BpuModel::SharedStatus()}}},
+        {"model_residency_failures",model_residency_failures->load()},
         {"warning_file_failures",ai_service::log::WarningFileFailures()},
         {"detection_decode",{{"clamped_probabilities",decode.clamped_probabilities},
           {"clamped_distances",decode.clamped_distances},{"rejected_geometry",decode.rejected_geometry}}},
@@ -177,8 +187,13 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, Signal); std::signal(SIGINT, Signal);
     std::thread control([&] {
       auto next_search_reconcile = std::chrono::steady_clock::now();
+      auto next_model_reconcile = next_search_reconcile;
       while (!stopping) {
         const bool licensed = license.IsLicensed();
+        if (std::chrono::steady_clock::now() >= next_model_reconcile) {
+          try { store->SynchronizeRuntime(); } catch (...) { ++(*model_residency_failures); }
+          next_model_reconcile = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        }
         try {
           search_hardware->Refresh(licensed && search_reader ? search_reader() : std::nullopt);
           const auto now = std::chrono::steady_clock::now();
@@ -206,7 +221,9 @@ int main(int argc, char** argv) {
     const bool listened = server.listen(config.server.host.c_str(), config.server.port);
     watchdog.Stop();
     if(config_client)config_client->Stop();
-    stopping = 1; control.join(); search_owner->Stop(); search_hardware->Stop(); license.Stop();
+    stopping = 1; control.join(); search_owner->Stop(); search_hardware->Stop();
+    ai_service::output::RetainConfiguredFaceEnhancers({});
+    ainvr::BpuModel::ConfigureResidency({}); license.Stop();
     return listened ? 0 : 1;
   } catch (const std::exception& e) {
     std::cerr << "AINVR control service: " << e.what() << '\n';

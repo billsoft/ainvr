@@ -15,7 +15,7 @@ int main(int argc,char** argv) {
     source.seekg(0);std::vector<int32_t> tokens(77);source.read(reinterpret_cast<char*>(tokens.data()),77*sizeof(int32_t));
     if(!source)throw std::runtime_error("Token read failed");
     for(auto x:tokens)if(x<0||x>49407)throw std::invalid_argument("Token outside CLIP vocabulary");
-    ainvr::BpuModel model(argv[1]);auto description=model.Describe();
+    auto model=ainvr::BpuModel::Acquire(argv[1]);auto description=model->Describe();
     if(description.at("inputs").size()!=1)throw std::invalid_argument("Expected one token input");
     const auto& d=description.at("inputs").at(0);
     if(d.at("name")!="tokens"||d.at("shape")!=nlohmann::json::array({1,77})||
@@ -24,7 +24,7 @@ int main(int argc,char** argv) {
       throw std::invalid_argument("Native token SDK contract mismatch");
     std::vector<unsigned char> packed(d.at("aligned_bytes").get<size_t>(),0);
     std::memcpy(packed.data(),tokens.data(),tokens.size()*sizeof(int32_t));
-    auto result=model.Run({packed});
+    auto result=model->Run({packed});
     if(result.size()!=1)throw std::invalid_argument("Expected one text embedding");
     auto values=ainvr::DecodeTensor(result[0],description.at("outputs").at(0));
     if(values.size()!=512)throw std::invalid_argument("Expected 512-dimensional embedding");
