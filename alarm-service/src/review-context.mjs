@@ -1,4 +1,5 @@
 import {EvidenceImages} from './evidence-images.mjs';
+import {EvidenceSpool,durableFile} from './evidence-spool.mjs';
 import {retainedTarget} from './retained-target.mjs';
 import {selectVisualEvidence,missingVisual} from './review-visual-evidence.mjs';
 import {isStorageBusy} from './review-storage.mjs';
@@ -87,7 +88,7 @@ export class ReviewContext {
  async publish(){
   if(Date.now()-this.lastPolicy<1000)return;this.lastPolicy=Date.now();
   const snapshot=await this.repository.ruleSnapshots.current();
-  const channels=[...new Set((snapshot?.rules??[]).filter(r=>r.review?.enabled&&r.alarm_enabled!==false).map(r=>r.channel_id))];
+  const channels=[...new Set((snapshot?.rules??[]).filter(r=>r.state==='enabled'&&r.alarm_enabled!==false).map(r=>r.channel_id))];
   const jobs=this.repository.captureJobs?await this.repository.captureJobs.find({state:'queued',created_at:{$gt:Date.now()-30000}}).sort({created_at:1}).limit(128).toArray():[];
   const retained_keys=jobs.map(job=>contextKey(job,job.sample));
   const path=join(this.root,'enabled.json');await writeFile(path+'.tmp',JSON.stringify({channels,retained_keys,expires_at:Math.floor(Date.now()/1000)+20}),{mode:0o600});await rename(path+'.tmp',path);
@@ -302,11 +303,12 @@ export class ReviewContext {
    // Read-only legacy compatibility. No new retained image files are written.
    for(const dir of candidate?['candidates']:['pinned','candidates'])if(!data){try{data=await readFile(join(this.root,dir,key+'.jpg'));}catch(e){if(e.code!=='ENOENT')throw e;}}
    if(!data){
-    const raw='/dev/shm/ainvr-review-frames';
+    try{data=(await new EvidenceSpool(this.root).read(row,sample)).data;}catch(e){if(e.code!=='ENOENT')throw e;}
+    if(!data){const raw='/dev/shm/ainvr-review-frames';
     if(Date.now()-(await stat(join(raw,key+'.jpg'))).mtimeMs>60000)throw Error('missing_context');
     const meta=JSON.parse(await readFile(join(raw,key+'.json'),'utf8'));
     for(const [k,v] of Object.entries({channel_id:row.channel_id,stream_session_id:row.stream_session_id,source_pts_ns:sample.source_pts_ns,source_frame_index:sample.source_frame_index,frame_width:row.analysis_evidence.source.width,frame_height:row.analysis_evidence.source.height}))if(meta[k]!==v)throw Error('missing_context');
-    data=await readFile(join(raw,key+'.jpg'));
+    data=await readFile(join(raw,key+'.jpg'));}
    }
    this.validateRetained(data,known?[known]:[]);this.validateGeometry(data,row.analysis_evidence?.source,true);
    await this.images.put(pool,key,data,this.imagePolicy(row,candidate));
@@ -321,6 +323,7 @@ export class ReviewContext {
   let data;
   try{data=await readFile(dest);}catch{
    if(!candidate){try{data=await readFile(join(this.root,'candidates',key+'.jpg'));}catch{}}
+   if(!data){try{data=(await new EvidenceSpool(this.root).read(row,sample)).data;}catch(e){if(e.code!=='ENOENT')throw e;}}
    if(!data){
    // Read-only compatibility for frames captured before the v2 rolling cache upgrade.
    let raw='/dev/shm/ainvr-review-frames';try{await stat(join(raw,key+'.json'));}catch{raw=this.root;}
@@ -331,7 +334,7 @@ export class ReviewContext {
    }
    this.validateGeometry(data,row.analysis_evidence?.source,true);
    if(candidate){const limit=this.policy?.candidate_max_bytes??128*1024**2;if(data.length>limit)throw Error('missing_context');await this.prunePool('candidates',limit-data.length,24*3600000);}
-   await writeFile(dest+'.tmp',data,{mode:0o600});await rename(dest+'.tmp',dest);
+   await durableFile(dest,data);
   }
   const expected=row.review?.frames?.find(f=>f.key===key)?.content_sha256;
   if(expected&&hash(data)!==expected)throw Error('evidence_integrity_mismatch');

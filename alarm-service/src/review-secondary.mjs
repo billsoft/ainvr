@@ -1,5 +1,5 @@
 // Decision version is separate from the unchanged crop/prompt protocol.
-export const REVIEW_DECISION_VERSION = 'rule-evidence-v5';
+export const REVIEW_DECISION_VERSION = 'rule-evidence-v6';
 export const PAIRED_SUPPORT_DEFAULTS = Object.freeze({minimum_frame_score: .85, strong_frame_score: .95});
 export function validPairedSupport(value) {
   return !!value && Number.isFinite(value.minimum_frame_score) && value.minimum_frame_score >= .85 &&

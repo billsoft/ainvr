@@ -12,6 +12,22 @@ def test_exact_identity_required():
     for key,value in [('ch','input'),('pts',123000001),('det',[{'t':'other'}]),('det',[{'t':r['track_id'],'pr':1}]),('det',[{'t':r['track_id'],'lc':1}])]:
         assert not matches({**payload,key:value},r)
 
+def test_detection_recovery_requires_same_session_frame_and_pts():
+    r={**request(), 'observation_mode':'detections', 'track_id':'detection:'+'a'*64+':42:0', 'source_frame_index':'8'}
+    assert validate_request(r)>0
+    metadata={'analytics':{'stream_session_id':r['stream_session_id']},
+              'recording_evidence_geometry':{'schema':'recording-frame-geometry-v1','source_frame_index':'8'}}
+    p={'ch':'ai','pts':123000000,'model_extra':metadata}
+    assert matches(p,r)
+    for change in [{'stream_session_id':'different'},{'source_pts_ns':'123000001'},
+                   {'source_frame_index':'9'},{'channel_id':'other'}]:
+        assert not matches(p,{**r,**change})
+    assert not matches({**p,'model_extra':{}},r)
+    assert not matches({**p,'model_extra':{'analytics':metadata['analytics']}},r)
+    assert not matches({**p,'model_extra':{'recording_evidence_geometry':metadata['recording_evidence_geometry']}},r)
+    for change in [{'source_frame_index':None},{'track_id':'anything'},{'observation_mode':'unknown'}]:
+        with pytest.raises(ValueError):validate_request({**r,**change})
+
 @pytest.mark.parametrize('change',[{'track_id':'another:4'},{'captured_at':'2026-10-26T08:00:00'},{'source_pts_ns':'-1'},{'width':True},{'height':0}])
 def test_invalid_requests_fail_closed(change):
     with pytest.raises(ValueError):validate_request({**request(),**change})

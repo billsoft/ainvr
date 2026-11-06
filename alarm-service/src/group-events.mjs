@@ -1,6 +1,6 @@
 // Group membership is scoped to one execution rule, camera session and schedule window.
 import {digest,makeAlarm} from './domain.mjs';
-import {inside,boundaryDistancePx} from './geometry.mjs';
+import {inside,boundaryDistancePx,stateSpatial} from './geometry.mjs';
 import {regionDirection} from './traversal.mjs';
 import {unwrapErp,liftErp} from './erp-geometry.mjs';
 import {compactProof,sampleOf} from './compact-evidence.mjs';
@@ -57,6 +57,7 @@ function qualifies(rule,frame,track,state,entry){
   const points=rule.erp_wrap?unwrapErp(rule.points):rule.points;
   if(rule.erp_wrap)p=liftErp(p,points);
   if(rule.behavior==='appearance')return state?.seen_since!=null&&elapsed(frame.source_pts_ns,state.seen_since)>=rule.duration_ms&&(!points||inside(points,p));
+  if(rule.spatial_semantics==='bbox-state-v1')return !!state?.match&&state.since!=null&&elapsed(frame.source_pts_ns,state.since)>=rule.duration_ms&&stateSpatial(rule,frame,b).match;
   if(rule.behavior==='region_enter')return !!entry&&state?.side==='in'&&inside(points,p);
   if(!state?.match||state.approach_pause||inside(points,p))return false;
   const distance=q=>boundaryDistancePx(points,q,width,height);

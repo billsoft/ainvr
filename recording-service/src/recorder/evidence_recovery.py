@@ -7,6 +7,7 @@ import signal
 import sys
 import tempfile
 import struct
+import re
 from datetime import datetime
 from fastapi import HTTPException
 
@@ -22,7 +23,12 @@ def validate_request(body):
             or not body['source_frame_index'].isdigit() or len(body['source_frame_index']) > 20
             or str(int(body['source_frame_index'])) != body['source_frame_index']):
         raise ValueError('invalid_request')
-    if not body['track_id'].startswith(body['stream_session_id'] + ':'):
+    mode = body.get('observation_mode', 'tracks')
+    if mode == 'detections':
+        if ('source_frame_index' not in body or
+                not re.fullmatch(r'detection:[a-f0-9]{64}:[0-9]{1,20}:[0-9]{1,4}', body['track_id'])):
+            raise ValueError('invalid_detection_identity')
+    elif mode != 'tracks' or not body['track_id'].startswith(body['stream_session_id'] + ':'):
         raise ValueError('session_mismatch')
     for key in ('width', 'height'):
         if type(body.get(key)) is not int or not 32 <= body[key] <= 8192:
@@ -33,6 +39,22 @@ def validate_request(body):
     return int(at.timestamp() * 1000)
 
 def matches(payload, request):
+    if request.get('observation_mode') == 'detections':
+        # A frame-local detection has no cross-frame track ID. Recover the
+        # exact full frame via producer metadata, never by wall time alone.
+        if not isinstance(payload, dict):
+            return False
+        extra = payload.get('model_extra')
+        if not isinstance(extra, dict):
+            return False
+        analytics, geometry = extra.get('analytics'), extra.get('recording_evidence_geometry')
+        return (payload.get('ch') == request['channel_id']
+                and str(payload.get('pts')) == request['source_pts_ns']
+                and isinstance(analytics, dict)
+                and analytics.get('stream_session_id') == request['stream_session_id']
+                and isinstance(geometry, dict)
+                and geometry.get('schema') == 'recording-frame-geometry-v1'
+                and geometry.get('source_frame_index') == request.get('source_frame_index'))
     return (isinstance(payload, dict) and payload.get('ch') == request['channel_id']
             and str(payload.get('pts')) == request['source_pts_ns']
             and any(d.get('t') == request['track_id'] and not d.get('pr') and not d.get('lc')

@@ -1,6 +1,7 @@
 // Copyright AINVR. Durable prepare/materialize/checkpoint protocol for standalone Mongo.
 import {observationBarrier} from './observation-barrier.mjs';
-import {randomUUID} from 'node:crypto';
+import {EvidenceSpool} from './evidence-spool.mjs';
+import {randomUUID,createHash} from 'node:crypto';
 import {digest,fail,identity,integerText,validateFrame} from './domain.mjs';
 import {evaluate} from './engine.mjs';
 import {behaviorEvent} from './behavior-events.mjs';
@@ -15,7 +16,7 @@ export function evidenceCaptureIntents(pending) {
   for(const event of pending.events??[]){
     if(event.rule.snapshot.alarm_enabled===false)continue;
     const group=event.analysis_evidence?.group;
-    const samples=group&&event.rule.snapshot.review.enabled?group.members.flatMap(m=>[m.start,...m.transition,m.sample,m.identity_sample].filter(Boolean)):event.analysis_evidence?.review_context?.samples??[];
+    const samples=group?group.members.flatMap(m=>[m.start,...m.transition,m.sample,m.identity_sample].filter(Boolean)):event.analysis_evidence?.review_context?.samples??[];
     for(const sample of samples){
       if(!sample.event_eligible||sample.observation!=='detected')continue;
       const intent={channel_id:event.channel_id,stream_session_id:event.stream_session_id,source:event.analysis_evidence.source,sample};
@@ -29,6 +30,7 @@ export class ObservationConsumer {
   constructor(repository,{now=()=>Date.now(),leaseMs=30000,hook=async()=>{}}={}) {
     this.repository=repository;this.collection=repository.checkpoints;
     this.now=now;this.leaseMs=leaseMs;this.hook=hook;this.dwellStarted=new Set();
+    this.spool=repository.reviewContext?.root?new EvidenceSpool(repository.reviewContext.root):null;
   }
   async consume(envelope) {
     const release=observationBarrier(this.repository).enter();
@@ -56,6 +58,7 @@ export class ObservationConsumer {
       if(doc.pending)doc=await this.finish(doc,validFence);
       if(doc.offset!==null&&offset<=BigInt(doc.offset)) {
         if(offset===BigInt(doc.offset)&&doc.fingerprint!==fingerprint)fail('offset_conflict','Same offset has different content',409);
+        await this.spool?.acknowledge(frame);
         return {durable:true,outcome:'already_consumed',offset:envelope.offset,events:[]};
       }
       const gap=doc.offset!==null&&offset!==BigInt(doc.offset)+1n;
@@ -71,6 +74,8 @@ export class ObservationConsumer {
       if(heat)result.checkpoint.region_heat=heatResult.state;
       result.issues.push(...dwell.issues,...heatResult.issues);
       const pending={offset:envelope.offset,fingerprint,checkpoint:result.checkpoint,dwell_facts:dwell.facts,heat_facts:heatResult.facts,capture_intents:result.capture_intents??[],events:result.events,coverage:result.coverage??[],ended_episodes:result.ended_episodes??[],issues:result.issues};
+      if(frame.evidence_delivery)pending.source_frame={channel_id:channel,stream_session_id:frame.stream_session_id,source_pts_ns:frame.source_pts_ns,source_frame_index:frame.source_frame_index,evidence_delivery:frame.evidence_delivery};
+      pending.active_episodes=result.active_episodes??[];
       // Drop optional heat before touching dwell, alarm evidence or base state.
       // Ordinary frames need one exact measurement. Re-measure only after a
       // degradation mutates pending; never estimate away the hard safety cap.
@@ -108,6 +113,7 @@ export class ObservationConsumer {
         pendingBytes=Buffer.byteLength(JSON.stringify(pending));
       }
       if(pendingBytes>8*1024*1024)fail('checkpoint_capacity','Channel state exceeds bounded checkpoint capacity',503);
+      await this.spool?.protect(pending,channel,frame.stream_session_id,doc.generation);
       const prepared=await this.collection.findOneAndUpdate({...validFence(),pending:null},{$set:{pending}},{returnDocument:'after'});
       if(!prepared)fail('lease_expired','Input lease expired; retry same input',503);
       await this.hook('prepared');
@@ -121,11 +127,41 @@ export class ObservationConsumer {
   }
   async finish(doc,fence) {
     const p=doc.pending;
+    // Prepared outcomes can be recovered by a different lease generation.
+    await this.spool?.protect(p,doc.channel_id,p.checkpoint.session,doc.generation);
     if(this.repository.captureJobs)for(const intent of evidenceCaptureIntents(p)){
       const id=digest([intent.channel_id,intent.stream_session_id,intent.sample.frame_id]);
       await this.repository.captureJobs.updateOne({_id:id},{$setOnInsert:{...intent,state:'queued',next_at:0,created_at:Date.now()}},{upsert:true});
     }
     for(const event of p.events){
+      if(event.rule.snapshot.alarm_enabled!==false&&await this.repository.isCleared?.(event))continue;
+      // Source v2 journals are published only after the exact frame has reached
+      // SSD. Complete the immutable evidence handoff before publishing an alarm.
+      if(event.rule.snapshot.alarm_enabled!==false&&event.analysis_evidence?.delivery?.schema_version===2){
+        const delivery=event.analysis_evidence.delivery;
+        if(delivery.state==='durable'){
+          const context=this.repository.reviewContext;
+          if(!context)throw Error('evidence_context_unavailable');
+          const intents=evidenceCaptureIntents({events:[event]});
+          if(!intents.length)delivery.state='failed';
+          else{
+            const refs=[];
+            try{
+              for(const intent of intents){const image=await context.image(event,intent.sample);refs.push({...intent.sample,key:image.key,width:image.width,height:image.height,storage:context.images?'mongodb':'ssd',content_sha256:createHash('sha256').update(image.data).digest('hex')});}
+              delivery.state='complete';delivery.frames=refs;
+            }catch(error){
+              // A missing/corrupt source is a terminal evidence fault, not an
+              // endless storage retry. Network/capacity failures retain pending.
+              if(error.code!=='ENOENT'&&!['missing_context','evidence_integrity_mismatch','evidence_identity_mismatch','unsupported_image','evidence_expired'].includes(error.message))throw error;
+              delivery.state='failed';delivery.failure=error.code==='ENOENT'?'source_frame_missing':error.message;
+            }
+          }
+        }
+        if(delivery.state==='failed'){
+          delivery.reason='source_evidence_failed';
+          event.review={...event.review,state:'failed',reason:'source_evidence_failed',context_state:'failed'};
+        }
+      }
       if(event.group_members){
         const {group_members:members,...alarm}=event;
         if(await this.repository.isCleared?.(alarm))continue;
@@ -177,11 +213,14 @@ export class ObservationConsumer {
       if(written)await this.hook(kind==='heat'?'heat_inserted':'dwell_inserted');
     }
     await this.hook('before_checkpoint');
+    for(const episode of p.active_episodes??[])await this.repository.events.updateOne({alarm_id:episode.episode_id,'lifecycle.state':'active'},{$max:{last_seen_at:episode.last_seen_at}});
     for(const episode of p.ended_episodes??[])await this.repository.endEpisode(episode);
     const saved=await this.collection.findOneAndUpdate({...fence(),'pending.fingerprint':p.fingerprint},
       {$set:{offset:p.offset,fingerprint:p.fingerprint,checkpoint:p.checkpoint,pending:null,last_consumed_at:new Date(this.now()).toISOString(),last_issues:p.issues}},
-      {returnDocument:'after'});
+      {returnDocument:'after',writeConcern:{w:1,j:true}});
     if(!saved)fail('lease_expired','Checkpoint not committed; retry same input',503);
+    await this.spool?.settle(p.checkpoint,doc.channel_id,doc.generation);
+    if(p.source_frame)await this.spool?.acknowledge(p.source_frame);
     return saved;
   }
 }

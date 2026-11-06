@@ -30,6 +30,9 @@ export class EvidenceImages {
   let used=await this.bytes(pool);
   // Nothing to evict: do not open the oldest-first scan at all.
   if(used<=maxBytes)return true;
+  // Published alarm references remain valid until their declared expiry. Pool
+  // pressure must reject new admission, never silently invalidate old alarms.
+  if(pool==='context')return false;
   // Bounded batches; callers retry later if an extreme backlog cannot be reclaimed.
   for await(const row of this.rows.find({pool},{projection:{_id:1,bytes:1}}).sort({created_at:1,_id:1}).limit(512)){
    if(used<=maxBytes)break;
@@ -50,7 +53,7 @@ export class EvidenceImages {
   const digest=sha(data),old=await this.rows.findOne({_id},{projection:{sha256:1}});
   if(old){if(old.sha256!==digest)throw Error('evidence_identity_conflict');if(await this.get(pool,key))return;await this.rows.deleteOne({_id,sha256:digest});}
   if(!await this.prune(pool,maxBytes-data.length,retentionMs))throw Error('evidence_capacity');
-  try{await this.rows.updateOne({_id},{$setOnInsert:{pool,key,data,bytes:data.length,sha256:digest,created_at:new Date(this.clock()),occurred_at:at,expires_at:expires}},{upsert:true});}
+  try{await this.rows.updateOne({_id},{$setOnInsert:{pool,key,data,bytes:data.length,sha256:digest,created_at:new Date(this.clock()),occurred_at:at,expires_at:expires}},{upsert:true,writeConcern:{w:1,j:true}});}
   catch(e){if(e.code!==11000)throw e;}
   const afterClear=await this.clearState.findOne({_id:'state'});
   if(afterClear&&at<=afterClear.cutoff){await this.rows.deleteOne({_id});throw Error('evidence_cleared');}

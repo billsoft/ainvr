@@ -70,6 +70,19 @@ export function boxRegionDistance(points,box){
   return Math.min(...corners.map(p=>boundaryDistance(points,p)),...points.map(p=>boundaryDistance(corners,p)));
 }
 
+// Rectangle-to-polygon distance uses source pixels, including non-square images.
+// Both containment directions, edge crossing and exact boundary contact count.
+export function boxRegionDistancePx(points,bbox,width,height){
+  return boxRegionDistance(points.map(([x,y])=>[x*width,y*height]),[bbox.x,bbox.y,bbox.w,bbox.h]);
+}
+export function stateSpatial(rule,frame,bbox){
+  const {width,height}=frame.source;
+  let points=rule.erp_wrap?unwrapErp(rule.points):rule.points;
+  const boxes=rule.erp_wrap?[bbox,{...bbox,x:bbox.x-width},{...bbox,x:bbox.x+width}]:[bbox];
+  const distance=Math.min(...boxes.map(b=>boxRegionDistancePx(points,b,width,height)));
+  return {distance_px:distance,overlap:distance===0,match:rule.behavior==='region_enter'?distance===0:distance<=rule.approach_px};
+}
+
 // Versioned pixel tolerance. Rules without it retain legacy normalized semantics.
 export function boundaryStable(rule,frame,point){
  return rule.hysteresis_px===undefined

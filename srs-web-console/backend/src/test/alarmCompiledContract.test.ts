@@ -35,6 +35,10 @@ it('UI edge identities compile into actual entry/passage gates without invented 
   });
   return events;
  }
+ const stateRule=compile('region_enter');
+ expect(stateRule).toMatchObject({spatial_semantics:'bbox-state-v1'});
+ expect(run(stateRule,[.4,.5])).toHaveLength(1);
+ expect(run(compile('region_approach'),[.4])).toHaveLength(1);
  const enter=run(compile('region_enter',['left']),[.2,.4,.5]);
  expect(enter).toHaveLength(1);expect(enter[0].direction.entry_edge).toBe(3);
  expect(run(compile('region_enter',['right']),[.2,.4,.5])).toEqual([]);

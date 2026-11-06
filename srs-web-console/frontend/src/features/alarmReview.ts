@@ -3,6 +3,7 @@ export function reviewLabel(alarm:AlarmEvent){
  return alarm.handling.state==='acknowledged'?(alarm.handling.reviewed_by_kind==='ai'?'已 AI 审核':'已人工审核'):'未审核'
 }
 const preparationReasons:Record<string,string>={
+ source_evidence_failed:'触发已发生，但原始证据保存失败；请检查存储与采集服务，需人工核查',
  focused_person_confirmed:'指定目标的人员证据满足确认条件',
  focused_context_confirmed:'两种视图的人员证据一致，确认告警',
  focused_non_person_confirmed:'两种视图均明确识别为非人员，判为误报',

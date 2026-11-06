@@ -25,7 +25,7 @@ it('whole frame does not offer zone-dependent triggers',()=>{
 })
 it('one compatible processor is selected and direction is stored by stable edge ID',()=>{
  const apply=vi.fn()
- render(<AssignmentEditor sourceId="cam" geometryRevision="g" zone={zone} definitions={[trigger]} sources={[source]} onApply={apply}/> )
+ render(<AssignmentEditor sourceId="cam" geometryRevision="g" zone={zone} definitions={[{...trigger,behavior:'region_traverse'}]} sources={[source]} onApply={apply}/> )
  fireEvent.change(screen.getByLabelText('触发器'),{target:{value:'t'}})
  fireEvent.click(screen.getByRole('button',{name:/进入边 1/}))
  fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
@@ -44,9 +44,27 @@ it('multiple processors require explicit selection; incompatible labels are excl
 
 it('changed zone directions require explicit acknowledgement before saving',()=>{
  const apply=vi.fn()
- render(<AssignmentEditor sourceId="cam" geometryRevision="g" zone={zone} definitions={[trigger]} sources={[source]} initial={{id:'a',triggerId:'t',processorId:'ai1',zoneId:'z',entryEdges:[],exitEdges:[],version:1,needsDirectionConfirmation:true}} onApply={apply}/> )
+ render(<AssignmentEditor sourceId="cam" geometryRevision="g" zone={zone} definitions={[{...trigger,behavior:'region_traverse'}]} sources={[source]} initial={{id:'a',triggerId:'t',processorId:'ai1',zoneId:'z',entryEdges:[],exitEdges:[],version:1,needsDirectionConfirmation:true}} onApply={apply}/> )
  fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
  fireEvent.click(screen.getByLabelText('已核对当前热区的进入和离开方向'))
  fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
  expect(apply).toHaveBeenCalledWith(expect.objectContaining({needsDirectionConfirmation:false}),'labels')
+})
+
+it('state intrusion removes obsolete direction restrictions when explicitly applied',()=>{
+ const apply=vi.fn()
+ render(<AssignmentEditor sourceId="cam" geometryRevision="g" zone={zone} definitions={[trigger]} sources={[source]} initial={{id:'a',triggerId:'t',processorId:'ai1',zoneId:'z',entryEdges:['old-edge'],exitEdges:[],version:1,needsDirectionConfirmation:true}} onApply={apply}/> )
+ expect(screen.queryByRole('button',{name:/进入边 1/})).not.toBeInTheDocument()
+ expect(screen.getByText(/检测框与热区相交或接触即触发/)).toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
+ expect(apply).toHaveBeenCalledWith(expect.objectContaining({entryEdges:[],exitEdges:[],needsDirectionConfirmation:false}),'labels')
+})
+
+it('multi-target conditions exclude processors that provide detections without tracking',()=>{
+ const apply=vi.fn()
+ render(<AssignmentEditor sourceId="cam" geometryRevision="g" zone={zone} definitions={[{...trigger,group:{labels:'any',minimum:3,window_ms:1000}}]} sources={[{...source,tracking_available:false,detection_available:true}]} onApply={apply}/> )
+ fireEvent.change(screen.getByLabelText('触发器'),{target:{value:'t'}})
+ expect(screen.queryByRole('option',{name:source.channel_name})).not.toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
+ expect(apply).not.toHaveBeenCalled()
 })

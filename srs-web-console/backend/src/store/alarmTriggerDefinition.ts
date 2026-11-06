@@ -88,8 +88,8 @@ export function compileAssignment(
     source.geometry_revision!==a.geometry_revision||source.label_map_version!==a.label_map_version)return fail('source_changed','来源或模型目录已变化');
   if(!source.stream_fingerprint||!/^[a-f0-9]{64}$/.test(source.stream_fingerprint)||!source.observed_at||!Number.isFinite(Date.parse(source.observed_at)))return fail('source_unavailable','来源证据尚未确认');
   if(d.group&&!source.tracking_available)return fail('tracking_required','组合条件需要支持跟踪的通道');
-  if(!source.tracking_available&&!(source.detection_available&&d.alarm_enabled&&['appearance','region_approach'].includes(d.behavior)&&d.duration_ms===0&&!a.entry_edges.length&&!a.exit_edges.length&&!zone?.erp_wrap))
-    return fail('tracking_required','此规则需要可靠跟踪；无跟踪仅支持无持续时间的出现、区内检出及接近带检出。');
+  if(!source.tracking_available&&!(source.detection_available&&d.alarm_enabled&&['appearance','region_approach','region_enter'].includes(d.behavior)&&d.duration_ms===0&&!a.entry_edges.length&&!a.exit_edges.length&&!zone?.erp_wrap))
+    return fail('tracking_required','此规则需要可靠跟踪；无跟踪仅支持无持续时间、无方向的出现、碰撞侵入及接近状态。');
   if(!Number.isSafeInteger(source.width)||source.width<=0||!Number.isSafeInteger(source.height)||source.height<=0)return fail('source_unavailable','原图尺寸尚未确认');
   if(d.target_model&&(!source.target_model||d.target_model.name!==source.target_model.name||d.target_model.adapter!==source.target_model.adapter||d.target_model.mode!==source.target_model.mode))return fail('model_unavailable','请选用相同模型的 AI 通道');
   if(d.labels.some(l=>!source.labels.some(s=>s.label_id===l.label_id&&(s.name||s.description||s.label_id)===l.name&&(l.description===undefined||l.description===s.description))))return fail('labels_unavailable','模型不支持所选目标，请确认目标映射');
@@ -111,6 +111,8 @@ export function compileAssignment(
     labels:d.labels.map(({label_id,name})=>({label_id,name})),label_ids:d.labels.map(l=>l.label_id),label_map_version:a.label_map_version,geometry_revision:a.geometry_revision,
     zone_id:a.zone_id,zone_version:a.zone_version,points:zone?.points.map(p=>[...p]),...(zone?.erp_wrap?{erp_wrap:true}:{}),
     ...(d.group?{group:d.group}:{}),behavior:d.behavior,anchor:'bottom_center',duration_ms:d.duration_ms,
+    ...(d.alarm_enabled&&d.behavior!=='region_traverse'&&!zone?.erp_wrap&&!a.entry_edges.length&&!a.exit_edges.length?{incident_policy:'condition-v1'}:{}),
+    ...(['region_enter','region_approach'].includes(d.behavior)&&!a.entry_edges.length&&!a.exit_edges.length?{spatial_semantics:'bbox-state-v1'}:{}),
     entry_edges:a.entry_edges.map(e=>zone!.edge_ids.indexOf(e)),exit_edges:a.exit_edges.map(e=>zone!.edge_ids.indexOf(e)),
     ...(distance!==undefined?{approach_px:source.width*distance/100,approach_width_percent:distance}:{}),
     alarm_enabled:d.alarm_enabled,schedule:d.schedule,review:d.review?.enabled?{...d.review,profile_id:'alarm-review-zh-v1',version:definitionVersion}:{enabled:false},

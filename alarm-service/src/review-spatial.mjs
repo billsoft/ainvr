@@ -3,6 +3,9 @@ import {focusPreparation} from './review-focus.mjs';
 // One bounded spatial cross-check. Unvalidated shadow output NEVER changes handling.
 export async function spatialShadow({row,evidence,input,context,invoke,modelHash}){
  const unavailable=reason=>({state:'unavailable',reason,automatic_decision:false,scope:'single_frame_spatial_shadow'});
+ // v1 shadow asks about the anchor point, not rectangle intersection. Do not
+ // present that different question as a cross-check of the state rule.
+ if(row.rule.snapshot.spatial_semantics==='bbox-state-v1')return {state:'not_applicable',reason:'bbox_state_verified_by_geometry',automatic_decision:false};
  if(input?.source_kind!=='full_frame'||!row.rule.snapshot.points?.length)return {state:'not_applicable',automatic_decision:false};
  const o=evidence.observations.find(o=>o.frame_id===input.sample.frame_id);
  if(typeof o?.inside!=='boolean')return unavailable('missing_spatial_observation');

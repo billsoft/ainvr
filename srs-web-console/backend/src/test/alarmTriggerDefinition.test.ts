@@ -51,7 +51,8 @@ it('detection-only allows zero-dwell presence and approach; crossings and dwell 
  const s={...source,tracking_available:false,detection_available:true};
  expect(compileAssignment({...definition(),duration_ms:0},1,assignment('zone'),s,zone,1)).toMatchObject({behavior:'appearance'});
  expect(compileAssignment(definition('region_approach'),1,assignment('zone'),s,zone,1)).toMatchObject({behavior:'region_approach'});
- for(const d of [definition(),definition('region_enter'),definition('region_traverse')])
+ expect(compileAssignment(definition('region_enter'),1,assignment('zone'),s,zone,1)).toMatchObject({behavior:'region_enter',spatial_semantics:'bbox-state-v1'});
+ for(const d of [definition(),definition('region_traverse')])
    expect(()=>compileAssignment(d,1,assignment('zone'),s,zone,1)).toThrow();
  expect(()=>compileAssignment(definition('region_approach'),1,{...assignment('zone'),entry_edges:['a']},s,zone,1)).toThrow();
 });

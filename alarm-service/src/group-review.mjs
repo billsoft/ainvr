@@ -87,7 +87,7 @@ export async function assessMember({row,member,context,auth,call,refs=[],passes=
   const allowed=scopedAuth?.labels.includes(label);
   const expandedPrompt=label==='person'?secondaryPrompt(label):'请只核对画面中央指定目标是否属于「'+label+'」。周围其他实例不能代替中央目标。';
   const exclusionPrompt=label==='person'?nonTargetPrompt(label):'中央目标是否有清晰、明确的证据属于其他物体，或是海报、倒影，从而可排除「'+label+'」？模糊、遮挡、太小或无法分辨时回答否。';
-  const moving=['region_traverse','region_enter'].includes(rule.behavior);
+  const moving=rule.behavior==='region_traverse'||(rule.behavior==='region_enter'&&rule.spatial_semantics!=='bbox-state-v1');
   if((moving||rule.duration_ms>0)&&!member.stage_proven)return {result:{...result,reason:'incomplete_trajectory'},refs};
   const samples=samplesFor(member);
   for(const s of samples){

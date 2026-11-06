@@ -1,3 +1,4 @@
+import {stateConfirmation} from './review-state.mjs';
 import {spatialShadow} from './review-spatial.mjs';
 import {buildReviewEvidence,reviewTaskContext} from './review-evidence.mjs';
 import {FOCUS_PROMPT_VERSION,FOCUS_PROMPT,focusPreparation,validFocusResult,validFocusEnvelope,focusAssessment} from './review-focus.mjs';
@@ -13,13 +14,15 @@ import {isStorageBusy} from './review-storage.mjs';
 import {ReviewCheckpoint} from './review-checkpoint.mjs';
 export {isStorageBusy} from './review-storage.mjs';
 export function reviewFor(event){
- if(event.analysis_evidence?.group)return {state:'skipped',attempt:0,reason:event.analysis_evidence.group.proof_version===2?'group_review_pending':'group_manual_review',policy:structuredClone(event.rule.snapshot.review)};
+ if(event.analysis_evidence?.delivery?.state==='failed')return {state:'failed',attempt:0,reason:'source_evidence_failed',context_state:'failed'};
+ const retained=event.analysis_evidence?.delivery?.state==='complete'?{frames:event.analysis_evidence.delivery.frames}:{};
+ if(event.analysis_evidence?.group)return {...retained,state:'skipped',attempt:0,reason:event.analysis_evidence.group.proof_version===2?'group_review_pending':'group_manual_review',policy:structuredClone(event.rule.snapshot.review)};
  const policy=event.rule?.snapshot?.review;
  const evidence=event.behavior_event_ids?.[0]??null;
- return policy?.enabled?{state:'queued',attempt:0,next_attempt_at:0,lease_until:0,
+ return policy?.enabled?{...retained,state:'queued',attempt:0,next_attempt_at:0,lease_until:0,
    generation:digest([event.rule.id,event.rule.version,event.frame_id,evidence]),evidence_id:evidence,
    policy:structuredClone(policy)}:
-   {state:'skipped',attempt:0,reason:'policy_disabled'};
+   {...retained,state:'skipped',attempt:0,reason:'policy_disabled'};
 }
 export function classify(score,policy){
  if(!Number.isFinite(score)||score<0||score>1)throw Error('invalid_model_result');
@@ -114,6 +117,14 @@ export class ReviewWorker{
    let stillAuthorized=authorized&&(await this.authorization())?.id===authorizationId;
    review.auto_confirmation=confirmationAssessment(stillAuthorized?(focused?{...authorization,approve_above:authorization.focus.strong_frame_score,minimum_frame_score:authorization.focus.minimum_frame_score}:authorization):null,scores,row.review.policy);
    let operatorConfirmed=review.auto_confirmation.outcome==='confirmed',operatorRejected=false;
+   const stateWitness=focused&&!limited?stateConfirmation(row,proof,inputs,results):null;
+   if(!operatorConfirmed&&stateWitness){
+    const assessment=confirmationAssessment(stillAuthorized?{...authorization,approve_above:authorization.focus.strong_frame_score,minimum_frame_score:authorization.focus.minimum_frame_score}:null,stateWitness.scores,row.review.policy);
+    if(assessment.outcome==='confirmed'){
+     review.auto_confirmation={...assessment,evidence_scope:stateWitness.scope,decisive_frame_ids:stateWitness.frame_ids};
+     operatorConfirmed=true;
+    }
+   }
    // One bounded, different visual input per required frame. Never reroll the
    // same image or let another person elsewhere in the full scene vote for it.
    if(!operatorConfirmed&&stillAuthorized&&authorization.mode==='confirm_or_reject'){
@@ -184,7 +195,7 @@ export class ReviewWorker{
     review.reference={state:'completed',generation:row.review.generation,score,frame_scores:scores,model:result.model,completed_at:at,scope:'target_category_only',automatic_decision:false,reason:review.reason,authorization_id:authorizationId,prompt_version:promptVersion,decision_version:REVIEW_DECISION_VERSION,layout:focused?authorization.focus.layout:'target-crop-v1'};
    }
    const disposition=state==='supported'?'handled':'false_positive';
-   const handling=handled?{...row.handling,state:'acknowledged',revision:row.handling.revision+1,reviewed_by_kind:'ai',acknowledged_by:'AI',acknowledged_at:at,disposition,note:review.secondary?.state==='completed'&&handled?`AI 特写与扩大范围复核${operatorRejected?'均否定目标类别，判为误报':'通过，确认告警'}；行为条件由规则引擎核验，模型准确率尚未全面验证，可人工改判`:limited?'行为证明完整；AI 核对可用的同目标真实图像（含触发帧）。部分全景关键帧缺失，仅允许确认，不允许自动判误报，可人工改判':validated?'AI 核对关键帧目标，行为条件由共用引擎判定':'按用户授权策略自动确认：各关键帧目标类别一致，行为由规则引擎判定；准确率尚未全面验证，可人工改判'}:null;
+   const handling=handled?{...row.handling,state:'acknowledged',revision:row.handling.revision+1,reviewed_by_kind:'ai',acknowledged_by:'AI',acknowledged_at:at,disposition,note:review.auto_confirmation?.evidence_scope==='trigger_state_category_with_verified_legacy_behavior'?'AI 确认触发帧中的指定目标；历史行为证据核验通过，前置帧用于核验行为而非要求完整人像。可人工改判':review.secondary?.state==='completed'&&handled?`AI 对照同目标关键帧及扩大图复核${operatorRejected?'均否定目标类别，判为误报':'通过，确认告警'}；行为条件由规则引擎核验，模型准确率尚未全面验证，可人工改判`:limited?'行为证明完整；AI 核对可用的同目标真实图像（含触发帧）。部分全景关键帧缺失，仅允许确认，不允许自动判误报，可人工改判':validated?'AI 核对关键帧目标，行为条件由共用引擎判定':'按用户授权策略自动确认：各关键帧目标类别一致，行为由规则引擎判定；准确率尚未全面验证，可人工改判'}:null;
    await this.rows.updateOne(fence,{$set:{review,...(handling?{handling}:{})},$inc:{version:1},$push:{logs:{$each:[{operation_id:token,action:handled?'ai_review':'ai_reference',actor:'ai-review',at,
      decision_basis:review.decision_basis,decision_path:review.decision_path,authorization_id:(operatorConfirmed||operatorRejected)?authorizationId:null,evidence_generation:row.review.generation,model:result.model,frame_ids:inputs.map(i=>i.sample.frame_id),frame_scores:scores,evidence_mode:review.evidence_mode,missing_frame_ids:review.missing_frame_ids,secondary:review.secondary?{version:review.secondary.version,outcome:review.secondary.outcome,frame_scores:review.secondary.frame_scores,frame_ids:review.secondary.frames.map(f=>f.frame_id),non_target_evidence_scores:review.secondary.non_target_evidence?.frame_scores}:null,
      note:`${state}; score=${result.real_score}; ${handled?disposition:'unreviewed'}`}],$slice:-1024}}});

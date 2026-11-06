@@ -14,6 +14,7 @@ export function createRecordingEvidence(bootstrap){
  const target=new URL('/api/internal/alarm-recording-evidence',bootstrap.control_url);
  return async(row,sample)=>{
   const identity={channel_id:row.channel_id,stream_session_id:row.stream_session_id,source_pts_ns:sample.source_pts_ns,source_frame_index:sample.source_frame_index,track_id:sample.track_id,captured_at:sample.captured_at,width:row.analysis_evidence.source.width,height:row.analysis_evidence.source.height};
+  if(row.analysis_evidence.observation_mode==='detections')identity.observation_mode='detections';
   const response=await fetch(target,{method:'POST',redirect:'error',signal:AbortSignal.timeout(36000),headers:{'x-service-token':bootstrap.service_token,'content-type':'application/json'},body:JSON.stringify(identity)});
   if(!response.ok){
    let code;try{const failure=await readResult(response,65536);code=failure.error?.code??failure.detail;}catch{}

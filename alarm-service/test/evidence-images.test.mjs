@@ -21,10 +21,10 @@ test('Mongo JPEG storage: bytes, hash, idempotency, capacity, expiry, corruption
  await images.put('context','a',jpeg,policy);await images.put('context','a',jpeg,policy);
  assert.equal(await images.rows.countDocuments({}),1);assert.deepEqual(await images.get('context','a'),jpeg);
  await assert.rejects(images.put('context','a',Buffer.from([255,216,0,255,217]),policy),/identity_conflict/);
- now++;await images.put('context','b',jpeg,policy);now++;await images.put('context','c',jpeg,policy);
- assert.equal(await images.get('context','a'),null);assert.equal(await images.bytes('context'),jpeg.length*2);
- await images.rows.updateOne({_id:'context:c'},{$set:{data:Buffer.from([0])}});
- await assert.rejects(images.get('context','c'),/integrity/);
+ now++;await images.put('context','b',jpeg,policy);now++;await assert.rejects(images.put('context','c',jpeg,policy),/evidence_capacity/);
+ assert.deepEqual(await images.get('context','a'),jpeg);assert.equal(await images.bytes('context'),jpeg.length*2);
+ await images.rows.updateOne({_id:'context:a'},{$set:{data:Buffer.from([0])}});
+ await assert.rejects(images.get('context','a'),/integrity/);
  now+=10001;assert.equal(await images.get('context','b'),null);await images.prune('context',0,10000);assert.equal(await images.rows.countDocuments({}),0);
  await db.collection('alarm_history_clear').insertOne({_id:'state',cutoff:new Date(now).toISOString()});
  await assert.rejects(images.put('context','old',jpeg,{...policy,occurredAt:new Date(now-1).toISOString()}),/cleared/);

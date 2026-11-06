@@ -53,7 +53,8 @@ export async function startService(input,{evidenceSource,reviewInvoke,recoverEvi
       vault=new EvidenceVault(db,{root:resolve(base,config.database),policy:config.evidence,source:evidenceSource,images:new EvidenceImages(db)});
       await vault.initialize();repository.evidenceVault=vault;
     }
-    if(reviewInvoke){context=new ReviewContext(repository,process.env.AINVR_REVIEW_FRAME_ROOT??'/mnt/ainvr-ssd/ainvr-review-frames');context.policy=config.review;context.recoverEvidence=recoverEvidence;await context.initialize();repository.reviewContext=context;review=new ReviewWorker(repository,{invoke:reviewInvoke,context,policy:config.review});await review.initialize();}
+    context=new ReviewContext(repository,process.env.AINVR_REVIEW_FRAME_ROOT??'/mnt/ainvr-ssd/ainvr-review-frames');context.policy=config.review;context.recoverEvidence=recoverEvidence;await context.initialize();repository.reviewContext=context;
+    if(reviewInvoke){review=new ReviewWorker(repository,{invoke:reviewInvoke,context,policy:config.review});await review.initialize();}
     const health=db.collection('alarm_service_health');
     await health.createIndex({expires_at:1},{expireAfterSeconds:0});
     const probe=async()=>{

@@ -41,6 +41,7 @@ export function validateRule(input) {
   }
   if(!Number.isSafeInteger(r.version)||r.version<1) fail('invalid_version','version');
   if(!TRIGGER_BEHAVIORS.includes(r.behavior)) fail('unsupported_behavior','behavior');
+  if(r.incident_policy!==undefined&&(r.incident_policy!=='condition-v1'||r.behavior==='region_traverse'||!r.alarm_enabled||r.erp_wrap||r.entry_edges?.length||r.exit_edges?.length))fail('invalid_incident_policy','Condition episodes require unrestricted non-traversal alarms');
   if(!['draft','enabled','paused','archived'].includes(r.state)) fail('invalid_state','state');
   if(!Array.isArray(r.label_ids)||!r.label_ids.length||r.label_ids.length>128) fail('invalid_labels','label_ids');
   if(r.group!==undefined){
@@ -70,6 +71,7 @@ export function validateRule(input) {
       p.edges.some(e=>!Number.isInteger(e)||e<0||e>=(r.points?.length??0)))fail('invalid_passage','Select distinct existing gate edges');
     if(r.entry_edges?.length||r.exit_edges?.length||r.duration_ms>0)fail('invalid_passage','Shared passage collector must be unrestricted');
   }
+  if(r.spatial_semantics!==undefined&&(r.spatial_semantics!=='bbox-state-v1'||!['region_enter','region_approach'].includes(r.behavior)||r.entry_edges?.length||r.exit_edges?.length))fail('invalid_spatial_semantics','State rules do not have crossing directions');
   r.anchor ??= 'bottom_center';
   if(!['bottom_center','center'].includes(r.anchor)) fail('invalid_anchor','anchor');
   r.duration_ms ??= 0; range(r.duration_ms,0,3600000,'duration_ms');
@@ -123,6 +125,7 @@ export function validateRule(input) {
 export function validateFrame(input) {
   const f=structuredClone(input);
   if(f.schema_version!=='1.0') fail('unsupported_schema','schema_version');
+  if(f.evidence_delivery!==undefined&&(f.evidence_delivery?.schema_version!==2||!['durable','failed'].includes(f.evidence_delivery.state)))fail('invalid_evidence_delivery','evidence_delivery');
   for(const k of ['channel_id','input_stream_id','stream_session_id','frame_id']) identity(f[k],k);
   integerText(f.seq,'seq'); integerText(f.source_pts_ns,'source_pts_ns');
   if(f.source_frame_index!==undefined)integerText(f.source_frame_index,'source_frame_index');
@@ -157,7 +160,7 @@ export function makeAlarm(rule,frame,track,firstSeq,direction=null) {
     stream_session_id:frame.stream_session_id,track_ids:[track.track_id],trigger_id:rule.trigger_id??rule.id,rule:{id:rule.id,version:rule.version,name:rule.name,snapshot:structuredClone(rule)},
     behavior:rule.behavior,severity:rule.severity,occurred_at:frame.captured_at,last_seen_at:frame.captured_at,
     source_pts_ns:frame.source_pts_ns,frame_id:frame.frame_id,direction,model_snapshot:structuredClone(frame.model),
-    analysis_evidence:{observation_mode:frame.observation_mode??'tracks',engine_semantics:ENGINE_SEMANTICS,first_seq:firstSeq,trigger_seq:frame.seq,source_frame_index:frame.source_frame_index??null,track:structuredClone(track),source:structuredClone(frame.source)},
+    analysis_evidence:{...(frame.evidence_delivery?{delivery:structuredClone(frame.evidence_delivery)}:{}),observation_mode:frame.observation_mode??'tracks',engine_semantics:ENGINE_SEMANTICS,first_seq:firstSeq,trigger_seq:frame.seq,source_frame_index:frame.source_frame_index??null,track:structuredClone(track),source:structuredClone(frame.source)},
     lifecycle:{state:'ended',end_reason:'discrete_trigger'},
     review:rule.review.enabled?{state:'queued',attempt:1,profile_id:rule.review.profile_id,profile_version:rule.review.version}:{state:'skipped',reason:'policy_disabled',attempt:0},
     handling:{state:'unacknowledged',revision:0,disposition:'unset'},evidence:{state:'pending',refs:[]},version:1};

@@ -30,7 +30,9 @@ export function describeAlarm(alarm:AlarmEvent,trigger:AlarmContext|undefined){
  if(group)sentence=group.mode==='completed_in_window'?`${group.window_ms/1000} 秒内有 ${group.count} 个不同目标完成穿越。`:`同一画面中有 ${group.count} 个不同目标同时满足「${behaviorNames[alarm.behavior]??alarm.behavior}」条件。`
  else if(!trigger)sentence=`目标${behaviorNames[alarm.behavior]??'触发'}${alarm.behavior==='appearance'?'':'热区'}。`
  else if(alarm.behavior==='appearance')sentence=`${target}在画面中连续出现 ${trigger.duration_ms/1000} 秒。`
+ else if(alarm.behavior==='region_approach'&&edgeOf(top?.direction,'nearest_edge')===null)sentence=`${target}与「${zone??'热区'}」的距离已在设定范围内。`
  else if(alarm.behavior==='region_approach')sentence=`${target}靠近「${zone??'热区'}」${edge(edgeOf(top?.direction,'nearest_edge'))}一侧（${binding?.approach_px??'?'} 像素内）。`
+ else if(alarm.behavior==='region_enter'&&edgeOf(top?.direction,'entry_edge')===null)sentence=`${target}与「${zone??'热区'}」相交或接触。`
  else if(alarm.behavior==='region_enter')sentence=`${target}从${edge(edgeOf(top?.direction,'entry_edge'))}进入「${zone??'热区'}」。`
  else if(alarm.behavior==='region_traverse'){
   const entered=at('region_enter'),left=top?.at,seconds=entered&&left?Math.round((Date.parse(left)-Date.parse(entered))/1000):null
@@ -40,8 +42,10 @@ export function describeAlarm(alarm:AlarmEvent,trigger:AlarmContext|undefined){
 }
 /** Stage label with its zone edge, for the detail sheet. */
 export function stageNote(stage:Stage,edge:(i:number|null)=>string){
+ if(stage.behavior==='region_enter'&&edgeOf(stage.direction,'entry_edge')===null)return '与布防区相交或接触'
  if(stage.behavior==='region_enter')return `从${edge(edgeOf(stage.direction,'entry_edge'))}进入`
  if(stage.behavior==='region_traverse')return `从${edge(edgeOf(stage.direction,'entry_edge'))}进，${edge(edgeOf(stage.direction,'exit_edge'))}出`
+ if(stage.behavior==='region_approach'&&edgeOf(stage.direction,'nearest_edge')===null)return '与布防区的距离在设定范围内'
  if(stage.behavior==='region_approach')return `靠近${edge(edgeOf(stage.direction,'nearest_edge'))}`
  return '进入画面'
 }

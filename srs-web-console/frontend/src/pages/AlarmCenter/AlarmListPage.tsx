@@ -226,7 +226,7 @@ export default function AlarmListPage(){
      <div className="mt-1 h-1.5 rounded bg-slate-100"><div className="h-1.5 rounded" style={{width:`${Math.round((today?.[b.id]??0)/maxToday*100)}%`,background:levelLook[b.id]!.color}}/></div></div>)}</div>
     {!today&&<p className="mt-2 text-xs text-ink-subtle">统计暂不可用</p>}
    </aside>
-   <p className="hidden border-t border-line p-4 text-sm leading-relaxed text-ink-subtle md:block">同一通道的同一目标只有一条告警，显示命中的最高级别。</p>
+   <p className="hidden border-t border-line p-4 text-sm leading-relaxed text-ink-subtle md:block">同一规则的持续风险合并告警，条件稳定解除后重新布防；穿越按独立通过事件判断。</p>
   </nav>
   <main className="alarm-workspace flex min-w-0 flex-1 flex-col">
    <PtzProtectionNotice/>

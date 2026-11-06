@@ -4,6 +4,7 @@ import {readdir,lstat,readFile,unlink,open} from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {digest,validateFrame,identity,integerText} from './domain.mjs';
+import {EvidenceSpool} from './evidence-spool.mjs';
 const recordName=/^[0-9]{20}\.json$/;
 const rawHash=value=>createHash('sha256').update(value).digest('hex');
 export function observationEnvelope(sample,rules){
@@ -44,7 +45,8 @@ export function observationEnvelope(sample,rules){
     frame_id:`${sample.stream_session_id}:${sample.source_frame_index}`,source_pts_ns:sample.source_pts_ns,source_frame_index:sample.source_frame_index,
     captured_at:new Date(sample.timestamp*1000).toISOString(),
     source:{width:sample.width,height:sample.height,coordinate_space:'source_pixels',geometry_revision:binding.geometry_revision},
-    model:{id:sample.model.id,label_map_version:labelVersion},observation_mode:detectionOnly?'detections':'tracks',tracks});
+    model:{id:sample.model.id,label_map_version:labelVersion},observation_mode:detectionOnly?'detections':'tracks',tracks,
+    ...(sample.evidence_delivery?{evidence_delivery:sample.evidence_delivery}:{})});
   if(frame.tracks.some(t=>!labels.some(l=>l.label_id===t.label_id)))throw Error('Unknown track label');
   return {envelope:{schema_version:'1.0',producer_id:sample.producer_id,offset:sample.offset,frame}};
 }
@@ -84,7 +86,9 @@ export class ObservationPump {
           const converted=observationEnvelope(sample,snapshot.rules);
           if(converted.waiting){reason=converted.waiting;throw Error('Source binding not configured');}
           if(converted.envelope){step='consume';const result=await this.consumer.consume(converted.envelope);if(result.durable!==true)throw Error('Consumption not durable');this.status.consumed++;this.status.last_persisted_at=new Date().toISOString();}
-          else {this.status.ignored++;this.status.last_ignored_reason=converted.ignored;}
+          else {this.status.ignored++;this.status.last_ignored_reason=converted.ignored;
+            if(this.repository.reviewContext?.root)await new EvidenceSpool(this.repository.reviewContext.root).acknowledge(sample);
+          }
           if(converted.ignored==='source_binding_mismatch')this.rememberIssue(directory.name,sample,'source_binding_mismatch','ignored');
           else this.issues.delete(directory.name);
           step='acknowledge';

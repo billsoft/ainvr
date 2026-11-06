@@ -27,25 +27,10 @@ test('a pool already within its byte budget is not scanned at all',{skip:!enable
  assert.deepEqual((await finds(db)).map(e=>e.planSummary),[],'prune opened an eviction scan although nothing needs evicting');
 }));
 
-test('eviction deletes the oldest first, ties by id, reading index keys only',{skip:!enabled,timeout:60000},()=>fixture(async db=>{
+test('context capacity refuses admission without scanning or deleting retained evidence',{skip:!enabled,timeout:30000},()=>fixture(async db=>{
  const images=new EvidenceImages(db);await images.initialize();
- // Production databases still carry the former {pool,created_at} index next to the new one.
- await images.rows.createIndex({pool:1,created_at:1});
- const docs=[];
- for(let i=0;i<6;i++)docs.push(row('t0-'+i,1e12));            // same timestamp: order falls back to _id
- for(let i=0;i<3000;i++)docs.push(row('n'+String(i).padStart(4,'0'),1e12+1000+i));
- await images.rows.insertMany(docs);
- const total=docs.length;
- await profiled(db,async()=>assert.equal(await images.prune('context',(total-3)*KB2,1e12),true));
- const left=new Set((await images.rows.find({},{projection:{_id:1}}).toArray()).map(d=>d._id));
- assert.equal(left.size,total-3);
- for(const gone of ['context:t0-0','context:t0-1','context:t0-2'])assert.equal(left.has(gone),false,gone+' should be evicted first');
- for(const kept of ['context:t0-3','context:t0-5','context:n0000'])assert.equal(left.has(kept),true,kept+' must survive');
- const scans=await finds(db);
- assert.equal(scans.length>=1,true,'an over-budget pool must run one eviction scan');
- for(const s of scans){
-  assert.equal(s.hasSortStage??false,false,'eviction sort must come from the index, not memory');
-  assert.equal(s.docsExamined??0,0,'eviction scan must be answered from the index without fetching JPEG documents');
-  assert.ok((s.keysExamined??0)<=600,'eviction scan must stay bounded by its batch, saw '+s.keysExamined+' keys');
- }
+ await images.rows.insertMany(Array.from({length:40},(_,i)=>row('a'+i,1e12+i)));
+ await profiled(db,async()=>assert.equal(await images.prune('context',10*KB2,1e12),false));
+ assert.equal(await images.rows.countDocuments({}),40);
+ assert.deepEqual(await finds(db),[]);
 }));

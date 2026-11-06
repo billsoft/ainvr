@@ -96,6 +96,7 @@ class ObservationJournal {
       {"timestamp",result.timestamp},{"width",result.frame_width},{"height",result.frame_height},
       {"model",{{"id",result.model_name},{"label_catalog",result.model_extra.at("label_catalog")}}},
       {"tracks",analytics.at("tracks")}};
+    if(result.model_extra.contains("evidence_delivery"))value["evidence_delivery"]=result.model_extra.at("evidence_delivery");
     value["observation_mode"]=detection_only?"detections":"tracks";
     if(detection_only) {
       value["detections"]=nlohmann::json::array();
