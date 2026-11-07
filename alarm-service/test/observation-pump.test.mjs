@@ -68,3 +68,24 @@ test('blocked and incompatible sources expose actionable diagnostics and recover
   assert.ok(!JSON.stringify(pump.status).includes('rtmp://'));
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('consumed deletion ACKs sync once per bounded batch; failure remains visible and replay is idempotent',async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),'ainvr-batch-ack-')),dir=path.join(root,rawHash('processor'));
+ try{
+  await mkdir(dir);const seen=new Set();let unique=0,syncs=0;
+  const values=Array.from({length:20},(_,i)=>({...sample,offset:String(i)}));
+  const write=async()=>{for(const value of values)await writeFile(path.join(dir,value.offset.padStart(20,'0')+'.json'),JSON.stringify(value));};
+  await write();const pump=new ObservationPump(root,{consume:async e=>{if(!seen.has(e.offset)){seen.add(e.offset);unique++;}return {durable:true};}},{ruleSnapshots:{current:async()=>({rules:[rule]})}});
+  const original=pump.syncDirectory.bind(pump);pump.syncDirectory=async folder=>{syncs++;assert.equal(unique,20);await original(folder);};
+  await pump.tick();assert.equal(syncs,1);assert.equal(unique,20);assert.equal(pump.status.failed,0);
+  // Simulate directory deletions lost after a power interruption.
+  await write();await pump.tick();assert.equal(unique,20);assert.equal(pump.status.consumed,40);
+  await write();pump.syncDirectory=async()=>{throw Error('sync failed');};await pump.tick();assert.equal(pump.status.state,'degraded');assert.equal(pump.status.last_error,'acknowledgement_pending');
+  assert.equal((await readdir(dir)).length,0);
+  await pump.tick();assert.equal(pump.status.state,'degraded');assert.equal(pump.status.failed,2);
+  pump.syncDirectory=original;await pump.tick();
+  assert.equal(pump.status.state,'ready');assert.equal(pump.status.last_error,null);
+  assert.equal(pump.status.channel_issues.length,0);assert.equal(pump.status.consumed,60);assert.equal(unique,20);
+
+ }finally{await rm(root,{recursive:true,force:true});}
+});

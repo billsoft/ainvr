@@ -53,7 +53,7 @@ export function observationEnvelope(sample,rules){
 export class ObservationPump {
   constructor(root,consumer,repository){
     if(!path.isAbsolute(root)||root.length>4096)throw Error('Absolute observation root required');
-    this.root=root;this.consumer=consumer;this.repository=repository;this.stopping=false;this.running=null;this.issues=new Map();
+    this.root=root;this.consumer=consumer;this.repository=repository;this.stopping=false;this.running=null;this.issues=new Map();this.pendingDirectorySyncs=new Set();
     this.status={state:'waiting',pending:0,consumed:0,ignored:0,failed:0,last_error:null,last_persisted_at:null,channel_issues:[]};
   }
   tick(){if(this.running)return this.running;this.running=this.scan().finally(()=>{this.running=null});return this.running;}
@@ -73,7 +73,7 @@ export class ObservationPump {
       const folder=path.join(this.root,directory.name);
       const records=(await readdir(folder)).filter(n=>recordName.test(n)).sort();pending+=records.length;
       // Fair bounded batches keep one busy channel from starving another.
-      let step='read',sample,reason;
+      let step='read',sample,reason,removed=false;
       for(const name of records.slice(0,100)){
         if(this.stopping)break;
         const file=path.join(folder,name);
@@ -93,7 +93,7 @@ export class ObservationPump {
           else this.issues.delete(directory.name);
           step='acknowledge';
           await unlink(file).catch(e=>{if(e.code!=='ENOENT')throw e;});
-          const handle=await open(folder,'r');try{await handle.sync();}finally{await handle.close();}
+          removed=true;
           pending--;
         }catch(e){
           if(e.code==='ENOENT')continue;
@@ -102,13 +102,25 @@ export class ObservationPump {
           break;
         }
       }
+      // Consumption is already durable and idempotent. Batch directory sync
+      // only for deletion ACKs (at most 100 records/channel); after a crash,
+      // reappearing records replay the existing checkpoint, never new alarms.
+      if(removed)this.pendingDirectorySyncs.add(directory.name);
+      if(this.pendingDirectorySyncs.has(directory.name))try{
+        await this.syncDirectory(folder);
+        this.pendingDirectorySyncs.delete(directory.name);
+        if(this.issues.get(directory.name)?.reason==='acknowledgement_pending')this.issues.delete(directory.name);
+      }
+      catch{this.status.failed++;failed=true;this.status.last_error='acknowledgement_pending';this.rememberIssue(directory.name,sample,'acknowledgement_pending','blocked');}
     }
     const present=new Set(directories.filter(d=>d.isDirectory()).map(d=>d.name));
     for(const key of this.issues.keys())if(!present.has(key))this.issues.delete(key);
+    for(const key of this.pendingDirectorySyncs)if(!present.has(key))this.pendingDirectorySyncs.delete(key);
     this.status.channel_issues=[...this.issues.values()];
     this.status.pending=pending;this.status.state=failed||this.issues.size?'degraded':'ready';
     if(!failed)this.status.last_error=this.issues.size?'source_binding_mismatch':null;
   }
+  async syncDirectory(folder){const handle=await open(folder,'r');try{await handle.sync();}finally{await handle.close();}}
   rememberIssue(key,sample,reason,state){
     this.issues.delete(key);
     const captured=new Date(Number.isFinite(sample?.timestamp)?sample.timestamp*1000:Number.NaN);

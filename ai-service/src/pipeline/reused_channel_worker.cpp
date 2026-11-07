@@ -1272,13 +1272,14 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
       search_source->EndFrame(search_token,result,*search_capture,objects_complete,complete(scene_offer));
     } catch (...) { /* Sampling refusal must not interrupt existing business. */ }
   }
+  std::shared_future<bool> evidence_receipt;
   if(output::HasReviewVisualTarget(result))result.model_extra["evidence_delivery"]={{"schema_version",2},{"state","failed"}};
   if (LicenseAllowed() && output::HasReviewVisualTarget(result) && output::SharedReviewFrameCache().Enabled(channel_id_) && result.model_extra.contains("analytics")) {
     ScopedTimingObservation timer([this, timing_identity](double ms) {
       RecordTiming(TimingStage::ReviewFrameOffer, ms, timing_identity);
     });
     const auto session=result.model_extra["analytics"].value("stream_session_id",std::string());
-    if(!session.empty()){const bool saved=output::SharedReviewFrameCache().Offer({{"channel_id",channel_id_},{"stream_session_id",session},
+    if(!session.empty()){evidence_receipt=output::SharedReviewFrameCache().OfferAsync({{"channel_id",channel_id_},{"stream_session_id",session},
       {"source_pts_ns",std::to_string(result.frame_pts_ns)},{"source_frame_index",std::to_string(result.frame_index)},
       {"frame_width",frame.width},{"frame_height",frame.height}},[owned=frame.ref]{
         static thread_local std::unique_ptr<ainvr::GlesPreprocessor> converter;
@@ -1288,20 +1289,22 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
         t.letterbox=false;t.yuv_bt709=owned->bt709;t.yuv_full_range=owned->full_range;
         auto rgba=converter->RunNv12Rgba(src.pixels,src.width,src.height,t);
         cv::Mat image(t.height,t.width,CV_8UC4);std::memcpy(image.data,rgba.data(),rgba.size());return image;
-      },frame.ref->nv12.pixels.size());
-      result.model_extra["evidence_delivery"]={{"schema_version",2},{"state",saved?"durable":"failed"}};
+      },frame.ref->nv12.pixels.size(),[this]{return stop_event_.load()||!LicenseAllowed();});
+      // The journal resolves this receipt before publishing its observation.
+      // Do not claim durable evidence just because RAM admission succeeded.
+      result.model_extra["evidence_delivery"]={{"schema_version",2},{"state","pending"}};
     }
   }
   if(auto journal=std::atomic_load(&observation_journal_)){
     try{
-      if(frame.epoch!=stream_epoch_.load()||!LicenseAllowed()){
-        result.model_extra["observation_delivery"]={{"state","skipped"},{"reason","source_or_license_changed"},{"stage_failures",observation_stage_failures_.load()}};
+      if(stop_event_.load()||frame.epoch!=stream_epoch_.load()||!LicenseAllowed()){
+        result.model_extra["observation_delivery"]={{"state","skipped"},{"reason",stop_event_.load()?"channel_stopping":"source_or_license_changed"},{"stage_failures",observation_stage_failures_.load()}};
       }else{
         {
         ScopedTimingObservation timer([this, timing_identity](double ms) {
           RecordTiming(TimingStage::ObservationStage, ms, timing_identity);
         });
-        journal->Stage(result);
+        journal->Stage(result,std::move(evidence_receipt));
         }
         // Durable write happens on the journal writer thread; failures are counted there (async_failures).
         result.model_extra["observation_delivery"]={{"state","queued"},{"stage_failures",observation_stage_failures_.load()}};

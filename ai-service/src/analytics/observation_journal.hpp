@@ -83,7 +83,7 @@ class ObservationJournal {
   // (reserve -> SaveState -> record write); queued-but-unwritten records leave no gap.
   // A full queue blocks (backpressure), never drops. Write failures are counted in
   // Status().async_failures and leave the documented visible offset gap.
-  void Stage(const FrameResult& result) {
+  void Stage(const FrameResult& result,std::shared_future<bool> evidence={}) {
     std::unique_lock guard(mutex_);
     if(result.channel_id!=channel_||result.frame_pts_ns<0||result.frame_index<0||!std::isfinite(result.timestamp))throw std::invalid_argument("Invalid observation source");
     const auto& analytics=result.model_extra.at("analytics");
@@ -97,6 +97,9 @@ class ObservationJournal {
       {"model",{{"id",result.model_name},{"label_catalog",result.model_extra.at("label_catalog")}}},
       {"tracks",analytics.at("tracks")}};
     if(result.model_extra.contains("evidence_delivery"))value["evidence_delivery"]=result.model_extra.at("evidence_delivery");
+    // Reserve the longest delivery state before byte admission. Pending is
+    // internal only; it is NEVER written into the consumer protocol.
+    if(evidence.valid())value["evidence_delivery"]={{"schema_version",2},{"state","pending"}};
     value["observation_mode"]=detection_only?"detections":"tracks";
     if(detection_only) {
       value["detections"]=nlohmann::json::array();
@@ -130,7 +133,15 @@ class ObservationJournal {
     auto record=std::make_shared<nlohmann::json>(std::move(value));
     // Blocks only when the bounded queue is full (backpressure).
     try{
-      writer_->Submit([this,record,bound]{WriteRecord(*record);inflight_records_.fetch_sub(1);inflight_bytes_.fetch_sub(bound);});
+      writer_->Submit([this,record,bound,evidence=std::move(evidence)]{
+        // One FIFO writer preserves frame/offset order even if later evidence
+        // completes first. Exceptions/broken receipts cannot claim durability.
+        if(evidence.valid()){
+          bool durable=false;try{durable=evidence.get();}catch(...){}
+          (*record)["evidence_delivery"]={{"schema_version",2},{"state",durable?"durable":"failed"}};
+        }
+        WriteRecord(*record);inflight_records_.fetch_sub(1);inflight_bytes_.fetch_sub(bound);
+      });
     }catch(...){inflight_records_.fetch_sub(1);inflight_bytes_.fetch_sub(bound);throw;}
   }
   // Waits until every queued record has been durably written or failed (tests, shutdown).

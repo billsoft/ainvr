@@ -1,7 +1,7 @@
 import {evidenceSyncStatus} from '../src/evidence-spool.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,readFile,readdir,rm,writeFile,truncate} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,readdir,rm,writeFile,truncate,stat,unlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -13,7 +13,7 @@ test('checkpoint-owned frames stay pinned; only durable consumed frames are ackn
   await spool.protect({states:{a:{review_compact:{start:s}}}},'c','s');
   const pins=await readdir(join(root,'raw'));assert.equal(pins.filter(n=>n.endsWith('.pin')).length,1);
   await spool.settle({session:'s',states:{a:{review_compact:{start:s}}}},'c');
-  assert.equal((await readdir(join(root,'raw'))).length,1);
+  assert.equal((await readdir(join(root,'raw'))).filter(n=>n.endsWith('.pin')).length,1);
   await spool.acknowledge({...s,channel_id:'c',stream_session_id:'s',evidence_delivery:{schema_version:2,state:'durable'}});
   assert.equal(await readFile(join(root,'raw',frameKey('c','s',s)+'.ack'),'utf8'),'1');
   await spool.settle({session:'s',states:{}},'c');assert.equal((await readdir(join(root,'raw'))).filter(n=>n.endsWith('.pin')).length,0);
@@ -66,5 +66,27 @@ test('durable operation telemetry counts failures and exposes immutable bounded 
   assert.equal(after.failures-before.failures,1);assert.ok(after.total_ms>=before.total_ms);
   assert.equal(Object.values(after.buckets).reduce((a,b)=>a+b,0),after.writes);
   after.buckets.le_1=-1;assert.notEqual(evidenceSyncStatus().buckets.le_1,-1);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('batched pins share durable marker data, retain generation fences and survive anchor replacement',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ainvr-pin-batch-'));try{
+  const spool=new EvidenceSpool(root),samples=Array.from({length:12},(_,i)=>({frame_id:'s:'+i,source_pts_ns:String(i),source_frame_index:String(i)}));
+  await spool.protect(samples,'c','s',4);
+  const anchor=await stat(join(root,'raw','.pin-anchor'));
+  for(const sample of samples){const p=join(root,'raw',frameKey('c','s',sample)+'.'+sha('c')+'.4.pin');assert.equal((await stat(p)).ino,anchor.ino);assert.equal(await readFile(p,'utf8'),'1');}
+  const restarted=new EvidenceSpool(root);await restarted.protect(samples,'c','s',5);
+  await spool.settle({session:'s'},'c',4); // stale worker cannot remove generation 5
+  assert.equal((await readdir(join(root,'raw'))).filter(n=>n.endsWith('.5.pin')).length,12);
+  await restarted.settle({session:'s',samples},'c',5);
+  assert.equal((await readdir(join(root,'raw'))).filter(n=>n.endsWith('.pin')).length,12);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('failed pin creation rejects preparation and leaves previously protected frames intact',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ainvr-pin-failure-'));try{
+  const spool=new EvidenceSpool(root),sample={frame_id:'s:1',source_pts_ns:'1',source_frame_index:'1'};
+  await spool.protect(sample,'c','s',1);await unlink(join(root,'raw','.pin-anchor'));
+  await assert.rejects(spool.protect(sample,'c','s',2),{code:'ENOENT'});
+  assert.equal((await readdir(join(root,'raw'))).filter(n=>n.endsWith('.1.pin')).length,1);
  }finally{await rm(root,{recursive:true,force:true});}
 });

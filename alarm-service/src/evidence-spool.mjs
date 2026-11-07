@@ -1,5 +1,5 @@
 // SSD frame ownership follows the durable observation checkpoint, not wall-clock TTL.
-import {open,mkdir,readdir,rename,unlink} from 'node:fs/promises';
+import {open,mkdir,readdir,rename,unlink,link} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 const metrics={writes:0,failures:0,total_ms:0,max_ms:0,buckets:{le_1:0,le_5:0,le_20:0,le_100:0,gt_100:0}};
@@ -28,7 +28,14 @@ async function boundedRead(path,limit){
  }finally{await file.close();}
 }
 export class EvidenceSpool {
- constructor(root){this.root=join(root,'raw');}
+ constructor(root){this.root=join(root,'raw');this.anchor=null;}
+ async pinAnchor(){
+  // Pins contain no per-frame data: use hard links to one fsynced immutable
+  // marker inode. Each generation still has its own fenced filename. A single
+  // directory fsync commits the entire batch before Mongo pending is prepared.
+  if(!this.anchor)this.anchor=durableFile(join(this.root,'.pin-anchor'),'1').catch(error=>{this.anchor=null;throw error;});
+  await this.anchor;return join(this.root,'.pin-anchor');
+ }
  keys(value,channel,session){
   const keys=new Set();
   const walk=x=>{if(!x||typeof x!=='object')return;
@@ -40,7 +47,13 @@ export class EvidenceSpool {
   if(!Number.isSafeInteger(generation)||generation<0)throw Error('invalid_evidence_generation');
   await mkdir(this.root,{recursive:true,mode:0o700});
   const owner=hash(channel);
-  for(const key of this.keys(value,channel,session))await durableFile(join(this.root,key+'.'+owner+'.'+generation+'.pin'),'1');
+  const keys=this.keys(value,channel,session);if(!keys.size)return;
+  const anchor=await this.pinAnchor(),started=performance.now();
+  try{
+   for(const key of keys)await link(anchor,join(this.root,key+'.'+owner+'.'+generation+'.pin')).catch(error=>{if(error.code!=='EEXIST')throw error;});
+   const directory=await open(this.root,'r');try{await directory.sync();}finally{await directory.close();}
+  }catch(error){++metrics.failures;throw error;}
+  finally{const ms=performance.now()-started;++metrics.writes;metrics.total_ms+=ms;metrics.max_ms=Math.max(metrics.max_ms,ms);++metrics.buckets[ms<=1?'le_1':ms<=5?'le_5':ms<=20?'le_20':ms<=100?'le_100':'gt_100'];}
  }
  async settle(checkpoint,channel,generation=0){
   if(!Number.isSafeInteger(generation)||generation<0)throw Error('invalid_evidence_generation');

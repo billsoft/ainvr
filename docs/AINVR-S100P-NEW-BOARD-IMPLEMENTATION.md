@@ -90,7 +90,9 @@ free -h
 
 ### 3.2 分开核算 S100 / S100P 的 CPU 与 ION 内存
 
-`.189` S100P 为 24 GB，Linux 约 11 GiB；`.190` 是 S100、12 GB，用户规划 ION 7 GB，Linux MemTotal 实测约 4412 MiB。两板不能复用同一容器额度。ION 的配置值与驱动实测值仍须分别记录，不把 `free` 的 CPU 内存当整机内存。
+本次 .190（boardid `0x6A87`）实际启动设备树为 `/boot/hobot/rdk-s100-v1p1.dtb`。仅修改 `/reserved-memory/ion_reserved@C80000000` 的 `reg` 长度 `0xf0000000` → `0xb0000000`（3.75 → 2.75 GiB）；carveout 保持 2.75 GiB，ion_cma 保持 0.5 GiB，三个主池合计 6 GiB（另有驱动独立 4 MiB chunk 池）。启动固件会重定位 CMA 地址，须对照运行设备树和 debugfs 实测总量，不能仅看节点名地址。旧设备树保存在 SSD `/mnt/ainvr-ssd/ion-6gb-20261106/rdk-s100-v1p1.dtb.before`；回退时恢复此文件到原路径、sync 后重启。此次 Qwen3-VL 2B 加载成功、检测通道恢复、录像读取验证通过；这不等于已认证更多通道或所有模型同时加载的峰值。BSP 更新可能覆盖设备树，更新后须复验该划分。
+
+`.189` S100P 为 24 GB，Linux 约 11 GiB；`.190` 是 S100、12 GB，初始 ION 7 GiB、Linux MemTotal 约 4412 MiB；2026-11-06 已调整为 ION 6 GiB，重启后 Linux MemTotal 约 5436 MiB，增加 1024 MiB。两板不能复用同一容器额度。ION 的配置值与驱动实测值仍须分别记录，不把 `free` 的 CPU 内存当整机内存。
 
 - 本板存在 `/boot/extlinux/extlinux.conf`；不是通用的 `/boot/config.txt`。本文未确认内存调整的具体 overlay/固件参数，不提供猜测的烧写命令。
 - 按该板 BSP 的实际配置流程调整后重启验证；不能只修改网页总量或模型 `ion_reserve_mb`。
@@ -935,3 +937,10 @@ MemoryAccounting=yes
 - 配置恢复一旦启动，即使HTTP仍响应，也不再发送WATCHDOG=1；这防止SDK排空卡住时不断续健康心跳。部署必须配置WatchdogSec和Restart=on-failure；.190实查WatchdogSec=30s、TimeoutStopSec=30s。看门狗是故障兜底，不保证SDK本身一定能正常退出；被迫结束时仍依赖既有SSD持久交付恢复。
 
 - 本轮最终验证：SSD串行编译AI服务成功；config_store、config_center、au_buffer、systemd_watchdog、shared_runtime、shared_bpu、configured_residency、model_loading_contract八组测试全部通过（0失败）。测试记录位于 test/results/runtime-followup-20261106/。本轮仅编译测试，维护结束恢复原服务，不替换部署二进制、不提交Git。
+
+
+### 2026-11-07 推理性能与维护停机补充
+
+.190 的审核证据已改为有界异步提交，观测日志等待真实持久化回执后才供告警消费；具体协议、实测与测试见 `S100P-INFERENCE-PIPELINE.md` 的 2026-11-07 节。不要以 `review_frame_offer` 接近零误判图片尚未保存：它现在只统计提交和容量背压，落盘完成延迟另看 cache completion 指标。
+
+编译仍使用 SSD 的构建目录、TMPDIR 和临时 swap，单任务 `-j1`；业务恢复后关闭并清理临时 swap，不把交换空间当运行容量。若需要暂停 LLM，应一并暂停告警审核消费者（当前为 alarm-service），待 LLM `/health` ready 后再恢复，避免在模型停机期间耗尽告警重试次数。若维护已经造成 `review_unavailable`，只通过现有带审计的重试机制、按维护时间范围重入队；不得直接改确认/误报结论。恢复后检查新证据 failed/dropped、观测消费、录像可读性和实际 FPS，不只检查进程存活。

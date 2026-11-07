@@ -91,5 +91,25 @@ int main(int argc, char** argv) {
     assert(next.Flush());
     assert(next.Status().at("next_offset") == "11");
   }
+  // 4. Evidence gates only the ordered writer, not the producer. A later
+  // frame must not overtake a pending receipt. Failed/broken receipts stay failed.
+  {
+    const std::string r=root+"-evidence";
+    ObservationJournal journal(r,"processor",64*1024*1024,10000,0);
+    std::promise<bool> first,second,failed;
+    auto a=first.get_future().share(),b=second.get_future().share(),c=failed.get_future().share();
+    std::shared_future<bool> broken;
+    {std::promise<bool> abandoned;broken=abandoned.get_future().share();}
+    journal.Stage(sample(1),a);journal.Stage(sample(2),b);journal.Stage(sample(3),c);journal.Stage(sample(4),broken);
+    second.set_value(true);failed.set_value(false);
+    assert(!journal.Flush(std::chrono::milliseconds(50)));
+    assert(journal.Status().at("next_offset")=="0");
+    first.set_value(true);assert(journal.Flush());
+    for(int i=0;i<4;++i){auto record=ReadJson(channel_dir(r)/Name(i));
+      assert(record.at("source_frame_index")==std::to_string(i+1));
+      assert(record.at("evidence_delivery").at("state")== (i<2?"durable":"failed"));
+    }
+    assert(journal.Status().at("async_failures")==0);
+  }
   std::cout << "Async observation journal PASS\n";
 }

@@ -33,17 +33,46 @@ int main(int argc,char** argv){try{
  struct ReleaseBeforeJoin{Gate& gate;~ReleaseBeforeJoin(){gate.Release();}}release{gate};
  Check(cache.Enabled("test"),"test policy unavailable");
  if(mode=="queue"){
-  cache.Offer(Metadata(1),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
-  for(int i=2;i<=9;++i)cache.Offer(Metadata(i),[]{return cv::Mat(32,32,CV_8UC4);});
+  cache.OfferAsync(Metadata(1),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
+  for(int i=2;i<=9;++i)cache.OfferAsync(Metadata(i),[]{return cv::Mat(32,32,CV_8UC4);});
+  auto rejected=cache.OfferAsync(Metadata(10),[]{return cv::Mat(32,32,CV_8UC4);});
+  Check(rejected.wait_for(std::chrono::milliseconds(0))==std::future_status::ready&&!rejected.get(),"full queue must reject without blocking");
   gate.Release();WaitWritten(root,9);
-  const auto stats=Status(root);Check(stats.at("written")==9,"small frames must support eight queued jobs");Check(stats.at("dropped")==0,"small burst unexpectedly dropped");
+  const auto stats=Status(root);Check(stats.at("written")==9,"small frames must support eight queued jobs");Check(stats.at("queue_full_dropped")==1,"queue overflow not accounted");
+ }else if(mode=="backpressure"){
+  auto first=cache.OfferAsync(Metadata(1),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
+  for(int i=2;i<=9;++i)cache.OfferAsync(Metadata(i),[]{return cv::Mat(32,32,CV_8UC4);});
+  std::atomic<bool> cancel{false};
+  auto stopped=std::async(std::launch::async,[&]{return cache.OfferAsync(Metadata(10),[]{return cv::Mat(32,32,CV_8UC4);},0,[&]{return cancel.load();}).get();});
+  Check(stopped.wait_for(std::chrono::milliseconds(50))==std::future_status::timeout,"saturated required evidence did not wait");
+  cancel=true;Check(stopped.wait_for(std::chrono::seconds(1))==std::future_status::ready&&!stopped.get(),"stop did not interrupt admission");
+  auto admitted=std::async(std::launch::async,[&]{return cache.OfferAsync(Metadata(11),[]{return cv::Mat(32,32,CV_8UC4);},0,[]{return false;}).get();});
+  Check(admitted.wait_for(std::chrono::milliseconds(50))==std::future_status::timeout,"saturated admission exceeded capacity");
+  gate.Release();Check(first.get()&&admitted.get(),"backpressured frame was lost");
+  WaitWritten(root,10);Check(Status(root).at("dropped")==0,"required backpressure dropped evidence");
  }else if(mode=="pixels"){
-  cache.Offer(Metadata(1,8192,8192),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
-  cache.Offer(Metadata(2,8192,8192),[]{return cv::Mat(32,32,CV_8UC4);});
-  cache.Offer(Metadata(3,8192,8192),[]{return cv::Mat(32,32,CV_8UC4);});
+  cache.OfferAsync(Metadata(1,8192,8192),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
+  cache.OfferAsync(Metadata(2,8192,8192),[]{return cv::Mat(32,32,CV_8UC4);});
+  cache.OfferAsync(Metadata(3,8192,8192),[]{return cv::Mat(32,32,CV_8UC4);});
   gate.Release();WaitWritten(root,2);std::this_thread::sleep_for(std::chrono::milliseconds(1100));
   const auto stats=Status(root);Check(stats.value("pixel_budget_dropped",0U)==1,"active NV12 bytes must count toward the 256 MiB bound");
   Check(stats.at("written")==2,"over-budget frame was retained");
+ }else if(mode=="receipts"){
+  auto pending=cache.OfferAsync(Metadata(1),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
+  Check(pending.wait_for(std::chrono::milliseconds(0))==std::future_status::timeout,"admitted is not durable");
+  gate.Release();Check(pending.get(),"durable receipt missing");
+  size_t jpg=0,meta=0;
+  for(const auto& e:std::filesystem::directory_iterator(root/"raw")){jpg+=e.path().extension()==".jpg";meta+=e.path().extension()==".json";}
+  Check(jpg==1&&meta==1,"receipt preceded evidence pair");
+  Check(!cache.OfferAsync(Metadata(2),[]()->cv::Mat{throw std::runtime_error("render failure");}).get(),"render failure claimed durable");
+  Check(cache.OfferAsync(Metadata(3),[]{return cv::Mat(32,32,CV_8UC4);}).get(),"worker did not recover");
+  Check(!cache.OfferAsync(Metadata(4,63,64),[]{return cv::Mat(32,32,CV_8UC4);}).get(),"invalid geometry admitted");
+ }else if(mode=="shutdown"){
+  // A second isolated cache owns these receipts; its destructor drains them.
+  const auto child=root/"drain";setenv("AINVR_REVIEW_FRAME_ROOT",child.c_str(),1);
+  std::vector<std::shared_future<bool>> receipts;
+  {ReviewFrameCache draining;for(int i=0;i<5;++i)receipts.push_back(draining.OfferAsync(Metadata(i),[]{std::this_thread::sleep_for(std::chrono::milliseconds(10));return cv::Mat(32,32,CV_8UC4);}));}
+  for(auto& receipt:receipts)Check(receipt.get(),"shutdown discarded accepted evidence");
  }else if(mode=="targets"){
   ai_service::FrameResult result;
   Check(!HasReviewVisualTarget(result),"empty frame must not consume a cache slot");
@@ -55,13 +84,20 @@ int main(int argc,char** argv){try{
   result.model_extra["analytics"]["tracks"][0]["observation"]="detected";
   Check(HasReviewVisualTarget(result),"real eligible track needs evidence");
  }else if(mode=="ttl"){
-  cache.Offer(Metadata(1),[]{return cv::Mat(32,32,CV_8UC4);});WaitWritten(root,1);
+  cache.OfferAsync(Metadata(1),[]{return cv::Mat(32,32,CV_8UC4);});WaitWritten(root,1);
   size_t found=0;std::filesystem::path jpg;
-  for(const auto& e:std::filesystem::directory_iterator("/dev/shm/ainvr-review-frames"))if(e.path().extension()==".jpg"){jpg=e.path();++found;}
+  for(const auto& e:std::filesystem::directory_iterator(root/"raw"))if(e.path().extension()==".jpg"){jpg=e.path();++found;}
   Check(found==1,"expected one isolated JPEG");
   std::filesystem::last_write_time(jpg,std::filesystem::file_time_type::clock::now()-std::chrono::seconds(20));
   std::this_thread::sleep_for(std::chrono::milliseconds(1300));
-  Check(std::filesystem::exists(jpg),"20 second old frame must survive the new 30 second grace");
+  Check(std::filesystem::exists(jpg),"unacknowledged frame must survive");
+  auto ack=jpg;ack.replace_extension(".ack");std::ofstream(ack)<<"{}";
+  std::filesystem::last_write_time(ack,std::filesystem::file_time_type::clock::now()-std::chrono::seconds(60));
+  auto pin=jpg;pin.replace_extension(".test.pin");std::ofstream(pin)<<"{}";
+  std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+  Check(std::filesystem::exists(jpg),"pinned acknowledged frame was evicted");
+  std::filesystem::remove(pin);std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+  Check(!std::filesystem::exists(jpg),"expired acknowledged frame was never reclaimed");
  }else throw std::runtime_error("unknown scenario");
  std::cout<<mode<<" software cache check passed\n";
  }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
