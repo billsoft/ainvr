@@ -91,5 +91,29 @@ int main() {
   analytics::CopyTrackIdentities(candidates,visible);
   assert(visible.size()==1 && visible[0].track_id==s1.detections[0].track_id);
   assert(visible[0].confidence==s1.detections[0].confidence);
+  // Throughput health is not a reason to replace physical target identities.
+  analytics::FrameAnalytics low_rate(c,true);
+  std::string identity,session;double time=0;
+  for(int i=0;i<120;++i){
+    time+=i%4==0?.7:i%4==1?.3:.5;
+    auto f=Frame(int64_t(time*1e9),400);
+    low_rate.Apply(f,1,1,time+(i%2)*.04);
+    const auto& a=f.model_extra["analytics"];
+    assert(a["status"]=="active" && !a["continuity_gap"].get<bool>());
+    if(i==0){identity=f.detections[0].track_id;session=a["stream_session_id"];}
+    assert(f.detections[0].track_id==identity && a["stream_session_id"]==session);
+  }
+  // Sustained under-target rate stays visibly unhealthy but does not manufacture arrivals.
+  for(int i=0;i<20;++i){time+=.75;auto f=Frame(int64_t(time*1e9),400);low_rate.Apply(f,1,1,time);
+    assert(f.detections[0].track_id==identity);
+    if(i>15)assert(!f.model_extra["analytics"]["cadence"]["meets_target"].get<bool>());
+  }
+  // A real source gap invalidates crossing evidence, while bounded IDs survive.
+  time+=1.2;auto gap=Frame(int64_t(time*1e9),600);low_rate.Apply(gap,1,1,time);
+  assert(gap.detections[0].track_id==identity);
+  assert(gap.model_extra["analytics"]["continuity_gap"].get<bool>());
+  assert(gap.model_extra["analytics"]["events"].empty());
+  auto epoch=Frame(int64_t((time+.5)*1e9),600);low_rate.Apply(epoch,2,1,time+.5);
+  assert(epoch.detections[0].track_id!=identity);
   std::cout<<"analytics frame/API/SEI integration: PASS\n";
 }

@@ -71,7 +71,7 @@ export function buildSearchSourceCatalog(channels: Channel[], raw: unknown): Sea
       const resolved = resolvePtzSource(output.id, channels, ai);
       if (resolved.root.id === output.id || !z.string().uuid().safeParse(resolved.root.id).success) continue;
       const tracking = processor.config.analytics?.enabled === true && processor.config.model?.adapter !== 'locateanything_bpu' &&
-        (processor.config.inference_fps === 0 || (processor.config.inference_fps ?? 0) >= 3);
+        (processor.config.inference_fps === 0 || (processor.config.inference_fps ?? 0) >= 2);
       // Same default as the AI config. This describes processing geometry,
       // not a physical camera/lens calibration or a semantic quality claim.
       const supported = (processor.config.snapshot?.projection_mode ?? 'none') === 'none';

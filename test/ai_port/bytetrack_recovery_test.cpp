@@ -105,8 +105,8 @@ int main() {
     now+=.1;const auto m=t.Process(now,{box(x+40,500,200,400,.9f,"car")});
     assert(id_of(m,0)!=id);
   }
-  // 9. Frame-rate independent:the same 0.6 s loss is bridged at 5, 10 and 15 fps.
-  for(double fps:{5.0,10.0,15.0}) {
+  // 9. Frame-rate independent:the same 0.6 s loss is bridged at 2, 3, 5, 10 and 15 fps.
+  for(double fps:{2.0,3.0,5.0,10.0,15.0}) {
     ByteTrackAdapter t(2,int(fps));double now=0;float x=100;
     const int id=walk(t,now,x,180,1.2,fps);
     for(int k=0;k<int(.6*fps+.5);++k){now+=1/fps;x+=180/fps;t.Process(now,{});}

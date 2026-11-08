@@ -49,6 +49,8 @@ class Tracker {
     session_=std::move(session);tracks_.clear();states_.clear();filters_.clear();
     last_pts_=-1;next_id_=1;next_event_=1;
   }
+  // Discontinuity invalidates geometric evidence, not a retained target identity.
+  void BreakEvidence(){states_.clear();}
   Update Process(double pts,const std::vector<Observation>& observations) {
     if(session_.empty()) throw std::logic_error("Reset tracking session before processing");
     if(!std::isfinite(pts)||pts<0) throw std::invalid_argument("Invalid source PTS");

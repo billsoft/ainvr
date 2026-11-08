@@ -46,8 +46,8 @@ struct DemuxStats {
 };
 struct SourceStats {
   uint64_t decoded=0,superseded=0,delivered=0,pre_keyframe_discarded=0;
-  uint64_t pending_tokens=0,copy_skipped=0;
-  double decoded_fps=0;
+  uint64_t pending_tokens=0,copy_skipped=0,non_reference_skipped=0;
+  double decoded_fps=0,received_fps=0;
   bool eof=false;
   std::optional<std::string> error;
 };
@@ -97,7 +97,8 @@ class StreamSource {
   std::atomic<bool> stop_{true},running_{false};
   std::atomic<int64_t> generation_{0},au_seen_{0};
   std::atomic<int> codec_{static_cast<int>(VideoCodec::kH264)};
-  bool init_ready_=false;
+  bool init_ready_=false,reference_decode_=false;
+  std::chrono::steady_clock::time_point last_received_{};
   std::exception_ptr init_error_;
   std::shared_ptr<ainvr::MediaSource> media_;
   std::shared_ptr<ainvr::CompressedTap> tap_;

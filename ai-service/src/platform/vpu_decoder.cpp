@@ -28,6 +28,7 @@ struct VpuDecoder::State {
   AVCodecParserContext* parser=nullptr;
   AVCodecContext* parser_context=nullptr;
   PictureTokens pending;
+  PreparedPicture prepared;
   Codec codec=Codec::H264;
   JpegOutputLayout jpeg_layout=JpegOutputLayout::StrictVisible;
   bool initialized=false,started=false,finished=false,failed=false;int max_width=0,max_height=0;
@@ -41,20 +42,28 @@ struct VpuDecoder::State {
     if(timeout<0)throw std::invalid_argument("Negative codec timeout");
     if(finished)throw std::runtime_error("Decoder already received end of stream");
     const auto queued_bytes=DecoderQueuedPacketBytes(codec,bytes.size(),context.video_dec_params.bitstream_buf_size,eos);
+    if(eos&&prepared.Pending())throw std::runtime_error("Unsubmitted picture before end of stream");
+    std::optional<int> poc;
+    if(parser&&!eos){
+      poc=prepared.Prepare(bytes,pts,AV_INPUT_BUFFER_PADDING_SIZE,[&](uint8_t* padded,size_t size){
+        uint8_t* parsed=nullptr;int parsed_size=0;
+        int consumed=av_parser_parse2(parser,parser_context,&parsed,&parsed_size,padded,size,AV_NOPTS_VALUE,AV_NOPTS_VALUE,0);
+        if(consumed!=int(size)||parsed_size!=int(size))throw std::runtime_error("Incomplete picture parser output");
+        return parser->output_picture_number;
+      });
+      // A legal GOP reset can arrive while the old same-POC display is queued.
+      // Let the caller drain it first. The caller's existing deadline still
+      // fails closed if that older display was actually lost; never overwrite it.
+      if(pending.Contains(*poc))return false;
+    }
     media_codec_buffer_t in{};int rc=hb_mm_mc_dequeue_input_buffer(&context,&in,timeout);
     if(rc==HB_MEDIA_ERR_WAIT_TIMEOUT)return false;
     Check(rc,"dequeue compressed buffer");
-    if(parser&&!eos){
-      auto padded=bytes;padded.resize(bytes.size()+AV_INPUT_BUFFER_PADDING_SIZE);
-      uint8_t* parsed=nullptr;int parsed_size=0;
-      int consumed=av_parser_parse2(parser,parser_context,&parsed,&parsed_size,padded.data(),bytes.size(),AV_NOPTS_VALUE,AV_NOPTS_VALUE,0);
-      if(consumed!=int(bytes.size())||parsed_size!=int(bytes.size()))throw std::runtime_error("Incomplete picture parser output");
-      pending.Push(parser->output_picture_number,pts);
-    }
+    if(poc)pending.Push(*poc,pts);
     in.type=MC_VIDEO_STREAM_BUFFER;in.vstream_buf.size=queued_bytes;in.vstream_buf.pts=pts;in.vstream_buf.stream_end=eos;
     if(!bytes.empty())std::memcpy(in.vstream_buf.vir_ptr,bytes.data(),bytes.size());
     if(queued_bytes>bytes.size())std::memset(in.vstream_buf.vir_ptr+bytes.size(),0,queued_bytes-bytes.size());
-    Check(hb_mm_mc_queue_input_buffer(&context,&in,timeout),"submit compressed buffer");finished=eos;return true;
+    Check(hb_mm_mc_queue_input_buffer(&context,&in,timeout),"submit compressed buffer");prepared.Commit();finished=eos;return true;
   }
 };
 VpuDecoder::VpuDecoder(Codec codec,int width,int height,JpegOutputLayout jpeg_layout):state_(std::make_unique<State>()){

@@ -89,3 +89,12 @@ test('consumed deletion ACKs sync once per bounded batch; failure remains visibl
 
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('source discontinuity survives journal conversion without changing target identity',()=>{
+ const original=observationEnvelope(sample,[rule]).envelope.frame;
+ const resumed=observationEnvelope({...sample,gap:true},[rule]).envelope.frame;
+ assert.equal(resumed.gap,true);
+ assert.equal(resumed.stream_session_id,original.stream_session_id);
+ assert.deepEqual(resumed.tracks,original.tracks);
+ assert.throws(()=>observationEnvelope({...sample,gap:'true'},[rule]),/Invalid observation gap/);
+});

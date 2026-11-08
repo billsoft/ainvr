@@ -96,6 +96,7 @@ class ObservationJournal {
       {"timestamp",result.timestamp},{"width",result.frame_width},{"height",result.frame_height},
       {"model",{{"id",result.model_name},{"label_catalog",result.model_extra.at("label_catalog")}}},
       {"tracks",analytics.at("tracks")}};
+    if(analytics.value("continuity_gap",false))value["gap"]=true;
     if(result.model_extra.contains("evidence_delivery"))value["evidence_delivery"]=result.model_extra.at("evidence_delivery");
     // Reserve the longest delivery state before byte admission. Pending is
     // internal only; it is NEVER written into the consumer protocol.

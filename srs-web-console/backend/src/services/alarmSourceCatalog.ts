@@ -40,7 +40,7 @@ export function buildAlarmSourceCatalog(rawChannel:unknown,rawFrame:unknown,inpu
   target_model:{name:m.name,adapter:m.adapter,mode:prompted?'open':'fixed'},
   label_map_version:version,label_ids:labels.map(l=>l.label_id),labels,
   geometry_revision:`source-frame-v2:${input.id}:${input.inputGeneration||new Date(input.createdAt).toISOString()}:${f.frame_width}x${f.frame_height}`,
-  tracking_available:c.config.analytics?.enabled===true&&m.adapter!=='locateanything_bpu'&&(c.config.inference_fps===0||c.config.inference_fps>=3)&&f.model_extra.analytics?.status==='active',
+  tracking_available:c.config.analytics?.enabled===true&&m.adapter!=='locateanything_bpu'&&(c.config.inference_fps===0||c.config.inference_fps>=2)&&f.model_extra.analytics?.status==='active',
   detection_available:['active','detection_only'].includes(f.model_extra.analytics?.status??''),
   width:f.frame_width,height:f.frame_height,observed_at:new Date(f.timestamp*1000).toISOString(),stream_fingerprint:createHash('sha256').update(c.config.stream.url).digest('hex')};
 }

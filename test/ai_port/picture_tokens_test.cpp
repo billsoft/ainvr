@@ -21,3 +21,22 @@ TEST(PictureTokens, RetentionIsBounded){
   ainvr::PictureTokens p;for(int i=0;i<128;++i)p.Push(i,i+1);
   EXPECT_THROW(p.Push(128,129),std::runtime_error);EXPECT_EQ(p.Take(0),1u);p.Push(128,129);
 }
+
+TEST(PictureTokens, BackpressureDrainsOldGopBeforeReusingPoc){
+  ainvr::PictureTokens tokens;ainvr::PreparedPicture prepared;
+  tokens.Push(0,100);int parses=0;std::vector<uint8_t> packet{1,2,3};
+  auto parse=[&](uint8_t* bytes,size_t size){++parses;EXPECT_EQ(size,3u);EXPECT_EQ(bytes[3],0);return 0;};
+  const auto poc=prepared.Prepare(packet,200,64,parse);
+  EXPECT_TRUE(tokens.Contains(poc));
+  EXPECT_EQ(prepared.Prepare(packet,200,64,parse),poc);EXPECT_EQ(parses,1);
+  EXPECT_EQ(tokens.Take(0),100u);EXPECT_FALSE(tokens.Contains(poc));
+  tokens.Push(poc,200);prepared.Commit();EXPECT_FALSE(prepared.Pending());
+  EXPECT_EQ(tokens.Take(0),200u);
+  prepared.Prepare(packet,300,64,parse);EXPECT_EQ(parses,2);
+}
+TEST(PictureTokens, PendingAdmissionCannotChangePacketOrTimestamp){
+  ainvr::PreparedPicture prepared;std::vector<uint8_t> packet{1,2,3};
+  auto parse=[](uint8_t*,size_t){return 2;};prepared.Prepare(packet,1,64,parse);
+  EXPECT_THROW(prepared.Prepare(packet,2,64,parse),std::runtime_error);
+  packet[1]=9;EXPECT_THROW(prepared.Prepare(packet,1,64,parse),std::runtime_error);
+}

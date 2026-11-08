@@ -150,7 +150,7 @@ it('static sources include only unique AI outputs, retain offline mappings and g
     { id: output, name: 'AI', streamName: 'ai', app: 'live' },
   ] as never;
   const processor = { id: 'processor-1', config: { stream: { url: 'rtmp://127.0.0.1:1935/live/raw' },
-    inference_fps: 10, analytics: { enabled: true }, publish: { enabled: true, target_url: 'rtmp://127.0.0.1/live/ai' } } };
+    inference_fps: 2, analytics: { enabled: true }, publish: { enabled: true, target_url: 'rtmp://127.0.0.1/live/ai' } } };
   const active = buildSearchSourceCatalog(channels, [processor]);
   expect(active.channels).toEqual([{ id: output, name: 'AI', sampling_supported: true, sampling_reason: null }]);
   expect(active.sources[0]).toMatchObject({ channel_id: output, input_stream_id: input, recording_channel_id: output,

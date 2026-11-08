@@ -11,7 +11,7 @@ if(AINVR_S100P)
   target_link_libraries(ainvr_stream_source_sei_probe PRIVATE ainvr_stream_source)
   set_target_properties(ainvr_stream_source_sei_probe PROPERTIES BUILD_RPATH /usr/hobot/lib)
   if(BUILD_TESTING)
-    foreach(cadence_test frame_copy_cadence tracking_cadence bpu_schedule)
+    foreach(cadence_test frame_copy_cadence tracking_cadence bpu_schedule reference_decode source_rate)
       add_executable(${cadence_test}_test ../test/ai_port/${cadence_test}_test.cpp)
       # These small standalone tests use assertions, including in Release builds.
       target_compile_options(${cadence_test}_test PRIVATE -UNDEBUG)

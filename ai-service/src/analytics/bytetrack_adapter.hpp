@@ -1,6 +1,7 @@
 // AINVR adapter around pinned ByteTrack; source coordinates are pixels.
 #pragma once
 #include "../../third_party/bytetrack_service/include/BYTETracker.h"
+#include "assignment.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -130,20 +131,36 @@ class ByteTrackAdapter {
     for(size_t i:fresh) candidates.push_back({i,result[i].observation});
     for(size_t o=0;o<boxes.size();++o)
       if(!matched.count(o) && boxes[o].score>=0.1f) candidates.push_back({kNone,o});
-    std::vector<std::tuple<float,size_t,int>> pairs;
+    std::vector<int> available;
+    for(const auto& [id,state]:identities_)if(!used.count(id)&&state.pts<pts)available.push_back(id);
+    std::vector<std::vector<double>> costs(candidates.size(),std::vector<double>(available.size(),4.0));
     for(size_t c=0;c<candidates.size();++c) {
       const auto& box=boxes[candidates[c].observation];
-      for(const auto& [id,s]:identities_) {
-        if(used.count(id) || s.label!=box.label || s.pts>=pts) continue;
-        const float cost=Fit(s,box.box,pts);
-        if(cost>=0) pairs.emplace_back(cost,c,id);
+      for(size_t j=0;j<available.size();++j) {
+        const auto& state=identities_.at(available[j]);
+        if(state.label!=box.label)continue;
+        const float cost=Fit(state,box.box,pts);
+        if(cost>=0)costs[c][j]=cost;
       }
     }
-    std::sort(pairs.begin(),pairs.end());
+    std::vector<int> assignment(candidates.size(),-1);
+    // Bound cubic recovery work. Crowded inputs retain the previous greedy
+    // recovery behavior rather than blocking every channel on this CPU task.
+    if(candidates.size()<=128 && available.size()<=128)assignment=Assign(costs,4.0);
+    else {
+      std::vector<std::tuple<double,size_t,size_t>> pairs;
+      for(size_t c=0;c<costs.size();++c)for(size_t j=0;j<available.size();++j)
+        if(costs[c][j]<4.0)pairs.emplace_back(costs[c][j],c,j);
+      std::sort(pairs.begin(),pairs.end());std::set<size_t> assigned;
+      for(const auto& [cost,c,j]:pairs)if(assignment[c]<0&&!assigned.count(j)) {
+        assignment[c]=int(j);assigned.insert(j);
+      }
+    }
     std::vector<char> taken(candidates.size(),0);
     std::vector<ByteTrackMatch> continued;
-    for(const auto& [cost,c,id]:pairs) {
-      if(taken[c] || used.count(id)) continue;
+    for(size_t c=0;c<candidates.size();++c) {
+      if(assignment[c]<0)continue;
+      const int id=available[assignment[c]];
       taken[c]=1;used.insert(id);
       const auto& candidate=candidates[c];
       if(candidate.result!=kNone) {alias_[result[candidate.result].track_id]=id;result[candidate.result].track_id=id;}

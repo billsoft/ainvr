@@ -47,6 +47,8 @@ struct Service {
   std::string state="unloaded",last_error;
   bool desired=false,stop=false,previous_search=false,search_parsing=false,search_supported=false,reload_requested=false;
   uint64_t ok=0,failed=0;
+  std::atomic<double> last_task_wait_ms{0},max_task_wait_ms{0};
+  std::atomic<uint64_t> tasks_observed{0};
   Json callers=Json::object();
   std::deque<double> latencies;
   std::string package_hash,package_id;
@@ -169,7 +171,7 @@ struct Service {
             {"preparation_profiles",Json::array({"target-crop-v1","target-focus-v2"})},
             {"review_tasks",Json::array({"target-review-abc-v1","target-review-abc-v2-rule","spatial-review-abc-v1"})},
             {"latency_ms",{{"p50",percentile(.5)},{"p95",percentile(.95)},{"samples",times.size()},{"window","last_256_completed"}}},
-            {"submit_time_share",{{"window_s",10},{"cap_percent",config.value("submit_time_share_cap_percent",90)}}},
+            {"submit_time_share",{{"window_s",10},{"cap_percent",config.value("submit_time_share_cap_percent",90)},{"pacing","after_each_completed_task"},{"last_task_wait_ms",last_task_wait_ms.load()},{"max_task_wait_ms",max_task_wait_ms.load()},{"tasks_observed",tasks_observed.load()}}},
             {"ready",desired&&state=="ready"},{"model",state},{"config_version",configuration.committed()},{"package_id",ActiveIdLocked()},
             {"tasks",{{"search-verify-zh-v1",{{"enabled",ainvr::llm::kSearchVerificationEnabled},
               {"template_sha256",ainvr::llm::SearchTemplateHash()},{"preprocessing_version",ainvr::llm::kSearchPreprocessing},{"validated",false}}}}},
@@ -182,7 +184,12 @@ struct Service {
     std::unique_ptr<ainvr::llm::Engine> engine;
     std::unique_ptr<ainvr::QwenReviewImagePipeline> image;
     std::deque<std::pair<Clock::time_point,double>> submissions;
-    ainvr::llm::task_time_observer=[&](double seconds){submissions.emplace_back(Clock::now(),seconds);};
+    ainvr::llm::task_time_observer=[&](double seconds){
+      submissions.emplace_back(Clock::now(),seconds);
+      const double ms=seconds*1000;last_task_wait_ms.store(ms);++tasks_observed;
+      double previous=max_task_wait_ms.load();
+      while(previous<ms&&!max_task_wait_ms.compare_exchange_weak(previous,ms)){}
+    };
     while(true) {
       std::shared_ptr<Job> job;
       Json settings;
@@ -255,7 +262,7 @@ struct Service {
             while(true){
               if(job->canceled)throw std::runtime_error("canceled");
               if(Clock::now()-start>std::chrono::seconds(job->execution_timeout))throw std::runtime_error("execution_timeout");
-              if(ainvr::llm::SubmissionAllowed(submissions,Clock::now(),settings.value("submit_time_share_cap_percent",90)))break;
+              if(ainvr::llm::PacedSubmissionAllowed(submissions,Clock::now(),settings.value("submit_time_share_cap_percent",90)))break;
               std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
           });

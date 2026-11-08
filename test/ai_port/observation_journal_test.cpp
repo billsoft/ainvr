@@ -34,5 +34,14 @@ int main(int argc,char** argv){
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));
   journal.Stage(sample(2));assert(journal.Flush());assert(journal.Status().at("next_offset")=="2");
  }
+ {
+  ObservationJournal journal(root+"-gap","processor");auto f=sample(1);
+  f.model_extra["analytics"]["continuity_gap"]=true;journal.Stage(f);assert(journal.Flush());
+  auto file=std::filesystem::path(root+"-gap")/ObservationJournal::Hash("processor")/"00000000000000000000.json";
+  std::ifstream input(file);nlohmann::json record;input>>record;
+  assert(record.at("gap")==true);
+  assert(record.at("stream_session_id")=="native-session");
+  assert(record.at("tracks").at(0).at("track_id")=="t");
+ }
  std::cout<<"Native ordered observation journal PASS\n";
 }

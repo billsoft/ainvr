@@ -32,6 +32,7 @@ export function observationEnvelope(sample,rules){
   const binding=eligible[0];
   if(!Array.isArray(sample.tracks))throw Error('Invalid tracks');
   if(sample.observation_mode!==undefined&&!['tracks','detections'].includes(sample.observation_mode))throw Error('Invalid observation mode');
+  if(sample.gap!==undefined&&typeof sample.gap!=='boolean')throw Error('Invalid observation gap');
   const detectionOnly=sample.observation_mode==='detections';
   if(detectionOnly&&(!Array.isArray(sample.detections)||sample.detections.length>4096||sample.tracks.length))throw Error('Invalid detections');
   // These IDs identify a real observation in ONE frame, never a tracked person.
@@ -46,6 +47,7 @@ export function observationEnvelope(sample,rules){
     captured_at:new Date(sample.timestamp*1000).toISOString(),
     source:{width:sample.width,height:sample.height,coordinate_space:'source_pixels',geometry_revision:binding.geometry_revision},
     model:{id:sample.model.id,label_map_version:labelVersion},observation_mode:detectionOnly?'detections':'tracks',tracks,
+    ...(sample.gap===true?{gap:true}:{}),
     ...(sample.evidence_delivery?{evidence_delivery:sample.evidence_delivery}:{})});
   if(frame.tracks.some(t=>!labels.some(l=>l.label_id===t.label_id)))throw Error('Unknown track label');
   return {envelope:{schema_version:'1.0',producer_id:sample.producer_id,offset:sample.offset,frame}};

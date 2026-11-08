@@ -1,6 +1,10 @@
 // Copyright AINVR. Replace only source hardware; original channel/publisher owns policy.
 #include "source.hpp"
 #include "frame_copy_cadence.hpp"
+#include "source_rate.hpp"
+#include "reference_decode.hpp"
+#include <cstdlib>
+#include <string_view>
 #include <chrono>
 #include <map>
 #include <stdexcept>
@@ -25,6 +29,7 @@ StreamSource::StreamSource(std::string url,std::string channel_id,bool publish,
   if(url_.empty()||channel_id_.empty()||timeout<100||timeout>60000||
      max_bytes<1024||max_bytes>256*1024*1024)
     throw std::invalid_argument("Invalid S100P source options");
+  reference_decode_=ReferenceDecodeEnabled(std::getenv("AINVR_AI_REFERENCE_DECODE"));
 }
 StreamSource::~StreamSource(){Stop();}
 void StreamSource::Start(){
@@ -33,7 +38,7 @@ void StreamSource::Start(){
   if(pump_.joinable())StopLocked();
   {
     std::lock_guard lock(mutex_);
-    stats_={};demux_={};size_.reset();latest_.reset();
+    stats_={};last_received_={};demux_={};size_.reset();latest_.reset();
     init_ready_=false;init_error_=nullptr;
     shedder_=std::make_shared<GopAwareShedder>();
   }
@@ -100,7 +105,10 @@ DemuxStats StreamSource::GetDemuxStats()const{
   std::lock_guard lock(mutex_);return demux_;
 }
 SourceStats StreamSource::GetStats()const{
-  std::lock_guard lock(mutex_);return stats_;
+  std::lock_guard lock(mutex_);auto result=stats_;
+  const double age=std::chrono::duration<double>(std::chrono::steady_clock::now()-last_received_).count();
+  result.received_fps=FreshSourceRate(result.received_fps,age,running_&&last_received_!=std::chrono::steady_clock::time_point{});
+  return result;
 }
 void StreamSource::ReportError(const std::string& error)noexcept{
   {std::lock_guard lock(mutex_);stats_.error=error;}
@@ -138,9 +146,12 @@ void StreamSource::Pump(){
     PtsRebaser clock;
     uint64_t token=0;int64_t frame_index=0;
     bool started=false,eof=false,submitted=false;
-    FrameCopyCadence copy_cadence;
+    FrameCopyCadence copy_cadence;ReferenceDecodeCadence decode_cadence;
+    const bool reference_decode=reference_decode_;
+
     auto rate_start=std::chrono::steady_clock::now();
-    uint64_t rate_frames=0;
+    uint64_t rate_frames=0,received_frames=0;
+    auto received_start=rate_start;
     auto receive=[&](int timeout){
       // The SDK render component does not exist before its first submitted AU.
       // Do not interpret a pre-submission query as a hardware decode failure.
@@ -183,7 +194,15 @@ void StreamSource::Pump(){
       auto [dts,pts]=clock.Map(packet->dts_ns,packet->pts_ns);
       if(dts<0||pts<0)throw std::runtime_error("Negative mapped source timestamp");
       ainvr::EncodedStamp stamp{pts,dts};
-      ++au_seen_;
+      ++au_seen_;++received_frames;
+      const auto received_now=std::chrono::steady_clock::now();
+      {std::lock_guard lock(mutex_);last_received_=received_now;}
+      const double received_seconds=std::chrono::duration<double>(received_now-received_start).count();
+      if(received_seconds>=2.0){
+        std::lock_guard lock(mutex_);
+        stats_.received_fps=received_frames/received_seconds;
+        received_frames=0;received_start=received_now;
+      }
       if(tap){
         auto q=tap->QueueState(packet->bytes.size());
         // Preserve the original GOP policy. Keyframes wait for bounded space;
@@ -195,16 +214,26 @@ void StreamSource::Pump(){
         }
       }
       if(stop_)break;
+      // Passthrough forwarding above retains every AU. This opt-in affects only
+      // AI decode, and preserves a 2x sampling cadence even with sparse references.
+      if(reference_decode&&info.codec==ainvr::Codec::H264&&packet->dts_ns&&
+         decode_cadence.Drop(dts,copy_rate_resolver_?copy_rate_resolver_():0,
+                             DiscardableH264Picture(packet->bytes))) {
+        std::lock_guard lock(mutex_);++stats_.non_reference_skipped;continue;
+      }
       if(pending.size()>=128)throw std::runtime_error("Too many unmatched source pictures");
       const auto current=token++;
       pending.emplace(current,Stamp{stamp,packet->pts_ns,packet->duration_ns});
       {std::lock_guard lock(mutex_);stats_.pending_tokens=pending.size();}
       auto deadline=Clock::now()+std::chrono::seconds(5);
       while(!stop_&&!decoder.Submit(packet->bytes,current,50)){
-        receive(0);
+        if(!receive(0))std::this_thread::sleep_for(std::chrono::milliseconds(1));
         if(Clock::now()>deadline)throw std::runtime_error("S100P VPU input stalled");
       }
-      if(!stop_){submitted=true;receive(50);}
+      // Keep the bounded hardware input queue fed; drain ready output without
+      // serializing every input behind one decoded frame. Queue-full retries
+      // above and EOS below still enforce their bounded deadlines.
+      if(!stop_){submitted=true;receive(0);}
     }
     if(eof&&!stop_&&started){
       auto deadline=Clock::now()+std::chrono::seconds(5);

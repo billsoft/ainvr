@@ -13,6 +13,9 @@ inline std::array<std::atomic<uint64_t>,size_t(CadenceReset::Count)>& CadenceRes
   static std::array<std::atomic<uint64_t>,size_t(CadenceReset::Count)> counters;return counters;
 }
 inline void CountCadenceReset(CadenceReset r) noexcept {CadenceResetCounters()[size_t(r)].fetch_add(1,std::memory_order_relaxed);}
+// Configured floor and measured tolerance are distinct; gaps still fail closed.
+inline constexpr double kMinTrackingFps = 2.0;
+inline constexpr double kMeasuredTrackingFloor = 1.95;
 class TrackingCadence {
  public:
   bool Observe(double source, double wall) {
@@ -29,8 +32,8 @@ class TrackingCadence {
         intervals_.push_back({ds,dw});source_seconds_+=ds;wall_seconds_+=dw;
         seconds_=std::max(source_seconds_,wall_seconds_);
         // Qualify after two seconds; once active, use five seconds to avoid
-        // resetting track identities on brief scheduler jitter near 3 FPS.
-        // The rate floor and immediate >1 second gap reset remain unchanged.
+        // resetting track identities on brief scheduler jitter near 2 FPS.
+        // A gap above one second still invalidates immediately.
         while(intervals_.size()>1 && std::max(source_seconds_-intervals_.front()[0],wall_seconds_-intervals_.front()[1])>=(ready_?5.0:2.0)) {
           source_seconds_-=intervals_.front()[0];wall_seconds_-=intervals_.front()[1];intervals_.pop_front();
           seconds_=std::max(source_seconds_,wall_seconds_);
@@ -38,8 +41,8 @@ class TrackingCadence {
         // Defensive bound for malformed/high-frequency timestamps: fail closed.
         if(intervals_.size()>4096) {CountCadenceReset(CadenceReset::TooManyIntervals);Reset();}
         else {
-          const bool adequate=intervals_.size()>=6 && seconds_>=2.0-1e-9 &&
-                              intervals_.size()/seconds_>=2.95;
+          const bool adequate=intervals_.size()>=4 && seconds_>=2.0-1e-9 &&
+                              intervals_.size()/seconds_>=kMeasuredTrackingFloor;
           if(adequate){bad_seconds_=0;ready_=true;}
           else if(ready_){bad_seconds_+=dt;if(bad_seconds_>=1.0-1e-9){ready_=false;CountCadenceReset(CadenceReset::ReadyLost);}}
         }
@@ -48,6 +51,7 @@ class TrackingCadence {
     last_source_=source;last_wall_=wall;
     return ready_;
   }
+  double MeasuredFps() const {return seconds_>0?intervals_.size()/seconds_:0;}
   void Reset(){intervals_.clear();source_seconds_=wall_seconds_=seconds_=bad_seconds_=0;last_source_=last_wall_=-1;ready_=false;}
  private:
   bool ready_=false;

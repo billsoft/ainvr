@@ -460,7 +460,9 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
   if(auto latest=result_buffer_.Latest();latest&&latest->model_extra.contains("analytics")) {
     const auto& a=latest->model_extra.at("analytics");
     stats["tracking_capability"]={{"status",a.value("status",std::string("unavailable"))},
-      {"reason",a.value("reason",std::string())}};
+      {"reason",a.value("reason",std::string())},
+      {"cadence",a.value("cadence",nlohmann::json::object())},
+      {"continuity_gap",a.value("continuity_gap",false)}};
   }
   if(auto outbox=std::atomic_load(&event_outbox_)) {
     stats["analytics_storage"]={{"pending",outbox->Pending()},
@@ -472,9 +474,9 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
     const auto delivery=stream->GetStats();
     // Capture cadence is intentionally sampled; report full decoder throughput separately.
     stats["delivered_fps"]=stats["source_fps"];
-    stats["source_fps"]=state==ChannelState::kRunning ? std::round(delivery.decoded_fps*100.0)/100.0 : 0.0;
+    stats["source_fps"]=state==ChannelState::kRunning ? std::round(delivery.received_fps*100.0)/100.0 : 0.0;
     stats["decoded_delivery"]={{"decoded",delivery.decoded},{"copy_skipped",delivery.copy_skipped},
-      {"copied",delivery.decoded-delivery.copy_skipped},{"delivered",delivery.delivered}};
+      {"non_reference_skipped",delivery.non_reference_skipped},{"copied",delivery.decoded-delivery.copy_skipped},{"delivered",delivery.delivered}};
     auto demux = stream->GetDemuxStats();
     if (demux.available) {
       stats["source_flv_format"] = demux.format;
@@ -750,7 +752,7 @@ bool ReusedChannelWorker::ReconnectStream() {
                                                                  cfg->publish.enabled);
       stream_instance_id_.fetch_add(1);
       // Oversample AI demand 2x so independent inference deadlines have a fresh
-      // frame. Compressed output and VPU decoding retain every source picture.
+      // frame. Compressed output retains every source picture; AI decode may opt into non-reference sampling.
       new_stream->SetCopyRateResolver([this]{const double fps=LoadCfg()->inference_fps;return fps>0?2*fps:0;});
       new_stream->SetErrorCallback([this](const std::string& msg) { OnStreamError(msg); });
       new_stream->SetCodecResolver(MakeCodecResolver(cfg, channel_id_));
@@ -1156,7 +1158,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   if (!analytics_) {
     auto policy=analytics::PhaseEffective(cfg->analytics);
     policy.enabled=policy.enabled && cfg->model.adapter!="locateanything_bpu" &&
-      (cfg->inference_fps==0 || cfg->inference_fps>=3);
+      (cfg->inference_fps==0 || cfg->inference_fps>=analytics::kMinTrackingFps);
     analytics_=std::make_unique<analytics::FrameAnalytics>(policy,true);
   }
   if(cfg->analytics.enabled) {
@@ -1409,7 +1411,7 @@ void ReusedChannelWorker::InitComponents() {
       std::make_shared<stream::StreamSource>(cfg->stream.url, channel_id_, need_es_branch);
   stream_instance_id_.fetch_add(1);
   // Oversample AI demand 2x so independent inference deadlines have a fresh
-  // frame. Compressed output and VPU decoding retain every source picture.
+  // frame. Compressed output retains every source picture; AI decode may opt into non-reference sampling.
   new_stream->SetCopyRateResolver([this]{const double fps=LoadCfg()->inference_fps;return fps>0?2*fps:0;});
   new_stream->SetErrorCallback([this](const std::string& msg) { OnStreamError(msg); });
   new_stream->SetCodecResolver(MakeCodecResolver(cfg, channel_id_));

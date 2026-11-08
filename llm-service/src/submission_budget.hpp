@@ -29,4 +29,21 @@ inline bool SubmissionAllowed(SubmissionHistory& history,
   }
   return std::isfinite(used) && used < cap_percent * .1;
 }
+// Spread the allowance across completed tasks instead of spending the entire
+// ten-second budget in a burst. Accounted time includes SDK queue waiting;
+// this is conservative pacing, not a claim of measured BPU occupancy.
+inline bool PacedSubmissionAllowed(SubmissionHistory& history,
+                                  SubmissionClock::time_point now,
+                                  double cap_percent) {
+  if(!std::isfinite(cap_percent)||cap_percent<5||cap_percent>90||
+     std::floor(cap_percent)!=cap_percent)return false;
+  if(!history.empty()) {
+    const auto& last=history.back();
+    if(last.first>now||!std::isfinite(last.second)||last.second<0)return false;
+    const double quiet=last.second*(100.0/cap_percent-1.0);
+    // Do not prune the last completion while a long cooldown is still pending.
+    if(!std::isfinite(quiet)||std::chrono::duration<double>(now-last.first).count()+1e-9<quiet)return false;
+  }
+  return SubmissionAllowed(history,now,cap_percent);
+}
 }  // namespace ainvr::llm

@@ -107,6 +107,13 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, sourceAvai
         </div>
       </div>
 
+      {receiving&&stats.tracking_capability?.status==='active'&&
+        (stats.tracking_capability.continuity_gap||stats.tracking_capability.cadence?.meets_target===false)&&
+        <p className="mt-3 rounded-base bg-amber-50 p-3 text-sm text-amber-900" role="status">
+          {stats.tracking_capability.continuity_gap
+            ?'检测画面出现间断：保留可关联目标，不补算缺少证据的穿越。'
+            :'跟踪持续运行；实际检测节奏低于目标，轨迹和计数质量可能下降。'}
+        </p>}
       {receiving&&stats.tracking_capability?.status==='detection_only'&&<p className="mt-3 rounded-base bg-amber-50 p-3 text-sm text-amber-900" role="status">
         {stats.tracking_capability.reason==='tracking_disabled'?'仅检测：目标跟踪未启用或当前模型不支持。':'仅检测：正在确认采样速度，或实际采样不足以可靠跟踪。'}
         计数、侵入、穿过及持续停留暂停；已有配置和历史保留。无持续时间的出现、区内检出和接近带检出仍可用。

@@ -3,6 +3,7 @@
 #include <cassert>
 using namespace ai_service::analytics;
 int main() {
+ for(double dt:{0.1,0.5}) {
   ByteTrackAdapter association;
   Options options;options.confirmation_hits=1;
   options.rules.push_back({"door","line","person",{{0.5,0},{0.5,1}},5});
@@ -16,16 +17,17 @@ int main() {
   };
   auto first=run(0,25);
   assert(first.events.empty());
-  auto next=run(0.1,35);
+  auto next=run(dt,35);
   assert(next.events.size()==1);
   assert(next.events[0].type=="line_crossing");
   assert(next.events[0].track_id==first.observation_tracks[0]);
-  auto stale=rules.ProcessTracked(0.1,{},{});assert(!stale.accepted);
-  auto missing=rules.ProcessTracked(0.2,{},{});
+  auto stale=rules.ProcessTracked(dt,{},{});assert(!stale.accepted);
+  auto missing=rules.ProcessTracked(2*dt,{},{});
   assert(missing.events.empty() && !missing.tracks[0].observed);
   bool rejected=false;
-  try {rules.ProcessTracked(0.3,{{"person",{0,0,0.1,0.1}},{"person",{0,0,0.1,0.1}}},
+  try {rules.ProcessTracked(3*dt,{{"person",{0,0,0.1,0.1}},{"person",{0,0,0.1,0.1}}},
                            {1,1});}
   catch(const std::invalid_argument&) {rejected=true;}
   assert(rejected);
+ }
 }

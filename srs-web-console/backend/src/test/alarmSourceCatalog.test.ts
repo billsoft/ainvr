@@ -36,10 +36,14 @@ it('display-name/remark changes preserve zones; input identity or resolution cha
 });
 
 it('low rate and runtime detection-only cannot offer tracking; zero FPS means follow source',()=>{
- const low={...channel,config:{...channel.config,inference_fps:2}};
+ const low={...channel,config:{...channel.config,inference_fps:1.99}};
  expect(buildAlarmSourceCatalog(low,frame,[input],now)!.tracking_available).toBe(false);
  expect(buildAlarmSourceCatalog({...channel,config:{...channel.config,inference_fps:0}},frame,[input],now)!.tracking_available).toBe(true);
  const slowFrame={...frame,model_extra:{...frame.model_extra,analytics:{status:'detection_only',stream_session_id:'s'}}};
  const source=buildAlarmSourceCatalog(channel,slowFrame,[input],now)!;
  expect(source.tracking_available).toBe(false);expect(source.detection_available).toBe(true);
+});
+
+it('2 FPS with active runtime supports alarm tracking',()=>{
+ expect(buildAlarmSourceCatalog({...channel,config:{...channel.config,inference_fps:2}},frame,[input],now)!.tracking_available).toBe(true);
 });

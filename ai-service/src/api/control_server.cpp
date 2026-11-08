@@ -1,3 +1,4 @@
+#include "../analytics/tracking_cadence.hpp"
 #include "platform/byte_budget.hpp"
 #include "../analytics/event_store.hpp"
 #include "control_server.hpp"
@@ -168,8 +169,8 @@ void ValidatePromptBeforeSave(const json& channel) {
   catch (const config::ConfigValidationError& e) { throw ApiError(422, "invalid_config", e.what()); }
   // Validate writes, not config loading: legacy channels must remain readable.
   if (cfg.analytics.enabled && (cfg.model.adapter == "locateanything_bpu" ||
-      (cfg.inference_fps > 0 && cfg.inference_fps < 3.0)))
-    throw ApiError(422, "tracking_rate_required", "目标跟踪要求至少 3 FPS；低频模型请关闭跟踪后保存。计数及穿过需要轨迹。");
+      (cfg.inference_fps > 0 && cfg.inference_fps < analytics::kMinTrackingFps)))
+    throw ApiError(422, "tracking_rate_required", "目标跟踪要求至少 2 FPS；低频模型请关闭跟踪后保存。计数及穿过需要轨迹。");
   if (cfg.model.adapter == "locateanything_bpu") return ValidateLocateAnythingQuery(cfg.model);
   if (cfg.model.adapter != "yoloe_pt" && cfg.model.adapter != "locateanything_trt") return;
   json result;

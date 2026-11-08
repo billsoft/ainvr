@@ -16,7 +16,8 @@ class FrameAnalytics {
     instance_=std::to_string(std::chrono::system_clock::now().time_since_epoch().count())+
       "-"+std::to_string(random());
   }
-  void Apply(FrameResult& result,int64_t epoch,int64_t generation) {
+  void Apply(FrameResult& result,int64_t epoch,int64_t generation,
+             std::optional<double> wall_seconds=std::nullopt) {
 
     if(result.frame_pts_ns<0 || result.frame_width<=0 || result.frame_height<=0) {
       result.model_extra["analytics"]={{"status","unavailable"},{"reason","missing_source_time_or_dimensions"}};
@@ -29,13 +30,13 @@ class FrameAnalytics {
     }
     const std::string key=std::to_string(epoch)+":"+std::to_string(generation)+":"+
       std::to_string(result.frame_width)+":"+std::to_string(result.frame_height)+":"+algorithm_;
+    // Identity follows the source/configuration, never a throughput indicator.
+    // Low-rate observations still update the tracker with their real source time.
     if(key!=key_) cadence_.Reset();
-    const bool ready=config_.enabled && (!enforce_cadence_ || cadence_.Observe(
-      static_cast<double>(result.frame_pts_ns)/1e9,
-      std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count()));
+    const bool ready=config_.enabled;
     if(key!=key_ || ready!=tracking_ready_) {
       tracking_ready_=ready;key_=key;session_=result.channel_id+":"+instance_+":"+std::to_string(++reset_);
-      tracker_.Reset(session_);byte_tracker_.Reset();last_pts_=-1;observed_pts_.clear();
+      tracker_.Reset(session_);byte_tracker_.Reset();last_pts_=-1;observed_pts_.clear();classes_.clear();
     }
     if(result.frame_pts_ns<=last_pts_) {
       result.model_extra["analytics"]={{"status","stale"},{"algorithm",algorithm_}};
@@ -48,6 +49,15 @@ class FrameAnalytics {
         {"stream_session_id",session_},{"tracks",nlohmann::json::array()},{"events",nlohmann::json::array()}};
       return;
     }
+    const bool cadence_ok=!enforce_cadence_ || cadence_.Observe(
+      static_cast<double>(result.frame_pts_ns)/1e9,
+      wall_seconds.value_or(std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count()));
+    // Keep bounded identities across a brief pause, but never bridge rule evidence
+    // across a missing source interval. Processing latency alone is not motion.
+    const bool continuity_gap=enforce_cadence_ && last_pts_>=0 &&
+      result.frame_pts_ns-last_pts_>1000000000LL;
+    if(continuity_gap)tracker_.BreakEvidence();
     std::vector<ScoredBox> scored_boxes;
     std::vector<Observation> observations;
     std::vector<size_t> indices;
@@ -143,7 +153,11 @@ class FrameAnalytics {
       events.push_back(std::move(event));
     }
     result.model_extra["analytics"]={{"schema_version","1.0"},{"status",update.accepted?"active":"stale"},
-      {"algorithm",algorithm_},{"stream_session_id",session_},{"tracks",tracks},{"events",events}};
+      {"algorithm",algorithm_},{"stream_session_id",session_},{"tracks",tracks},{"events",events},
+      {"continuity_gap",continuity_gap},
+      {"reason",continuity_gap?"source_observation_gap":cadence_ok?"":"insufficient_tracking_cadence"},
+      {"cadence",{{"meets_target",cadence_ok},{"measured_fps",cadence_.MeasuredFps()},
+        {"minimum_configured_fps",kMinTrackingFps}}}};
   }
  private:
   TrackingCadence cadence_;bool enforce_cadence_=false,tracking_ready_=false;

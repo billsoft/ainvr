@@ -47,6 +47,28 @@ int main() {
                 std::numeric_limits<double>::quiet_NaN()}};
     Check(SubmissionAllowed(history, now, 90));
     Check(history.empty());
+    history={{now,.1}};
+    Check(!PacedSubmissionAllowed(history,now,40));
+    Check(!PacedSubmissionAllowed(history,now+std::chrono::milliseconds(149),40));
+    Check(PacedSubmissionAllowed(history,now+std::chrono::milliseconds(150),40));
+    history={{now,1.0}};
+    Check(!PacedSubmissionAllowed(history,now+std::chrono::seconds(10),5));
+    Check(history.size()==1); // cooldown cannot disappear with the accounting window
+    Check(PacedSubmissionAllowed(history,now+std::chrono::seconds(19),5));
+    Check(history.empty());
+    history={{now,-1}};Check(!PacedSubmissionAllowed(history,now,40));
+    history={{now+std::chrono::seconds(1),.1}};Check(!PacedSubmissionAllowed(history,now,40));
+    history={};Check(PacedSubmissionAllowed(history,now,40));
+    Check(!PacedSubmissionAllowed(history,now,0));
+    // Every short task creates a quiet interval; a single request cannot burst
+    // through its whole ten-second allowance before yielding to detections.
+    auto clock=now;
+    for(int i=0;i<100;i++){
+      Check(PacedSubmissionAllowed(history,clock,40));
+      clock+=std::chrono::milliseconds(20);history.emplace_back(clock,.02);
+      Check(!PacedSubmissionAllowed(history,clock,40));
+      clock+=std::chrono::milliseconds(31);
+    }
     std::cout << checks << " submission budget checks passed\n";
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
