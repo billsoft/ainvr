@@ -18,7 +18,7 @@ assert not a.output.exists()
 reference = json.loads((a.reference / 'manifest.json').read_text())
 actual = json.loads((a.actual / 'manifest.json').read_text())
 slots=reference.get('prompt_slots',8)
-assert slots in (8,32) and actual.get('prompt_slots',8)==slots
+assert slots in (1,2,8,32) and actual.get('prompt_slots',8)==slots
 assert reference['backend'] == 'onnx-cuda' and actual['backend'] == 'bpu'
 assert reference['source_onnx_sha256'] == actual['source_onnx_sha256']
 assert reference['prepared_manifest_sha256'] == actual['prepared_manifest_sha256']

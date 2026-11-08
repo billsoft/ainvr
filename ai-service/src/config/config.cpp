@@ -153,8 +153,8 @@ ModelConfig ParseModel(const json& node) {
   m.max_new_tokens = GetI(node, "max_new_tokens", m.adapter == "locateanything_bpu" ? 256 : 64);
   if (node.contains("prompts") && !node["prompts"].is_null()) {
     if ((m.adapter != "yoloe_bpu" && m.adapter != "locateanything_bpu") || !node["prompts"].is_array() ||
-        node["prompts"].empty() || node["prompts"].size() > (m.name=="yoloe-26x-32"?32u:8u))
-      Fail("标签数量超出所选模型容量，8 槽最多 8 项、32 槽最多 32 项");
+        node["prompts"].empty() || node["prompts"].size() > (m.name=="yoloe-26x-32"?32u:m.name=="yoloe-26x-1"?1u:m.name=="yoloe-26x-2"?2u:8u))
+      Fail("标签数量超出所选模型容量，1 槽最多 1 项、2 槽最多 2 项、8 槽最多 8 项、32 槽最多 32 项");
     std::set<std::string> ids, descriptions;
     for (const auto& row : node["prompts"]) {
       if (!row.is_object()) Fail("标签项必须是对象");

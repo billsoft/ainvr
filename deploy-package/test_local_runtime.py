@@ -10,7 +10,7 @@ class IntegrityTest(unittest.TestCase):
   self.put=put
   q=put('llm/qwen3vl-2b-review-v1/embedding.bf16',b'embedding')
   self.manifest=put('llm/qwen3vl-2b-review-v1/llm-package.ainvr.json',json.dumps({'files':[{'path':q.name,'bytes':q.stat().st_size,'sha256':hashlib.sha256(q.read_bytes()).hexdigest()}]}).encode())
-  for name in ['gpen_bfr_256.hbm','derived/s100p/yolo26x.hbm','derived/s100p/yolo26x-face.hbm','derived/s100p/yoloe-26x.hbm','derived/s100p/yoloe-26x-32.hbm']:
+  for name in ['gpen_bfr_256.hbm','derived/s100p/yolo26x.hbm','derived/s100p/yolo26x-face.hbm','derived/s100p/yoloe-26x.hbm','derived/s100p/yoloe-26x-32.hbm','derived/s100p/yoloe-26x-1.hbm','derived/s100p/yoloe-26x-2.hbm']:
    p=put(name,name.encode());put(name+'.ainvr.json',json.dumps({'hbm_sha256':hashlib.sha256(p.read_bytes()).hexdigest()}).encode())
  def test_valid_local_assets(self):self.assertTrue(module.verify(self.root)['passed'])
  def test_embedding_corruption_is_rejected(self):
@@ -38,4 +38,3 @@ class InstallTest(unittest.TestCase):
    with self.assertRaises(AssertionError):installer.install_file(source,destination,installer.digest(source))
    self.assertTrue(destination.is_symlink())
 if __name__=='__main__':unittest.main()
-

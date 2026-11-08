@@ -9,7 +9,7 @@ p.add_argument('--prepared',type=Path,required=True)
 p.add_argument('--onnx',type=Path,required=True)
 p.add_argument('--output',type=Path,required=True)
 p.add_argument('--oracle',type=Path)
-p.add_argument('--slots',type=int,choices=[32],default=32)
+p.add_argument('--slots',type=int,choices=[1,2,32],default=32)
 a=p.parse_args();a.output.mkdir(exist_ok=False)
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 base=json.loads((a.prepared/'manifest.json').read_text())
@@ -23,7 +23,8 @@ for i,item in enumerate(base['samples']):
     for c in rng.permutation(80).tolist():
         if len(selected)==a.slots:break
         if c not in selected:selected.append(c)
-    active=a.slots if i%4 else [1,8,16,24][(i//4)%4]
+    pool=[x for x in (1,8,16,24) if x<=a.slots]
+    active=a.slots if (i%4 or a.slots==1) else pool[(i//4)%len(pool)]
     prompt=np.zeros((1,a.slots,512),dtype=np.float32)
     prompt[:,:active]=vectors[:,selected[:active]]
     path=Path(item['prompt_file']);(a.output/path).parent.mkdir(exist_ok=True)
@@ -32,6 +33,6 @@ for i,item in enumerate(base['samples']):
                      class_names=[names[c] for c in selected],active_count=active))
 base.update(samples=rows,prompt_slots=a.slots,detector_onnx_sha256=sha(a.onnx),
             source_manifest_sha256=sha(a.prepared/'manifest.json'),production_approved=False,
-            scope='32-slot candidate calibration/validation; old images and splits preserved')
+            scope=f'{a.slots}-slot candidate calibration/validation; old images and splits preserved')
 (a.output/'manifest.json').write_text(json.dumps(base,indent=2))
 print(json.dumps({'slots':a.slots,'samples':len(rows),'onnx_sha256':sha(a.onnx)}))

@@ -126,7 +126,7 @@ BpuPromptEngine::BpuPromptEngine(BpuPromptResources resources)
     throw std::runtime_error("RepRTA must emit eight 512-dimensional vectors");
 }
 std::vector<float> BpuPromptEngine::Encode(const std::vector<std::string>& phrases, size_t slots) {
-  if((slots!=8&&slots!=32)||phrases.empty()||phrases.size()>slots)throw std::invalid_argument("Prompt capacity mismatch");
+  if((slots!=1&&slots!=2&&slots!=8&&slots!=32)||phrases.empty()||phrases.size()>slots)throw std::invalid_argument("Prompt capacity mismatch");
   std::vector<float> result(slots*512,0);
   for(size_t begin=0;begin<phrases.size();begin+=8) {
     const std::vector<std::string> group(phrases.begin()+begin,phrases.begin()+std::min(begin+8,phrases.size()));

@@ -238,7 +238,7 @@ export interface AiPublishStats {
 }
 
 export interface AiChannelStats {
-  tracking_capability?: {status:string;reason?:string}
+  tracking_capability?: {status:string;reason?:string;continuity_gap?:boolean;cadence?:{meets_target:boolean;measured_fps:number;minimum_configured_fps:number}}
   analytics_storage?: {pending:number;delivered:number;delivery_failures:number;stage_failures:number}
   state: AiChannelState
   elapsed_seconds: number
@@ -408,6 +408,32 @@ export interface AiServiceHealth {
  * model.* 本身（否则 SCRFD 会用 YOLO 的归一化参数推理出垃圾结果且不报错，
  * 见架构方案 D6）。provider 统一 tensorrt——cuda EP 本机实测不可用。 */
 export const AI_MODEL_PRESETS = {
+  'yoloe-26x-1': {
+    displayName: '开放词汇模型 · 1 槽', streamSlug: 'grounding-1',
+    needsIouThreshold: true, label: '开放词汇识别 · 1 槽',
+    description: '只识别 1 个描述，识别速度更快；需要同时识别多个目标请选 8 槽或 32 槽',
+    model: {
+      name: 'yoloe-26x-1', adapter: 'yoloe_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/yoloe-26x-1.hbm', input_size: [640, 640] as [number, number],
+      stride: 32, provider: 'bpu' as const, engine_cache: '',
+      class_names: null,
+    },
+    preprocess: { mean: [0, 0, 0] as [number, number, number],
+      std: [255, 255, 255] as [number, number, number], rgb_order: true },
+  },
+  'yoloe-26x-2': {
+    displayName: '开放词汇模型 · 2 槽', streamSlug: 'grounding-2',
+    needsIouThreshold: true, label: '开放词汇识别 · 2 槽',
+    description: '只识别 2 个描述，需要同时识别多个目标请选 8 槽或 32 槽',
+    model: {
+      name: 'yoloe-26x-2', adapter: 'yoloe_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/yoloe-26x-2.hbm', input_size: [640, 640] as [number, number],
+      stride: 32, provider: 'bpu' as const, engine_cache: '',
+      class_names: null,
+    },
+    preprocess: { mean: [0, 0, 0] as [number, number, number],
+      std: [255, 255, 255] as [number, number, number], rgb_order: true },
+  },
   'yoloe-26x': {
     displayName: '开放词汇模型 · 8 槽', streamSlug: 'grounding-fast',
     needsIouThreshold: true, label: '开放词汇识别 · 8 槽',
@@ -569,7 +595,7 @@ export function isOpenVocabularyPreset(preset: AiModelPresetKey): boolean {
 }
 
 export const SELECTABLE_AI_MODEL_PRESET_KEYS: readonly AiModelPresetKey[] = [
-  'yolo26x', 'yolo26x-face', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b',
+  'yolo26x', 'yolo26x-face', 'yoloe-26x-1', 'yoloe-26x-2', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b',
 ]
 export const DEFAULT_AI_MODEL_PRESET: AiModelPresetKey = 'yolo26x'
 
@@ -591,8 +617,8 @@ export function getAiModelDisplayNameByName(name: string | null | undefined): st
 }
 
 export function isYoloePreset(preset: AiModelPresetKey): boolean {
-  return preset === 'yoloe-26x' || preset === 'yoloe-26x-32'
+  return preset === 'yoloe-26x-1' || preset === 'yoloe-26x-2' || preset === 'yoloe-26x' || preset === 'yoloe-26x-32'
 }
 export function promptSlotLimit(preset: AiModelPresetKey): number {
-  return preset === 'yoloe-26x-32' ? 32 : 8
+  return preset === 'yoloe-26x-32' ? 32 : preset === 'yoloe-26x-1' ? 1 : preset === 'yoloe-26x-2' ? 2 : 8
 }

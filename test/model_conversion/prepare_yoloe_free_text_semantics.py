@@ -8,7 +8,7 @@ import onnxruntime as ort
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--root',type=Path,required=True)
 p.add_argument('--output',type=Path,required=True)
-p.add_argument('--prompt-slots',type=int,choices=[8,32],default=8)
+p.add_argument('--prompt-slots',type=int,choices=[1,2,8,32],default=8)
 p.add_argument('--detector-onnx',type=Path)
 a=p.parse_args();a.output.mkdir(exist_ok=False);torch.set_num_threads(2)
 sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
@@ -26,6 +26,12 @@ cases=[('bus-person',['a passenger bus','a pedestrian'],[0]),
        ('bus-person',['an airplane','a forklift'],[]),
        ('dog',['a domestic animal','a parked vehicle'],[]),
        ('dog',['a passenger bus','a pedestrian'],[])]
+if a.prompt_slots==1:
+    # One description per run; intentions fixed before any FP32 or BPU evaluation.
+    cases=[('bus-person',['a passenger bus'],[0]),
+           ('bus-person',['an airplane'],[]),
+           ('dog',['a domestic animal'],[]),
+           ('dog',['a parked vehicle'],[])]
 rows=[]
 for i,(image,phrases,required) in enumerate(cases):
     tokens=np.zeros((len(phrases),77),np.int64)

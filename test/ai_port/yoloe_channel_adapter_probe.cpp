@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
     const auto groups = request.at("groups").get<std::vector<std::vector<std::string>>>();
     const int slots = request.value("prompt_slots", 8);
     const bool labeled = request.value("use_prompt_labels", false);
-    if (slots != 8 && slots != 32) throw std::invalid_argument("Expected 8 or 32 slots");
+    if (slots != 1 && slots != 2 && slots != 8 && slots != 32) throw std::invalid_argument("Expected 1, 2, 8 or 32 slots");
     if (groups.size() != 2) throw std::invalid_argument("Expected two runtime prompt groups");
     using Clock = std::chrono::steady_clock;
     auto deadline = Clock::now() + std::chrono::seconds(90);
@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
     auto rows = nlohmann::json::array();
     for (const auto& phrases : groups) {
       ai_service::config::ModelConfig cfg;
-      cfg.name = slots == 32 ? "yoloe-26x-32" : "yoloe-26x"; cfg.adapter = "yoloe_bpu";
+      cfg.name = slots == 32 ? "yoloe-26x-32" : slots == 1 ? "yoloe-26x-1" : slots == 2 ? "yoloe-26x-2" : "yoloe-26x"; cfg.adapter = "yoloe_bpu";
       cfg.provider = "bpu"; cfg.path = argv[2];
       cfg.class_names = phrases; cfg.label_id = "adapter-probe";
       if (labeled) for (size_t i=0; i<phrases.size(); ++i)

@@ -16,7 +16,7 @@ p.add_argument('--output',type=Path,required=True)
 p.add_argument('--work',type=Path)
 a=p.parse_args();assert not a.output.exists()
 sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
-manifest=json.loads((a.references/'manifest.json').read_text());slots=manifest.get('prompt_slots',8);assert slots in (8,32);cases=manifest['samples'];assert len(cases)==4
+manifest=json.loads((a.references/'manifest.json').read_text());slots=manifest.get('prompt_slots',8);assert slots in (1,2,8,32);cases=manifest['samples'];assert len(cases)==4
 work=a.work or a.output.parent/(a.output.stem+'-work');work.mkdir(exist_ok=False)
 request=work/'native-request.json';vectors=work/'native-vectors.bin'
 request.write_text(json.dumps({'prompt_slots':slots,'groups':[x['phrases'] for x in cases]}))

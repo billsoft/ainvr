@@ -85,7 +85,7 @@ class YoloeBpuAdapter : public BpuChannelAdapter {
 class Yoloe8BpuAdapter final : public YoloeBpuAdapter {
  public:
   explicit Yoloe8BpuAdapter(config::ModelConfig cfg):YoloeBpuAdapter(std::move(cfg)){
-    if(ModelConfig().name=="yoloe-26x-32")throw std::invalid_argument("32-slot model cannot use the8-slot runtime");
+    if(ModelConfig().name=="yoloe-26x-32"||ModelConfig().name=="yoloe-26x-1"||ModelConfig().name=="yoloe-26x-2")throw std::invalid_argument("32-slot/1-slot/2-slot model cannot use the8-slot runtime");
   }
 };
 class Yoloe32BpuAdapter final : public YoloeBpuAdapter {
@@ -94,12 +94,26 @@ class Yoloe32BpuAdapter final : public YoloeBpuAdapter {
     if(ModelConfig().name!="yoloe-26x-32")throw std::invalid_argument("32-slot runtime requires its own model contract");
   }
 };
+class Yoloe1BpuAdapter final : public YoloeBpuAdapter {
+ public:
+  explicit Yoloe1BpuAdapter(config::ModelConfig cfg):YoloeBpuAdapter(std::move(cfg)){
+    if(ModelConfig().name!="yoloe-26x-1")throw std::invalid_argument("1-slot runtime requires its own model contract");
+  }
+};
+class Yoloe2BpuAdapter final : public YoloeBpuAdapter {
+ public:
+  explicit Yoloe2BpuAdapter(config::ModelConfig cfg):YoloeBpuAdapter(std::move(cfg)){
+    if(ModelConfig().name!="yoloe-26x-2")throw std::invalid_argument("2-slot runtime requires its own model contract");
+  }
+};
 inline std::unique_ptr<BpuChannelAdapter> CreateBpuRuntimeAdapter(const config::ModelConfig& cfg){
   if(cfg.adapter=="yolo26_bpu")return std::make_unique<Yolo26BpuAdapter>(cfg);
   if(cfg.adapter=="yoloface_bpu")return std::make_unique<YoloFaceBpuAdapter>(cfg);
   if(cfg.adapter=="scrfd_bpu")return std::make_unique<ScrfdBpuAdapter>(cfg);
   if(cfg.adapter=="yoloe_bpu"){
     if(cfg.name=="yoloe-26x-32")return std::make_unique<Yoloe32BpuAdapter>(cfg);
+    if(cfg.name=="yoloe-26x-2")return std::make_unique<Yoloe2BpuAdapter>(cfg);
+    if(cfg.name=="yoloe-26x-1")return std::make_unique<Yoloe1BpuAdapter>(cfg);
     return std::make_unique<Yoloe8BpuAdapter>(cfg);
   }
   if(cfg.adapter=="locateanything_bpu")

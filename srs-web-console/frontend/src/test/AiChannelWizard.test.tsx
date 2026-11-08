@@ -111,19 +111,19 @@ describe('AiChannelWizard', () => {
     fireEvent.change(fps,{target:{value:''}})
     expect(screen.queryByRole('dialog',{name:'关闭目标跟踪'})).not.toBeInTheDocument()
     fireEvent.change(fps,{target:{value:'5'}})
-    fireEvent.change(fps,{target:{value:'2'}})
+    fireEvent.change(fps,{target:{value:'1.5'}})
     expect(screen.getByRole('dialog',{name:'关闭目标跟踪'})).toBeInTheDocument()
     await user.click(screen.getByRole('button',{name:'取消变更'}))
     expect(fps).toHaveValue(5)
-    fireEvent.change(fps,{target:{value:'2'}})
+    fireEvent.change(fps,{target:{value:'1.5'}})
     await user.click(screen.getByRole('button',{name:'关闭跟踪并继续'}))
-    expect(fps).toHaveValue(2)
+    expect(fps).toHaveValue(1.5)
     await user.click(screen.getByRole('button',{name:'下一步 →'}))
     expect(screen.getByLabelText('开启目标跟踪')).not.toBeChecked()
     expect(screen.getByLabelText('开启目标跟踪')).toBeDisabled()
   })
 
-  it.each([[5, '0.20 秒'], [0.5, '2.00 秒'], [0, '跟随源流']] as const)(
+  it.each([[2, '0.50 秒'], [5, '0.20 秒'], [0.5, '2.00 秒'], [0, '跟随源流']] as const)(
     'tracking explains configured sampling without promising accurate counts (%s FPS)', async (fps, expected) => {
       const user=userEvent.setup()
       render(<AiChannelWizard {...baseProps({mode:'edit',initial:makeChannel({inference_fps:fps,analytics:{enabled:true}})})}/>)
@@ -443,7 +443,7 @@ describe('AiChannelWizard', () => {
     expect(Array.from(models.options, option => option.value)).toEqual(['yolo26x', 'yolo26x-face'])
     expect(screen.queryByLabelText('识别描述')).not.toBeInTheDocument()
     await user.selectOptions(types, 'open')
-    expect(Array.from(models.options).filter(option => !option.disabled).map(option => option.value)).toEqual(['yoloe-26x', 'yoloe-26x-32', 'locateanything-3b'])
+    expect(Array.from(models.options).filter(option => !option.disabled).map(option => option.value)).toEqual(['yoloe-26x-1', 'yoloe-26x-2', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b'])
     expect(Array.from(models.options).find(option => option.value === 'yoloe-26x-32')).toHaveProperty('disabled', false)
     expect(screen.getByLabelText('识别描述 1')).toBeInTheDocument()
     expect(screen.getByLabelText('标签 ID 1')).toBeInTheDocument()
@@ -697,4 +697,18 @@ describe('AiChannelWizard', () => {
     expect(screen.getByTestId('wizard-stream-select')).toHaveValue('ch-main')
     expect(screen.queryByTestId('wizard-stream-url')).not.toBeInTheDocument()
   })
+})
+
+describe('单双槽向导容量',()=>{
+ it('双槽允许两项并阻止第三项，切换单槽保留内容而不静默删掉',async()=>{
+  const user=userEvent.setup();render(<AiChannelWizard {...baseProps()}/>);
+  await selectSourceAndNext(user);await user.selectOptions(screen.getByRole('combobox',{name:'模型类型'}),'open');
+  await user.selectOptions(screen.getByTestId('wizard-model-select'),'yoloe-26x-2');
+  await user.click(screen.getByRole('button',{name:'＋ 添加标签'}));
+  expect(screen.getByLabelText('识别描述 2')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'＋ 添加标签'})).toBeDisabled();
+  await user.selectOptions(screen.getByTestId('wizard-model-select'),'yoloe-26x-1');
+  expect(screen.getByLabelText('识别描述 2')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'＋ 添加标签'})).toBeDisabled();
+ });
 })

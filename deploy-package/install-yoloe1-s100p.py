@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Install a separately accepted 1/2-slot detector; share the canonical model directory with accepted 8-slot components."""
+import argparse, hashlib, importlib.util, json, os, subprocess, uuid
+from pathlib import Path
+p=argparse.ArgumentParser(description=__doc__)
+for name in ('model','adapter-report','optimization-report','probe'):
+    p.add_argument('--'+name,type=Path,required=True)
+a=p.parse_args();repo=Path('/home/sunrise/ainvr');assert Path.cwd().resolve()==repo
+sha=lambda path:hashlib.sha256(path.read_bytes()).hexdigest()
+read=lambda path:json.loads(path.read_text())
+assert a.model.resolve().is_relative_to(Path('/mnt/ainvr-ssd/model-compile-candidates'))
+contract=read(Path(str(a.model)+'.ainvr.json'));h=sha(a.model)
+slots=contract['dynamic_text']['prompt_slots'];assert contract['hbm_sha256']==h and slots in (1,2)
+quality=contract['validation'];assert contract['production_approved'] and quality['full_pipeline_accuracy_verified']
+for field in ('independent_image_report','free_text_visible_report'):
+    assert sha(Path(quality[field]))==quality[field+'_sha256']
+live=read(a.adapter_report);opt=read(a.optimization_report)
+assert live['passed'] and live['prompt_slots']==slots and live['prompt_labels_verified']
+assert live['same_hbm_runtime_prompt_reload_verified'] and not live['cpu_neural_fallback']
+assert opt['optimized_component_verified'] and opt['outputs_exact'] and opt['optimized_sha256']==h and opt['optimized_fps']>5
+assert len(live['groups'])==2
+for group in live['groups']:
+    assert group['metadata']['hbm_sha256']==h and group['metadata']['prompt_slots']==slots
+warm=[f['total_adapter_ms'] for g in live['groups'] for f in g['frames'][1:]]
+assert len(warm)==10 and 1000/(sum(warm)/len(warm))>5
+spec=importlib.util.spec_from_file_location('ainvr_yoloe_install',repo/'deploy-package/install-yoloe-s100p.py')
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+root=repo/'ai-service/models/derived/s100p'
+assert root.resolve().is_relative_to((repo/'ai-service/models').resolve())
+root.mkdir(parents=True,exist_ok=True)
+assert root.stat().st_dev==repo.stat().st_dev, 'Runtime models must be on board storage'
+shared=read(root/'yoloe-26x.hbm.ainvr.json')['dynamic_text']
+for field in ('text_hbm_sha256','reprta_hbm_sha256'):
+    assert shared[field]==contract['dynamic_text'][field], 'Shared encoder mismatch'
+for field in ('text_hbm','reprta_hbm','tokenizer_assets','tokenizer_python'):
+    contract['dynamic_text'][field]=shared[field]
+model=root/f'yoloe-26x-{slots}.hbm';module.install_file(a.model,model,h)
+contract['lifecycle']=f'{slots}-slot hardware and adapter accepted; actual Web UI acceptance pending'
+quality.update(native_channel_adapter_report=str(a.adapter_report.resolve()),
+ native_channel_adapter_report_sha256=sha(a.adapter_report),
+ optimization_report=str(a.optimization_report.resolve()),optimization_report_sha256=sha(a.optimization_report),
+ warm_adapter_fps_excluding_first_frame_initialization=1000/(sum(warm)/len(warm)))
+manifest=root/f'yoloe-26x-{slots}.hbm.ainvr.json'
+data=(json.dumps(contract,indent=2)+'\n').encode()
+if manifest.exists(): assert manifest.read_bytes()==data
+else:
+    temp=manifest.with_name('.'+manifest.name+'.'+uuid.uuid4().hex);temp.write_bytes(data);os.replace(temp,manifest)
+config=root/f'acceptance-config-{slots}.json'
+config.write_text(json.dumps({'id':'yoloe1-install-check','stream':{'url':'rtmp://localhost/live/test'},
+ 'model':{'name':f'yoloe-26x-{slots}','adapter':'yoloe_bpu','provider':'bpu','path':str(model),
+ 'prompts':[{'description':'person','label_id':'person','label_name':'Person'}]}}))
+subprocess.run([str(a.probe),'--validate',str(config)],check=True,timeout=30)
+print(json.dumps({'installed':str(model),'hbm_sha256':h,'other_slot_models_preserved':True,'ui_enabled':False}))

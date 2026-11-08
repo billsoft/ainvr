@@ -36,7 +36,7 @@ sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
 prepared = json.loads((a.prepared / 'manifest.json').read_text())
 assert prepared['state'] == 'prepared'
 slots=prepared.get('prompt_slots',8)
-assert slots in (8,32)
+assert slots in (1,2,8,32)
 samples = [x for x in prepared['samples'] if x['split'] == 'validation']
 assert len(samples) == 128
 assert len({x['image_tensor'] for x in samples}) == 128

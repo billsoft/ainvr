@@ -18,7 +18,7 @@ assert bm['model_sha256']==b['hbm_sha256']==sha(a.baseline/'detector.hbm')
 assert om['model_sha256']==o['hbm_sha256']==sha(a.optimized/'detector.hbm')
 assert bm['backend']==om['backend']=='bpu'
 assert bm['prepared_manifest_sha256']==om['prepared_manifest_sha256']
-assert bm['prompt_slots']==om['prompt_slots']==32 and bm['warmup']==om['warmup']==5
+assert bm['prompt_slots']==om['prompt_slots'] and bm['prompt_slots'] in (1,2,32) and bm['warmup']==om['warmup']==5
 assert len(bm['samples'])==len(om['samples'])==128
 left={x['id']:x for x in bm['samples']};right={x['id']:x for x in om['samples']}
 assert len(left)==128 and left.keys()==right.keys()
@@ -30,7 +30,7 @@ for key,x in left.items():
     assert x['prompt_tensor_source']=='FP32 oracle file'
     with np.load(a.baseline_capture/(key+'.npz')) as f:baseline=f['output']
     with np.load(a.optimized_capture/(key+'.npz')) as f:optimized=f['output']
-    assert baseline.shape==optimized.shape==(1,36,8400)
+    assert baseline.shape==optimized.shape==(1,4+bm['prompt_slots'],8400)
     assert np.isfinite(baseline).all() and np.isfinite(optimized).all()
     exact &= np.array_equal(baseline,optimized)
     maximum=max(maximum,float(np.abs(baseline.astype(np.float64)-optimized.astype(np.float64)).max()))

@@ -41,7 +41,7 @@ def main():
     assert raw['reprta_hbm_sha256'] == sha(args.reprta)
     assert raw['native_prompt_generation_verified']
     slots = manifest.get('prompt_slots',8)
-    assert slots in (8,32)
+    assert slots in (1,2,8,32)
     cases = manifest['samples']
     assert len(cases) == 4
     args.work.mkdir()

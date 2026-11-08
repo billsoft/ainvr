@@ -7,7 +7,7 @@ int main(int argc,char** argv) {
   try {
     if(argc!=3 && argc!=4)throw std::invalid_argument("Expected raw output, active classes JSON and optional slots");
     const int slots=argc==4?std::stoi(argv[3]):8;
-    if(slots!=8 && slots!=32)throw std::invalid_argument("Expected 8 or 32 slots");
+    if(slots!=1 && slots!=2 && slots!=8 && slots!=32)throw std::invalid_argument("Expected 1, 2, 8 or 32 slots");
     std::ifstream input(argv[1],std::ios::binary|std::ios::ate);
     if(!input||input.tellg()!=std::streamoff((4+slots)*8400*sizeof(float)))throw std::invalid_argument("Raw output size mismatch");
     input.seekg(0);std::vector<float> values((4+slots)*8400);input.read(reinterpret_cast<char*>(values.data()),values.size()*sizeof(float));

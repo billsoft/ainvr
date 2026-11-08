@@ -25,7 +25,7 @@ def verify(root):
   p=qwen/f['path'];assert p.resolve().is_relative_to(qwen.resolve()),'Out-of-package path'
   assert p.stat().st_size==f['bytes'];verify_file(p,f['sha256'])
  verify_file(manifest)
- for name in ['gpen_bfr_256.hbm','derived/s100p/yolo26x.hbm','derived/s100p/yolo26x-face.hbm','derived/s100p/yoloe-26x.hbm','derived/s100p/yoloe-26x-32.hbm']:
+ for name in ['gpen_bfr_256.hbm','derived/s100p/yolo26x.hbm','derived/s100p/yolo26x-face.hbm','derived/s100p/yoloe-26x.hbm','derived/s100p/yoloe-26x-32.hbm','derived/s100p/yoloe-26x-1.hbm','derived/s100p/yoloe-26x-2.hbm']:
   hbm=models/name;sidecar=Path(str(hbm)+'.ainvr.json');check_local(sidecar,device);d=json.loads(sidecar.read_text());verify_file(hbm,d['hbm_sha256'])
   if 'dynamic_text' in d:
    t=d['dynamic_text']

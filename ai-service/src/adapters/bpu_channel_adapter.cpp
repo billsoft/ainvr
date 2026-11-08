@@ -51,7 +51,9 @@ void ValidateDynamicText(const config::ModelConfig& cfg,const nlohmann::json& ma
   RuntimePrompts(cfg);
   const auto& text=manifest.at("dynamic_text");const auto resources=PromptResources(cfg,text);
   const int slots=text.at("prompt_slots").get<int>();
-  if((slots!=8&&slots!=32)||RuntimePrompts(cfg).size()>size_t(slots)||text.at("embedding_size")!=512||text.at("neural_backend")!="bpu")
+  const int expected=cfg.name=="yoloe-26x-32"?32:cfg.name=="yoloe-26x-1"?1:cfg.name=="yoloe-26x-2"?2:8;
+  if(slots!=expected)throw std::runtime_error("Model preset and compiled prompt capacity mismatch");
+  if((slots!=1&&slots!=2&&slots!=8&&slots!=32)||RuntimePrompts(cfg).size()>size_t(slots)||text.at("embedding_size")!=512||text.at("neural_backend")!="bpu")
     throw std::runtime_error("开放词汇组件接口与 S100P 不一致");
   const auto& validation=manifest.at("validation");
   if(manifest.value("production_approved",false)!=true||validation.value("full_pipeline_accuracy_verified",false)!=true||

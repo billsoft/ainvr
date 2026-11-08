@@ -43,6 +43,14 @@ TEST(S100pConfig, MultiPromptLabelsRoundTripAndRejectInvalidIdentity) {
   EXPECT_THROW(ChannelConfigFromJson(bad),ConfigValidationError);
 }
 
+TEST(S100pConfig, SingleSlotModelAcceptsExactlyOnePrompt) {
+  auto ch=Channel();ch["model"]={{"adapter","yoloe_bpu"},{"provider","bpu"},{"name","yoloe-26x-1"},{"path","models/yoloe.hbm"}};
+  ch["model"]["prompts"]=json::array({{{"description","person"},{"label_id","p0"},{"label_name","Person"}}});
+  EXPECT_EQ(ChannelConfigFromJson(ch).model.prompts.size(),1u);
+  ch["model"]["prompts"].push_back({{"description","car"},{"label_id","p1"},{"label_name","Car"}});
+  EXPECT_THROW(ChannelConfigFromJson(ch),ConfigValidationError);
+}
+
 TEST(S100pConfig, PromptSlotLimitsAndSwitchToClosedModel) {
   auto ch=Channel();ch["model"]={{"adapter","yoloe_bpu"},{"provider","bpu"},{"name","yoloe-26x"},{"path","models/yoloe.hbm"}};
   auto rows=json::array();
@@ -62,4 +70,11 @@ TEST(S100pConfig, PromptSlotLimitsAndSwitchToClosedModel) {
   ch["model"]["adapter"]="yolo26_bpu";
   ch["model"]["name"]="yolo26x";
   EXPECT_TRUE(ChannelConfigFromJson(ch).model.prompts.empty());
+}
+
+TEST(S100pConfig, DoubleSlotRejectsOverflowAndAcceptsOneOrTwo) {
+ auto ch=Channel();ch["model"]={{"adapter","yoloe_bpu"},{"provider","bpu"},{"name","yoloe-26x-2"},{"path","models/yoloe.hbm"}};
+ auto rows=json::array();
+ for(int i=0;i<3;++i){rows.push_back({{"description","object "+std::to_string(i)},{"label_id","p"+std::to_string(i)},{"label_name","Object"}});ch["model"]["prompts"]=rows;
+ if(i<2)EXPECT_EQ(ChannelConfigFromJson(ch).model.prompts.size(),size_t(i+1));else EXPECT_THROW(ChannelConfigFromJson(ch),ConfigValidationError);}
 }
