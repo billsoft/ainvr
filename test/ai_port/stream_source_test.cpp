@@ -47,9 +47,11 @@ std::vector<std::shared_ptr<FrameRef>> ReadFrames(StreamSource& source,int max,i
   }
   return result;
 }
-void VerifyFile(const char* env,VideoCodec expected_codec){
+void VerifyFile(const char* env,VideoCodec expected_codec,bool sampled=false){
   const auto file=Env(env);auto expected=ReferencePackets(file);ASSERT_GE(expected.size(),18);
-  StreamSource source(file,"fixture",true);source.Start();
+  StreamSource source(file,"fixture",true);
+  if(sampled)source.SetCopyRateResolver([]{return 6.0;});
+  source.Start();
   ElementRef sink{source.GetEsSinkRef()};ASSERT_NE(sink.value,nullptr);
   auto packets=std::async(std::launch::async,[&]{
     std::vector<Packet> result;auto deadline=Clock::now()+std::chrono::seconds(10);
@@ -83,10 +85,11 @@ void VerifyFile(const char* env,VideoCodec expected_codec){
     const auto& f=*frames[i];ASSERT_TRUE(original_by_mapped.contains(f.pts_ns));
     ASSERT_TRUE(f.source_pts_ns.has_value());EXPECT_EQ(*f.source_pts_ns,original_by_mapped.at(f.pts_ns));
     EXPECT_EQ(f.nv12.pts,uint64_t(f.pts_ns));EXPECT_EQ(f.nv12.pixels.size(),size_t(f.width)*f.height*3/2);
-    if(i)EXPECT_GT(f.pts_ns,frames[i-1]->pts_ns);
+    if(i){EXPECT_GT(f.pts_ns,frames[i-1]->pts_ns);EXPECT_GT(f.frame_index,frames[i-1]->frame_index);}
   }
   source.Stop();
-  EXPECT_EQ(stats.decoded,stats.superseded+stats.delivered);
+  EXPECT_EQ(stats.decoded,stats.superseded+stats.delivered+stats.copy_skipped);
+  if(sampled)EXPECT_GT(stats.copy_skipped,0);else EXPECT_EQ(stats.copy_skipped,0);
   ::testing::Test::RecordProperty("hardware_decoded_frames",int(stats.decoded));
   ::testing::Test::RecordProperty("matching_compressed_access_units",int(actual.size()));
   ::testing::Test::RecordProperty("observed_display_frames",int(frames.size()));
@@ -198,3 +201,6 @@ TEST(StreamSource,InvalidInputsDoNotStartHardwareAndFailedSourceCanRetry){
   EXPECT_THROW(source.Start(),std::runtime_error);EXPECT_GT(source.GetStreamGeneration(),gen);
   EXPECT_EQ(source.GetEsSinkRef(),nullptr);source.Stop();
 }
+
+TEST(StreamSource,SampledH264PreservesAllCompressedPacketsAndExactDisplayPts){VerifyFile("AINVR_SOURCE_H264",VideoCodec::kH264,true);}
+TEST(StreamSource,SampledH265PreservesAllCompressedPacketsAndExactDisplayPts){VerifyFile("AINVR_SOURCE_H265",VideoCodec::kH265,true);}

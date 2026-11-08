@@ -1,4 +1,6 @@
 #include "bpu.hpp"
+#include "bpu_schedule.hpp"
+#include <cstdlib>
 #include "model_digest.hpp"
 #include <cstring>
 #include <stdexcept>
@@ -14,6 +16,7 @@
 
 namespace ainvr {
 namespace {
+int TaskPriority(){static const int priority=ParseBpuTaskPriority(std::getenv("AINVR_BPU_TASK_PRIORITY"));return priority;}
 SharedRuntimeCache<BpuModel>& Models(){static auto* cache=new SharedRuntimeCache<BpuModel>();return *cache;}
 ConfiguredResidency<BpuModel>& Residency(){static auto* state=new ConfiguredResidency<BpuModel>();return *state;}
 ModelDigestCache& Digests(){static auto* cache=new ModelDigestCache();return *cache;}
@@ -62,9 +65,10 @@ nlohmann::json BpuModel::SharedStatus(){
  }
  for(const auto& entry:Residency().Snapshot())configured.push_back({{"resource",entry.key},{"owners",entry.owners},{"resident",entry.resident}});
  const auto digest=Digests().Status();
- return {{"retiring_batches",SharedRetirementBarrier().Pending()},{"digest_cache",{{"hits",digest.hits},{"misses",digest.misses},{"bytes_hashed",digest.bytes}}},{"instances",rows.size()},{"models",rows},{"configured",configured},{"scheduling","fifo"}};
+ return {{"retiring_batches",SharedRetirementBarrier().Pending()},{"digest_cache",{{"hits",digest.hits},{"misses",digest.misses},{"bytes_hashed",digest.bytes}}},{"instances",rows.size()},{"models",rows},{"configured",configured},{"scheduling","fifo"},{"sdk_task_priority",TaskPriority()}};
 }
 BpuModel::BpuModel(const std::string& path, const std::string& name) {
+  (void)TaskPriority(); // Validate deployment input before loading hardware resources.
   if(!BpuRuntimeHealthy())throw std::runtime_error("BPU runtime fault; service restart required");
   // Reserve custody before submitting work; timeout cleanup must not allocate.
   quarantine_=std::make_unique<Quarantine>();
@@ -181,6 +185,7 @@ std::vector<std::vector<unsigned char>> BpuModel::Run(const std::vector<std::vec
   }
   hbUCPSchedParam sched; HB_UCP_INITIALIZE_SCHED_PARAM(&sched);
   sched.backend = HB_UCP_BPU_CORE_ANY;
+  sched.priority = TaskPriority();
   rc = hbUCPSubmitTask(task, &sched);
   if (rc != 0) {
     release_failed_task();

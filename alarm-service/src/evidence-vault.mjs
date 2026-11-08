@@ -30,10 +30,20 @@ function exactEvidence(raw,fact){
    !Array.isArray(e.variants)||!e.variants.includes('processed')||e.variants.length>2||new Set(e.variants).size!==e.variants.length||e.variants.some(v=>!['processed','original'].includes(v)))throw Error('Source evidence identity mismatch');
  return Object.fromEntries(['kind','image_id','channel_id','track_id','stream_session_id','source_pts_ns','source_frame_index','frame_width','frame_height','image_width','image_height','label_id','variants'].map(k=>[k,e[k]??null]));
 }
+export class EvidenceDiagnostics {
+ constructor(clock=()=>Date.now(),emit=record=>console.info(JSON.stringify(record))){this.clock=clock;this.emit=emit;this.last=-Infinity;this.suppressed=0;}
+ record(row,stage,sourceReason,error){
+  const detail={stage,source_reason:['not_saved_or_expired','ambiguous_frame','archive_unavailable','invalid_archive_record'].includes(sourceReason)?sourceReason:null,
+   error_code:['ENOENT','ENOSPC','EIO','ETIMEDOUT','ECONNRESET'].includes(error?.code)?error.code:null,
+   event_id:/^[a-f0-9]{64}$/.test(row.event_id)?row.event_id:null,attempt:Number.isSafeInteger(row.attempts)?row.attempts:0,at:new Date(this.clock()).toISOString()};
+  if(this.clock()-this.last>=60000){try{this.emit({kind:'evidence_capture_failure',...detail,suppressed_since_last:this.suppressed});}catch{}this.last=this.clock();this.suppressed=0;}else this.suppressed++;
+  return detail;
+ }
+}
 export class EvidenceVault{
  constructor(db,{root,policy,source,clock=()=>Date.now(),images=null}){
   this.db=db;this.rows=db.collection('alarm_evidence');this.facts=db.collection('behavior_events');this.root=resolve(root);this.policy=policy;this.source=source;this.clock=clock;
-  this.images=images;this.used=0;this.timer=null;this.inFlight=null;this.closing=false;this.lock=null;this.lastError=null;this.needsRecovery=false;
+  this.diagnostics=new EvidenceDiagnostics(clock);this.images=images;this.used=0;this.timer=null;this.inFlight=null;this.closing=false;this.lock=null;this.lastError=null;this.needsRecovery=false;
  }
  async initialize(){
   await this.images?.initialize();
@@ -120,20 +130,21 @@ export class EvidenceVault{
   if(!this.policy.enabled)return;
   const now=this.clock(),token=randomUUID(),row=await this.rows.findOneAndUpdate({state:'pending',next_attempt_at:{$lte:now}},{$set:{state:'capturing',capture_token:token},$inc:{attempts:1}},{sort:{queued_at:1,_id:1},returnDocument:'after'});
   if(!row)return;
-  const written=[];
+  const written=[];let stage="fact_lookup",sourceReason=null;
   try{
    if(this.expires(row)<=now){await this.retire(row,'retention');return true;}
    if(now>=row.deadline||row.attempts>20){await this.rows.updateOne({_id:row._id,state:'capturing',capture_token:token},{$set:{state:'unavailable',reason:'capture_timeout'}});return true;}
    const fact=await this.facts.findOne({event_id:row.event_id});if(!fact)throw Error('Fact unavailable');
    if(!this.source)throw Error('Evidence source unavailable');
-   const metadata=await this.source.metadata(row.event_id);
+   stage="source_metadata";const metadata=await this.source.metadata(row.event_id);sourceReason=metadata?.reason;
    if(metadata?.state!=='available')throw Error('Exact source crop not available');
-   const evidence=exactEvidence(metadata,fact),images=[];
+   stage="identity_validation";const evidence=exactEvidence(metadata,fact),images=[];
+   stage="source_image";
    for(const variant of evidence.variants)images.push({variant,data:imageBuffer(await this.source.image(row.event_id,variant))});
    const size=images.reduce((sum,i)=>sum+i.data.length,0);
-   if(!await this.maintain(size))throw Error('Evidence capacity unavailable');
+   stage="capacity";if(!await this.maintain(size))throw Error('Evidence capacity unavailable');
    if(!this.images){const disk=await statfs(this.root);if(disk.bavail*disk.bsize<size+128*1024*1024)throw Error('SSD headroom insufficient');}
-   for(const {variant,data} of images){
+   stage="persist_image";for(const {variant,data} of images){
     const name=`${row.event_id}-${variant}-${randomUUID()}.jpg`;
     // Register before writing: partial writes are removed on ordinary failure.
     written.push({name,variant,bytes:data.length,sha256:sha(data),...(this.images?{storage:'mongodb'}:{})});
@@ -142,14 +153,15 @@ export class EvidenceVault{
     this.used+=data.length;
    }
    await syncDirectory(this.root);
-   await this.rows.updateOne({_id:row._id,state:'capturing',capture_token:token},{$set:{state:'stored',files:written,evidence,saved_at:new Date(this.clock()).toISOString(),reason:null}});
+   stage="publish";await this.rows.updateOne({_id:row._id,state:'capturing',capture_token:token},{$set:{state:'stored',files:written,evidence,saved_at:new Date(this.clock()).toISOString(),reason:null}});
    this.lastError=null;
-  }catch{
+  }catch(error){
+   const diagnostic=this.diagnostics.record(row,stage,sourceReason,error);
    const exhausted=this.clock()>=row.deadline||row.attempts>=20;
    // Fence any late/ambiguous publication before deleting its files. A timed-out
    // write may already have committed; in that case preserve the saved images.
    try{
-    const fenced=await this.rows.findOneAndUpdate({_id:row._id,state:'capturing',capture_token:token},{$set:{state:exhausted?'unavailable':'pending',reason:exhausted?'capture_timeout':'capture_retry',next_attempt_at:this.clock()+Math.min(60000,5000*2**Math.min(row.attempts-1,4))}},{returnDocument:'after'});
+    const fenced=await this.rows.findOneAndUpdate({_id:row._id,state:'capturing',capture_token:token},{$set:{diagnostic,state:exhausted?'unavailable':'pending',reason:exhausted?'capture_timeout':'capture_retry',next_attempt_at:this.clock()+Math.min(60000,5000*2**Math.min(row.attempts-1,4))}},{returnDocument:'after'});
     if(!fenced){const current=await this.rows.findOne({_id:row._id});if(current?.state==='stored'){this.lastError=null;return true;}throw Error('Uncertain evidence ownership');}
     for(const f of written){if(f.storage==='mongodb')await this.images.remove('crop',f.name);else await unlink(this.filePath(f.name)).catch(e=>{if(e.code!=='ENOENT')throw e;});}
     await syncDirectory(this.root);await this.reconcileFiles();

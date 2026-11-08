@@ -27,6 +27,12 @@ class ArchiveTest(unittest.TestCase):
             self.assertEqual(event['signals'], [marker])
             self.assertNotIn('private-value', json.dumps(event))
 
+    def test_disconnect_ret_is_preserved_without_url(self):
+        result = observer.srs_error_summary('[WARN][7][abc][104] client disconnect peer. ret=1007 token=secret')
+        self.assertEqual(result['codes'], ['1007'])
+        self.assertEqual(result['signals'], ['disconnect'])
+        self.assertNotIn('secret', json.dumps(result))
+
     def test_archive_rotates_and_preserves_latest_record(self):
         with tempfile.TemporaryDirectory() as folder:
             handler = observer.configure_archive(folder)

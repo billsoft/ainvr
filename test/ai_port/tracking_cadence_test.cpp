@@ -14,6 +14,22 @@ int main(){
   assert(first>=0 && first<=2.0+1.0/fps);
   assert(!c.Observe(t+2,t+2));
  }
+ // Alternating processing jitter must not be added to every source interval.
+ {TrackingCadence jitter;bool ready=false;
+  for(int i=0;i<90;i++)ready=jitter.Observe(i/3.2,i/3.2+(i%2)*.06);
+  assert(ready);
+ }
+ // Sustained 3.33 FPS with two-second 2.5 FPS bursts must retain tracks.
+ // This still has no interval above 400 ms and returns to 4 FPS each cycle.
+ {TrackingCadence burst;double t=0;
+  for(int i=0;i<100;i++){t+=.3;burst.Observe(t,t);}
+  for(int cycle=0;cycle<20;cycle++){
+   for(int i=0;i<5;i++){t+=.4;assert(burst.Observe(t,t));}
+   for(int i=0;i<10;i++){t+=.25;assert(burst.Observe(t,t));}
+  }
+  // A real gap invalidates immediately, irrespective of the smoothing window.
+  assert(!burst.Observe(t+1.01,t+1.01));
+ }
  TrackingCadence c;bool ready=false;
  for(int i=0;i<60;++i)ready=c.Observe(i*.1,i*.5);assert(!ready);
  c.Reset();double t=0;

@@ -92,7 +92,7 @@ bool VpuDecoder::Finish(int timeout){
   if(state_->failed)throw std::runtime_error("Decoder failed; recreate before resuming");
   try{return state_->Queue({},0,timeout,true);}catch(...){state_->failed=true;throw;}
 }
-std::optional<Nv12Frame> VpuDecoder::Receive(int timeout){
+std::optional<Nv12Frame> VpuDecoder::Receive(int timeout,const std::function<bool(uint64_t)>& copy_pixels){
   if(state_->failed)throw std::runtime_error("Decoder failed; recreate before resuming");
   struct FailOnException {State& s;int depth=std::uncaught_exceptions();
     ~FailOnException(){if(std::uncaught_exceptions()>depth)s.failed=true;}} guard{*state_};
@@ -141,6 +141,9 @@ std::optional<Nv12Frame> VpuDecoder::Receive(int timeout){
     // displayed POC may select the original access-unit token.
     frame.pts=s.pending.Take(metadata.display_poc);
   }
+  // Resolve the displayed POC/token and release the SDK buffer even when no
+  // consumer needs a detached image. Empty pixels are metadata-only output.
+  if(copy_pixels && !copy_pixels(frame.pts))return frame;
   frame.pixels.resize(size_t(w)*h*3/2);
   for(int y=0;y<h;++y)std::memcpy(frame.pixels.data()+size_t(y)*w,v.vir_ptr[0]+size_t(y)*ys,w);
   for(int y=0;y<h/2;++y)std::memcpy(frame.pixels.data()+size_t(w)*h+size_t(y)*w,v.vir_ptr[1]+size_t(y)*uvs,w);

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,readdir,writeFile,readFile,symlink,unlink,rm} from 'node:fs/promises';
 import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {MongoClient} from 'mongodb';
 import {EvidenceVault,validateEvidencePolicy} from '../src/evidence-vault.mjs';
@@ -111,3 +112,28 @@ test('SIGKILL after file fsync releases kernel ownership and next process recove
   finally{await restarted.close();}
  }finally{clearTimeout(timer);if(child.exitCode===null&&child.signalCode===null){const exit=once(child,'exit');child.kill('SIGKILL');await exit;}}
 }));
+
+import {EvidenceDiagnostics} from '../src/evidence-vault.mjs';
+test('capture diagnostics bound storms and exclude raw errors and credentials',()=>{
+ let now=0;const emitted=[];const d=new EvidenceDiagnostics(()=>now,r=>emitted.push(r));
+ for(let i=0;i<10000;i++)d.record({event_id:'a'.repeat(64),attempts:i},'source_metadata','not_saved_or_expired',{message:'token=secret',code:'private'});
+ assert.equal(emitted.length,1);now=60000;
+ const detail=d.record({event_id:'bad secret',attempts:2},'persist_image',null,{code:'ENOSPC'});
+ assert.equal(emitted.length,2);assert.equal(emitted[1].suppressed_since_last,9999);
+ assert.equal(detail.error_code,'ENOSPC');assert.equal(detail.event_id,null);
+ assert.ok(!JSON.stringify(emitted).includes('secret'));
+});
+
+test('failed metadata capture persists diagnostic without changing retry behavior',async()=>{
+ const row={_id:'a'.repeat(64),event_id:'a'.repeat(64),occurred_at:new Date().toISOString(),deadline:Date.now()+60000,attempts:1};const updates=[];
+ const rows={findOneAndUpdate:async(q,u)=>{updates.push(u);return row;}};
+ const db={collection:name=>name==='alarm_evidence'?rows:{findOne:async()=>({})}};
+ const testRoot=await mkdtemp(join(tmpdir(),'ainvr-vault-log-'));
+ const vault=new EvidenceVault(db,{root:testRoot,policy:{enabled:true,retention_days:1},source:{metadata:async()=>({state:'unavailable',reason:'not_saved_or_expired'})}});
+ vault.maintain=async()=>true;vault.reconcileFiles=async()=>{};vault.diagnostics=new EvidenceDiagnostics(()=>Date.now(),()=>{});
+ try{await vault.tick();
+ const update=updates.find(u=>u.$set?.diagnostic);
+ assert.equal(update.$set.state,'pending');assert.equal(update.$set.diagnostic.stage,'source_metadata');
+ assert.equal(update.$set.diagnostic.source_reason,'not_saved_or_expired');
+ }finally{await rm(testRoot,{recursive:true,force:true});}
+});

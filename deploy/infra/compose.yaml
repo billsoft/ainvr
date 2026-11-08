@@ -98,11 +98,12 @@ services:
         bind:
           create_host_path: false
       - ./init/mongo.js:/docker-entrypoint-initdb.d/10-ainvr.js:ro
+      - ./mongo-health.sh:/ainvr-mongo-health.sh:ro
     secrets:
       - mongo_admin_password
       - mongo_app_password
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--norc", "--eval", "quit(db.adminCommand({ping:1}).ok === 1 ? 0 : 1)"]
+      test: ["CMD", "timeout", "3", "bash", "/ainvr-mongo-health.sh"]
       interval: 10s
       timeout: 5s
       retries: 20

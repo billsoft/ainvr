@@ -46,7 +46,8 @@ struct DemuxStats {
 };
 struct SourceStats {
   uint64_t decoded=0,superseded=0,delivered=0,pre_keyframe_discarded=0;
-  uint64_t pending_tokens=0;
+  uint64_t pending_tokens=0,copy_skipped=0;
+  double decoded_fps=0;
   bool eof=false;
   std::optional<std::string> error;
 };
@@ -77,6 +78,7 @@ class StreamSource {
   using CodecResolver=std::function<std::optional<VideoCodec>()>;
   using VideoProgressResolver=std::function<std::optional<SrsVideoProgress>()>;
   // Assigned before Start; callbacks must not synchronously call lifecycle methods.
+  void SetCopyRateResolver(std::function<double()> callback){copy_rate_resolver_=std::move(callback);}
   void SetErrorCallback(ErrorCallback callback){error_callback_=std::move(callback);}
   void SetCodecResolver(CodecResolver callback){codec_resolver_=std::move(callback);}
   void SetVideoProgressResolver(VideoProgressResolver callback){progress_resolver_=std::move(callback);}
@@ -104,6 +106,7 @@ class StreamSource {
   std::optional<std::pair<int,int>> size_;
   SourceStats stats_;
   DemuxStats demux_;
+  std::function<double()> copy_rate_resolver_;
   ErrorCallback error_callback_;
   CodecResolver codec_resolver_;
   VideoProgressResolver progress_resolver_;

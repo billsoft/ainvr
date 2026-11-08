@@ -42,9 +42,9 @@ def srs_error_summary(line):
     stamp = re.search(r'\[(\d{4}-\d{2}-\d{2} [0-9:.]+)\]', line)
     return {'severity': match[1].title(), 'session': match[2],
             'srs_time_utc': stamp[1] if stamp else None,
-            'codes': re.findall(r'\bcode=(\d+)\b', line)[:8],
+            'codes': re.findall(r'\b(?:code|ret)=(\d+)\b', line)[:8],
             'signals': [word for word in ('timeout', 'reset', 'closed', 'publish',
-                'handshake', 'socket', 'No space') if word.lower() in line.lower()]}
+                'handshake', 'socket', 'disconnect', 'No space') if word.lower() in line.lower()]}
 
 def srs_errors(events):
     while not STOP.is_set():
@@ -230,6 +230,8 @@ def main():
     error_thread.start()
     history = collections.deque(maxlen=6)
     last_event = last_heartbeat = last_pid_refresh = 0
+    last_error_batch = time.monotonic()
+    summaries = collections.Counter()
     last_sample = time.monotonic()
     root_pid = 0
     pending = set()
@@ -258,15 +260,21 @@ def main():
             pending.update(reasons)
             # Drain bounded queue once per sample. Repeated error storms are
             # aggregated, keeping CPU, memory and disk use bounded.
-            summaries = collections.Counter()
             for _ in range(min(len(errors), 256)):
                 event = errors.popleft()
                 event.pop('captured_at', None)
-                summaries[json.dumps(event, sort_keys=True)] += 1
-            if summaries:
+                event.pop('session', None)
+                event.pop('srs_time_utc', None)
+                key = json.dumps(event, sort_keys=True)
+                if key not in summaries and len(summaries) >= 128:
+                    key = '{"kind":"other_error_groups"}'
+                summaries[key] += 1
+            if summaries and now-last_error_batch >= 30:
                 emit('srs_error_batch', records=[{'detail': json.loads(k), 'count': n}
                     for k, n in summaries.items()], queue_capacity=256,
-                    note='bounded best-effort samples, not an exhaustive error count')
+                    note='30s bounded summary; samples may be dropped during storms')
+                summaries.clear()
+                last_error_batch = now
             last_sample = now
             if pending and now-last_event >= 15:
                 # Full TCP queue/retransmit state and stacks only on anomalies.

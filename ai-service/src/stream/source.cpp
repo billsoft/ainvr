@@ -1,5 +1,6 @@
 // Copyright AINVR. Replace only source hardware; original channel/publisher owns policy.
 #include "source.hpp"
+#include "frame_copy_cadence.hpp"
 #include <chrono>
 #include <map>
 #include <stdexcept>
@@ -137,16 +138,33 @@ void StreamSource::Pump(){
     PtsRebaser clock;
     uint64_t token=0;int64_t frame_index=0;
     bool started=false,eof=false,submitted=false;
+    FrameCopyCadence copy_cadence;
+    auto rate_start=std::chrono::steady_clock::now();
+    uint64_t rate_frames=0;
     auto receive=[&](int timeout){
       // The SDK render component does not exist before its first submitted AU.
       // Do not interpret a pre-submission query as a hardware decode failure.
       if(!submitted||pending.empty())return false;
-      auto frame=decoder.Receive(timeout);if(!frame)return false;
+      auto frame=decoder.Receive(timeout,[&](uint64_t token){
+        const auto it=pending.find(token);
+        if(it==pending.end())throw std::runtime_error("Missing decoded frame token");
+        return copy_cadence.Keep(it->second.mapped.pts_ns,copy_rate_resolver_?copy_rate_resolver_():0);
+      });if(!frame)return false;
       auto it=pending.find(frame->pts);
       if(it==pending.end())throw std::runtime_error("VPU display frame has no source timestamp token");
       auto stamp=it->second;pending.erase(it);
       frame->pts=static_cast<uint64_t>(stamp.mapped.pts_ns);
-      auto ref=std::make_shared<FrameRef>(std::move(*frame),stamp.duration,++frame_index,
+      ++frame_index;
+      ++rate_frames;
+      const auto rate_now=std::chrono::steady_clock::now();
+      const double rate_seconds=std::chrono::duration<double>(rate_now-rate_start).count();
+      if(rate_seconds>=2.0){
+        std::lock_guard lock(mutex_);
+        stats_.decoded_fps=rate_frames/rate_seconds;
+        rate_frames=0;rate_start=rate_now;
+      }
+      if(frame->pixels.empty()){std::lock_guard lock(mutex_);++stats_.decoded;++stats_.copy_skipped;stats_.pending_tokens=pending.size();return true;}
+      auto ref=std::make_shared<FrameRef>(std::move(*frame),stamp.duration,frame_index,
                                          stamp.original,info.bt709,info.full_range);
       {
         std::lock_guard lock(mutex_);

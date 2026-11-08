@@ -75,3 +75,18 @@ Docker 29 的 containerd 镜像存储会把清单摘要显示为镜像 ID；离�
 [Docker Ubuntu 安装说明](https://docs.docker.com/engine/install/ubuntu/)、
 [地瓜系统 FAQ](https://developer.d-robotics.cc/rdk_s_doc/FAQ/hardware_and_system)、
 [SRS Docker 文档](https://ossrs.io/lts/en-us/docs/v7/doc/getting-started)。
+
+
+## 小内存板的 MongoDB 健康检查（2026-11-08）
+
+Compose 使用 `timeout 3 bash /ainvr-mongo-health.sh`，通过本机 Mongo wire OP_MSG
+发送真实 `ping`，严格校验响应 ID、操作码和 `ok:1`。不读取业务数据，也不使用数据库凭据。
+这避免每 10 秒启动 `mongosh` 所产生的约 250 MiB 瞬时 RSS；不是单纯 TCP 端口检查。
+当前脚本限定本项目锁定的 MongoDB 7 standalone 响应格式。升级镜像、改副本集或协议时，
+必须重新跑 `python3 deploy/infra/test_mongo_health.py` 和真实容器探活，不能把未知响应当成功。
+
+按仓库 Compose 启动时，会自动只读挂载同目录的 `mongo-health.sh`。
+如果现场使用 `/etc/ainvr/infra/compose.yaml` 的独立副本，必须同步健康检查命令，并挂载
+SSD 仓库中的脚本，例如 `/mnt/ainvr-ssd/ainvr/deploy/infra/mongo-health.sh:/ainvr-mongo-health.sh:ro`。
+确认挂载文件存在后再重建 Mongo 容器；保留原数据卷、凭据、缓存和内存限制。
+使用 `docker inspect --format '{{.State.Health.Status}}' ainvr-mongo` 确认实际为 healthy。

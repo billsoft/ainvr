@@ -469,6 +469,12 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
   }
   if (auto stream = LoadStream()) {
     stats["video_codec"] = stream::CodecName(stream->Codec());
+    const auto delivery=stream->GetStats();
+    // Capture cadence is intentionally sampled; report full decoder throughput separately.
+    stats["delivered_fps"]=stats["source_fps"];
+    stats["source_fps"]=state==ChannelState::kRunning ? std::round(delivery.decoded_fps*100.0)/100.0 : 0.0;
+    stats["decoded_delivery"]={{"decoded",delivery.decoded},{"copy_skipped",delivery.copy_skipped},
+      {"copied",delivery.decoded-delivery.copy_skipped},{"delivered",delivery.delivered}};
     auto demux = stream->GetDemuxStats();
     if (demux.available) {
       stats["source_flv_format"] = demux.format;
@@ -743,6 +749,9 @@ bool ReusedChannelWorker::ReconnectStream() {
       auto new_stream = std::make_shared<stream::StreamSource>(cfg->stream.url, channel_id_,
                                                                  cfg->publish.enabled);
       stream_instance_id_.fetch_add(1);
+      // Oversample AI demand 2x so independent inference deadlines have a fresh
+      // frame. Compressed output and VPU decoding retain every source picture.
+      new_stream->SetCopyRateResolver([this]{const double fps=LoadCfg()->inference_fps;return fps>0?2*fps:0;});
       new_stream->SetErrorCallback([this](const std::string& msg) { OnStreamError(msg); });
       new_stream->SetCodecResolver(MakeCodecResolver(cfg, channel_id_));
       new_stream->SetVideoProgressResolver([cfg] {
@@ -1399,6 +1408,9 @@ void ReusedChannelWorker::InitComponents() {
   auto new_stream =
       std::make_shared<stream::StreamSource>(cfg->stream.url, channel_id_, need_es_branch);
   stream_instance_id_.fetch_add(1);
+  // Oversample AI demand 2x so independent inference deadlines have a fresh
+  // frame. Compressed output and VPU decoding retain every source picture.
+  new_stream->SetCopyRateResolver([this]{const double fps=LoadCfg()->inference_fps;return fps>0?2*fps:0;});
   new_stream->SetErrorCallback([this](const std::string& msg) { OnStreamError(msg); });
   new_stream->SetCodecResolver(MakeCodecResolver(cfg, channel_id_));
   new_stream->SetVideoProgressResolver([cfg] {

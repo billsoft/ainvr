@@ -1,6 +1,7 @@
 // Copyright AINVR. Independent submission/retrieval permits B-frame reordering.
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -26,7 +27,7 @@ class VpuDecoder {
   // On timeout returns false; callers retain and retry the same packet.
   bool Submit(const std::vector<uint8_t>& access_unit,uint64_t pts,int timeout_ms=100);
   bool Finish(int timeout_ms=100);
-  std::optional<Nv12Frame> Receive(int timeout_ms=100);
+  std::optional<Nv12Frame> Receive(int timeout_ms=100, const std::function<bool(uint64_t)>& copy_pixels={});
  private:
   struct State;std::unique_ptr<State> state_;
 };

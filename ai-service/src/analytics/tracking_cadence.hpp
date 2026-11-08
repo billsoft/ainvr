@@ -18,17 +18,22 @@ class TrackingCadence {
   bool Observe(double source, double wall) {
     if (!std::isfinite(source)||!std::isfinite(wall)||source<0||wall<0) { CountCadenceReset(CadenceReset::Invalid);Reset(); return false; }
     if (last_source_ >= 0) {
-      const double dt=std::max(source-last_source_,wall-last_wall_);
+      const double ds=source-last_source_,dw=wall-last_wall_;
+      const double dt=std::max(ds,dw);
       if (source<=last_source_||wall<last_wall_||dt>1.0) {
         CountCadenceReset(source<=last_source_||wall<last_wall_?CadenceReset::NotMonotonic:
           source-last_source_>1.0?CadenceReset::SourceGapOver1s:CadenceReset::WallGapOver1s);
         Reset();
       }
       else {
-        intervals_.push_back(dt);seconds_+=dt;
-        // Retain at least two seconds, including the interval across its boundary.
-        while(intervals_.size()>1 && seconds_-intervals_.front()>=2.0) {
-          seconds_-=intervals_.front();intervals_.pop_front();
+        intervals_.push_back({ds,dw});source_seconds_+=ds;wall_seconds_+=dw;
+        seconds_=std::max(source_seconds_,wall_seconds_);
+        // Qualify after two seconds; once active, use five seconds to avoid
+        // resetting track identities on brief scheduler jitter near 3 FPS.
+        // The rate floor and immediate >1 second gap reset remain unchanged.
+        while(intervals_.size()>1 && std::max(source_seconds_-intervals_.front()[0],wall_seconds_-intervals_.front()[1])>=(ready_?5.0:2.0)) {
+          source_seconds_-=intervals_.front()[0];wall_seconds_-=intervals_.front()[1];intervals_.pop_front();
+          seconds_=std::max(source_seconds_,wall_seconds_);
         }
         // Defensive bound for malformed/high-frequency timestamps: fail closed.
         if(intervals_.size()>4096) {CountCadenceReset(CadenceReset::TooManyIntervals);Reset();}
@@ -43,10 +48,10 @@ class TrackingCadence {
     last_source_=source;last_wall_=wall;
     return ready_;
   }
-  void Reset(){intervals_.clear();seconds_=bad_seconds_=0;last_source_=last_wall_=-1;ready_=false;}
+  void Reset(){intervals_.clear();source_seconds_=wall_seconds_=seconds_=bad_seconds_=0;last_source_=last_wall_=-1;ready_=false;}
  private:
   bool ready_=false;
-  std::deque<double> intervals_;
-  double seconds_=0,bad_seconds_=0,last_source_=-1,last_wall_=-1;
+  std::deque<std::array<double,2>> intervals_;
+  double source_seconds_=0,wall_seconds_=0,seconds_=0,bad_seconds_=0,last_source_=-1,last_wall_=-1;
 };
 }
