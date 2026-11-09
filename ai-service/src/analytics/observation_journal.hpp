@@ -22,6 +22,9 @@
 #include <array>
 #include <atomic>
 #include <functional>
+#include <future>
+#include <vector>
+#include <deque>
 namespace ai_service::analytics {
 // Process-wide stall diagnostics for the synchronous journal path (inference thread).
 struct ObservationJournalDiag {
@@ -130,20 +133,24 @@ class ObservationJournal {
     // Count before writing: even a rename followed by a failed directory fsync
     // may leave a record. An overestimate cannot exceed the storage bound.
     ++usage_records_;usage_bytes_+=bound;inflight_records_.fetch_add(1);inflight_bytes_.fetch_add(bound);
-    guard.unlock();
+    // Hand the record to the writer FIFO in Stage order (still under the producer
+    // lock), so records that arrive while the writer is busy form the next batch.
     auto record=std::make_shared<nlohmann::json>(std::move(value));
-    // Blocks only when the bounded queue is full (backpressure).
+    {std::lock_guard q(queue_mutex_);queue_.push_back({record,bound,std::move(evidence)});}
+    guard.unlock();
+    // One task per record keeps the executor bound as the backpressure limit: a full
+    // queue blocks here, never drops. A task finding its record already committed by
+    // an earlier batch returns at once. Exceptions/broken receipts cannot claim
+    // durability (DrainQueue).
     try{
-      writer_->Submit([this,record,bound,evidence=std::move(evidence)]{
-        // One FIFO writer preserves frame/offset order even if later evidence
-        // completes first. Exceptions/broken receipts cannot claim durability.
-        if(evidence.valid()){
-          bool durable=false;try{durable=evidence.get();}catch(...){}
-          (*record)["evidence_delivery"]={{"schema_version",2},{"state",durable?"durable":"failed"}};
-        }
-        WriteRecord(*record);inflight_records_.fetch_sub(1);inflight_bytes_.fetch_sub(bound);
-      });
-    }catch(...){inflight_records_.fetch_sub(1);inflight_bytes_.fetch_sub(bound);throw;}
+      writer_->Submit([this]{DrainQueue();});
+    }catch(...){
+      bool removed=false;
+      {std::lock_guard q(queue_mutex_);for(auto it=queue_.begin();it!=queue_.end();++it)if(it->record==record){queue_.erase(it);removed=true;break;}}
+      // Not found: an earlier task already took it and will account for it.
+      if(removed){inflight_records_.fetch_sub(1);inflight_bytes_.fetch_sub(bound);}
+      throw;
+    }
   }
   // Waits until every queued record has been durably written or failed (tests, shutdown).
   bool Flush(std::chrono::milliseconds timeout=std::chrono::seconds(30)) const {
@@ -151,26 +158,90 @@ class ObservationJournal {
     while(inflight_records_.load()!=0){if(std::chrono::steady_clock::now()>end)return false;std::this_thread::sleep_for(std::chrono::milliseconds(1));}
     return true;
   }
-  nlohmann::json Status() const {std::lock_guard guard(mutex_);return {{"producer_id",producer_},{"next_offset",std::to_string(next_.load())},{"staged",staged_.load()},{"pending_upper_bound",usage_records_},{"bytes_upper_bound",usage_bytes_},{"full_rejections",full_rejections_},{"queued",inflight_records_.load()},{"async_failures",async_failures_.load()}};}
+  nlohmann::json Status() const {std::lock_guard guard(mutex_);return {{"producer_id",producer_},{"next_offset",std::to_string(next_.load())},{"staged",staged_.load()},{"pending_upper_bound",usage_records_},{"bytes_upper_bound",usage_bytes_},{"full_rejections",full_rejections_},{"queued",inflight_records_.load()},{"async_failures",async_failures_.load()},{"write_batches",write_batches_.load()}};}
  private:
   static bool IsRecord(const std::filesystem::path& path){const auto name=path.filename().string();return name.size()==25&&name.substr(20)==".json"&&name.find_first_not_of("0123456789")>=20;}
-  // Writer-thread only (single FIFO worker). Same on-disk sequence as the old synchronous path.
-  void WriteRecord(nlohmann::json& value){
+  struct Queued {std::shared_ptr<nlohmann::json> record;size_t bound=0;std::shared_future<bool> evidence;};
+  // Writer-thread only (single FIFO worker).
+  void DrainQueue(){
+    std::vector<Queued> batch;
+    {std::lock_guard q(queue_mutex_);batch.assign(std::make_move_iterator(queue_.begin()),std::make_move_iterator(queue_.end()));queue_.clear();}
+    if(batch.empty())return;
+    // Receipts are awaited in order: a later frame never overtakes a pending one.
+    // Exceptions/broken receipts cannot claim durability.
+    for(auto& q:batch)if(q.evidence.valid()){
+      bool durable=false;try{durable=q.evidence.get();}catch(...){}
+      (*q.record)["evidence_delivery"]={{"schema_version",2},{"state",durable?"durable":"failed"}};
+    }
+    WriteRecords(batch);
+    for(const auto& q:batch){inflight_records_.fetch_sub(1);inflight_bytes_.fetch_sub(q.bound);}
+  }
+  // Same on-disk protocol as the per-record path, committed per batch: offsets are
+  // reserved in FIFO order and saved (producer.json) BEFORE any record of the batch
+  // is written, so the state is never behind a record; every record is fsynced
+  // (concurrently: ext4 commits concurrent fsyncs together) and renamed in order;
+  // ONE directory sync then commits the batch. A failure leaves the documented
+  // visible offset gap. Four syncs per record capped the journal near 15/s on .190.
+  void WriteRecords(std::vector<Queued>& batch){
+    struct Out {std::string data;std::filesystem::path target,temp;int fd=-1;bool ok=false;};
+    std::vector<Out> outs;outs.reserve(batch.size());
+    size_t failures=0;
     try{
       if(before_write_)before_write_();
       std::lock_guard io(io_mutex_);
-      const auto offset=next_.load();
-      if(offset==std::numeric_limits<uint64_t>::max())throw std::runtime_error("Observation offset exhausted");
-      value["offset"]=std::to_string(offset);
-      const auto data=value.dump();if(data.size()>1024*1024)throw std::runtime_error("Observation record capacity exceeded");
-      next_.store(offset+1);
-      {const auto t0=std::chrono::steady_clock::now();SaveState(); // Only accepted records reserve an offset durably.
+      uint64_t offset=next_.load();
+      for(auto& q:batch){
+        try{
+          if(offset==std::numeric_limits<uint64_t>::max())throw std::runtime_error("Observation offset exhausted");
+          (*q.record)["offset"]=std::to_string(offset);
+          auto data=q.record->dump();if(data.size()>1024*1024)throw std::runtime_error("Observation record capacity exceeded");
+          std::ostringstream name;name<<std::setw(20)<<std::setfill('0')<<offset<<".json";
+          Out out;out.data=std::move(data);out.target=path_/name.str();out.temp=out.target;out.temp+=".writer-tmp";
+          outs.push_back(std::move(out));++offset;
+        }catch(...){++failures;}
+      }
+      if(outs.empty()){Fail(failures);return;}
+      ++write_batches_;
+      next_.store(offset);
+      {const auto t0=std::chrono::steady_clock::now();SaveState(); // Only accepted records reserve offsets durably.
         JournalDiag().Note(true,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count());}
-      std::ostringstream name;name<<std::setw(20)<<std::setfill('0')<<offset<<".json";
-      {const auto t0=std::chrono::steady_clock::now();AtomicWrite(path_/name.str(),data);
-        JournalDiag().Note(false,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count());}
-      ++staged_;
-    }catch(...){++async_failures_;JournalDiag().async_failures.fetch_add(1,std::memory_order_relaxed);}
+      const auto t0=std::chrono::steady_clock::now();
+      for(auto& out:outs){
+        out.fd=open(out.temp.c_str(),O_CREAT|O_TRUNC|O_WRONLY|O_CLOEXEC|O_NOFOLLOW,0600);
+        if(out.fd<0)continue;
+        size_t at=0;out.ok=true;
+        while(at<out.data.size()){const auto n=write(out.fd,out.data.data()+at,out.data.size()-at);if(n<=0){out.ok=false;break;}at+=size_t(n);}
+      }
+      // Bounded concurrency: at most 16 syncing threads however large the backlog.
+      std::atomic<size_t> next{0};
+      const auto sync=[&]{for(size_t i;(i=next.fetch_add(1))<outs.size();)if(outs[i].ok)outs[i].ok=fsync(outs[i].fd)==0;};
+      // A thread that cannot start only shrinks the pool: this thread finishes the
+      // remaining syncs (shared index) and every started thread is joined.
+      {std::vector<std::thread> pool;const size_t n=std::min<size_t>(16,outs.size());
+       try{for(size_t i=1;i<n;++i)pool.emplace_back(sync);}catch(...){}
+       sync();for(auto& t:pool)t.join();}
+      bool published=false;
+      for(auto& out:outs){
+        if(out.fd>=0&&close(out.fd))out.ok=false;out.fd=-1;
+        // A failed write must not leave an unaccounted temp file on the eMMC.
+        if(out.ok){try{std::filesystem::rename(out.temp,out.target);published=true;}catch(...){out.ok=false;}}
+        if(!out.ok){std::error_code ignored;std::filesystem::remove(out.temp,ignored);++failures;}
+      }
+      if(published){
+        try{SyncDirectory();}
+        catch(...){for(auto& out:outs)if(out.ok){out.ok=false;++failures;}}
+      }
+      size_t written=0;for(const auto& out:outs)written+=out.ok;
+      staged_+=written;
+      JournalDiag().Note(false,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count());
+      Fail(failures);
+    }catch(...){
+      for(auto& out:outs){if(out.fd>=0)close(out.fd);std::error_code ignored;std::filesystem::remove(out.temp,ignored);}
+      Fail(batch.size());
+    }
+  }
+  void Fail(size_t n){
+    if(!n)return;async_failures_+=n;JournalDiag().async_failures.fetch_add(n,std::memory_order_relaxed);
   }
   void RefreshUsage(){
     size_t bytes=0,count=0;
@@ -206,7 +277,8 @@ class ObservationJournal {
   std::filesystem::path path_;std::string channel_,producer_;size_t max_bytes_,max_records_;uintmax_t min_free_bytes_;
   size_t usage_bytes_=0,usage_records_=0;uint64_t full_rejections_=0;
   std::chrono::steady_clock::time_point usage_checked_;
-  std::atomic<uint64_t> next_{0},staged_{0},async_failures_{0};
+  std::atomic<uint64_t> next_{0},staged_{0},async_failures_{0},write_batches_{0};
+  std::mutex queue_mutex_;std::deque<Queued> queue_; // records handed to the writer, FIFO
   std::atomic<size_t> inflight_records_{0},inflight_bytes_{0};
   int lock_=-1;mutable std::mutex mutex_,io_mutex_;
   std::function<void()> before_write_; // test seam: gate the writer thread

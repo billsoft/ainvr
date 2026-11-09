@@ -111,5 +111,28 @@ int main(int argc, char** argv) {
     }
     assert(journal.Status().at("async_failures")==0);
   }
+  // 5. A backlog is committed in batches: one state save and one directory sync per
+  // batch, with every record still fsynced, in order, without gaps. Four syncs per
+  // record capped the journal (and, through backpressure, inference) near 15/s.
+  {
+    Gate gate;
+    const std::string r = root + "-batch";
+    ObservationJournal journal(r, "processor", 64 * 1024 * 1024, 10000, 0, [&] { gate.Wait(); });
+    for (int i = 1; i <= 40; ++i) journal.Stage(sample(i));
+    gate.Open();
+    assert(journal.Flush());
+    assert(journal.Status().at("next_offset") == "40");
+    assert(journal.Status().at("async_failures") == 0);
+    assert(journal.Status().value("write_batches", uint64_t(1000)) <= 3);
+    const auto state_offset = std::stoull(ReadJson(channel_dir(r) / "producer.json").at("next_offset").get<std::string>());
+    assert(state_offset == 40);
+    for (uint64_t o = 0; o < 40; ++o) {
+      const auto j = ReadJson(channel_dir(r) / Name(o));
+      assert(j.at("offset") == std::to_string(o));
+      assert(j.at("source_frame_index") == std::to_string(o + 1));
+    }
+    for (const auto& e : std::filesystem::directory_iterator(channel_dir(r)))
+      assert(e.path().filename().string().find(".writer-tmp") == std::string::npos);
+  }
   std::cout << "Async observation journal PASS\n";
 }

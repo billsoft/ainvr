@@ -111,6 +111,76 @@ int main(int argc,char** argv){try{
   Check(std::filesystem::exists(jpg),"pinned acknowledged frame was evicted");
   std::filesystem::remove(pin);std::this_thread::sleep_for(std::chrono::milliseconds(1300));
   Check(!std::filesystem::exists(jpg),"expired acknowledged frame was never reclaimed");
+ }else if(mode=="full_spool"){
+  // Unacknowledged evidence never expires, so a saturated spool must reject
+  // quickly: no per-job directory rescan and no JPEG encode that cannot be stored.
+  // Sparse files make 2.4 GiB of apparent size without writing data.
+  for(int i=0;i<3;++i){
+   std::string key(64,char('a'+i));
+   const auto jpg=root/"raw"/(key+".jpg");{std::ofstream(jpg)<<"x";}
+   std::filesystem::resize_file(jpg,800ULL*1024*1024);
+   std::ofstream(root/"raw"/(key+".json"))<<"{}";
+  }
+  std::atomic<int> renders{0};
+  const auto started=std::chrono::steady_clock::now();
+  for(int i=1;i<=40;++i)
+   Check(!cache.OfferAsync(Metadata(i),[&]{++renders;return cv::Mat(32,32,CV_8UC4);}).get(),"full spool accepted evidence");
+  const auto elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  // Status is rewritten at most once per second, after a job. One more job past
+  // that window flushes the counters; poll instead of reading a stale snapshot.
+  Check(!cache.OfferAsync(Metadata(41),[&]{++renders;return cv::Mat(32,32,CV_8UC4);}).get(),"full spool accepted evidence");
+  Json stats;const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  do{try{stats=Status(root);}catch(...){}if(stats.value("failed",0U)>=41)break;std::this_thread::sleep_for(std::chrono::milliseconds(20));}while(std::chrono::steady_clock::now()<until);
+  Check(stats.value("failed",0U)>=41,"full spool rejections not accounted");
+  Check(renders.load()==0,"full spool still rendered frames that cannot be stored");
+  // Space freed outside this process (operator cleanup) must be reclaimed by the
+  // next scan: remembered sizes follow the directory, never a stale byte total.
+  for(int i=0;i<3;++i){std::string key(64,char('a'+i));std::filesystem::remove(root/"raw"/(key+".jpg"));std::filesystem::remove(root/"raw"/(key+".json"));}
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  Check(cache.OfferAsync(Metadata(42),[]{return cv::Mat(32,32,CV_8UC4);}).get(),"freed spool space was not reclaimed");
+  Check(stats.at("maintenance_scans").get<uint64_t>()<=elapsed+3,"full spool rescanned the directory per failed job");
+ }else if(mode=="abandon"){
+  // A durable frame whose observation record was never published has no consumer
+  // that could reference or acknowledge it. It must become reclaimable (an ACK),
+  // or the never-expiring spool fills with orphans.
+  const auto ackOf=[&](int n){const auto m=Metadata(n);const std::string id=m.at("channel_id").get<std::string>()+"\n"+m.at("stream_session_id").get<std::string>()+"\n"+m.at("source_pts_ns").get<std::string>()+"\n"+m.at("source_frame_index").get<std::string>();
+   unsigned char d[SHA256_DIGEST_LENGTH];SHA256(reinterpret_cast<const unsigned char*>(id.data()),id.size(),d);std::string k;for(auto b:d){k+="0123456789abcdef"[b>>4];k+="0123456789abcdef"[b&15];}return root/"raw"/(k+".ack");};
+  auto queued=cache.OfferAsync(Metadata(1),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
+  cache.Abandon(Metadata(1),queued);
+  Check(!std::filesystem::exists(ackOf(1)),"abandon must not ACK a frame before it is durable");
+  gate.Release();Check(queued.get(),"abandoned frame was not stored");
+  const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+  while(!std::filesystem::exists(ackOf(1))&&std::chrono::steady_clock::now()<until)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  Check(std::filesystem::exists(ackOf(1)),"frame abandoned while queued was never released");
+  auto stored=cache.OfferAsync(Metadata(2),[]{return cv::Mat(32,32,CV_8UC4);});Check(stored.get(),"second frame not stored");
+  cache.Abandon(Metadata(2),stored);
+  Check(std::filesystem::exists(ackOf(2)),"frame abandoned after storage was not released");
+  auto kept=cache.OfferAsync(Metadata(3),[]{return cv::Mat(32,32,CV_8UC4);});Check(kept.get(),"third frame not stored");
+  Check(!std::filesystem::exists(ackOf(3)),"a published frame must wait for its consumer ACK");
+  std::promise<bool> refused;refused.set_value(false);
+  cache.Abandon(Metadata(4),refused.get_future().share());
+  Check(!std::filesystem::exists(ackOf(4)),"a refused admission must not leave an ACK");
+ }else if(mode=="batch"){
+  // Frames that queued while storage was busy are committed together: their file
+  // syncs run concurrently and ONE directory sync commits the batch. Per-frame
+  // syncs (3 per frame on a busy SSD) capped durable evidence near 15 frames/s.
+  auto first=cache.OfferAsync(Metadata(1),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
+  std::vector<std::shared_future<bool>> rest;
+  for(int i=2;i<=9;++i)rest.push_back(cache.OfferAsync(Metadata(i),[]{return cv::Mat(32,32,CV_8UC4);}));
+  auto overflow=cache.OfferAsync(Metadata(10),[]{return cv::Mat(32,32,CV_8UC4);});
+  Check(overflow.wait_for(std::chrono::milliseconds(0))==std::future_status::ready&&!overflow.get(),"batching must not enlarge the bounded queue");
+  gate.Release();Check(first.get(),"first frame not stored");
+  for(auto& r:rest)Check(r.get(),"queued frame not stored");
+  WaitWritten(root,9);std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  cache.OfferAsync(Metadata(11),[]{return cv::Mat(32,32,CV_8UC4);}).get();
+  Json stats;const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+  do{try{stats=Status(root);}catch(...){}if(stats.value("written",0U)>=10)break;std::this_thread::sleep_for(std::chrono::milliseconds(20));}while(std::chrono::steady_clock::now()<until);
+  Check(stats.value("written",0U)==10,"batched frames not all written");
+  Check(stats.value("directory_syncs",1000U)<=4,"queued frames were not committed by a shared directory sync");
+  size_t jpg=0,meta=0,tmp=0;
+  for(const auto& e:std::filesystem::directory_iterator(root/"raw")){jpg+=e.path().extension()==".jpg";meta+=e.path().extension()==".json";tmp+=e.path().extension()==".tmp";}
+  Check(jpg==10&&meta==10&&tmp==0,"batch left incomplete pairs or temporaries");
  }else throw std::runtime_error("unknown scenario");
  std::cout<<mode<<" software cache check passed\n";
  }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

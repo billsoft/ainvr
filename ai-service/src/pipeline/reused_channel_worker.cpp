@@ -1283,16 +1283,17 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
       search_source->EndFrame(search_token,result,*search_capture,objects_complete,complete(scene_offer));
     } catch (...) { /* Sampling refusal must not interrupt existing business. */ }
   }
-  std::shared_future<bool> evidence_receipt;
+  std::shared_future<bool> evidence_receipt;nlohmann::json evidence_identity;bool observation_published=false;
   if(output::HasReviewVisualTarget(result))result.model_extra["evidence_delivery"]={{"schema_version",2},{"state","failed"}};
   if (LicenseAllowed() && output::HasReviewVisualTarget(result) && output::SharedReviewFrameCache().Enabled(channel_id_) && result.model_extra.contains("analytics")) {
     ScopedTimingObservation timer([this, timing_identity](double ms) {
       RecordTiming(TimingStage::ReviewFrameOffer, ms, timing_identity);
     });
     const auto session=result.model_extra["analytics"].value("stream_session_id",std::string());
-    if(!session.empty()){evidence_receipt=output::SharedReviewFrameCache().OfferPreparedAsync({{"channel_id",channel_id_},{"stream_session_id",session},
-      {"source_pts_ns",std::to_string(result.frame_pts_ns)},{"source_frame_index",std::to_string(result.frame_index)},
-      {"frame_width",frame.width},{"frame_height",frame.height}},[owned=frame.ref]{
+    if(!session.empty()){evidence_identity={{"channel_id",channel_id_},{"stream_session_id",session},
+      {"source_pts_ns",std::to_string(result.frame_pts_ns)},{"source_frame_index",std::to_string(result.frame_index)}};
+      auto evidence_metadata=evidence_identity;evidence_metadata["frame_width"]=frame.width;evidence_metadata["frame_height"]=frame.height;
+      evidence_receipt=output::SharedReviewFrameCache().OfferPreparedAsync(std::move(evidence_metadata),[owned=frame.ref]{
         const auto& src=owned->nv12;const double scale=std::min(1.0,1280.0/std::max(src.width,src.height));
         output::ReviewEncodedFrame image;image.width=std::max(32,int(src.width*scale)/2*2);image.height=std::max(32,int(src.height*scale)/2*2);
         if(!output::EncodeSnapshotNv12Jpeg(src.pixels,src.width,src.height,image.width,image.height,owned->bt709,owned->full_range,image.jpeg,85))
@@ -1313,13 +1314,17 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
         ScopedTimingObservation timer([this, timing_identity](double ms) {
           RecordTiming(TimingStage::ObservationStage, ms, timing_identity);
         });
-        journal->Stage(result,std::move(evidence_receipt));
+        journal->Stage(result,evidence_receipt);
         }
+        observation_published=true;
         // Durable write happens on the journal writer thread; failures are counted there (async_failures).
         result.model_extra["observation_delivery"]={{"state","queued"},{"stage_failures",observation_stage_failures_.load()}};
       }
     }catch(...){++observation_stage_failures_;result.model_extra["observation_delivery"]={{"state","failed"},{"stage_failures",observation_stage_failures_.load()}};}
   }
+  // Evidence admitted for an observation that was not published (journal full,
+  // stopping, epoch change, no journal) can never be acknowledged by a consumer.
+  if(evidence_receipt.valid()&&!observation_published)output::SharedReviewFrameCache().Abandon(evidence_identity,evidence_receipt);
 
   if (snapshot_sink_ && LicenseAllowed()) {
     utils::Timer snapshot_timer;
