@@ -1,6 +1,11 @@
 // Observed outside -> inside -> outside only. Ambiguous polygon crossings reset.
 import {inside,boundaryStable} from './geometry.mjs';
 const eps=1e-9;
+// The anchor (box bottom/centre) of one observed target jitters in proportion to
+// its box: occlusion and pose changes move it by a sizeable fraction of the box
+// width between frames. A crossing must clear that jitter, not only the fixed
+// hysteresis, or a target standing near the line is counted in and back out.
+export const LINE_JITTER_WIDTH_RATIO=0.1;
 function hits(poly,a,b){
   const result=[],v=[b[0]-a[0],b[1]-a[1]];
   for(let i=0;i<poly.length;i++){
@@ -62,7 +67,7 @@ function result(rule,frame,entry,exit,t,extra={}){
     method:rule.passage?.kind??'zone',observation_gaps:gaps,gap_ms,
     same_boundary_edge:entry.edge===exit.edge,trajectory_complete:true};
 }
-function lineStep(rule,frame,point,state){
+function lineStep(rule,frame,point,state,box=null){
   const t=state.traversal??={previous:null,entry:null},edge=rule.passage.edges[0],a=rule.points[edge],b=rule.points[(edge+1)%rule.points.length];
   if(t.line_confirmation_version!==2){t.previous=null;t.line_samples=0;delete t.line_pending;t.line_confirmation_version=2;}
   const area=rule.points.reduce((s,p,i)=>{const q=rule.points[(i+1)%rule.points.length];return s+p[0]*q[1]-q[0]*p[1];},0);
@@ -74,7 +79,8 @@ function lineStep(rule,frame,point,state){
   // Separate boundary classification from passage confirmation. A point just
   // beyond the uncertainty band is not enough to prove meaningful displacement.
   // Both sides need two real samples beyond 2x the configured tolerance.
-  const clearance=2*tolerance,clear=Math.abs(signed)+eps>=clearance;
+  const width=box&&Number.isFinite(box.w)&&box.w>0?(pixel?box.w:box.w/frame.source.width):0;
+  const clearance=Math.max(2*tolerance,LINE_JITTER_WIDTH_RATIO*width),clear=Math.abs(signed)+eps>=clearance;
   if(Math.abs(signed)<tolerance){
     // Boundary uncertainty neither proves the destination nor flips the origin.
     if(t.line_pending){t.line_pending.samples=0;t.line_pending.since=null;}
@@ -98,7 +104,7 @@ function lineStep(rule,frame,point,state){
     if(pending.samples<2||stableMs<120)return null;
     delete t.line_pending;t.previous=current;t.line_samples=2;
     const passage=result(rule,frame,pending.entry,pending.exit,t,{line_direction:current.side>0?'inward':'outward'});
-    return {...passage,confirmation:{policy:'line-observed-sides-v2',clearance:clearance,clearance_unit:pixel?'source_pixels':'normalized',before_samples:2,after_samples:pending.samples,stable_ms:stableMs,confirmed_at:current.at,confirmed_frame_id:current.frame_id}};
+    return {...passage,confirmation:{policy:'line-observed-sides-v3',clearance:clearance,clearance_unit:pixel?'source_pixels':'normalized',before_samples:2,after_samples:pending.samples,stable_ms:stableMs,confirmed_at:current.at,confirmed_frame_id:current.frame_id}};
   }
   // One observation on either side is insufficient even for a confirmed track.
   if((t.line_samples??0)<2){t.previous=current;t.line_samples=clear?1:0;return null;}
@@ -108,9 +114,9 @@ function lineStep(rule,frame,point,state){
   t.line_pending={entry:{...prev,boundary:h.point,edge},exit:{...current,boundary:h.point,edge},samples:clear?1:0,since:clear?current.pts:null,last_pts:current.pts};
   return null;
 }
-export function traversalStep(rule,frame,point,state){
+export function traversalStep(rule,frame,point,state,box=null){
   // A stationary real observation can confirm a crossing already observed.
-  if(rule.passage?.kind==='line')return lineStep(rule,frame,point,state);
+  if(rule.passage?.kind==='line')return lineStep(rule,frame,point,state,box);
   const last=state.traversal?.previous;
   if(last&&last.point[0]===point[0]&&last.point[1]===point[1]){
     state.traversal.previous={...last,pts:frame.source_pts_ns,at:frame.captured_at,seq:frame.seq,frame_id:frame.frame_id};

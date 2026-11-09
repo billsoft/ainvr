@@ -5,7 +5,7 @@ const rule={id:'r',version:1,name:'line',channel_id:'c',state:'enabled',label_id
 function run(frames){let cp=null;const events=[],inputs=[];frames.forEach((rows,i)=>{
  if(!Array.isArray(rows))rows=[rows];
  const ms=rows[0]?.ms??i*100,pts=String((ms+1000)*1000000);
- const f={schema_version:'1.0',channel_id:'c',input_stream_id:'in',stream_session_id:rows[0]?.session??'s',seq:String(i+1),frame_id:String(i+1),source_pts_ns:pts,captured_at:new Date(Date.UTC(2026,9,23)+ms).toISOString(),source:{width:1000,height:1000,coordinate_space:'source_pixels',geometry_revision:'g'},model:{label_map_version:'l'},tracks:rows.filter(v=>!v.absent).map((v,j)=>({track_id:v.id??'t'+j,label_id:'person',state:v.state??'confirmed',observation:v.predicted?'predicted':'detected',last_observed_pts_ns:v.predicted?String((ms+900)*1000000):pts,event_eligible:!v.ineligible,bbox:{x:v.x*1000-10,y:(v.y??.5)*1000-10,w:20,h:20}})),...(rows[0]?.gap?{gap:true}:{})};
+ const f={schema_version:'1.0',channel_id:'c',input_stream_id:'in',stream_session_id:rows[0]?.session??'s',seq:String(i+1),frame_id:String(i+1),source_pts_ns:pts,captured_at:new Date(Date.UTC(2026,9,23)+ms).toISOString(),source:{width:1000,height:1000,coordinate_space:'source_pixels',geometry_revision:'g'},model:{label_map_version:'l'},tracks:rows.filter(v=>!v.absent).map((v,j)=>({track_id:v.id??'t'+j,label_id:'person',state:v.state??'confirmed',observation:v.predicted?'predicted':'detected',last_observed_pts_ns:v.predicted?String((ms+900)*1000000):pts,event_eligible:!v.ineligible,bbox:{x:v.x*1000-(v.w??20)/2,y:(v.y??.5)*1000-(v.h??20)/2,w:v.w??20,h:v.h??20}})),...(rows[0]?.gap?{gap:true}:{})};
  inputs.push(f);const result=evaluate(cp,f,[rule]);cp=JSON.parse(JSON.stringify(result.checkpoint));events.push(...result.events);
  });return {cp,events,inputs};}
 const path=xs=>xs.map(x=>({x}));
@@ -44,6 +44,25 @@ test('tentative after-side observations never supply confirmed completion',()=>{
  const start=[.2,.2,.4].map(x=>({x,state:'tentative'}));
  assert.equal(run([...start,{x:.4}]).events.length,0);
  assert.equal(run([...start,...path([.4,.4,.4])]).events.length,1);
+});
+// Replayed frame by frame from .190 (frames 598-630 of a 30 FPS recording):
+// [px from the line, box width, lost]. The box shrinks from 515 to 340 px at
+// one occlusion, throwing the anchor 76 px back over the line for six frames.
+const jitterWalk=[[-45,362],[-38,376],[-30,388],[-30,388],[-30,389],[-29,408],[-17,420],[-12,433],[-5,445],[-5,445],[-5,445],[0,452],
+ [18,485],[30,485],[32,505],[32,506],[32,506],[41,515],[-35,340],[-30,343],[-28,348],[-28,348],[-28,348],[-25,353],
+ [-25,353,1],[-25,353,1],[-25,353,1],[-25,353,1],[-25,353,1],[95,553],[114,541],[160,541],[210,541],[260,541]];
+// Halved to keep the 1000 px test frame valid; the jitter-to-width ratio is kept.
+const wide=rows=>rows.map((r,i)=>{const [dx,w,lost]=Array.isArray(r)?r:[r,400];return {x:(300+dx/2)/1000,w:w/2,h:240,ms:Math.round(i*1000/30),...(lost?{predicted:true}:{})};});
+test('anchor jitter of a wide box near the line is one passage, never in and back out',()=>{
+ assert.deepEqual(run(wide(jitterWalk)).events.map(e=>e.direction.line_direction),['inward']);
+});
+test('a wide target genuinely returning far beyond its jitter still counts both ways',()=>{
+ const there=[-300,-250,-200,-150,-100,-50,50,100,150,200,250,300,300,300];
+ const back=[250,200,150,100,50,-50,-100,-150,-200,-250,-300,-300,-300];
+ assert.deepEqual(run(wide([...there,...back]).map((v,i)=>({...v,ms:i*100}))).events.map(e=>e.direction.line_direction),['inward','outward']);
+});
+test('a wide target crossing at 3 FPS is still counted once',()=>{
+ assert.equal(run(wide([-360,-250,-100,100,250,400]).map((v,i)=>({...v,ms:i*333}))).events.length,1);
 });
 test('finite line extension and endpoints do not count',()=>{
  assert.equal(run([.2,.2,.4,.4,.4].map(x=>({x,y:.1}))).events.length,0);

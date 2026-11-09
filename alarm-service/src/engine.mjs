@@ -235,7 +235,7 @@ export function evaluate(checkpoint,input,rules) {
         for(const old of tentative.filter(x=>elapsedMs(f,x.frame.source_pts_ns)<=1000)){
           if(old.track.label_id!==t.label_id){breakEvidence(s);break;}
           const b=old.track.bbox,q=anchor([(b.x+b.w/2)/W,(b.y+b.h*(r.anchor==='center'?.5:1))/H]);
-          const priorEntry=s.traversal?.entry,completed=traversalStep(g,old.frame,q,s);
+          const priorEntry=s.traversal?.entry,completed=traversalStep(g,old.frame,q,s,b);
           if(completed){breakEvidence(s);continue;} // Never publish an unconfirmed passage.
           if(sample){const prior=sampleOf(old.frame,old.track);if(!priorEntry&&s.traversal?.entry)beginEvidence(s,prior);s.review_compact??={};s.review_compact.last=prior;}
         }
@@ -251,7 +251,7 @@ export function evaluate(checkpoint,input,rules) {
         if(activePassage)issues.push(`${reason}:${r.id}:${t.track_id}`);
       }
       const oldEntry=s.traversal?.entry;
-      const tr=traversalStep(g,f,p,s);
+      const tr=traversalStep(g,f,p,s,t.bbox);
       if(!oldEntry&&s.traversal?.entry)begin();
       if(s.traversal_issue){issues.push(`${s.traversal_issue}:${r.id}:${t.track_id}`);delete s.traversal_issue;}
       if(tr&&allowedEdge(tr.entry.edge,r.entry_edges)&&allowedEdge(tr.exit.edge,r.exit_edges)){
