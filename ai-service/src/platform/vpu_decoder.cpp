@@ -114,11 +114,16 @@ std::optional<Nv12Frame> VpuDecoder::Receive(int timeout,const std::function<boo
         deadline-std::chrono::steady_clock::now()).count();
     ready=poll(&descriptor,1,static_cast<int>(std::max<int64_t>(0,remaining)));
   }while(ready<0&&errno==EINTR&&std::chrono::steady_clock::now()<deadline);
-  if(ready==0)return std::nullopt;
   if(ready<0)throw std::runtime_error("Poll VPU/JPU output readiness failed");
   if(descriptor.revents&(POLLERR|POLLHUP|POLLNVAL))
     throw std::runtime_error("VPU/JPU readiness fd reported a hardware failure");
-  if(!(descriptor.revents&POLLIN))throw std::runtime_error("Unexpected VPU/JPU readiness event");
+  if(ready>0&&!(descriptor.revents&POLLIN))throw std::runtime_error("Unexpected VPU/JPU readiness event");
+  // The readiness fd is an edge-style wakeup and can be missed (measured on a
+  // 1080p30 B-pyramid H.264 stream: decoder input queue full, output queue
+  // holding a frame, fd never readable -> 5 s "VPU input stalled" and a channel
+  // rebuild). The output queue count is the source of truth, so a quiet fd must
+  // not hide a queued frame. When the fd is quiet and the queue is empty this
+  // costs one status query and returns exactly as before.
   mc_inter_status_t status{};
   Check(hb_mm_mc_get_status(&s.context,&status),"query VPU/JPU output status");
   // Do not dequeue an empty render queue or suppress ERR_UNKNOWN. B-picture
