@@ -68,10 +68,10 @@ export async function startService(input,{evidenceSource,reviewInvoke,recoverEvi
     };
     if(!await probe())throw Error('Alarm storage not writable');
     const consumer=new ObservationConsumer(repository);
-    const observedConsumer={consume:async envelope=>{
+    const observedConsumer={flushAcknowledgements:()=>consumer.flushAcknowledgements(),consume:async(envelope,options)=>{
       counters.received++;lastInputAt=new Date().toISOString();
       try{
-        const result=await consumer.consume(envelope);
+        const result=await consumer.consume(envelope,options);
         if(result.durable){counters.persisted++;lastPersistedAt=new Date().toISOString();}
         if(result.outcome==='already_consumed')counters.replayed++;
         return result;

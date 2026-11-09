@@ -55,7 +55,7 @@ export function observationEnvelope(sample,rules){
 export class ObservationPump {
   constructor(root,consumer,repository){
     if(!path.isAbsolute(root)||root.length>4096)throw Error('Absolute observation root required');
-    this.root=root;this.consumer=consumer;this.repository=repository;this.stopping=false;this.running=null;this.issues=new Map();this.pendingDirectorySyncs=new Set();
+    this.root=root;this.consumer=consumer;this.repository=repository;this.stopping=false;this.concurrency=8;this.running=null;this.issues=new Map();this.pendingDirectorySyncs=new Set();
     this.status={state:'waiting',pending:0,consumed:0,ignored:0,failed:0,last_error:null,last_persisted_at:null,channel_issues:[]};
   }
   tick(){if(this.running)return this.running;this.running=this.scan().finally(()=>{this.running=null});return this.running;}
@@ -69,9 +69,12 @@ export class ObservationPump {
     if(!snapshot){this.status.state='waiting';this.status.last_error='rules_not_configured';return;}
     if(this.reconciledRevision!==snapshot.revision){await this.repository.reconcileActivities?.(snapshot);this.reconciledRevision=snapshot.revision;}
     let pending=0,failed=false;
-    for(const directory of directories){
-      if(this.stopping)break;
-      if(!directory.isDirectory()||!/^[a-f0-9]{64}$/.test(directory.name))continue;
+    // Channels are independent (one lease and checkpoint each): consume them
+    // concurrently so their syncs and journaled Mongo commits overlap, while each
+    // channel stays strictly ordered. One-at-a-time capped ALL channels together
+    // near 19 frames/s (8 channels x 3 FPS needs 24).
+    const channelDirectories=directories.filter(d=>d.isDirectory()&&/^[a-f0-9]{64}$/.test(d.name));
+    const consumeChannel=async directory=>{
       const folder=path.join(this.root,directory.name);
       const records=(await readdir(folder)).filter(n=>recordName.test(n)).sort();pending+=records.length;
       // Fair bounded batches keep one busy channel from starving another.
@@ -87,9 +90,9 @@ export class ObservationPump {
           step='convert';
           const converted=observationEnvelope(sample,snapshot.rules);
           if(converted.waiting){reason=converted.waiting;throw Error('Source binding not configured');}
-          if(converted.envelope){step='consume';const result=await this.consumer.consume(converted.envelope);if(result.durable!==true)throw Error('Consumption not durable');this.status.consumed++;this.status.last_persisted_at=new Date().toISOString();}
+          if(converted.envelope){step='consume';const result=await this.consumer.consume(converted.envelope,{deferAcknowledgement:true});if(result.durable!==true)throw Error('Consumption not durable');this.status.consumed++;this.status.last_persisted_at=new Date().toISOString();}
           else {this.status.ignored++;this.status.last_ignored_reason=converted.ignored;
-            if(this.repository.reviewContext?.root)await new EvidenceSpool(this.repository.reviewContext.root).acknowledge(sample);
+            if(this.repository.reviewContext?.root)await new EvidenceSpool(this.repository.reviewContext.root).acknowledge(sample,{defer:true});
           }
           if(converted.ignored==='source_binding_mismatch')this.rememberIssue(directory.name,sample,'source_binding_mismatch','ignored');
           else this.issues.delete(directory.name);
@@ -109,12 +112,19 @@ export class ObservationPump {
       // reappearing records replay the existing checkpoint, never new alarms.
       if(removed)this.pendingDirectorySyncs.add(directory.name);
       if(this.pendingDirectorySyncs.has(directory.name))try{
+        // Evidence ACKs of this batch become durable before the deletions do.
+        await this.consumer.flushAcknowledgements?.();
+        if(this.repository.reviewContext?.root)await new EvidenceSpool(this.repository.reviewContext.root).flushAcknowledgements();
         await this.syncDirectory(folder);
         this.pendingDirectorySyncs.delete(directory.name);
         if(this.issues.get(directory.name)?.reason==='acknowledgement_pending')this.issues.delete(directory.name);
       }
       catch{this.status.failed++;failed=true;this.status.last_error='acknowledgement_pending';this.rememberIssue(directory.name,sample,'acknowledgement_pending','blocked');}
-    }
+    };
+    const queue=[...channelDirectories];
+    await Promise.all(Array.from({length:Math.min(this.concurrency,queue.length)},async()=>{
+      for(let directory;!this.stopping&&(directory=queue.shift());)await consumeChannel(directory);
+    }));
     const present=new Set(directories.filter(d=>d.isDirectory()).map(d=>d.name));
     for(const key of this.issues.keys())if(!present.has(key))this.issues.delete(key);
     for(const key of this.pendingDirectorySyncs)if(!present.has(key))this.pendingDirectorySyncs.delete(key);

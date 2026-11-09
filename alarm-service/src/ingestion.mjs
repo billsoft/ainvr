@@ -32,11 +32,15 @@ export class ObservationConsumer {
     this.now=now;this.leaseMs=leaseMs;this.hook=hook;this.dwellStarted=new Set();
     this.spool=repository.reviewContext?.root?new EvidenceSpool(repository.reviewContext.root):null;
   }
-  async consume(envelope) {
+  // deferAcknowledgement: the caller commits ACKs with flushAcknowledgements()
+  // before it durably deletes the input (journal pump). Others get durable ACKs.
+  async consume(envelope,options={}) {
     const release=observationBarrier(this.repository).enter();
-    try{return await this.consumeFrame(envelope);}finally{release();}
+    try{return await this.consumeFrame(envelope,options);}finally{release();}
   }
-  async consumeFrame(envelope) {
+  async flushAcknowledgements(){await this.spool?.flushAcknowledgements();}
+  async consumeFrame(envelope,options={}) {
+    const defer={defer:options.deferAcknowledgement===true};
     if(!envelope||envelope.schema_version!=='1.0')fail('invalid_envelope','Unsupported input envelope');
     const producer=identity(envelope.producer_id,'producer_id');
     const offset=integerText(envelope.offset,'offset');
@@ -55,10 +59,10 @@ export class ObservationConsumer {
       if(doc.producer_id!==producer)fail('producer_changed','Producer identity changed; explicit migration required',409);
       // Complete a previously prepared outcome before reading current rules.
       // Old/stale workers can only materialize this same immutable outcome.
-      if(doc.pending)doc=await this.finish(doc,validFence);
+      if(doc.pending)doc=await this.finish(doc,validFence,false,defer);
       if(doc.offset!==null&&offset<=BigInt(doc.offset)) {
         if(offset===BigInt(doc.offset)&&doc.fingerprint!==fingerprint)fail('offset_conflict','Same offset has different content',409);
-        await this.spool?.acknowledge(frame);
+        await this.spool?.acknowledge(frame,defer);
         return {durable:true,outcome:'already_consumed',offset:envelope.offset,events:[]};
       }
       const gap=doc.offset!==null&&offset!==BigInt(doc.offset)+1n;
@@ -117,7 +121,7 @@ export class ObservationConsumer {
       const prepared=await this.collection.findOneAndUpdate({...validFence(),pending:null},{$set:{pending}},{returnDocument:'after'});
       if(!prepared)fail('lease_expired','Input lease expired; retry same input',503);
       await this.hook('prepared');
-      doc=await this.finish(prepared,validFence,true);
+      doc=await this.finish(prepared,validFence,true,defer);
       this.dwellStarted.add(channel);
       if(this.dwellStarted.size>1024)this.dwellStarted.delete(this.dwellStarted.values().next().value);
       return {durable:true,outcome:'consumed',offset:doc.offset,events:[...new Set(pending.events.filter(e=>e.rule.snapshot.alarm_enabled!==false).map(e=>e.episode_id??e.alarm_id))],behavior_events:pending.events.flatMap(e=>(e.group_members??[e]).map(member=>behaviorEvent(member).event_id)),issues:result.issues};
@@ -125,7 +129,7 @@ export class ObservationConsumer {
       await this.collection.updateOne(fence,{$set:{lease_until:0},$unset:{lease_token:''}});
     }
   }
-  async finish(doc,fence,protectedInThisAttempt=false) {
+  async finish(doc,fence,protectedInThisAttempt=false,defer={}) {
     const p=doc.pending;
     // Prepared outcomes can be recovered by a different lease generation.
     // The normal path already fsynced these exact immutable pending keys before
@@ -222,7 +226,7 @@ export class ObservationConsumer {
       {returnDocument:'after',writeConcern:{w:1,j:true}});
     if(!saved)fail('lease_expired','Checkpoint not committed; retry same input',503);
     await this.spool?.settle(p.checkpoint,doc.channel_id,doc.generation);
-    if(p.source_frame)await this.spool?.acknowledge(p.source_frame);
+    if(p.source_frame)await this.spool?.acknowledge(p.source_frame,defer);
     return saved;
   }
 }

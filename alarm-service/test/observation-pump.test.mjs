@@ -98,3 +98,48 @@ test('source discontinuity survives journal conversion without changing target i
  assert.deepEqual(resumed.tracks,original.tracks);
  assert.throws(()=>observationEnvelope({...sample,gap:'true'},[rule]),/Invalid observation gap/);
 });
+test('pump defers per-frame ACK syncs and commits them before journal deletions',async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),'ainvr-observations-')),dir=path.join(root,rawHash('processor'));
+ try{
+  await mkdir(dir);for(const offset of ['0','1','2'])await writeFile(path.join(dir,offset.padStart(20,'0')+'.json'),JSON.stringify({...sample,offset}));
+  const order=[],options=[];
+  const consumer={consume:async(e,o)=>{options.push(o);order.push('consume:'+e.offset);return {durable:true}},flushAcknowledgements:async()=>{order.push('flush')}};
+  const pump=new ObservationPump(root,consumer,{ruleSnapshots:{current:async()=>({rules:[rule]})}});
+  pump.syncDirectory=async()=>{order.push('sync')};
+  await pump.tick();
+  assert.deepEqual(order,['consume:0','consume:1','consume:2','flush','sync']);
+  assert.ok(options.every(o=>o?.deferAcknowledgement===true),'pump must request deferred acknowledgements');
+  assert.equal((await readdir(dir)).length,0);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('channels are consumed concurrently, each in order, and a blocked channel never stalls another',async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),'ainvr-observations-'));
+ try{
+  const other={...rule,id:'r2',channel_id:'other'};
+  for(const channel of ['processor','other']){
+   const dir=path.join(root,rawHash(channel));await mkdir(dir);
+   for(const offset of ['0','1','2'])await writeFile(path.join(dir,offset.padStart(20,'0')+'.json'),JSON.stringify({...sample,channel_id:channel,offset}));
+  }
+  const seen={processor:[],other:[]};let active=0,peak=0,failOnce=true;
+  const consumer={consume:async e=>{
+   const channel=e.frame.channel_id;active++;peak=Math.max(peak,active);seen[channel].push(e.offset);
+   try{
+    await new Promise(r=>setTimeout(r,30));
+    if(channel==='other'&&e.offset==='1'&&failOnce){failOnce=false;throw Error('storage down');}
+    return {durable:true};
+   }finally{active--;}
+  }};
+  const pump=new ObservationPump(root,consumer,{ruleSnapshots:{current:async()=>({rules:[rule,other]})}});
+  pump.syncDirectory=async()=>{};
+  await pump.tick();
+  assert.ok(peak>=2,'one channel at a time serialised every channel behind the slowest one');
+  assert.deepEqual(seen.processor,['0','1','2']);
+  assert.deepEqual(seen.other,['0','1']);
+  assert.equal((await readdir(path.join(root,rawHash('processor')))).length,0);
+  assert.deepEqual((await readdir(path.join(root,rawHash('other')))).sort(),['00000000000000000001.json','00000000000000000002.json']);
+  await pump.tick();
+  assert.deepEqual(seen.other,['0','1','1','2']);
+  assert.equal((await readdir(path.join(root,rawHash('other')))).length,0);
+ }finally{await rm(root,{recursive:true,force:true});}
+});

@@ -90,3 +90,53 @@ test('failed pin creation rejects preparation and leaves previously protected fr
   assert.equal((await readdir(join(root,'raw'))).filter(n=>n.endsWith('.1.pin')).length,1);
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('deferred acknowledgements are visible at once and committed by one directory flush',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ainvr-spool-'));try{
+  const spool=new EvidenceSpool(root);await mkdir(join(root,'raw'));
+  const frames=Array.from({length:20},(_,i)=>({channel_id:'c',stream_session_id:'s',source_pts_ns:String(i),source_frame_index:String(i),evidence_delivery:{schema_version:2,state:'durable'}}));
+  const before=evidenceSyncStatus().writes;
+  for(const frame of frames)await spool.acknowledge(frame,{defer:true});
+  for(const frame of frames)assert.equal((await stat(join(root,'raw',frameKey('c','s',frame)+'.ack'))).isFile(),true);
+  await new EvidenceSpool(root).flushAcknowledgements();
+  assert.equal(evidenceSyncStatus().writes-before,1,'one directory sync must commit the whole batch');
+  await spool.flushAcknowledgements();
+  assert.equal(evidenceSyncStatus().writes-before,1,'a clean spool must not sync again');
+  await spool.acknowledge({...frames[0],evidence_delivery:{schema_version:2,state:'failed'}},{defer:true});
+  await spool.flushAcknowledgements();assert.equal(evidenceSyncStatus().writes-before,1,'non-durable evidence is never acknowledged');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+test('settle consults a shared pin index instead of rescanning the spool on every frame',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ainvr-spool-'));try{
+  await mkdir(join(root,'raw'));
+  for(let i=0;i<300;++i)await writeFile(join(root,'raw',sha(String(i))+'.jpg'),'x');
+  const a={frame_id:'s:1',source_pts_ns:'1',source_frame_index:'1'},b={frame_id:'s:2',source_pts_ns:'2',source_frame_index:'2'};
+  const writer=new EvidenceSpool(root),settler=new EvidenceSpool(root);
+  await writer.protect({states:{a:{review_compact:{start:a}}}},'c','s',1);
+  await settler.settle({session:'s',states:{a:{review_compact:{start:a}}}},'c',1);
+  const scans=evidenceSyncStatus().directory_scans;
+  for(let i=0;i<50;++i)await settler.settle({session:'s',states:{a:{review_compact:{start:a}}}},'c',1);
+  assert.equal(evidenceSyncStatus().directory_scans-scans,0,'steady-state settle must not list the spool');
+  await writer.protect({states:{b:{review_compact:{start:b}}}},'c','s',2);
+  await settler.settle({session:'s',states:{b:{review_compact:{start:b}}}},'c',2);
+  const pins=(await readdir(join(root,'raw'))).filter(n=>n.endsWith('.pin'));
+  assert.deepEqual(pins,[frameKey('c','s',b)+'.'+sha('c')+'.2.pin'],'pin created by another instance must be indexed and older generation released');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('re-protecting already-durable pins does not sync the spool directory again',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ainvr-pin-resync-'));try{
+  const a={frame_id:'s:1',source_pts_ns:'1',source_frame_index:'1'},b={frame_id:'s:2',source_pts_ns:'2',source_frame_index:'2'};
+  const spool=new EvidenceSpool(root);await spool.protect(a,'c','s',1);
+  const before=evidenceSyncStatus().writes;
+  for(let i=0;i<20;++i)await spool.protect(a,'c','s',1);
+  await new EvidenceSpool(root).protect(a,'c','s',1);
+  assert.equal(evidenceSyncStatus().writes-before,0,'every consumed frame re-syncing unchanged pins capped alarm consumption');
+  await spool.protect({a,b},'c','s',1);
+  assert.equal(evidenceSyncStatus().writes-before,1,'a new pin must still be committed before preparation');
+  await spool.settle({session:'s',b},'c',1);
+  await spool.protect(a,'c','s',1);
+  assert.equal(evidenceSyncStatus().writes-before,2,'a released and re-created pin must be committed again');
+  assert.ok((await readdir(join(root,'raw'))).includes(frameKey('c','s',a)+'.'+sha('c')+'.1.pin'));
+ }finally{await rm(root,{recursive:true,force:true});}
+});
