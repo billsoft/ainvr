@@ -47,7 +47,7 @@ export function parseTriggerDefinition(input:unknown):TriggerDefinition {
   if(d.target_model){
     const open=['yoloe_bpu','locateanything_bpu'].includes(d.target_model.adapter);
     if(open!==(d.target_model.mode==='open')||d.labels.some(l=>open?!l.description:l.description!==undefined))return fail('invalid_trigger','模型类型与识别标签不匹配');
-    if(open&&(d.labels.length>(d.target_model.name==='yoloe-26x-32'?32:d.target_model.name==='yoloe-26x-1'?1:8)||d.labels.some(l=>l.description!.includes('<|'))))return fail('invalid_trigger','开放词汇标签数量或描述无效');
+    if(open&&(d.labels.length>(d.target_model.name==='yoloe-26x-32'?32:d.target_model.name==='yoloe-26x-1'?1:d.target_model.name==='yoloe-26x-2'?2:8)||d.labels.some(l=>l.description!.includes('<|'))))return fail('invalid_trigger','开放词汇标签数量或描述无效');
   }
   if(d.behavior!=='appearance'&&d.duration_ms!==0)return fail('invalid_trigger','只有出现使用持续时间');
   if((d.behavior==='region_approach')!==(d.approach_width_percent!==undefined))return fail('invalid_trigger','只有接近使用距离且必须设置');

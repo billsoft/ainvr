@@ -88,6 +88,13 @@ it('1 槽开放词汇模型的触发定义最多只允许 1 个标签',()=>{
  expect(()=>parseTriggerDefinition({...definition(),target_model:model,labels:[...one,{label_id:'car',name:'汽车',description:'a car'}]})).toThrow();
 });
 
+it('2 槽开放词汇模型的触发定义最多只允许 2 个标签',()=>{
+ const model={name:'yoloe-26x-2',adapter:'yoloe_bpu',mode:'open' as const};
+ const two=[{label_id:'truck',name:'卡车',description:'a red truck'},{label_id:'car',name:'汽车',description:'a car'}];
+ expect(parseTriggerDefinition({...definition(),target_model:model,labels:two}).labels).toHaveLength(2);
+ expect(()=>parseTriggerDefinition({...definition(),target_model:model,labels:[...two,{label_id:'bus',name:'客车',description:'a bus'}]})).toThrow();
+});
+
 it('组合条件随执行规则冻结，检测模式不接受需要跨帧身份的组合',()=>{
  const input={...definition(),duration_ms:0,group:{labels:'any' as const,minimum:3,window_ms:1000}};
  expect(compileAssignment(input,1,assignment(),source,null,1)?.group).toEqual(input.group);
