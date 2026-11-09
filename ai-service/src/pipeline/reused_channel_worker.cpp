@@ -1290,16 +1290,14 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
       RecordTiming(TimingStage::ReviewFrameOffer, ms, timing_identity);
     });
     const auto session=result.model_extra["analytics"].value("stream_session_id",std::string());
-    if(!session.empty()){evidence_receipt=output::SharedReviewFrameCache().OfferAsync({{"channel_id",channel_id_},{"stream_session_id",session},
+    if(!session.empty()){evidence_receipt=output::SharedReviewFrameCache().OfferPreparedAsync({{"channel_id",channel_id_},{"stream_session_id",session},
       {"source_pts_ns",std::to_string(result.frame_pts_ns)},{"source_frame_index",std::to_string(result.frame_index)},
       {"frame_width",frame.width},{"frame_height",frame.height}},[owned=frame.ref]{
-        static thread_local std::unique_ptr<ainvr::GlesPreprocessor> converter;
-        if(!converter)converter=std::make_unique<ainvr::GlesPreprocessor>();
         const auto& src=owned->nv12;const double scale=std::min(1.0,1280.0/std::max(src.width,src.height));
-        ainvr::ImageTransform t;t.width=std::max(32,int(src.width*scale)/2*2);t.height=std::max(32,int(src.height*scale)/2*2);
-        t.letterbox=false;t.yuv_bt709=owned->bt709;t.yuv_full_range=owned->full_range;
-        auto rgba=converter->RunNv12Rgba(src.pixels,src.width,src.height,t);
-        cv::Mat image(t.height,t.width,CV_8UC4);std::memcpy(image.data,rgba.data(),rgba.size());return image;
+        output::ReviewEncodedFrame image;image.width=std::max(32,int(src.width*scale)/2*2);image.height=std::max(32,int(src.height*scale)/2*2);
+        if(!output::EncodeSnapshotNv12Jpeg(src.pixels,src.width,src.height,image.width,image.height,owned->bt709,owned->full_range,image.jpeg,85))
+          throw std::runtime_error("evidence encode");
+        return image;
       },frame.ref->nv12.pixels.size(),[this]{return stop_event_.load()||!LicenseAllowed();});
       // The journal resolves this receipt before publishing its observation.
       // Do not claim durable evidence just because RAM admission succeeded.

@@ -32,6 +32,8 @@ struct Job {
  std::vector<uint8_t> pixels;
  int width,height,quality;
  bool rgba;
+ const std::vector<uint8_t>* nv12_pixels=nullptr;
+ int input_width=0,input_height=0;bool bt709=false,full_range=false;size_t retained_bytes=0;
  uint64_t enqueued=0,converted=0;
  std::promise<std::vector<uint8_t>> result;
 };
@@ -51,19 +53,27 @@ class HardwareJpeg {
  }
  std::vector<uint8_t> Run(const cv::Mat& input,int quality,bool rgba){
   auto job=std::make_unique<Job>();job->width=input.cols;job->height=input.rows;job->quality=quality;
-  job->rgba=rgba;
+  job->rgba=rgba;job->input_width=input.cols;job->input_height=input.rows;
   const auto copy_start=Tick();
   const size_t row=size_t(input.cols)*(rgba?4:3);job->pixels.resize(row*input.rows);
   // Memory transfer only; GPU handles channel order, colors, chroma and padding.
   for(int y=0;y<input.rows;++y)std::memcpy(job->pixels.data()+size_t(y)*row,input.ptr(y),row);
-  Observe(0,copy_start);
+  Observe(0,copy_start);job->retained_bytes=job->pixels.size();return Submit(std::move(job));
+ }
+ std::vector<uint8_t> RunNv12(const std::vector<uint8_t>& pixels,int sw,int sh,int w,int h,bool bt709,bool full_range,int quality){
+  auto job=std::make_unique<Job>();job->width=w;job->height=h;job->quality=quality;job->rgba=false;
+  // The synchronous caller owns immutable pixels until its receipt is ready.
+  job->nv12_pixels=&pixels;job->input_width=sw;job->input_height=sh;job->bt709=bt709;job->full_range=full_range;job->retained_bytes=pixels.size();return Submit(std::move(job));
+ }
+ private:
+ std::vector<uint8_t> Submit(std::unique_ptr<Job> job){
   auto result=job->result.get_future();
   const auto admission_start=Tick();
   {std::unique_lock<std::mutex> lock(mutex_);
-   available_.wait(lock,[&]{return stopping_||(jobs_.size()<4&&queued_bytes_+job->pixels.size()<=size_t(256)*1024*1024);});
+   available_.wait(lock,[&]{return stopping_||(jobs_.size()<4&&queued_bytes_+job->retained_bytes<=size_t(256)*1024*1024);});
    if(stopping_)throw std::runtime_error("Snapshot JPEG worker is stopping");
    Observe(1,admission_start);job->enqueued=Tick();
-   queued_bytes_+=job->pixels.size();jobs_.push_back(std::move(job));}
+   queued_bytes_+=job->retained_bytes;jobs_.push_back(std::move(job));}
   available_.notify_all();return result.get();
  }
  private:
@@ -75,7 +85,7 @@ class HardwareJpeg {
    {std::unique_lock<std::mutex> lock(mutex_);
     available_.wait(lock,[&]{return stopping_||!jobs_.empty();});
     if(jobs_.empty()&&stopping_)break;
-    job=std::move(jobs_.front());jobs_.pop_front();queued_bytes_-=job->pixels.size();}
+    job=std::move(jobs_.front());jobs_.pop_front();queued_bytes_-=job->retained_bytes;}
    available_.notify_all();
    Observe(2,job->enqueued);const auto conversion_start=Tick();
    try {
@@ -86,9 +96,17 @@ class HardwareJpeg {
     transform.nearest=true;transform.letterbox=false;
     transform.source_region=std::array<float,4>{0,0,float(w),float(h)};
     if(!colors)colors=std::make_unique<ainvr::GlesPreprocessor>();
-    auto nv12=job->rgba
+    std::vector<uint8_t> nv12;
+    if(job->nv12_pixels){
+      transform.nearest=false;transform.yuv_bt709=job->bt709;transform.yuv_full_range=job->full_range;
+      // Preserve the visible scale while edge-padding the JPU-aligned extent.
+      transform.source_region=std::array<float,4>{0,0,float(job->input_width)*w/job->width,float(job->input_height)*h/job->height};
+      nv12=colors->RunJpegNv12(*job->nv12_pixels,job->input_width,job->input_height,transform);
+      job->nv12_pixels=nullptr;
+    }else nv12=job->rgba
       ? colors->RunRgbaJpegNv12(job->pixels,job->width,job->height,transform)
-      : colors->RunBgrJpegNv12(job->pixels,job->width,job->height,transform);++gpu_count;
+      : colors->RunBgrJpegNv12(job->pixels,job->width,job->height,transform);
+    ++gpu_count;
     Observe(3,conversion_start);job->converted=Tick();
     std::vector<uint8_t>().swap(job->pixels); // GPU has consumed the owned input.
     {
@@ -161,6 +179,7 @@ class HardwareJpeg {
  bool stopping_=false;
  std::thread worker_,encoder_worker_;
 };
+HardwareJpeg& SharedHardwareJpeg(){static HardwareJpeg worker;return worker;}
 #endif
 }
 SnapshotJpegStats GetSnapshotJpegStats(){std::lock_guard lock(timing_mutex);return {hardware_count.load(),0,failure_count.load(),gpu_count.load(),encoder_creates.load(),encoder_reuses.load(),timings};}
@@ -189,7 +208,7 @@ bool Encode(const cv::Mat& input,std::vector<uint8_t>& out,int quality,bool rgba
   throw std::invalid_argument("Snapshot hardware JPEG requires visible dimensions 17..8192; CPU image fallback is disabled");
 #ifdef AINVR_ARCHIVE_JPU
  // Both APIs share one hardware queue and one owning GLES thread.
- static HardwareJpeg worker;out=worker.Run(input,quality,rgba);return true;
+ out=SharedHardwareJpeg().Run(input,quality,rgba);return true;
 #else
  throw std::runtime_error("Snapshot hardware JPEG backend is unavailable; CPU image fallback is disabled");
 #endif
@@ -201,4 +220,15 @@ bool EncodeSnapshotJpeg(const cv::Mat& input,std::vector<uint8_t>& out,int quali
 bool EncodeSnapshotRgbaJpeg(const cv::Mat& input,std::vector<uint8_t>& out,int quality){
  return Encode(input,out,quality,true);
 }
+bool EncodeSnapshotNv12Jpeg(const std::vector<uint8_t>& pixels,int sw,int sh,int w,int h,bool bt709,bool full_range,std::vector<uint8_t>& out,int quality){
+ out.clear();
+ if(sw<=0||sh<=0||sw>16384||sh>16384||sw%2||sh%2||pixels.size()!=size_t(sw)*sh*3/2||pixels.size()>size_t(256)*1024*1024||w<32||h<32||w>8192||h>8192||w%2||h%2||quality<1||quality>100)
+  throw std::invalid_argument("Invalid snapshot NV12 dimensions, pixels or quality");
+#ifdef AINVR_ARCHIVE_JPU
+ out=SharedHardwareJpeg().RunNv12(pixels,sw,sh,w,h,bt709,full_range,quality);return true;
+#else
+ throw std::runtime_error("Snapshot hardware JPEG backend is unavailable; CPU image fallback is disabled");
+#endif
+}
+
 }

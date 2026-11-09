@@ -22,4 +22,9 @@ bool EncodeSnapshotJpeg(const cv::Mat& bgr, std::vector<uint8_t>& out, int quali
 // Native archive RGBA8 -> GPU color/padding -> JPU. Non-contiguous ROIs are
 // copied as bytes only, alpha is ignored. Same dimensions and failure contract.
 bool EncodeSnapshotRgbaJpeg(const cv::Mat& rgba, std::vector<uint8_t>& out, int quality);
+// Packed source NV12 -> one GLES resize/color pass -> the SAME shared JPU queue.
+// Synchronous: source bytes remain immutable until return; no CPU pixel conversion.
+bool EncodeSnapshotNv12Jpeg(const std::vector<uint8_t>& nv12,int source_width,int source_height,
+ int width,int height,bool bt709,bool full_range,std::vector<uint8_t>& out,int quality);
+
 }

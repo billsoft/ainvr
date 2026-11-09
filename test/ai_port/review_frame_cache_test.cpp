@@ -73,6 +73,19 @@ int main(int argc,char** argv){try{
   std::vector<std::shared_future<bool>> receipts;
   {ReviewFrameCache draining;for(int i=0;i<5;++i)receipts.push_back(draining.OfferAsync(Metadata(i),[]{std::this_thread::sleep_for(std::chrono::milliseconds(10));return cv::Mat(32,32,CV_8UC4);}));}
   for(auto& receipt:receipts)Check(receipt.get(),"shutdown discarded accepted evidence");
+ }else if(mode=="encoded"){
+  auto receipt=cache.OfferPreparedAsync(Metadata(101),[&]{gate.Wait();return ReviewEncodedFrame{{255,216,255,217},48,32};});
+  gate.Entered();Check(receipt.wait_for(std::chrono::milliseconds(0))==std::future_status::timeout,"prepared input claimed durable before storage");gate.Release();Check(receipt.get(),"prepared image not durably persisted");
+  size_t found=0;for(const auto& f:std::filesystem::directory_iterator(root/"raw"))if(f.path().extension()==".json"){Json m;std::ifstream in(f.path());in>>m;Check(m.at("image_width")==48&&m.at("image_height")==32&&m.at("bytes")==4&&m.at("sha256").get<std::string>().size()==64,"prepared dimensions/hash changed");++found;}
+  Check(found==1,"prepared image metadata missing");
+  Check(!cache.OfferPreparedAsync(Metadata(102),[]{return ReviewEncodedFrame{{1,2,3,4},48,32};}).get(),"non-JPEG prepared bytes admitted");
+ }else if(mode=="persist_failure"){
+  const std::string identity="test\ns\n1\n1";unsigned char digest[SHA256_DIGEST_LENGTH];SHA256(reinterpret_cast<const unsigned char*>(identity.data()),identity.size(),digest);std::string key;for(auto byte:digest){key+="0123456789abcdef"[byte>>4];key+="0123456789abcdef"[byte&15];}
+  const auto blocked=root/"raw"/(key+".json.tmp");std::filesystem::create_directory(blocked);
+  Check(!cache.OfferAsync(Metadata(1),[]{return cv::Mat(32,32,CV_8UC4);}).get(),"failed metadata write claimed complete evidence");
+  Check(!std::filesystem::exists(root/"raw"/(key+".jpg")),"published JPEG before staging metadata");
+  Check(std::filesystem::is_directory(blocked),"cleanup removed a path it did not open");std::filesystem::remove(blocked);
+  Check(cache.OfferAsync(Metadata(2),[]{return cv::Mat(32,32,CV_8UC4);}).get(),"write failure blocked later receipts");
  }else if(mode=="targets"){
   ai_service::FrameResult result;
   Check(!HasReviewVisualTarget(result),"empty frame must not consume a cache slot");

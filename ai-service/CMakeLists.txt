@@ -73,6 +73,10 @@ if(AINVR_S100P)
   target_link_libraries(ainvr_decode_probe PRIVATE ainvr_vpu nlohmann_json::nlohmann_json PkgConfig::AVFORMAT)
   set_target_properties(ainvr_decode_probe PROPERTIES BUILD_RPATH /usr/hobot/lib)
   # Explicit manual probe only: never run media hardware from normal CTest.
+  add_executable(ainvr_evidence_nv12_probe EXCLUDE_FROM_ALL ../test/ai_port/evidence_nv12_probe.cpp)
+  target_include_directories(ainvr_evidence_nv12_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(ainvr_evidence_nv12_probe PRIVATE ainvr_reused_snapshot_store ainvr_media_source ainvr_vpu)
+  set_target_properties(ainvr_evidence_nv12_probe PROPERTIES BUILD_RPATH /usr/hobot/lib)
   add_executable(snapshot_jpeg_layout_probe EXCLUDE_FROM_ALL ../test/ai_port/snapshot_renderer_probe.cpp)
   target_compile_definitions(snapshot_jpeg_layout_probe PRIVATE AINVR_JPEG_DECODE_LAYOUT_DIAGNOSTIC)
   # Vendor headers bundle OpenSSL 1.x; use the system OpenSSL before SDK paths.
