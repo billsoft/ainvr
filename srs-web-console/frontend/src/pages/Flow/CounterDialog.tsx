@@ -16,7 +16,7 @@ export function CounterDialog({initial,labels,onCancel,onSaved,send=flowService.
  const host=useFullscreenPortalHost(),title=useId()
  const [value,setValue]=useState<CounterInput>(()=>initial?{counter_id:initial.counter_id,name:initial.name,labels:structuredClone(initial.labels),method:initial.method,outputs:initial.outputs,
   names:{...initial.names},occupancy:initial.occupancy,max_gap_ms:initial.max_gap_ms,state:initial.state}:
-  {counter_id:`counter-${newAlarmOperationId()}`,name:'',labels:labels.filter(l=>l.label_id==='person'||l.name==='person').slice(0,1),method:'line',outputs:'both',names:{in:'进',out:'出'},occupancy:true,max_gap_ms:1000,state:'enabled'})
+  {counter_id:`counter-${newAlarmOperationId()}`,name:'',labels:labels.filter(l=>l.label_id==='person'||l.name==='person').slice(0,1),method:'line',outputs:'both',names:{in:'进',out:'出'},occupancy:true,max_gap_ms:1500,state:'enabled'})
  const [session]=useState(()=>createCounterSaveSession(initial?.version??0,send))
  const [error,setError]=useState(''),[saving,setSaving]=useState(false),[discard,setDiscard]=useState(false)
  const original=useRef(JSON.stringify(value)),dialog=useRef<HTMLDivElement>(null),first=useRef<HTMLInputElement>(null),discardPanel=useRef<HTMLElement>(null)
