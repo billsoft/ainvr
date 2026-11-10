@@ -7,8 +7,8 @@ import {useEffect,useId,useRef,useState} from 'react'
 import {createPortal} from 'react-dom'
 import {ScheduleEditor} from './ScheduleEditor'
 import {scheduleError,scheduleSummary} from '@/features/alarmSchedule'
-import {triggerBehaviors,behaviorNames,type TriggerLabel} from '@/features/alarmTriggers'
-import {labelDisplay} from '@/features/labelNames'
+import {triggerBehaviors,type TriggerLabel} from '@/features/alarmTriggers'
+import {actionText,conditionOf,conditionSentence,defaultWindowMs,groupOf,minimumCount,needsWindow,type TriggerCondition} from '@/features/triggerCondition'
 import type {TriggerDefinition,TriggerDefinitionInput} from '@/features/alarmDefinitions'
 
 interface Props {
@@ -42,6 +42,29 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
  useEffect(()=>{if(discard)discardPanel.current?.focus();else if(dialog.current&&!dialog.current.contains(document.activeElement))heading.current?.focus()},[discard])
  const close=()=>{if(locked)return;if(JSON.stringify({value,seconds,percent})!==original.current)setDiscard(true);else onCancel()}
  const patch=(change:Partial<TriggerDefinitionInput>)=>{setValue(v=>({...v,...change}));setError('')}
+ // The operator edits relation / count / window; the stored group is derived from them.
+ // An untouched existing definition keeps its group exactly as stored.
+ const [condition,setCondition]=useState(()=>conditionOf(value))
+ const windowEdited=useRef(!!initial?.group)
+ const recompute=(c:TriggerCondition,labels=value.labels.length)=>{
+  const fixed={...c,count:Math.max(c.count,minimumCount(labels>1?c.relation:'any',labels))}
+  setCondition(fixed)
+  const group=groupOf(fixed,labels)
+  // A new appearance group counts targets present together; individual dwell defaults to none.
+  if(group&&!value.group&&!initial&&value.behavior==='appearance')setSeconds('0')
+  patch({group})
+ }
+ const editCondition=(change:Partial<TriggerCondition>)=>{if('window_ms' in change)windowEdited.current=true;recompute({...condition,...change})}
+ const labelCount=useRef(value.labels.length),behaviorRef=useRef(value.behavior)
+ useEffect(()=>{
+  // Labels or behaviour changed: keep the chosen condition valid for the new selection.
+  if(labelCount.current===value.labels.length&&behaviorRef.current===value.behavior)return
+  const window=windowEdited.current?condition.window_ms:defaultWindowMs(value.behavior)
+  labelCount.current=value.labels.length;behaviorRef.current=value.behavior
+  recompute({...condition,window_ms:window,relation:value.labels.length>1?condition.relation:'any'})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ },[value.labels.length,value.behavior])
+ const windowShown=needsWindow(condition,value.labels.length)
  const validation=(n:number)=>{
   if(n===0&&(!value.name.trim()||value.name.trim().length>128))return '请填写名称，最多128个字符'
   if(n===1)return targetError(value)
@@ -59,8 +82,8 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
   for(let n=0;n<4;n++){const problem=validation(n);if(problem){setStep(n);setError(problem);return}}
   busy.current=true;setSaving(true);setError('')
   try{
-   const {approach_width_percent:_,...base}=value
-   await onSave({...base,name:value.name.trim(),duration_ms:value.behavior==='appearance'?Math.round(Number(seconds)*1000):0,
+   const {approach_width_percent:_,group,...base}=value
+   await onSave({...base,...(group?{group}:{}),name:value.name.trim(),duration_ms:value.behavior==='appearance'?Math.round(Number(seconds)*1000):0,
     ...(value.behavior==='region_approach'?{approach_width_percent:Number(percent)}:{})})
   }catch(e){
    const status=(e as {status?:number}).status
@@ -102,13 +125,14 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
     </>}
     {step===1&&<TriggerTargetPicker value={value} legacyLabels={labels} sources={sources} onChange={patch}/>}
     {step===2&&<>
-     {value.alarm_enabled&&<section className="space-y-3 rounded-panel border border-line p-4">
-      <label className="block text-sm font-medium">触发方式<select className={field} value={value.group?'group':'single'} onChange={e=>{const enabled=e.target.value==='group';if(enabled&&!initial&&value.behavior==='appearance')setSeconds('0');patch({group:enabled?{labels:'any',minimum:2,window_ms:value.behavior==='region_traverse'?3000:0}:undefined})}}><option value="single">单目标 · 任一所选标签</option><option value="group">组合 · 多类别或数量条件</option></select></label>
-      {value.group&&<><div className="grid gap-3 sm:grid-cols-3">
-       <label>类别匹配<select className={field} value={value.group.labels} onChange={e=>patch({group:{...value.group!,labels:e.target.value as 'all'|'any'}})}><option value="any">任一类别（或）</option><option value="all">全部类别（与）</option></select></label>
-       <label>最少不同目标数<input className={field} type="number" min={1} max={16} value={value.group.minimum} onChange={e=>patch({group:{...value.group!,minimum:Number(e.target.value)}})}/></label>
-       <label>{value.behavior==='region_traverse'?'穿越窗口（秒）':'同时保持（秒）'}<input className={field} type="number" min={0} max={60} step="0.1" value={value.group.window_ms/1000} onChange={e=>patch({group:{...value.group!,window_ms:Math.round(Number(e.target.value)*1000)}})}/></label></div>
-       <p className="text-xs text-ink-subtle">{value.behavior==='region_traverse'?'窗口内按完成穿越的不同跟踪目标计数，同一目标只算一次，0 秒表示必须同帧完成穿越。':'只计同一帧中符合行为的不同目标；0 秒表示同帧达标即告警。先后出现但未同框不会累加。'} 全部类别要求每类至少一个。组合告警逐个核对目标。授权及证据满足时可自动确认或判误报，其他情况保留人工审核。</p></>}
+     {value.alarm_enabled&&<section aria-label="触发条件" className="space-y-3 rounded-panel border border-line p-4">
+      <div className="grid gap-3 sm:grid-cols-3">
+       {value.labels.length>1&&<label className="block text-sm font-medium">类别关系<select className={`${field} mt-1.5`} value={condition.relation} onChange={e=>editCondition({relation:e.target.value as 'any'|'all'})}><option value="any">任一类别（或）</option><option value="all">全部类别同时（与）</option></select></label>}
+       <label className="block text-sm font-medium">至少几个目标<input className={`${field} mt-1.5`} type="number" min={minimumCount(condition.relation,value.labels.length)} max={16} step={1} value={condition.count} onChange={e=>editCondition({count:Number(e.target.value)})}/></label>
+       {windowShown&&<label className="block text-sm font-medium">{value.behavior==='region_traverse'?'穿越时间窗（秒）':'同时满足的容许漏检（秒）'}<input className={`${field} mt-1.5`} type="number" min={0} max={60} step="0.1" value={condition.window_ms/1000} onChange={e=>editCondition({window_ms:Math.min(60000,Math.max(0,Math.round(Number(e.target.value)*1000)))})}/></label>}
+      </div>
+      <p className="text-xs leading-5 text-ink-subtle">{!windowShown?'任一所选目标满足条件即告警，每个目标单独判断。':value.behavior==='region_traverse'?'在时间窗内按完成穿过的不同目标计数，同一目标只算一次；0 秒表示须在同一帧完成。':'所选目标须同时满足条件；某个目标被短暂遮挡或漏检时，在容许时间内仍算在场。先后出现但没有同时在场不会累加；0 秒表示须在同一帧。'}{condition.relation==='all'&&value.labels.length>1?' “与”要求每类至少 1 个，数量为合计。':''}{windowShown?' 组合告警会逐个核对目标，证据不足时保留人工审核。':''}</p>
+      <p role="status" aria-label="触发条件说明" className="rounded-base bg-primary-50 p-3 text-sm text-ink">即：{conditionSentence(value,actionText(value.behavior,{seconds,percent}))}时告警。</p>
      </section>}
      {value.behavior==='appearance'?<>
       <label className="block text-sm font-medium text-ink">连续出现（秒）<input type="number" min="0" max="3600" step="0.1" inputMode="decimal" value={seconds}
@@ -139,7 +163,7 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
        </>}
       </div></details>
      </section>}
-     <p className="rounded-base bg-surface-page p-3 text-sm text-ink">将会：{value.labels.length?value.labels.map(l=>labelDisplay(l.name)).join('、'):'（未选目标）'} {value.behavior==='appearance'?`连续出现满 ${seconds||0} 秒`:value.behavior==='region_approach'?`接近热区（画面宽度 ${percent||'?'}% 以内）`:`${behaviorNames[value.behavior]}热区`}时，{value.alarm_enabled?'生成告警':'保留旧版行为记录'}；{scheduleSummary(value.schedule)}。</p>
+     <p className="rounded-base bg-surface-page p-3 text-sm text-ink">将会：{conditionSentence(value,actionText(value.behavior,{seconds,percent}))}时，{value.alarm_enabled?'生成告警':'保留旧版行为记录'}；{scheduleSummary(value.schedule)}。</p>
      <p className="text-xs text-ink-subtle">{!initial?'新建后默认启用；关联到 AI 输出画面或热区并保存布防后才开始告警。':value.state==='enabled'?'当前已启用。启用和暂停可在触发器列表的“更多操作”中管理。':`当前${value.state==='draft'?'为草稿':value.state==='archived'?'已归档':'已暂停'}；保存修改不会自动启用。可在列表的“更多操作”中启用。`}</p>
      {initial?.usages?.length?<section aria-label="修改影响范围" className="rounded-base border border-warning bg-amber-50 p-3 text-sm"><h4 className="font-medium">保存将更新 {initial.usages.length} 处选用</h4>
       <ul>{initial.usages.map(u=><li key={u.assignment_id}>{usageNames[u.source_id]??'来源暂不可用'} · {u.zone_name??'整个画面'} · {usageNames[u.processor_id]??'处理器暂不可用'}</li>)}</ul><p className="mt-2 text-sm">历史记录保留当时版本；本次修改应用后重新累计判定证据。</p></section>

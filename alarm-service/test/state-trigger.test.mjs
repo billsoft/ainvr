@@ -56,11 +56,11 @@ test('proximity uses rectangle pixel distance, including overlap; respects aspec
  assert.equal(runner(r)(0,[{x:350,y:350,w:20,h:20}]).length,1);
  assert.equal(boxRegionDistancePx(points,{x:550,y:350,w:20,h:20},2000,1000),30);
 });
-test('three simultaneous members must all sustain one second, arrivals cannot accumulate',()=>{
+test('three simultaneous members trigger when the third arrives; the window only tolerates misses',()=>{
  const step=runner({group:{labels:'any',minimum:3,window_ms:1000}});
  const boxes=[0,1,2].map(i=>({x:350+i*30,y:350,w:20,h:20}));
- assert.equal(step(0,boxes.slice(0,2)).length,0);assert.equal(step(500,boxes).length,0);
- assert.equal(step(1000,boxes).length,0);const [e]=step(1500,boxes);assert.ok(e);
+ assert.equal(step(0,boxes.slice(0,2)).length,0);const [e]=step(500,boxes);assert.ok(e);
+ assert.equal(step(1000,boxes).length,0);assert.equal(step(1500,boxes).length,0);
  assert.equal(e.group_summary.count,3);assert.equal(buildReviewEvidence(e).blocking,false);
  assert.equal(step(1600,boxes).length,0);
 });

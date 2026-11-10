@@ -29,7 +29,11 @@ export function conditionIncidents(cp,frame,rules,periods,events,{discontinuity=
    const b=t.bbox;return inside(r.points,[(b.x+b.w/2)/frame.source.width,(b.y+b.h*(r.anchor==='center'?.5:1))/frame.source.height]);
   });
   const labels=new Set(members.map(m=>m.label_id));
-  const satisfied=r.group?members.length>=r.group.minimum&&(r.group.labels!=='all'||r.label_ids.every(l=>labels.has(l))):members.length>0;
+  // A group is held exactly when the group evaluator counts it held (same membership,
+  // same missed-detection tolerance); otherwise a flicker could end the episode while
+  // the group still counts and raise the same gathering twice.
+  const held=cp.groups?.[JSON.stringify([r.id,r.version])]?.held;
+  const satisfied=r.group?(held??(members.length>=r.group.minimum&&(r.group.labels!=='all'||r.label_ids.every(l=>labels.has(l))))):members.length>0;
   // Coasting/lost targets and unsupported group detection cannot prove departure.
   const unknown=discontinuity||boundaryUncertain||(r.group&&!tracked)||r.geometry_revision!==frame.source.geometry_revision||r.label_map_version!==frame.model.label_map_version||(r.input_stream_id!==undefined&&r.input_stream_id!==frame.input_stream_id)||frame.tracks.some(t=>r.label_ids.includes(t.label_id)&&(t.observation!=='detected'||t.event_eligible===false||t.state!=='confirmed'));
   if(satisfied||unknown)delete s.clear_since;

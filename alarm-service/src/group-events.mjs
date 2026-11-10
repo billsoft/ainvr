@@ -4,6 +4,7 @@ import {inside,boundaryDistancePx,stateSpatial} from './geometry.mjs';
 import {regionDirection} from './traversal.mjs';
 import {unwrapErp,liftErp} from './erp-geometry.mjs';
 import {compactProof,sampleOf} from './compact-evidence.mjs';
+import {separate} from './same-object.mjs';
 
 const elapsed=(now,start)=>Number(BigInt(now)-BigInt(start))/1e6;
 const ENTRY_MEMORY_MS=10000,MAX_ENTERED=64,REARM_MIN_MS=1000,MAX_MEMBERS=256,MAX_SPENT=1024;
@@ -30,6 +31,16 @@ function bound(state,now,rule,oldestFirst){
   if(state.spent.length>MAX_SPENT){state.spent.sort((a,b)=>Number(BigInt(b.at)-BigInt(a.at)));state.spent.length=MAX_SPENT;cut=true;}
   if(cut)state.truncated_until=String(BigInt(now)+BigInt(window+1)*1000000n);
   return !!state.truncated_until&&BigInt(now)<=BigInt(state.truncated_until);
+}
+// An ID switch leaves the old ID coasting on the same body as the new one: count it once.
+// Real sightings are never merged here (separate detections are separate tracker claims;
+// group review still checks shared witnesses); a coasting member counts only when its
+// current box is apart from every member already counted.
+function distinctObjects(members){
+  const box=m=>({label_id:m.sample.label_id,bbox:m.current_bbox??m.sample.bbox});
+  const kept=members.filter(m=>m.real);
+  for(const m of members)if(!m.real&&kept.every(k=>separate(box(k),box(m))))kept.push(m);
+  return kept;
 }
 function choose(members,rule){
   const chosen=new Map();
@@ -81,7 +92,7 @@ function build(rule,frame,selected,candidates,windowComplete,truncated=false){
     occurred_at:frame.captured_at,last_seen_at:frame.captured_at,track_ids:members.map(m=>m.sample.track_id),group_summary:{count:members.length,mode:rule.behavior==='region_traverse'?'completed_in_window':'simultaneous',window_ms:rule.group.window_ms},group_members:facts};
   event.analysis_evidence={...event.analysis_evidence,source_frame_index:frame.source_frame_index??null,trigger_seq:frame.seq,
     started_at:members.map(m=>m.start?.captured_at??m.sample.captured_at).sort()[0],
-    group:{...rule.group,proof_version:2,window_complete:windowComplete,candidate_count:candidates.length,candidates_truncated:truncated,mode:rule.behavior==='region_traverse'?'completed_in_window':'simultaneous',members:members.map((m,i)=>({...m,
+    group:{...rule.group,proof_version:2,window_complete:windowComplete,candidate_count:candidates.length,candidates_truncated:truncated,mode:rule.behavior==='region_traverse'?'completed_in_window':'simultaneous',members:members.map(({real:_real,current_bbox:_box,...m},i)=>({...m,
       identity_sample:(()=>{const t=frame.tracks.find(t=>t.track_id===m.sample.track_id&&t.label_id===m.sample.label_id&&t.observation==='detected'&&t.state==='confirmed'&&t.event_eligible!==false);return t?sampleOf(frame,t):null;})(),
       name:rule.labels?.find(l=>l.label_id===m.sample.label_id)?.name??m.sample.label_id,event_id:digest(['behavior',facts[i].dedup_key])}))}};
   event.analysis_evidence.group_digest=digest([rule,event.analysis_evidence.group,event.frame_id,event.stream_session_id]);
@@ -108,21 +119,30 @@ export function groupEvents(cp,frame,eligible,periods,events,reset){
       truncated=bound(state,now,rule,false);
       candidates=state.members;
     }else{
+      // Simultaneous condition. A member is a target whose last REAL qualifying sighting
+      // is at most window_ms old: the window tolerates missed detections, it is not a
+      // dwell time. A target observed not qualifying, or no longer reported, leaves at once.
       const last=new Map(state.members.map(m=>[m.sample.track_id,m]));
       // A target that legitimately entered keeps its proof across a missed detection (the single-target state is dropped with the track).
       const entered=state.entered??={};
       for(const id of Object.keys(entered))if(elapsed(now,entered[id].seen)>ENTRY_MEMORY_MS)delete entered[id];
       state.members=[];
       for(const t of frame.tracks){
-        if(t.state!=='confirmed'||t.observation!=='detected'||t.event_eligible===false||!rule.label_ids.includes(t.label_id))continue;
-        const prior=last.get(t.track_id),same=prior?.sample.label_id===t.label_id?prior:null,stage=stages.get(t.track_id);
+        if(!rule.label_ids.includes(t.label_id))continue;
+        const prior=last.get(t.track_id),same=prior?.sample.label_id===t.label_id?prior:null;
+        if(t.state!=='confirmed'||t.observation!=='detected'||t.event_eligible===false){
+          // Coasting, lost or weak: keep a recent real sighting, never create or refresh one.
+          if(same&&elapsed(now,same.sample.source_pts_ns)<=window)state.members.push({...same,real:false,current_bbox:t.bbox});
+          continue;
+        }
+        const stage=stages.get(t.track_id);
         const single=cp.states[JSON.stringify([rule.id,rule.version,t.track_id])];
         if(single?.side==='out')delete entered[t.track_id];   // seen outside again: its next way in is a new entry
         const known=rule.behavior==='region_enter'&&entered[t.track_id]?.label_id===t.label_id?entered[t.track_id]:null;
         const carried=same??known;
         if(!qualifies(rule,frame,t,single,stage||carried))continue;
         const m=memberAt(frame,t,stage);
-        m.start=same?.start??m.sample;
+        m.start=same?.start??m.sample;m.real=true;m.current_bbox=t.bbox;
         if(carried&&!stage){m.transition=carried.transition;m.direction=carried.direction;m.stage_proven=carried.stage_proven;m.traversal=carried.traversal??null;}
         if(rule.behavior==='region_enter'&&(stage||carried)){
           entered[t.track_id]={label_id:t.label_id,transition:m.transition,direction:m.direction,stage_proven:m.stage_proven,traversal:m.traversal,seen:now};
@@ -132,10 +152,12 @@ export function groupEvents(cp,frame,eligible,periods,events,reset){
         state.members.push(m);
       }
       truncated=bound(state,now,rule,true);
-      candidates=state.members.filter(m=>elapsed(now,m.start.source_pts_ns)>=window);
+      candidates=distinctObjects(state.members);
     }
     const selected=choose(candidates,rule);
-    if(selected.length&&!state.fired){
+    // A coasting set cannot raise an alarm by itself: the completing frame has a real member.
+    if(rule.behavior!=='region_traverse')state.held=selected.length>0;
+    if(selected.length&&!state.fired&&(rule.behavior==='region_traverse'||selected.some(m=>m.real))){
       result.push(build(rule,frame,selected,candidates,rule.behavior!=='region_traverse'||elapsed(now,state.observed_since)>=window,truncated));
       if(rule.behavior==='region_traverse'){
         // A threshold crossing is one alarm, including when many tracks finish on the same frame.
@@ -145,7 +167,7 @@ export function groupEvents(cp,frame,eligible,periods,events,reset){
       }else state.fired=true;
     }
     // Re-arm only after the count has stayed short for a while, so one missed detection cannot raise the same gathering twice.
-    if(selected.length||(rule.behavior!=='region_traverse'&&choose(state.members,rule).length))delete state.low_since;
+    if(selected.length)delete state.low_since;
     else if(state.fired){
       state.low_since??=now;
       if(elapsed(now,state.low_since)>=Math.max(REARM_MIN_MS,window)){state.fired=false;delete state.low_since;}

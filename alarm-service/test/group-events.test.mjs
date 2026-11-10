@@ -19,11 +19,12 @@ test('three people must overlap; a prediction or three sequential arrivals do no
  const step=camera('appearance',{labels:'any',minimum:3,window_ms:1000});
  for(const [i,id] of ['a','b','c'].entries())assert.equal(step(i*100,[[id]]).length,0);
  const all=[['a'],['b'],['c']];
+ // A weak sighting never creates a member.
  assert.equal(step(300,[['a'],['b'],['c','person',.5,false]]).length,0);
- assert.equal(step(400,all).length,0);assert.equal(step(1399,all).length,0);
- const [alarm]=step(1400,all);assert.equal(alarm.track_ids.length,3);
+ // Simultaneous presence triggers at once; the window is a missed-detection tolerance, not a dwell.
+ const [alarm]=step(400,all);assert.equal(alarm.track_ids.length,3);
  assert.equal(new Set(alarm.analysis_evidence.group.members.map(m=>m.sample.frame_id)).size,1);
- assert.equal(step(1500,all).length,0);
+ assert.equal(step(1399,all).length,0);assert.equal(step(1500,all).length,0);
 });
 test('AND requires every category, OR counts across selected categories',()=>{
  const step=camera('appearance',{labels:'all',minimum:2,window_ms:0},['person','bag']);
@@ -194,19 +195,19 @@ test('a crowd above the state bound keeps its clock and still alarms; the candid
   const people=Array.from({length:crowd},(_,i)=>['p'+String(i).padStart(4,'0')]);
   const alarms=[];
   for(let ms=0;ms<=2000;ms+=500)for(const a of step(ms,people))alarms.push([ms,a]);
-  assert.equal(alarms.length,1,'crowd '+crowd);assert.equal(alarms[0][0],1000);
+  assert.equal(alarms.length,1,'crowd '+crowd);assert.equal(alarms[0][0],0);
   assert.equal(alarms[0][1].analysis_evidence.group.candidates_truncated,crowd>256,'crowd '+crowd);
  }
 });
 
-test('staggered arrivals alarm only once every member has been present for the whole window',()=>{
+test('staggered arrivals alarm once, as soon as all members are present together',()=>{
  const step=camera('appearance',{labels:'any',minimum:3,window_ms:1000});
  const fired=[];
  for(let ms=0;ms<=2200;ms+=100){
-  const present=[['a']];if(ms>=500)present.push(['b']);if(ms>=900)present.push(['c']);
+  const present=[['a','person',.2]];if(ms>=500)present.push(['b','person',.5]);if(ms>=900)present.push(['c','person',.8]);
   if(step(ms,present).length)fired.push(ms);
  }
- assert.deepEqual(fired,[1900],'A at 0, B at 0.5 s, C at 0.9 s: all three have been together for the last full second only at 1.9 s');
+ assert.deepEqual(fired,[900],'A at 0, B at 0.5 s, C at 0.9 s: all three are present together from 0.9 s');
 });
 test('AND keeps the only bag among 256 people for simultaneous and completed-pass windows',()=>{
  for(const behavior of ['appearance','region_traverse']){
@@ -217,7 +218,8 @@ test('AND keeps the only bag among 256 people for simultaneous and completed-pas
    for(const event of step(ms,tracks(x)))alarms.push({ms,group:event.analysis_evidence.group});
   }
   assert.equal(alarms.length,1,behavior);
-  assert.equal(alarms[0].ms,1000);
+  // Simultaneous presence triggers on the first frame; passes complete at x=.9.
+  assert.equal(alarms[0].ms,behavior==='appearance'?0:1000);
   assert.ok(alarms[0].group.members.some(m=>m.sample.track_id==='zbag'));
   assert.equal(alarms[0].group.candidates_truncated,true);
  }

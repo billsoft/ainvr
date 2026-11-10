@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {missingVisual} from './review-visual-evidence.mjs';
 import {contextKey} from './review-context.mjs';
 import {digest} from './domain.mjs';
+import {separate} from './same-object.mjs';
 import {authorizedResult,confirmationAssessment} from './review-authorization.mjs';
 import {expandedTarget,secondaryPrompt,nonTargetPrompt,secondaryAssessment} from './review-secondary.mjs';
 import {reviewDescription,REVIEW_PROMPT_VERSION} from './review-prompt.mjs';
@@ -22,17 +23,6 @@ export function samplesFor(member){
     byFrame.set(sample.frame_id,{...sample,roles:[...new Set([...(previous?.roles??[]),...(sample.roles??[])])]});
   }
   return [...byFrame.values()];
-}
-// Two boxes of the SAME category that cover mostly the same pixels are one object seen twice. Boxes of different
-// categories may overlap freely: a bag is held in front of its carrier and people in a huddle touch.
-const SAME_LABEL_IOU=.5;
-function iou(a,b){
-  const w=Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x),h=Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y);
-  if(!(w>0&&h>0))return 0;
-  const inter=w*h;return inter/(a.w*a.h+b.w*b.h-inter);
-}
-function separate(a,b){
-  return a.label_id!==b.label_id||iou(a.bbox,b.bbox)<=SAME_LABEL_IOU;
 }
 export function groupDecision(row,scores,auth){
   if(buildReviewEvidence(row).blocking)return 'uncertain';

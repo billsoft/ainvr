@@ -4,7 +4,7 @@ import { validatePoints } from './geometry.mjs';
 import {normalizeSchedule} from './schedule.mjs';
 
 // Bumped when behavior judgement changes; recorded on every fact so statistics can tell eras apart.
-export const ENGINE_SEMANTICS='2026-11-10.counter-input-pauses';
+export const ENGINE_SEMANTICS='2026-11-10.group-simultaneous-tolerance';
 export class DomainError extends Error {
   constructor(code, message, status=422) { super(message); this.code=code; this.status=status; }
 }
