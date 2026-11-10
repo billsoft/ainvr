@@ -1,6 +1,7 @@
 // 抽帧跳过 vs 过载丢帧的拆分、算力不足判定——多通道并行时"GPU 够不够"
 // 的唯一信号,不能再把按设定帧率的正常抽帧/源流抖动当成丢帧报出去。
 #include <gtest/gtest.h>
+#include <vector>
 
 #include "../../src/pipeline/frame_accounting.hpp"
 
@@ -112,4 +113,71 @@ TEST(ArchiveAdmissionSkips, SeparatesArchiveWaitFromSamplingAndOverload) {
   EXPECT_EQ(ArchiveAdmissionSkips(-1, 100, 0), 0);
   EXPECT_EQ(ArchiveAdmissionSkips(100, 3, 0), 0);
   EXPECT_EQ(ArchiveAdmissionSkips(100, 130, 5), 5);
+}
+
+// ---- 按源时间戳抽帧 ----
+// 流媒体服务成批转发(.190 实测每 ~355ms 一批 ~10 帧):按到达顺序取帧时,
+// 每批只能处理前几帧,其余超时丢弃,推理只到目标的约 75%,且送进跟踪器的
+// 画面成团、中间大段空档。按画面时间戳排布,与到达方式无关。
+namespace {
+constexpr int64_t kFrame30 = 33'333'333;
+int CountAdmitted(SourcePtsSampler& s, int frames, int64_t step_ns, double interval, int64_t start = 0) {
+  int admitted = 0;
+  for (int i = 0; i < frames; ++i) admitted += s.Admit(start + i * step_ns, interval);
+  return admitted;
+}
+}  // namespace
+
+TEST(SourcePtsSampler, HalvesA30FpsSourceEvenly) {
+  SourcePtsSampler s;
+  std::vector<int> kept;
+  for (int i = 0; i < 12; ++i) if (s.Admit(i * kFrame30, kInterval15)) kept.push_back(i);
+  EXPECT_EQ(kept, (std::vector<int>{0, 2, 4, 6, 8, 10}));
+  EXPECT_TRUE(s.Active());
+}
+
+TEST(SourcePtsSampler, TenSecondsAtFifteenFpsKeepsOneHundredFifty) {
+  SourcePtsSampler s;
+  EXPECT_NEAR(CountAdmitted(s, 300, kFrame30, kInterval15), 150, 1);
+}
+
+TEST(SourcePtsSampler, MillisecondRoundedTimestampsStillHalve) {
+  // RTMP 时间戳按毫秒取整:33/34/33... 不能因取整少抽或多抽。
+  SourcePtsSampler s;
+  int admitted = 0;
+  for (int i = 0; i < 300; ++i) admitted += s.Admit(int64_t(i * 1000 / 30) * 1'000'000, kInterval15);
+  EXPECT_NEAR(admitted, 150, 1);
+}
+
+TEST(SourcePtsSampler, SourceSlowerThanTargetKeepsEveryFrame) {
+  SourcePtsSampler s;
+  EXPECT_EQ(CountAdmitted(s, 260, 1'000'000'000 / 26, 1.0 / 30), 260);
+}
+
+TEST(SourcePtsSampler, FollowingTheSourceKeepsEveryFrame) {
+  SourcePtsSampler s;
+  EXPECT_EQ(CountAdmitted(s, 90, kFrame30, 0.0), 90);
+  EXPECT_FALSE(s.Active());
+}
+
+TEST(SourcePtsSampler, UnknownTimestampsAreNotPaced) {
+  SourcePtsSampler s;
+  EXPECT_TRUE(s.Admit(-1, kInterval15));
+  EXPECT_TRUE(s.Admit(-1, kInterval15));
+  EXPECT_FALSE(s.Active());
+}
+
+TEST(SourcePtsSampler, TimestampResetOrJumpResynchronises) {
+  SourcePtsSampler s;
+  CountAdmitted(s, 30, kFrame30, kInterval15, 5'000'000'000);
+  EXPECT_TRUE(s.Admit(0, kInterval15));                 // backwards: new schedule
+  EXPECT_FALSE(s.Admit(kFrame30, kInterval15));
+  EXPECT_TRUE(s.Admit(60'000'000'000, kInterval15));    // long jump forward
+  EXPECT_FALSE(s.Admit(60'000'000'000 + kFrame30, kInterval15));
+}
+
+TEST(SourcePtsSampler, ChangingTheTargetTakesEffectImmediately) {
+  SourcePtsSampler s;
+  CountAdmitted(s, 30, kFrame30, kInterval15);
+  EXPECT_EQ(CountAdmitted(s, 30, kFrame30, 1.0 / 30, 30 * kFrame30), 30);
 }

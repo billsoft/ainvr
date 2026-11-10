@@ -71,4 +71,43 @@ inline bool IsUnderCapacity(double actual_fps, double effective_target_fps,
   return fps_short && busy;
 }
 
+// How long a chosen frame may wait for inference: longer than one merged-write
+// burst (~350 ms) plus inferring the frames it carries.
+inline constexpr double kPendingFrameMaxAgeS = 0.6;
+
+// Chooses inference frames on the source timestamp grid. Delivery may be bursty
+// (the media server merges writes: ~10 frames every ~355 ms measured on .190);
+// selecting by arrival kept only the head of each burst, so inference reached
+// ~75% of the target and the tracker saw clumps of frames with long holes.
+// Capture thread only.
+class SourcePtsSampler {
+ public:
+  // True when the frame belongs to the configured cadence. interval_s<=0 follows
+  // the source; unknown timestamps are not paced (the caller keeps wall pacing).
+  bool Admit(int64_t pts_ns, double interval_s) {
+    if (interval_s <= 0 || pts_ns < 0) { Reset(); return true; }
+    const int64_t step = std::llround(interval_s * 1e9);
+    // A timestamp may arrive up to a quarter slot early (millisecond rounding,
+    // source jitter) and still take the slot.
+    const int64_t early = step / 4;
+    const bool resync = step != step_ || next_ < 0 || pts_ns <= last_ ||
+                        pts_ns - last_ > kResyncNs;
+    last_ = pts_ns;
+    step_ = step;
+    active_ = true;
+    if (resync) { next_ = pts_ns + step; return true; }
+    if (pts_ns < next_ - early) return false;
+    // Keep the grid, but never schedule a slot that is already in the past.
+    next_ = std::max(next_ + step, pts_ns + step - early);
+    return true;
+  }
+  bool Active() const { return active_; }
+  void Reset() { next_ = last_ = -1; step_ = 0; active_ = false; }
+
+ private:
+  static constexpr int64_t kResyncNs = 1'000'000'000;
+  int64_t next_ = -1, last_ = -1, step_ = 0;
+  bool active_ = false;
+};
+
 }  // namespace ai_service::pipeline

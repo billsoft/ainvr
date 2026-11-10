@@ -233,6 +233,10 @@ class ReusedChannelWorker : public ChannelWorker {
   std::optional<CapturedFrame> latest_frame_;
   // Absorb bursty delivery without unbounded latency or 8K memory growth.
   std::deque<CapturedFrame> pending_frames_;
+  // Capture thread: admits frames on the source timestamp grid (frame_mutex_).
+  SourcePtsSampler source_sampler_;
+  // Frames are paced by source time; the inference loop need not wait on the clock.
+  std::atomic<bool> source_paced_{false};
   std::atomic<int64_t> stream_epoch_{0};
   int64_t frame_seq_ = 0;
 

@@ -17,6 +17,15 @@ int main(){
   }
   assert(std::abs(count-target*100)<=1);assert(max_gap<=300000000);
  }
+ // RTMP timestamps are whole milliseconds (33/34/33 ms). At a copy rate equal to
+ // the source rate every frame must be kept; a frame a fraction of a millisecond
+ // ahead of the ideal grid is not early (measured on .190: 1 in 3 frames lost).
+ {ai_service::stream::FrameCopyCadence ms;int all=0;
+  for(int i=0;i<300;i++)all+=ms.Keep(int64_t(i*1000/30)*1000000,30);
+  assert(all==300);
+  ai_service::stream::FrameCopyCadence half;int kept15=0;
+  for(int i=0;i<300;i++)kept15+=half.Keep(int64_t(i*1000/30)*1000000,15);
+  assert(kept15>=149&&kept15<=151);}
  ai_service::stream::FrameCopyCadence stall;
  assert(stall.Keep(0,4));assert(stall.Keep(1000000000000LL,4));
  assert(!stall.Keep(1000000000001LL,4));assert(stall.Keep(1000250000000LL,4));}

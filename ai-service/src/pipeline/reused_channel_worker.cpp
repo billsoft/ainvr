@@ -604,6 +604,7 @@ void ReusedChannelWorker::CaptureLoop() {
         if (search_sampling_source_) search_sampling_source_->Reset();
         latest_frame_.reset();
         pending_frames_.clear();
+        source_sampler_.Reset();source_paced_.store(false);
         result_buffer_.Clear();
       }
       frame_cond_.notify_all();
@@ -684,10 +685,14 @@ void ReusedChannelWorker::CaptureLoop() {
       std::lock_guard<std::mutex> lock(frame_mutex_);
       latest_frame_ = cap;
       const auto target=LoadCfg()->inference_fps;
-      const size_t cadence_limit=target>0?size_t(std::max(1.0,std::ceil(target*.25))):8;
+      // Choose by source time, not arrival: a burst still yields evenly spaced frames.
+      const bool admitted=source_sampler_.Admit(cap.pts_ns,target>0?1.0/target:0.0);
+      source_paced_.store(source_sampler_.Active());
+      // Room for the chosen frames of one pending age at the target rate.
+      const size_t cadence_limit=target>0?size_t(std::max(1.0,std::ceil(target*kPendingFrameMaxAgeS))):8;
       const size_t memory_limit=std::max<size_t>(1,96*1024*1024/std::max<size_t>(1,ref->nv12.pixels.size()));
-      const size_t limit=std::min({size_t(8),cadence_limit,memory_limit});
-      pending_frames_.push_back(cap);
+      const size_t limit=std::min({size_t(24),cadence_limit,memory_limit});
+      if(admitted)pending_frames_.push_back(cap);
       while(pending_frames_.size()>limit)pending_frames_.pop_front();
     }
     frame_cond_.notify_all();
@@ -798,7 +803,7 @@ std::optional<ReusedChannelWorker::CapturedFrame> ReusedChannelWorker::PickNextF
   const auto now=NowMono();
   while(!pending_frames_.empty() &&
         (pending_frames_.front().seq<=last_consumed_seq ||
-         now-pending_frames_.front().captured_mono>.25)){
+         now-pending_frames_.front().captured_mono>kPendingFrameMaxAgeS)){
     if(pending_frames_.front().seq>last_consumed_seq)*expired_observation=true;
     pending_frames_.pop_front();
   }
@@ -843,8 +848,11 @@ void ReusedChannelWorker::InferLoop() {
     if (reset_deadline_.exchange(false)) {observations.Gap(output::SearchObservationGapReason::Reset);next_deadline_ = 0.0;}
     double now = NowMono();
     bool dispatch_due=true;
+    // Source-time admission already applies the cadence; waiting on the clock as
+    // well would lose slots whenever frames arrive in bursts.
+    const bool source_paced=interval>0.0&&source_paced_.load();
 
-    if (interval > 0.0) {
+    if (interval > 0.0 && !source_paced) {
       if (next_deadline_ <= 0.0) next_deadline_ = now;
       double time_to_deadline = next_deadline_ - now;
       if (time_to_deadline > 0.0) {
@@ -892,7 +900,7 @@ void ReusedChannelWorker::InferLoop() {
       else if(interval<=0&&skipped>0)observations.Gap(output::SearchObservationGapReason::FullFrameDrop);
       // Do not use SplitSkipped's heuristic as a continuity certificate.
       // This selected slot exists even if SDK dispatch/result/publication fails.
-      frame->search_observation=observations.Dispatch(NowMono(),next_deadline_,interval);
+      frame->search_observation=observations.Dispatch(NowMono(),source_paced?0.0:next_deadline_,interval);
       last_consumed_seq = frame->seq;
       if (skipped > 0) {
         std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -908,7 +916,7 @@ void ReusedChannelWorker::InferLoop() {
 
     if (!frame.has_value() && !queued_frame.has_value()) {
       SleepMs(5.0);
-      if (interval > 0.0 && next_deadline_ < NowMono() - interval) {
+      if (interval > 0.0 && !source_paced && next_deadline_ < NowMono() - interval) {
         observations.Slip(output::SearchObservationGapReason::NoFrameDeadlineMiss);
         next_deadline_ = NowMono() + interval;
       }
