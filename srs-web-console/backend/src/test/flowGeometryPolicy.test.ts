@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest';
-import {compileBinding} from '../store/flowCounters.js';
+import {compileBinding,recountAllowed} from '../store/flowCounters.js';
 const def={counter_id:'visitors',name:'traffic',labels:[{label_id:'p',name:'person'}],method:'zone' as const,outputs:'both' as const,names:{in:'in',out:'out'},occupancy:false,max_gap_ms:1000,state:'enabled' as const};
 const source={channel_id:'ai',input_stream_id:'camera',geometry_revision:'g',label_map_version:'lm',tracking_available:true,labels:[{label_id:'p',name:'person'}],width:1920,height:1080,stream_fingerprint:'a'.repeat(64),observed_at:'2026-10-21T00:00:00Z'};
 const zone={zone_id:'door',channel_id:'camera',geometry_revision:'g',version:1,state:'active',points:[[.3,.3],[.7,.3],[.7,.7],[.3,.7]] as [number,number][],edge_ids:['top','right','bottom','left']};
@@ -19,8 +19,23 @@ it('rotated pixel-space rectangles retain clearance checks and stable edge mappi
   if(width<=10.8)expect(()=>compileBinding(def,1,binding,source,rotated,1)).toThrow(/区域太窄/);
   else expect(compileBinding(def,1,binding,source,rotated,1)?.edge_ids).toEqual(zone.edge_ids);
   expect(compileBinding({...def,method:'line'},1,{...binding,direction:{kind:'line',edge:'left',in_side:'inward'}},source,rotated,1)?.passage?.edges).toEqual([3]);
-  expect(compileBinding({...def,method:'gates'},1,{...binding,direction:{kind:'gates',from:'left',to:'right'}},source,rotated,1)?.passage?.edges).toEqual([3,1]);
+  expect(compileBinding({...def,method:'gates'},1,{...binding,direction:{kind:'gates',from:'left',to:'right'}},source,rotated,1)?.passage?.edges).toEqual([1,3]);
  }
+});
+
+it('swapping gates A and B is a query-time direction change, not a new execution rule',()=>{
+ const gates=(from:string,to:string)=>compileBinding({...def,method:'gates'},1,{...binding,direction:{kind:'gates',from,to}},source,zone,1);
+ expect(gates('right','left')).toEqual(gates('left','right'));
+});
+
+it('history can be recounted only where recorded passages carry the new classification',()=>{
+ const line=(edge:string,in_side:'inward'|'outward')=>({kind:'line' as const,edge,in_side});
+ expect(recountAllowed(line('left','inward'),line('left','outward'))).toBe(true);
+ expect(recountAllowed(line('left','inward'),line('right','inward'))).toBe(false);
+ expect(recountAllowed({kind:'gates',from:'left',to:'right'},{kind:'gates',from:'right',to:'left'})).toBe(true);
+ expect(recountAllowed({kind:'gates',from:'left',to:'right'},{kind:'gates',from:'left',to:'top'})).toBe(false);
+ expect(recountAllowed({kind:'edges',entry:['left'],exit:['right']},{kind:'edges',entry:['top'],exit:['bottom','right']})).toBe(true);
+ expect(recountAllowed(line('left','inward'),{kind:'edges',entry:['left'],exit:['right']})).toBe(false);
 });
 
 it('all counting modes reject coincident vertices before width validation, including the closing edge',()=>{

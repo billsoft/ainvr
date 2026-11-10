@@ -48,6 +48,14 @@ export function sameDirection(a:BindingDirection,b:BindingDirection){
   const canon=(d:BindingDirection)=>d.kind==='line'?['line',d.edge,d.in_side]:d.kind==='gates'?['gates',d.from,d.to]:d.kind==='edges'?['edges',[...d.entry],[...d.exit]]:['angle',d.entry.from,d.entry.to,d.exit.from,d.exit.to]
   return JSON.stringify(canon(a))===JSON.stringify(canon(b))
 }
+/** Same rule as the parameter store: a line or gate pair may flip direction, not move;
+ * region passages record every crossed edge and can be reclassified freely. */
+export function recountAllowed(previous:BindingDirection,next:BindingDirection){
+  if(previous.kind!==next.kind)return false
+  if(previous.kind==='line'&&next.kind==='line')return previous.edge===next.edge
+  if(previous.kind==='gates'&&next.kind==='gates')return [previous.from,previous.to].sort().join('\n')===[next.from,next.to].sort().join('\n')
+  return true
+}
 export function bindingEdges(d:BindingDirection):string[]{
   return d.kind==='line'?[d.edge]:d.kind==='gates'?[d.from,d.to]:d.kind==='edges'?[...d.entry,...d.exit]:[]
 }

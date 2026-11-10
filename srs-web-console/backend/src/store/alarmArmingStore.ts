@@ -1,4 +1,4 @@
-import {compileBinding,parseCounterDefinition,validateBindingSet,type BindingVersion,type CounterBinding,type CounterDefinition} from './flowCounters.js';
+import {compileBinding,parseCounterDefinition,recountAllowed,validateBindingSet,type BindingVersion,type CounterBinding,type CounterDefinition} from './flowCounters.js';
 import {unwrapErp} from './erpGeometry.js';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
@@ -176,6 +176,7 @@ export class AlarmArmingStore {
   private async recordLine(c:PoolClient,b:CounterBinding,recount:boolean,actor:string){
     const last=(await c.query('SELECT seq,direction FROM flow_counter_binding_versions WHERE binding_id=$1 ORDER BY seq DESC LIMIT 1',[b.binding_id])).rows[0];
     if(last&&isDeepStrictEqual(last.direction,b.direction))return;
+    if(last&&recount&&!recountAllowed(last.direction,b.direction))fail('invalid_binding','换了计数边后不能重新统计以前的记录，请选择“保持原统计”');
     await c.query('INSERT INTO flow_counter_binding_versions(binding_id,seq,direction,reclassify,actor,effective_from) VALUES($1,$2,$3,$4,$5,clock_timestamp())',
       [b.binding_id,(last?.seq??0)+1,JSON.stringify(b.direction),!!last&&recount,actor]);
   }

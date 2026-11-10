@@ -79,7 +79,7 @@ export function CounterDialog({initial,labels,onCancel,onSaved,send=flowService.
     </section>
     <details className="rounded-panel border border-line"><summary className="cursor-pointer px-3 py-2.5 text-sm font-medium text-ink">高级</summary>
      <div className="space-y-2 border-t border-line p-3"><label className="block text-sm font-medium text-ink">短时漏检保留（秒）<input type="number" min="0" max="2" step="0.1" className="form-input mt-1.5 block w-32" value={value.max_gap_ms/1000} onChange={e=>patch({max_gap_ms:Math.round(Math.min(2,Math.max(0,Number(e.target.value)||0))*1000)})}/></label>
-      <p className="text-xs text-ink-subtle">目标被遮挡片刻后同一编号恢复时，仍按一次通行计数；0 表示不保留。</p></div></details>
+      <p className="text-xs text-ink-subtle">目标被遮挡片刻，或画面短暂卡顿、丢帧后同一编号恢复时，仍按一次通行计数；按秒计算，高低帧率效果相同。0 表示不保留。</p></div></details>
     {initial&&!!initial.bindings.length&&<p className="rounded-base bg-surface-page p-3 text-sm">已选用到 {initial.bindings.length} 个热区，保存后同时生效。</p>}
    </fieldset>
    {error&&<p role="alert" className="rounded-base border border-danger bg-danger-50 p-3 text-sm text-danger-700">{error}</p>}</div>

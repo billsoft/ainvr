@@ -11,6 +11,8 @@ export function coverageStep(cp,frame,rules,interrupted){
     const identity={assignment_id:r.assignment_id,rule_version:r.version,channel_id:frame.channel_id,input_stream_id:frame.input_stream_id};
     const key=digest(identity),at=new Date(frame.captured_at).toISOString(),old=previous[key];
     const continuous=!interrupted&&old&&old.session===frame.stream_session_id&&old.at<at;
+    // A broken segment ends at its last consumed frame, not at its last throttled write.
+    if(!continuous&&old?.identity&&old.written!==old.at)segments.push({...old.identity,segment_id:digest([key,old.session,old.first]),from:old.from,to:old.at});
     const start=continuous?old.from:at,first=continuous?old.first:frame.seq;
     const written=continuous?old.written:null;
     // The second frame is written at once so even a short session has a real span.

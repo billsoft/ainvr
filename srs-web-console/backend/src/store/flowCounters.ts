@@ -68,6 +68,18 @@ export function validateBindingSet(inputs:unknown[]):CounterBindingInput[]{
   }
   return bindings;
 }
+/**
+ * Recounting reclassifies recorded passages; it cannot invent passages of another
+ * line. A line passage records only its own edge and side, two-gate passages only
+ * their own pair: those may flip direction, not move. Region passages record every
+ * crossed edge, so any new entry/exit choice can be applied to them.
+ */
+export function recountAllowed(previous:BindingDirection,next:BindingDirection):boolean{
+  if(previous.kind!==next.kind)return false;
+  if(previous.kind==='line'&&next.kind==='line')return previous.edge===next.edge;
+  if(previous.kind==='gates'&&next.kind==='gates')return [previous.from,previous.to].sort().join('\n')===[next.from,next.to].sort().join('\n');
+  return true;
+}
 /** Edge ids the binding needs on its zone; a missing id means the line must be confirmed again. */
 export function bindingEdges(d:BindingDirection):string[]{
   return d.kind==='line'?[d.edge]:d.kind==='gates'?[d.from,d.to]:d.kind==='edges'?[...d.entry,...d.exit]:[];
@@ -95,8 +107,10 @@ export function compileBinding(definition:CounterDefinition,definitionVersion:nu
   }
   if(bindingEdges(b.direction).some(e=>!zone.edge_ids.includes(e)))return fail('direction_changed','热区的边已变化，请重新确认计数线');
   const index=(e:string)=>zone.edge_ids.indexOf(e);
+  // Gate order is a query-time classification (A→B is "in"); the engine judges both
+  // orders alike, so swapping A and B must not restart counting.
   const passage=b.direction.kind==='line'?{kind:'line',edges:[index(b.direction.edge)],max_gap_ms:d.max_gap_ms}:
-    b.direction.kind==='gates'?{kind:'gates',edges:[index(b.direction.from),index(b.direction.to)],max_gap_ms:d.max_gap_ms}:
+    b.direction.kind==='gates'?{kind:'gates',edges:[index(b.direction.from),index(b.direction.to)].sort((x,y)=>x-y),max_gap_ms:d.max_gap_ms}:
     {kind:'zone',max_gap_ms:d.max_gap_ms};
   const tolerance=Math.max(0.5,Math.min(6,Math.min(source.width,source.height)*0.005));
   if(d.method==='zone'){

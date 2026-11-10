@@ -6,7 +6,7 @@ import {useRef,useState} from 'react'
 import type {AlarmSource} from '@/api/alarmTriggerService'
 import {newAlarmOperationId} from '@/api/alarmZoneService'
 import {methodNames,type Counter} from '@/api/flowService'
-import {sameDirection,type DraftCounterBinding,type DraftZone} from '@/features/armingDraft'
+import {recountAllowed,sameDirection,type DraftCounterBinding,type DraftZone} from '@/features/armingDraft'
 import {edgeNames,sourceSize} from '@/features/alarmTriggers'
 import {labelDisplay} from '@/features/labelNames'
 
@@ -42,10 +42,12 @@ export function CounterBindingEditor({sourceId,geometryRevision,zone,counters,so
  const concave=isConcaveRegion(zone.points)
  // Earlier passages keep the meaning they had; recounting them is an explicit choice.
  const lineChanged=!!initial&&!initial.needsConfirmation&&!!direction&&!sameDirection(direction,initial.direction)
+ // Recorded passages belong to the edge(s) they crossed: only a direction flip can be recounted.
+ const recountable=!!initial&&!!direction&&lineChanged&&recountAllowed(initial.direction,direction)
  const choose=(c:Counter)=>{setCounterId(c.counter_id);onPick(pickFrom(c.method,initial?.counterId===c.counter_id&&!initial.needsConfirmation?initial.direction:undefined))}
  const apply=()=>{
   if(!counter||!effective||!direction){setError('请选择兼容的计数器、处理器并完成方向设置。');return false}
-  try{onApply({id:initial?.id??generatedId.current,counterId:counter.counter_id,processorId:effective.channel_id,zoneId:zone.id,direction,needsConfirmation:false,...(lineChanged&&recount?{reclassifyHistory:true}:{})},effective.label_map_version);return true}catch(e){setError(e instanceof Error?e.message:'不能加入草稿');return false}
+  try{onApply({id:initial?.id??generatedId.current,counterId:counter.counter_id,processorId:effective.channel_id,zoneId:zone.id,direction,needsConfirmation:false,...(recountable&&recount?{reclassifyHistory:true}:{})},effective.label_map_version);return true}catch(e){setError(e instanceof Error?e.message:'不能加入草稿');return false}
  }
  useWorkspaceDraft(workspace,{flush:()=>!initial&&!counterId?true:apply(),dirty:()=>JSON.stringify({counterId,processorId,direction,recount})!==original.current})
  const inName=counter?.names.in??'进',outName=counter?.outputs==='both'?counter.names.out:null
@@ -115,7 +117,8 @@ export function CounterBindingEditor({sourceId,geometryRevision,zone,counters,so
     {!direction&&<p role="status" className="text-xs text-ink-subtle">{counter.method==='line'?'请选择一条计数边。':counter.method==='gates'?'请选择两条不同的边，完成后才能关联。':'请分别选择至少一条进入边和离开边，完成后才能关联。'}</p>}
    </div>
   </>}
-  {lineChanged&&<fieldset role="group" aria-label="以前的记录" className="space-y-2 rounded-base border border-line p-3 text-sm">
+  {lineChanged&&!recountable&&<p role="status" className="rounded-base border border-line p-3 text-xs leading-5 text-ink-subtle">换了计数边：新计数线从保存时起生效，以前的记录保持不变（以前的通行只经过原来的边，不能按新边重新统计）。</p>}
+  {recountable&&<fieldset role="group" aria-label="以前的记录" className="space-y-2 rounded-base border border-line p-3 text-sm">
    <legend className="px-1 font-medium text-ink">以前的记录</legend>
    <label className="flex items-start gap-2"><input type="radio" name="recount" className="mt-1" checked={!recount} onChange={()=>setRecount(false)}/><span>保持原统计<span className="block text-xs text-ink-subtle">新计数线从保存时起生效，以前的数量不变。</span></span></label>
    <label className="flex items-start gap-2"><input type="radio" name="recount" className="mt-1" checked={recount} onChange={()=>setRecount(true)}/><span>按新计数线重新统计<span className="block text-xs text-ink-subtle">适合原来方向设反了：以前的通行也按新计数线重新分进出。</span></span></label>

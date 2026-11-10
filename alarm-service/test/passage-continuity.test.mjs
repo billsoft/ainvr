@@ -18,7 +18,12 @@ test('same-ID short hidden observation preserves entry; prediction alone never c
  assert.equal(replay([.2,.4,{x:.5,eligible:false},.6,.8]).events.length,1);
 });
 test('hard loss, ID/session changes, explicit input gap and gap over deadline never bridge',()=>{
- for(const middle of [{x:.5,absent:true},{x:.5,id:'new'},{x:.5,session:'new'},{x:.5,gap:true},{x:.5,state:'tentative'},{x:.5,label:'other'}])assert.equal(replay([.2,.4,middle,.8]).events.length,0);
+ for(const middle of [{x:.5,absent:true},{x:.5,id:'new'},{x:.5,session:'new'},{x:.5,state:'tentative'},{x:.5,label:'other'}])assert.equal(replay([.2,.4,middle,.8]).events.length,0);
+ // An input pause with contiguous records is bridged within the retention, like an occlusion...
+ assert.equal(replay([.2,.4,{x:.5,gap:true},.8]).events.length,1);
+ // ...but never beyond it.
+ assert.equal(replay([.2,.4,{x:.5,gap:true,ms:1500},{x:.8,ms:1600}]).events.length,0);
+ assert.equal(replay([.2,.4,{x:.5,gap:true},.8],{passage:{kind:'zone',max_gap_ms:0}}).events.length,0);
  assert.equal(replay([.2,.4,{x:.5,predicted:true},{x:.8,ms:1400}]).events.length,0);
  // Alarm sources remain strict unless explicitly opted into the statistics contract.
  assert.equal(replay([.2,.4,{x:.5,predicted:true},.8],{alarm_enabled:true}).events.length,0);

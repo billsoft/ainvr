@@ -3,7 +3,7 @@ import {conditionIncidents} from './condition-incidents.mjs';
 import {counterContinuation} from './low-confidence.mjs';
 import {sampleOf,beginEvidence,sealEvidence} from './compact-evidence.mjs';
 // Copyright AINVR. Pure, checkpointable trigger evaluator. No model execution.
-import {holdPassage,restorePassage} from './passage-continuity.mjs';
+import {gapAllowance,holdPassage,restorePassage} from './passage-continuity.mjs';
 import {coverageStep} from './flow-coverage.mjs';
 import {unwrapErp,liftErp} from './erp-geometry.mjs';
 import {boundaryDistancePx,boundaryStable,inside,stateSpatial} from './geometry.mjs';
@@ -27,7 +27,7 @@ function breakEvidence(state) {
   delete state.review_compact;delete state.review_outside;delete state.approach_pause;delete state.last_approach_pts;
   delete state.entry_origin_point;delete state.side; delete state.traversal; delete state.match; delete state.candidate;
   delete state.unmatched_since; delete state.observedPoint; delete state.triggerDirection; delete state.out_since;
-  delete state.passage_visible_pts;delete state.passage_observation;delete state.passage_pending;delete state.passage_rejection;state.interrupted=true;
+  delete state.passage_visible_pts;delete state.passage_observation;delete state.passage_pending;delete state.passage_input_pause;delete state.passage_rejection;state.interrupted=true;
 }
 // Frame-rate adaptive continuity: a pause longer than 4x the recent median frame
 // interval (at least 1.5 s) is a gap. Long intervals are recorded too, so a channel
@@ -69,8 +69,19 @@ export function evaluate(checkpoint,input,rules) {
   }
   if(seqGap||ptsReset||timeGap||f.gap===true){
     issues.push('input_gap');
-    // The same ID across a few dropped records is still the same target; a long pause is not.
-    for(const [key,s] of Object.entries(cp.states)){if(s.traversal?.entry){const [id,,track]=JSON.parse(key);issues.push(`passage_input_gap:${id}:${track}`);}breakEvidence(s);if(timeGap)delete s.seen_since;}
+    // A pause with contiguous records is only missing time. Counting rules bridge
+    // it like an occlusion, bounded by their own retention in milliseconds (so the
+    // same allowance holds at 2 FPS and at 30 FPS); the next real observation is
+    // then checked for elapsed time, displacement, size and label. Alarm rules,
+    // missing records and PTS resets keep the strict break.
+    const timeOnly=!seqGap&&!ptsReset;
+    const counting=timeOnly?new Map(rules.map(preparedRule).filter(r=>r.behavior==='region_traverse'&&gapAllowance(r)>0).map(r=>[JSON.stringify([r.id,r.version]),r])):new Map();
+    for(const [key,s] of Object.entries(cp.states)){
+      const [id,version,track]=JSON.parse(key),rule=counting.get(JSON.stringify([id,version]));
+      if(rule&&!s.tentative&&holdPassage(rule,f,s)){s.passage_input_pause=true;continue;}
+      if(s.traversal?.entry||s.traversal?.line_pending)issues.push(`passage_input_gap:${id}:${track}`);
+      breakEvidence(s);if(timeGap)delete s.seen_since;
+    }
   }
   cp.session=f.stream_session_id;cp.seq=f.seq;cp.pts=f.source_pts_ns;
   // Physical camera movement invalidates all geometry on this processor. The
@@ -319,7 +330,7 @@ export function evaluate(checkpoint,input,rules) {
   for(const key of Object.keys(cp.states)){
     const [id,version,track]=JSON.parse(key);
     if(!eligible.has(JSON.stringify([id,version]))||!present.has(track)){
-      if(!present.has(track)&&cp.states[key].traversal?.entry)issues.push(`passage_identity_ended:${id}:${track}`);
+      if(!present.has(track)&&(cp.states[key].traversal?.entry||cp.states[key].traversal?.line_pending))issues.push(`passage_identity_ended:${id}:${track}`);
       const keep=!present.has(track)&&eligible.has(JSON.stringify([id,version]))&&cp.episodes[track];
       if(keep)cp.states[key]={first_seq:cp.states[key].first_seq,since:f.source_pts_ns,fired:cp.states[key].fired===true};
       else delete cp.states[key];
@@ -372,7 +383,7 @@ export function evaluate(checkpoint,input,rules) {
   cp.passage_diagnostics??=[];
   for(const issue of issues){
     const prefix=issue.split(':')[0];
-    if(!['passage_input_gap','passage_observation_gap','passage_identity_ended','passage_gap_rejected','passage_gap_timeout','passage_gap_time_invalid','passage_gap_displacement','passage_gap_size_change','passage_gap_label_changed','ambiguous_boundary_crossing','ambiguous_concave_crossing','interior_not_observed','entry_not_observed'].includes(prefix))continue;
+    if(!['passage_input_gap','passage_observation_gap','passage_identity_ended','passage_gap_rejected','passage_gap_timeout','passage_gap_time_invalid','passage_gap_displacement','passage_gap_size_change','passage_gap_reversal','passage_gap_label_changed','ambiguous_boundary_crossing','ambiguous_concave_crossing','interior_not_observed','entry_not_observed'].includes(prefix))continue;
     // IDs may contain colons: match the full rule ID instead of splitting it.
     const rule=[...eligible.values()].sort((a,b)=>b.id.length-a.id.length).find(r=>issue.startsWith(prefix+':'+r.id+':'));
     if(rule)cp.passage_diagnostics.push({rule_id:rule.id,reason:prefix,at:f.captured_at,frame_id:f.frame_id,track_id:issue.slice(prefix.length+rule.id.length+2)});

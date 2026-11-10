@@ -25,7 +25,7 @@ function comparisonText(now:number,before:number|undefined,period:string){
  const percent=Math.round((now-before)/before*100)
  return percent===0?`与${period}持平`:`比${period} ${percent>0?'↑':'↓'} ${Math.abs(percent)}%`
 }
-const passageReason=(reason:string)=>({passage_input_gap:'输入帧序列中断',passage_observation_gap:'真实观测中断超时',passage_identity_ended:'跟踪身份结束',passage_gap_rejected:'恢复后的轨迹无法可靠衔接',passage_gap_timeout:'遮挡超过计数允许时长',passage_gap_time_invalid:'恢复观测时间不连续',passage_gap_displacement:'恢复目标的位置变化过大',passage_gap_size_change:'恢复目标的大小变化过大',passage_gap_label_changed:'跟踪目标类别发生变化',ambiguous_boundary_crossing:'越界位置有歧义',ambiguous_concave_crossing:'凹区域内轨迹连续性不明确',interior_not_observed:'未观测到稳定的区域内部位置',entry_not_observed:'缺少有效进入证据'}[reason]??'通行证据不完整')
+const passageReason=(reason:string)=>({passage_input_gap:'输入帧序列中断',passage_observation_gap:'真实观测中断超时',passage_identity_ended:'跟踪身份结束',passage_gap_rejected:'恢复后的轨迹无法可靠衔接',passage_gap_timeout:'遮挡超过计数允许时长',passage_gap_time_invalid:'恢复观测时间不连续',passage_gap_displacement:'恢复目标的位置变化过大',passage_gap_size_change:'恢复目标的大小变化过大',passage_gap_reversal:'恢复后的目标运动方向与之前相反',passage_gap_label_changed:'跟踪目标类别发生变化',ambiguous_boundary_crossing:'越界位置有歧义',ambiguous_concave_crossing:'凹区域内轨迹连续性不明确',interior_not_observed:'未观测到稳定的区域内部位置',entry_not_observed:'缺少有效进入证据'}[reason]??'通行证据不完整')
 
 /** Filters affect the location list only. Each binding retains its own facts and trend. */
 export function CounterStatistics({counter:c,result:r,previous,comparison,bucket,slots,zoneName,onRecords,onClear}:Props){

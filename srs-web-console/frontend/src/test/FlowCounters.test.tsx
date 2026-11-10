@@ -189,6 +189,21 @@ it('调整已有计数线时提供“以前的记录”选项，默认保持原�
  await waitFor(()=>expect(send).toHaveBeenCalledOnce())
  expect(send.mock.calls[0]![0].counterBindings[0]).toMatchObject({direction:{in_side:'outward'},reclassify_history:true})
 })
+it('换到另一条计数边时不提供重新统计：以前的通行只属于原来那条边',async()=>{
+ const withBinding:ArmingDocument={...base,counter_bindings:[{binding_id:'flow-1',counter_id:'visitors',input_stream_id:'cam',processor_id:'ai',zone_id:'z',zone_version:1,geometry_revision:'g:1000x500',label_map_version:'lm',direction:{kind:'line',edge:'b',in_side:'inward'}}]}
+ const send=vi.fn().mockResolvedValue({saved:true,sourceId:'cam',revision:2,application:{state:'applied'}})
+ render(<ArmingModal sourceId="cam" sourceName="大门" base={withBinding} reference={{url:'image',width:1000,height:500,geometryRevision:'g:1000x500',capturedAt:'now'}}
+  definitions={[]} sources={[source]} counters={[counter]} send={send} onClose={vi.fn()} onSaved={vi.fn()}/>)
+ fireEvent.click(screen.getByRole('button',{name:'选择热区 门口'}))
+ fireEvent.click(screen.getByRole('button',{name:'调整计数线 客流 · 门口'}))
+ fireEvent.click(screen.getByRole('button',{name:'边 4'}))
+ expect(screen.queryByRole('radio',{name:/按新计数线重新统计/})).not.toBeInTheDocument()
+ expect(screen.getByText(/以前的记录保持不变/)).toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'保存布防'}))
+ await waitFor(()=>expect(send).toHaveBeenCalledOnce())
+ expect(send.mock.calls[0]![0].counterBindings[0]).toMatchObject({direction:{edge:'d'}})
+ expect(send.mock.calls[0]![0].counterBindings[0]).not.toHaveProperty('reclassify_history')
+})
 it('从参数库读回的计数线字段顺序不同，不算改动：未修改时不出现“以前的记录”，也不发送重新统计',async()=>{
  // PostgreSQL returns JSON object keys in its own order.
  const stored:ArmingDocument={...base,counter_bindings:[{binding_id:'flow-1',counter_id:'visitors',input_stream_id:'cam',processor_id:'ai',zone_id:'z',zone_version:1,geometry_revision:'g:1000x500',label_map_version:'lm',direction:{edge:'b',kind:'line',in_side:'inward'} as never}]}

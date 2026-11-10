@@ -38,7 +38,13 @@ test('boundary uncertainty resets destination confirmation without inventing a r
  assert.equal(run(path([.2,.2,.4,.301,.4,.4,.4])).events.length,1);
 });
 test('gaps, identity changes and session changes cannot complete a pending crossing',()=>{
- for(const patch of [{gap:true},{id:'new'},{session:'new'},{absent:true}])assert.equal(run([...path([.2,.2,.4]),{x:.4,...patch},...path([.4,.4,.4])]).events.length,0);
+ for(const patch of [{id:'new'},{session:'new'},{absent:true}])assert.equal(run([...path([.2,.2,.4]),{x:.4,...patch},...path([.4,.4,.4])]).events.length,0);
+ // A pause within the retention keeps the observed crossing, but the pause itself
+ // never confirms it: post-pause real samples restart the stable duration.
+ assert.equal(run([...path([.2,.2,.4]),{x:.4,gap:true},{x:.4,ms:400}]).events.length,0);
+ assert.equal(run([...path([.2,.2,.4]),{x:.4,gap:true},...path([.4,.4,.4])]).events.length,1);
+ // Beyond the retention (1 s here) it cannot complete.
+ assert.equal(run([...path([.2,.2,.4]),{x:.4,gap:true,ms:1400},{x:.4,ms:1500},{x:.4,ms:1600},{x:.4,ms:1700}]).events.length,0);
 });
 test('tentative after-side observations never supply confirmed completion',()=>{
  const start=[.2,.2,.4].map(x=>({x,state:'tentative'}));
