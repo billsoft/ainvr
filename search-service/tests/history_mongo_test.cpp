@@ -440,6 +440,47 @@ void RollingRetention(const std::string& uri, const std::string& database, mongo
   Command(client, database + "_bytes", {{"dropDatabase", 1}});
 }
 
+// Capacity accounting runs on nearly every write once the byte budget is full.
+// It must read the bytes index only, never the stored JPEG documents (.190: a
+// 1 GiB collection re-read every ~20 s saturated the SSD and stalled inference).
+void UsageCovered(const std::string& uri, const std::string& database, int64_t at, mongoc_client_t* client) {
+  HistoryMongo history(uri, database); history.Initialize();
+  for (int n = 0; n < 3; ++n) history.Put(Make(300 + n, at));
+  const auto usage = history.Usage();
+  Check(usage.at("samples") == 3 && usage.at("bytes").get<int64_t>() > 0);
+  const nlohmann::ordered_json explain{{"explain", {{"aggregate", "search_samples"},
+    {"pipeline", Json::array({{{"$group", {{"_id", nullptr}, {"samples", {{"$sum", 1}}}, {"bytes", {{"$sum", "$bytes"}}}}}}})},
+    {"cursor", Json::object()}, {"hint", "search_usage_bytes"}}}, {"verbosity", "executionStats"}};
+  const auto text = explain.dump(); bson_error_t error{};
+  bson_t* input = bson_new_from_json(reinterpret_cast<const uint8_t*>(text.data()), text.size(), &error);
+  Check(input != nullptr); bson_t reply;
+  const bool ok = mongoc_client_command_simple(client, database.c_str(), input, nullptr, &reply, &error);
+  bson_destroy(input); Check(ok);
+  char* json = bson_as_relaxed_extended_json(&reply, nullptr); const std::string plan(json); bson_free(json); bson_destroy(&reply);
+  Check(plan.find("PROJECTION_COVERED") != std::string::npos && plan.find("\"totalDocsExamined\" : 0") != std::string::npos);
+  Command(client, database, {{"dropDatabase", 1}});
+}
+
+// nlohmann::json sorts object keys, so index specs written with it were created
+// alphabetically ({captured_ms, channel, model, ordinal}). Range scans then could
+// not narrow by model/channel. The projection index must keep its declared order,
+// and an existing scrambled index must be replaced on start-up.
+void ProjectionIndexOrder(const std::string& uri, const std::string& database, mongoc_client_t* client) {
+  Command(client, database, {{"createIndexes", "search_samples"}, {"indexes", nlohmann::ordered_json::array({
+    {{"key", {{"captured_ms", 1}, {"channel", 1}, {"model", 1}, {"ordinal", 1}}}, {"name", "search_projection"}}})}});
+  HistoryMongo history(uri, database); history.Initialize();
+  const nlohmann::ordered_json list{{"listIndexes", "search_samples"}};
+  const auto text = list.dump(); bson_error_t error{};
+  bson_t* input = bson_new_from_json(reinterpret_cast<const uint8_t*>(text.data()), text.size(), &error);
+  Check(input != nullptr); bson_t reply;
+  const bool ok = mongoc_client_command_simple(client, database.c_str(), input, nullptr, &reply, &error);
+  bson_destroy(input); Check(ok);
+  char* json = bson_as_relaxed_extended_json(&reply, nullptr); const std::string indexes(json); bson_free(json); bson_destroy(&reply);
+  Check(indexes.find("\"key\" : { \"model\" : 1, \"channel\" : 1, \"captured_ms\" : 1, \"ordinal\" : 1 }, \"name\" : \"search_projection_v2\"") != std::string::npos);
+  Check(indexes.find("\"name\" : \"search_projection\"") == std::string::npos);
+  Command(client, database, {{"dropDatabase", 1}});
+}
+
 int main() {
   if (!std::getenv("AINVR_SEARCH_TEST_MONGO")) { std::cout << "SKIP: isolated Mongo fixture not requested\n"; return 77; }
   const std::string uri = "mongodb://127.0.0.1:25440/?serverSelectionTimeoutMS=2000";
@@ -452,6 +493,8 @@ int main() {
     auto history = std::make_unique<HistoryMongo>(uri, database); history->Initialize();
     const auto at = Now() - 1000; const auto first = Make(9, at);
     IndexChanges(uri, database + "_index_changes", at, client.get());
+    UsageCovered(uri, database + "_usage", at, client.get());
+    ProjectionIndexOrder(uri, database + "_projection_order", client.get());
     SceneReceipts(uri, database + "_scenes", at);
     ProjectionMaintenance(uri, database + "_maintenance", at, client.get());
     HistoryBudget longest; longest.retention_ms = 365LL * 86400000;

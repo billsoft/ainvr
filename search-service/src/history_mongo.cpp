@@ -476,9 +476,11 @@ struct HistoryMongo::State {
     return n;
   }
   Json Usage(Client& c) {
+    // Runs on nearly every write once the byte budget is full: read the bytes
+    // index only, never the documents that carry the JPEG payload.
     const auto result = Command(c, {{"aggregate", "search_samples"}, {"pipeline", Json::array({
       {{"$group", {{"_id", nullptr}, {"samples", {{"$sum", 1}}}, {"bytes", {{"$sum", "$bytes"}}}}}}
-    })}, {"cursor", Json::object()}, {"maxTimeMS", 5000}});
+    })}, {"cursor", Json::object()}, {"hint", "search_usage_bytes"}, {"maxTimeMS", 5000}});
     const auto rows = result.at("cursor").at("firstBatch");
     cached_usage = rows.empty() ? Json{{"samples", 0}, {"bytes", 0}} : Json{{"samples", rows[0].at("samples")}, {"bytes", rows[0].at("bytes")}};
     usage_at = Now(); return cached_usage;
@@ -773,9 +775,9 @@ void HistoryMongo::Initialize() {
     })}});
   }
   state_->Command(c, {{"createIndexes", "search_samples"}, {"indexes", Json::array({
-    {{"key", {{"model", 1}, {"channel", 1}, {"captured_ms", 1}, {"ordinal", 1}}}, {"name", "search_projection"}},
     {{"key", {{"ordinal", 1}}}, {"name", "search_ordinal"}, {"unique", true}},
     {{"key", {{"captured_ms", 1}, {"ordinal", 1}}}, {"name", "search_evict_order"}},
+    {{"key", {{"bytes", 1}}}, {"name", "search_usage_bytes"}},
     {{"key", {{"metadata.channel", 1}, {"metadata.processor", 1}, {"metadata.session", 1},
               {"metadata.track", 1}, {"metadata.model", 1}, {"metadata.scene", 1}}}, {"name", "search_track_identity"}}
   })}});
@@ -784,6 +786,18 @@ void HistoryMongo::Initialize() {
               {"metadata.track", 1}, {"metadata.model", 1}, {"track_slot", 1}}},
      {"name", "search_track_slot"}, {"unique", true}, {"partialFilterExpression", {{"track_slot", {{"$exists", true}}}}}}
   })}});
+  // nlohmann::json sorts object keys: a compound key written with it is created
+  // alphabetically. The projection scan narrows by model and channel before its
+  // time range, so its key keeps the declared order. The first release created
+  // it as {captured_ms, channel, model, ordinal}; replace that index by name.
+  nlohmann::ordered_json projection_index;
+  projection_index["key"] = nlohmann::ordered_json{{"model", 1}, {"channel", 1}, {"captured_ms", 1}, {"ordinal", 1}};
+  projection_index["name"] = "search_projection_v2";
+  state_->Command(c, {{"createIndexes", "search_samples"}, {"indexes", nlohmann::ordered_json::array({projection_index})}});
+  const auto existing = state_->Command(c, {{"listIndexes", "search_samples"}, {"cursor", Json::object()}});
+  for (const auto& index : existing.at("cursor").at("firstBatch"))
+    if (index.value("name", "") == "search_projection")
+      state_->Command(c, {{"dropIndexes", "search_samples"}, {"index", "search_projection"}});
   nlohmann::ordered_json verification_index;
   verification_index["key"] = nlohmann::ordered_json{{"created_ms", -1}, {"_id", -1}};
   verification_index["name"] = "search_verification_scan";
