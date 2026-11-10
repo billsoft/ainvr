@@ -34,22 +34,22 @@ int main(int argc,char** argv){try{
  Check(cache.Enabled("test"),"test policy unavailable");
  if(mode=="queue"){
   cache.OfferAsync(Metadata(1),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
-  for(int i=2;i<=9;++i)cache.OfferAsync(Metadata(i),[]{return cv::Mat(32,32,CV_8UC4);});
-  auto rejected=cache.OfferAsync(Metadata(10),[]{return cv::Mat(32,32,CV_8UC4);});
+  for(int i=2;i<=97;++i)cache.OfferAsync(Metadata(i),[]{return cv::Mat(32,32,CV_8UC4);});
+  auto rejected=cache.OfferAsync(Metadata(98),[]{return cv::Mat(32,32,CV_8UC4);});
   Check(rejected.wait_for(std::chrono::milliseconds(0))==std::future_status::ready&&!rejected.get(),"full queue must reject without blocking");
-  gate.Release();WaitWritten(root,9);
-  const auto stats=Status(root);Check(stats.at("written")==9,"small frames must support eight queued jobs");Check(stats.at("queue_full_dropped")==1,"queue overflow not accounted");
+  gate.Release();WaitWritten(root,97);
+  const auto stats=Status(root);Check(stats.at("written")==97,"small frames must support 96 queued jobs");Check(stats.at("queue_full_dropped")==1,"queue overflow not accounted");
  }else if(mode=="backpressure"){
   auto first=cache.OfferAsync(Metadata(1),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
-  for(int i=2;i<=9;++i)cache.OfferAsync(Metadata(i),[]{return cv::Mat(32,32,CV_8UC4);});
+  for(int i=2;i<=97;++i)cache.OfferAsync(Metadata(i),[]{return cv::Mat(32,32,CV_8UC4);});
   std::atomic<bool> cancel{false};
-  auto stopped=std::async(std::launch::async,[&]{return cache.OfferAsync(Metadata(10),[]{return cv::Mat(32,32,CV_8UC4);},0,[&]{return cancel.load();}).get();});
+  auto stopped=std::async(std::launch::async,[&]{return cache.OfferAsync(Metadata(98),[]{return cv::Mat(32,32,CV_8UC4);},0,[&]{return cancel.load();}).get();});
   Check(stopped.wait_for(std::chrono::milliseconds(50))==std::future_status::timeout,"saturated required evidence did not wait");
   cancel=true;Check(stopped.wait_for(std::chrono::seconds(1))==std::future_status::ready&&!stopped.get(),"stop did not interrupt admission");
-  auto admitted=std::async(std::launch::async,[&]{return cache.OfferAsync(Metadata(11),[]{return cv::Mat(32,32,CV_8UC4);},0,[]{return false;}).get();});
+  auto admitted=std::async(std::launch::async,[&]{return cache.OfferAsync(Metadata(99),[]{return cv::Mat(32,32,CV_8UC4);},0,[]{return false;}).get();});
   Check(admitted.wait_for(std::chrono::milliseconds(50))==std::future_status::timeout,"saturated admission exceeded capacity");
   gate.Release();Check(first.get()&&admitted.get(),"backpressured frame was lost");
-  WaitWritten(root,10);Check(Status(root).at("dropped")==0,"required backpressure dropped evidence");
+  WaitWritten(root,98);Check(Status(root).at("dropped")==0,"required backpressure dropped evidence");
  }else if(mode=="pixels"){
   cache.OfferAsync(Metadata(1,8192,8192),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
   cache.OfferAsync(Metadata(2,8192,8192),[]{return cv::Mat(32,32,CV_8UC4);});
@@ -167,20 +167,33 @@ int main(int argc,char** argv){try{
   // syncs (3 per frame on a busy SSD) capped durable evidence near 15 frames/s.
   auto first=cache.OfferAsync(Metadata(1),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);});gate.Entered();
   std::vector<std::shared_future<bool>> rest;
-  for(int i=2;i<=9;++i)rest.push_back(cache.OfferAsync(Metadata(i),[]{return cv::Mat(32,32,CV_8UC4);}));
-  auto overflow=cache.OfferAsync(Metadata(10),[]{return cv::Mat(32,32,CV_8UC4);});
+  for(int i=2;i<=97;++i)rest.push_back(cache.OfferAsync(Metadata(i),[]{return cv::Mat(32,32,CV_8UC4);}));
+  auto overflow=cache.OfferAsync(Metadata(98),[]{return cv::Mat(32,32,CV_8UC4);});
   Check(overflow.wait_for(std::chrono::milliseconds(0))==std::future_status::ready&&!overflow.get(),"batching must not enlarge the bounded queue");
   gate.Release();Check(first.get(),"first frame not stored");
   for(auto& r:rest)Check(r.get(),"queued frame not stored");
-  WaitWritten(root,9);std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-  cache.OfferAsync(Metadata(11),[]{return cv::Mat(32,32,CV_8UC4);}).get();
+  WaitWritten(root,97);std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  cache.OfferAsync(Metadata(99),[]{return cv::Mat(32,32,CV_8UC4);}).get();
   Json stats;const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(5);
-  do{try{stats=Status(root);}catch(...){}if(stats.value("written",0U)>=10)break;std::this_thread::sleep_for(std::chrono::milliseconds(20));}while(std::chrono::steady_clock::now()<until);
-  Check(stats.value("written",0U)==10,"batched frames not all written");
+  do{try{stats=Status(root);}catch(...){}if(stats.value("written",0U)>=98)break;std::this_thread::sleep_for(std::chrono::milliseconds(20));}while(std::chrono::steady_clock::now()<until);
+  Check(stats.value("written",0U)==98,"batched frames not all written");
   Check(stats.value("directory_syncs",1000U)<=4,"queued frames were not committed by a shared directory sync");
   size_t jpg=0,meta=0,tmp=0;
   for(const auto& e:std::filesystem::directory_iterator(root/"raw")){jpg+=e.path().extension()==".jpg";meta+=e.path().extension()==".json";tmp+=e.path().extension()==".tmp";}
-  Check(jpg==10&&meta==10&&tmp==0,"batch left incomplete pairs or temporaries");
+  Check(jpg==98&&meta==98&&tmp==0,"batch left incomplete pairs or temporaries");
+ }else if(mode=="stall"){
+  // A storage stall (a slow fsync on a busy SSD) must be absorbed by the RAM
+  // budget, not stop inference: ~4 s of 1080p evidence at 15 FPS is admitted
+  // at once while the writer is blocked (.190: an 8-job bound stalled the
+  // inference loop for 1-15 s and the tracker lost identities in the hole).
+  auto first=cache.OfferAsync(Metadata(1,1920,1080),[&]{gate.Wait();return cv::Mat(32,32,CV_8UC4);},0,[]{return false;});gate.Entered();
+  const auto t0=std::chrono::steady_clock::now();
+  std::vector<std::shared_future<bool>> rest;
+  for(int i=2;i<=61;++i)rest.push_back(cache.OfferAsync(Metadata(i,1920,1080),[]{return cv::Mat(32,32,CV_8UC4);},0,[]{return false;}));
+  Check(std::chrono::steady_clock::now()-t0<std::chrono::milliseconds(500),"admission blocked during a storage stall within the RAM budget");
+  gate.Release();Check(first.get(),"first frame not stored");
+  for(auto& r:rest)Check(r.get(),"stalled frame not stored");
+  WaitWritten(root,61);Check(Status(root).at("dropped")==0,"stall dropped evidence");
  }else throw std::runtime_error("unknown scenario");
  std::cout<<mode<<" software cache check passed\n";
  }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

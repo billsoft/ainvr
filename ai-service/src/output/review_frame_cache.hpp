@@ -42,7 +42,10 @@ inline bool HasReviewVisualTarget(const FrameResult& result) {
 struct ReviewEncodedFrame {std::vector<uint8_t> jpeg;int width=0,height=0;};
 class ReviewFrameCache {
  using Json=nlohmann::json;
- static constexpr size_t queue_capacity_=8;
+ // Jobs waiting for storage are bounded by the 256 MiB pixel budget (82 queued
+ // 1080p frames, ~5 s at 15 FPS) so a slow fsync is absorbed instead of stopping
+ // inference; this count only bounds bookkeeping for tiny frames.
+ static constexpr size_t queue_capacity_=96;
  static constexpr uintmax_t pixel_capacity_=256ULL*1024*1024,jpeg_capacity_=2ULL*1024*1024*1024;
  static constexpr int ttl_seconds_=30,requested_ttl_seconds_=60;
  static constexpr uintmax_t kMinFrameBytes=64*1024;
