@@ -13,10 +13,14 @@ const dirtyAcks=new Set(),pinIndexes=new Map(),durablePins=new Map(),anchors=new
 // directory anyway cost ~40 ms per consumed frame. Names found on disk at startup
 // are not trusted as durable and are committed once when first referenced.
 const durableSet=root=>{let set=durablePins.get(root);if(!set)durablePins.set(root,set=new Set());return set;};
+// Pin names grouped by the channel that owns them. Releasing pins after each consumed frame
+// walks one channel's own handful of names, never every pin in the spool: pins left behind by
+// channels that stopped consuming used to cost every other channel a full scan per frame.
+const pinName=/^([a-f0-9]{64})\.([a-f0-9]{64})(?:\.(\d+))?\.pin$/;
 function pinIndex(root){
  let index=pinIndexes.get(root);
  if(!index){
-  index=(async()=>{++metrics.directory_scans;let names=[];try{names=await readdir(root);}catch(e){if(e.code!=='ENOENT')throw e;}return new Set(names.filter(n=>n.endsWith('.pin')));})();
+  index=(async()=>{++metrics.directory_scans;let names=[];try{names=await readdir(root);}catch(e){if(e.code!=='ENOENT')throw e;}const owners=new Map();for(const name of names){const match=pinName.exec(name);if(!match)continue;let set=owners.get(match[2]);if(!set)owners.set(match[2],set=new Set());set.add(name);}return owners;})();
   pinIndexes.set(root,index);index.catch(()=>{if(pinIndexes.get(root)===index)pinIndexes.delete(root);});
  }
  return index;
@@ -72,7 +76,7 @@ export class EvidenceSpool {
   const anchor=await this.pinAnchor(),started=performance.now();let synced=false;
   try{
    const index=await pinIndex(this.root),durable=durableSet(this.root),names=[];
-   for(const key of keys){const name=key+'.'+owner+'.'+generation+'.pin';await link(anchor,join(this.root,name)).catch(error=>{if(error.code!=='EEXIST')throw error;});index.add(name);names.push(name);}
+   for(const key of keys){const name=key+'.'+owner+'.'+generation+'.pin';await link(anchor,join(this.root,name)).catch(error=>{if(error.code!=='EEXIST')throw error;});let mine=index.get(owner);if(!mine)index.set(owner,mine=new Set());mine.add(name);names.push(name);}
    if(names.every(name=>durable.has(name)))return;
    synced=true;
    const directory=await open(this.root,'r');try{await directory.sync();}finally{await directory.close();}
@@ -86,14 +90,15 @@ export class EvidenceSpool {
   // Pins are created only through protect(); the index is loaded from disk once
   // per process. Pins written by another process later are kept (never released
   // early), which can only retain evidence longer, never lose it.
-  const index=await pinIndex(this.root);
-  for(const name of [...index]){
-   const match=/^([a-f0-9]{64})\.([a-f0-9]{64})(?:\.(\d+))?\.pin$/.exec(name);
-   if(!match||match[2]!==owner)continue;
+  const mine=(await pinIndex(this.root)).get(owner);
+  if(!mine)return;
+  for(const name of [...mine]){
+   const match=pinName.exec(name);
+   if(!match)continue;
    const pinGeneration=Number(match[3]??0);
    // A worker whose lease expired cannot release a newer worker's evidence.
    if(pinGeneration>generation||(pinGeneration===generation&&keep.has(match[1])))continue;
-   await unlink(join(this.root,name)).catch(e=>{if(e.code!=='ENOENT')throw e;});index.delete(name);durableSet(this.root).delete(name);
+   await unlink(join(this.root,name)).catch(e=>{if(e.code!=='ENOENT')throw e;});mine.delete(name);durableSet(this.root).delete(name);
   }
  }
  async acknowledge(frame,{defer=false}={}){
