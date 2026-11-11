@@ -55,7 +55,7 @@ export function observationEnvelope(sample,rules){
 export class ObservationPump {
   constructor(root,consumer,repository){
     if(!path.isAbsolute(root)||root.length>4096)throw Error('Absolute observation root required');
-    this.root=root;this.consumer=consumer;this.repository=repository;this.stopping=false;this.concurrency=8;this.running=null;this.issues=new Map();this.pendingDirectorySyncs=new Set();
+    this.root=root;this.consumer=consumer;this.repository=repository;this.stopping=false;this.concurrency=8;this.running=null;this.issues=new Map();this.blockedLog=new Map();this.pendingDirectorySyncs=new Set();
     this.status={state:'waiting',pending:0,consumed:0,ignored:0,failed:0,last_error:null,last_persisted_at:null,channel_issues:[]};
   }
   tick(){if(this.running)return this.running;this.running=this.scan().finally(()=>{this.running=null});return this.running;}
@@ -103,6 +103,7 @@ export class ObservationPump {
         }catch(e){
           if(e.code==='ENOENT')continue;
           this.status.failed++;failed=true;this.status.last_error='record_not_consumed';
+          if(!reason)this.logBlocked(directory.name,sample,step,e);
           this.rememberIssue(directory.name,sample,reason??(step==='consume'?'processing_unavailable':step==='acknowledge'?'acknowledgement_pending':'invalid_observation'),'blocked');
           break;
         }
@@ -133,6 +134,17 @@ export class ObservationPump {
     if(!failed)this.status.last_error=this.issues.size?'source_binding_mismatch':null;
   }
   async syncDirectory(folder){const handle=await open(folder,'r');try{await handle.sync();}finally{await handle.close();}}
+  // The status API only carries a coarse reason. Write the real cause to the service log, once per
+  // channel when it changes and at most once a minute while it lasts (the scan retries every 100 ms).
+  logBlocked(key,sample,step,error){
+    const cause=`${step}:${error?.code??''}:${error?.message??''}`.slice(0,300),last=this.blockedLog.get(key),now=Date.now();
+    if(last?.cause===cause&&now-last.at<60000)return;
+    this.blockedLog.delete(key);this.blockedLog.set(key,{cause,at:now});
+    while(this.blockedLog.size>128)this.blockedLog.delete(this.blockedLog.keys().next().value);
+    process.stderr.write(JSON.stringify({at:new Date(now).toISOString(),event:'observation_blocked',service:'alarm-service',
+      channel_id:typeof sample?.channel_id==='string'?sample.channel_id.slice(0,256):null,step,
+      error:String(error?.message??error).slice(0,200),...(error?.code!==undefined?{code:String(error.code).slice(0,64)}:{})})+'\n');
+  }
   rememberIssue(key,sample,reason,state){
     this.issues.delete(key);
     const captured=new Date(Number.isFinite(sample?.timestamp)?sample.timestamp*1000:Number.NaN);

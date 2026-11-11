@@ -157,8 +157,12 @@ export class ObservationConsumer {
               delivery.state='complete';delivery.frames=refs;
             }catch(error){
               // A missing/corrupt source is a terminal evidence fault, not an
-              // endless storage retry. Network/capacity failures retain pending.
-              if(error.code!=='ENOENT'&&!['missing_context','evidence_integrity_mismatch','evidence_identity_mismatch','unsupported_image','evidence_expired'].includes(error.message))throw error;
+              // endless storage retry. So is a full screenshot pool: published
+              // screenshots are never evicted, so room only appears when they expire
+              // (days). Holding the frame would stop this channel's counting and
+              // triggers for that long; the alarm is published without a screenshot.
+              // Only a storage outage (network, timeout) retains pending.
+              if(error.code!=='ENOENT'&&!['missing_context','evidence_integrity_mismatch','evidence_identity_mismatch','unsupported_image','evidence_expired','evidence_capacity'].includes(error.message))throw error;
               delivery.state='failed';delivery.failure=error.code==='ENOENT'?'source_frame_missing':error.message;
             }
           }

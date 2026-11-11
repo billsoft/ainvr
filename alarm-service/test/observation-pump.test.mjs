@@ -143,3 +143,19 @@ test('channels are consumed concurrently, each in order, and a blocked channel n
   assert.equal((await readdir(path.join(root,rawHash('other')))).length,0);
  }finally{await rm(root,{recursive:true,force:true});}
 });
+test('a blocked channel writes the real cause to the service log once, not on every retry',async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),'ainvr-observations-')),dir=path.join(root,rawHash('processor'));
+ const write=process.stderr.write,lines=[];
+ try{
+  await mkdir(dir);await writeFile(path.join(dir,'0'.padStart(20,'0')+'.json'),JSON.stringify(sample));
+  let cause='evidence_capacity';
+  const pump=new ObservationPump(root,{consume:async()=>{throw Object.assign(Error(cause),{code:'E_TEST'})}},{ruleSnapshots:{current:async()=>({rules:[rule]})}});
+  process.stderr.write=text=>{lines.push(String(text));return true;};
+  for(let i=0;i<5;i++)await pump.tick();
+  cause='storage down';await pump.tick();await pump.tick();
+  process.stderr.write=write;
+  const logged=lines.filter(l=>l.includes('observation_blocked')).map(l=>JSON.parse(l));
+  assert.deepEqual(logged.map(l=>l.error),['evidence_capacity','storage down']);
+  assert.equal(logged[0].channel_id,'processor');assert.equal(logged[0].step,'consume');assert.equal(logged[0].code,'E_TEST');
+ }finally{process.stderr.write=write;await rm(root,{recursive:true,force:true});}
+});
