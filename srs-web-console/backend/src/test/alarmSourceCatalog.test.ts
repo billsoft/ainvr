@@ -47,3 +47,13 @@ it('low rate and runtime detection-only cannot offer tracking; zero FPS means fo
 it('2 FPS with active runtime supports alarm tracking',()=>{
  expect(buildAlarmSourceCatalog({...channel,config:{...channel.config,inference_fps:2}},frame,[input],now)!.tracking_available).toBe(true);
 });
+it('names why a source is not usable',()=>{
+ const reasons:string[]=[],why=(r:string)=>reasons.push(r);
+ buildAlarmSourceCatalog(channel,frame,[input],now+61000,why);
+ buildAlarmSourceCatalog(channel,frame,[input,{...input,id:'duplicate'}],now,why);
+ buildAlarmSourceCatalog({...channel,state:'reconnecting'},frame,[input],now,why);
+ buildAlarmSourceCatalog(channel,{...frame,stream_url:'rtmp://127.0.0.1/live/other'},[input],now,why);
+ expect(reasons).toEqual(['latest_result_stale:61s','input_channel_matches:2','channel_not_running:reconnecting','result_from_other_configuration']);
+ expect(buildAlarmSourceCatalog(channel,frame,[input],now,why)).not.toBeNull();
+ expect(reasons).toHaveLength(4);
+});

@@ -254,3 +254,39 @@ it.skipIf(!enabled)('PG model and open-vocabulary identity survives save, read a
  await expect(store.saveDefinition({...d,labels:[{...labels[0],description:'a toy truck'},labels[1]]},1,'operator','model-d2',async()=>s)).rejects.toMatchObject({code:'labels_unavailable'});
  expect((await store.listDefinitions()).find((x:any)=>x.trigger_id===d.trigger_id)).toMatchObject({version:1,labels});
 }));
+it.skipIf(!enabled)('PG 来源离线时已有布防可原样保存、改区域和解除选用，规则沿用已保存的来源信息',async()=>isolated(async store=>{
+  await store.saveDefinition(definition,0,'operator','d1',lookup);
+  await store.saveArming(arming(),0,'operator','a1',lookup,async()=>'g');
+  const before=(await store.snapshot()).rules;
+  const offline=async()=>null;
+  // Same content while the camera is down: accepted, executions untouched.
+  await store.saveArming(arming(),1,'operator','again',offline,offline);
+  expect((await store.snapshot()).rules).toEqual(before);
+  // Remove one selection (disarm) while the camera is down.
+  await store.saveArming({...arming(),assignments:[assignment('a','one')]},2,'operator','disarm',offline,offline);
+  expect((await store.snapshot()).rules.map((r:any)=>r.id)).toEqual(['a']);
+  // A geometry the server never observed is still refused.
+  await expect(store.saveArming({source_id:'camera',geometry_revision:'new',zones:[{...zone('one'),geometry_revision:'new'}],assignments:[]},3,'operator','claim',offline,offline)).rejects.toMatchObject({code:'source_unavailable'});
+  // A selection for an AI output that has never been bound still needs the live source.
+  await expect(store.saveArming({...arming(),assignments:[assignment('a','one'),{...assignment('c','two'),processor_id:'other'}]},3,'operator','fresh',offline,offline)).rejects.toMatchObject({code:'source_unavailable'});
+  expect((await store.snapshot()).rules.map((r:any)=>r.id)).toEqual(['a']);
+}));
+it.skipIf(!enabled)('PG 来源离线时按 AI 输出保存的计数选用可原样保存和解除',async()=>isolated(async store=>{
+  const counter={counter_id:'visitors',name:'客流',labels:[{label_id:'person',name:'人员'}],method:'zone',outputs:'both',names:{in:'进',out:'出'},occupancy:true,max_gap_ms:1000,state:'enabled'};
+  await store.saveCounter(counter,0,'operator','counter',lookup);
+  const z={...zone('zone-ai'),name:'热区 1',edge_ids:['top','right','bottom','left'],points:[[.2,.2],[.8,.2],[.8,.8],[.2,.8]]};
+  const doc={processor_id:'ai',source_id:'camera',geometry_revision:'g',zones:[z],assignments:[],counter_bindings:[{binding_id:'flow-count-ai',counter_id:'visitors',input_stream_id:'camera',processor_id:'ai',zone_id:z.zone_id,zone_version:1,geometry_revision:'g',label_map_version:'lm',direction:{kind:'edges',entry:['left'],exit:['right']}}]};
+  await store.saveArming(doc,0,'operator','first',lookup,async()=>'g');
+  const before=(await store.snapshot()).rules;
+  const offline=async()=>null;
+  await store.saveArming(doc,1,'operator','again',offline,offline);
+  expect((await store.snapshot()).rules).toEqual(before);
+  await store.saveArming({...doc,counter_bindings:[]},2,'operator','unbind',offline,offline);
+  expect((await store.readArming('camera','ai')).counter_bindings).toEqual([]);
+}));
+it.skipIf(!enabled)('PG 一次布防保存对同一 AI 输出只查询一次来源',async()=>isolated(async store=>{
+  await store.saveDefinition(definition,0,'operator','d1',lookup);
+  let calls=0;
+  await store.saveArming(arming(),0,'operator','a1',async()=>{calls++;return source;},async()=>'g');
+  expect(calls).toBe(1);
+}));

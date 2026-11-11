@@ -21,6 +21,15 @@ const armingSchema=z.object({
 type Zone=z.infer<typeof zoneSchema>;
 type Arming={coordinate_space?:'planar'|'erp';source_id:string;geometry_revision:string;zones:Zone[];assignments:TriggerAssignment[];counter_bindings:CounterBinding[]};
 type Lookup=(processorId:string)=>Promise<AssignmentSource|null>;
+/** The source evidence a rule was compiled with. An unchanged selection can be saved again from it
+ * while the camera is offline or the AI service is too busy to answer. If the picture has changed
+ * by the time the source returns, the stored binding no longer matches and the rule is ignored. */
+function frozenSource(processorId:string,definition:{labels?:AssignmentSource["labels"];target_model?:AssignmentSource["target_model"]},compiled:any):AssignmentSource|null{
+  const f=compiled?.source_binding;
+  if(!f||typeof f.input_stream_id!=='string'||typeof f.geometry_revision!=='string')return null;
+  return {channel_id:processorId,input_stream_id:f.input_stream_id,geometry_revision:f.geometry_revision,label_map_version:f.label_map_version,
+    ...(definition.target_model?{target_model:definition.target_model}:{}),tracking_available:true,labels:definition.labels??[],width:f.width,height:f.height,stream_fingerprint:f.stream_fingerprint,observed_at:f.not_before};
+}
 function fail(code:string,message:string):never{
   const status=code==='source_unavailable'?503:
     ['version_conflict','idempotency_conflict','source_changed','assignment_identity','binding_identity','archived_trigger','counter_deleting'].includes(code)?409:code==='not_found'?404:422;
@@ -326,14 +335,20 @@ export class AlarmArmingStore {
       if(!zoneIds.has(b.zone_id))fail('zone_required','删除区域时必须解除计数选用');
     }
     return this.operation('arming',processorId?{...doc,processor_id:processorId}:doc,expected,actor,key,async c=>{
-      const current=await sourceGeometry(doc.source_id);
-      if(current===null)fail('source_unavailable','来源暂不可用，请保留草稿');
-      if(current!==doc.geometry_revision)fail('source_changed','画面规格已变化，请重新读取');
+      // One live query per AI output for the whole save, however many selections it carries.
+      const asked=new Map<string,Promise<AssignmentSource|null>>();
+      const live=(id:string)=>{let answer=asked.get(id);if(!answer){answer=lookup(id);asked.set(id,answer);}return answer;};
       const old=(await c.query('SELECT revision,document FROM alarm_arming_sources WHERE source_id=$1',[doc.source_id])).rows[0];
+      const current=await sourceGeometry(doc.source_id);
+      // Offline or unanswered: the picture this server already observed and stored stays valid for
+      // editing and disarming. A picture it never observed is still refused.
+      if(current===null&&old?.document.geometry_revision!==doc.geometry_revision)fail('source_unavailable','来源暂不可用，请保留草稿');
+      if(current!==null&&current!==doc.geometry_revision)fail('source_changed','画面规格已变化，请重新读取');
       if((old?.revision??0)!==expected)fail('version_conflict','布防已修改，请重新读取');
       if(processorId){
-        const processor=await lookup(processorId);
-        if(!processor||processor.input_stream_id!==doc.source_id)fail('source_changed','AI 处理器与输入来源不匹配');
+        const processor=await live(processorId);
+        const known=(old?.document.assignments??[]).some((a:any)=>a.processor_id===processorId)||(old?.document.counter_bindings??[]).some((b:any)=>b.processor_id===processorId)||(old?.document.zones??[]).some((z:any)=>z.processor_id===processorId);
+        if(processor?processor.input_stream_id!==doc.source_id:!known)fail('source_changed','AI 处理器与输入来源不匹配');
         doc=mergeProcessorArming(old?.document,doc,processorId);
       }
       for(const z of doc.zones){
@@ -349,7 +364,7 @@ export class AlarmArmingStore {
         if(previous&&(previous.source_id!==doc.source_id||previous.trigger_id!==a.trigger_id))fail('assignment_identity','选用编号不能迁移到其他来源或触发器');
         const trigger=(await c.query('SELECT document,version FROM alarm_trigger_definitions WHERE trigger_id=$1',[a.trigger_id])).rows[0];
         if(!trigger||trigger.document.state==='archived')fail('trigger_unavailable','触发器不存在或已归档');
-        const source=await lookup(a.processor_id);
+        const source=await live(a.processor_id)??(previous?.active?frozenSource(a.processor_id,trigger.document,previous.compiled_rule):null);
         if(!source)fail('source_unavailable','来源暂不可用，请保留草稿');
         // Validate all assignments even when the definition is paused. Only the
         // persisted rule is disabled, not the compatibility checks.
@@ -380,7 +395,7 @@ export class AlarmArmingStore {
         if(previous&&(previous.source_id!==doc.source_id||previous.counter_id!==b.counter_id))fail('binding_identity','计数选用编号不能迁移到其他来源或计数器');
         const counter=(await c.query('SELECT document,version FROM flow_counter_definitions WHERE counter_id=$1',[b.counter_id])).rows[0];
         if(!counter||counter.document.deleting)fail('counter_unavailable','计数器不存在或正在删除');
-        const source=await lookup(b.processor_id);
+        const source=await live(b.processor_id)??(previous?.active?frozenSource(b.processor_id,counter.document,previous.compiled_rule):null);
         if(!source)fail('source_unavailable','来源暂不可用，请保留草稿');
         await this.writeBinding(c,doc.source_id,b,counter.document,counter.version,source,doc.zones.find(z=>z.zone_id===b.zone_id)??null,previous);
         await this.recordLine(c,b,recount.has(b.binding_id),actor);
