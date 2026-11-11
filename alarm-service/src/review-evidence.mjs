@@ -70,8 +70,10 @@ function build(row){
  }
  if(r.behavior==='region_traverse'){
   const a=byRole('进入前'),b=byRole('进入后'),d=byRole('离开后');
-  add('spatial','穿越过程',!a||!b||!d?'unknown':!a.inside&&b.inside&&!d.inside?'pass':'conflict','区域外→区域内→区域外','逐关键帧复算',[a?.frame_id,b?.frame_id,d?.frame_id].filter(Boolean));
   const t=row.analysis_evidence.traversal;
+  // Straight through between two frames: both keyframes are outside, on opposite sides.
+  if(t?.interior_observed===false)add('spatial','穿越过程',!a||!d?'unknown':!a.inside&&!d.inside?'pass':'conflict','区域外→连线穿过区域→区域外','前后两帧位置连线复算',[a?.frame_id,d?.frame_id].filter(Boolean));
+  else add('spatial','穿越过程',!a||!b||!d?'unknown':!a.inside&&b.inside&&!d.inside?'pass':'conflict','区域外→区域内→区域外','逐关键帧复算',[a?.frame_id,b?.frame_id,d?.frame_id].filter(Boolean));
   add('continuity','穿越连续性',t?.trajectory_complete===true&&t?.observation_gaps===0?'pass':'unknown','轨迹完整且无观测缺口',t?`缺口${t.observation_gaps??'未知'}，耗时${t.duration_ms??'未知'}ms`:'未记录',[],'engine_state');
  }
  const start=byRole(stateRule?'状态满足起点':r.behavior==='appearance'?'首次有效检出':r.behavior==='region_approach'?'进入接近带后':'进入后');

@@ -142,7 +142,7 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
       <label className="block text-sm font-medium text-ink">接近距离（画面宽度 %）<input type="number" min="0.001" max="100" step="any" inputMode="decimal" value={percent}
        onChange={e=>{setPercent(e.target.value);setError('')}} className={`${field} mt-1.5 sm:w-64`}/></label>
       <p className="text-sm text-ink-subtle">按检测框到热区的最短距离判断，接触或重叠时距离为 0。距离按来源画面宽度换算，选用时可单独调整。</p>
-     </>:<p className="text-sm text-ink-subtle">{value.behavior==='region_enter'?'检测框与热区相交或接触即满足；首次就在区内也会触发，无需进入前画面。':'目标须从热区外进入，再从不同边离开；轨迹证据不完整时不触发。'}</p>}
+     </>:<p className="text-sm text-ink-subtle">{value.behavior==='region_enter'?'检测框与热区相交或接触即满足；首次就在区内也会触发，无需进入前画面。':'目标须从热区外进入，再从不同边离开。画面帧率低、区内没有拍到时，按同一目标前后两帧位置的连线是否穿过热区判断；目标中途丢失时不触发。'}</p>}
      <p className="rounded-base bg-surface-page p-3 text-xs text-ink-subtle">{['region_enter','region_approach'].includes(value.behavior)?'位置按检测框与布防区的关系判断，不要求进入过程。': '位置按识别框底边中点判断。'}{value.behavior==='appearance'?'可选用到整个画面或指定热区。':value.behavior==='region_traverse'?'具体热区及允许方向，在布防中设置。':'具体热区在布防中设置。'}</p>
     </>}
     {step===3&&<>

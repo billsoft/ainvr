@@ -42,6 +42,8 @@ export function restorePassage(rule,frame,track,point,state){
   if(valid){
    const t=state.traversal??={previous:null,entry:null};
    t.gaps=(t.gaps??0)+1;t.gap_ms=(t.gap_ms??0)+elapsed;
+   // Marks this one step as joined across missed detections (see the straight-through rule).
+   t.bridged_pts=frame.source_pts_ns;
   }
  }
  delete state.passage_pending;delete state.passage_input_pause;

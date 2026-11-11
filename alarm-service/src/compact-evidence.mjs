@@ -20,7 +20,7 @@ export function compactProof(row){
  if(!c?.proof||c.proof.method!==(r.spatial_semantics==='bbox-state-v1'?'production_evaluator_state_v1':'production_evaluator_transition_v2')||!Array.isArray(c.samples)||!c.samples.length||c.samples.length>4)return no('incomplete_trajectory');
  if(c.integrity!==digest({samples:c.samples,proof:c.proof})||c.proof.rule_digest!==digest(r)||digest(c.proof.direction)!==digest(row.direction)||digest(c.proof.traversal)!==digest(row.analysis_evidence.traversal??null))return no('geometry_unconfirmed');
  if(c.samples.some(s=>!s.event_eligible||s.observation!=='detected'||s.track_id!==row.track_ids?.[0]||s.label_id!==row.analysis_evidence.track.label_id||s.source_frame_index==null)||c.samples.at(-1).frame_id!==row.frame_id)return no('incomplete_trajectory');
- const required=row.analysis_evidence.observation_mode==='detections'?['当帧检出']:r.spatial_semantics==='bbox-state-v1'?['状态满足起点','状态满足触发']:{appearance:['首次有效检出','达到持续条件'],region_approach:['进入接近带前','进入接近带后','达到持续条件'],region_enter:['进入前','进入后','达到持续条件'],region_traverse:['进入前','进入后','离开前','离开后']}[r.behavior];
+ const required=row.analysis_evidence.observation_mode==='detections'?['当帧检出']:r.spatial_semantics==='bbox-state-v1'?['状态满足起点','状态满足触发']:{appearance:['首次有效检出','达到持续条件'],region_approach:['进入接近带前','进入接近带后','达到持续条件'],region_enter:['进入前','进入后','达到持续条件'],region_traverse:row.analysis_evidence.traversal?.interior_observed===false?['进入前','离开后']:['进入前','进入后','离开前','离开后']}[r.behavior];
  const roles=new Set(c.samples.flatMap(s=>s.roles??[]));
  if(!required||required.some(role=>!roles.has(role)))return no('missing_keyframe');
  return {ok:true,samples:c.samples,verification:c.proof};

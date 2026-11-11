@@ -40,11 +40,11 @@ test('line counts finite stable segment crossings in both directions, not jitter
  assert.equal(replay([.29,.301,.299,.302,.298],{passage}).events.length,0);
  assert.equal(replay([{x:.2,y:.1},{x:.4,y:.1}],{passage}).events.length,0);
 });
-test('two gates count observed segment spanning both gates, reject same-gate return and ordinary zone skip',()=>{
+test('two gates count observed segment spanning both gates and reject same-gate return; a plain zone crossed in one step counts too',()=>{
  const passage={kind:'gates',edges:[3,1],max_gap_ms:1000};
  assert.equal(replay([.2,.8],{passage}).events.length,1);
  assert.equal(replay([.2,.4,.2],{passage}).events.length,0);
- assert.equal(replay([.2,.8]).events.length,0);
+ const skipped=replay([.2,.8]).events;assert.equal(skipped.length,1);assert.equal(skipped[0].analysis_evidence.traversal.interior_observed,false);
  const r=replay([.2,.8,.9,.2],{passage});assert.equal(r.events.length,2);
  assert.deepEqual(r.events.map(e=>[e.direction.entry_edge,e.direction.exit_edge]),[[3,1],[1,3]]);
 });

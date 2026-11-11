@@ -17,8 +17,11 @@ test('region traversal captures entry/exit direction and emits once for observed
   assert.equal(e.analysis_evidence.traversal.trajectory_complete,true);
   assert.equal(e.analysis_evidence.traversal.entry.frame_id,'2');assert.equal(e.analysis_evidence.traversal.exit.frame_id,'5');
 });
-test('initial inside, skipped interior, lost track and session/gap do not invent traversal',()=>{
-  assert.equal(run([.4,.5,.8]).length,0);assert.equal(run([.2,.8]).length,0);
+test('initial inside, lost track and session/gap do not invent traversal; one step straight through does count',()=>{
+  assert.equal(run([.4,.5,.8]).length,0);
+  const through=run([.2,.8]);assert.equal(through.length,1);
+  assert.equal(through[0].analysis_evidence.traversal.interior_observed,false);assert.equal(through[0].direction.entry_side_deg,270);assert.equal(through[0].direction.exit_side_deg,90);
+  for(const change of [(f,i)=>{if(i===1)f.gap=true;},(f,i)=>{if(i>=1)f.stream_session_id='new';}])assert.equal(run([.2,.8],change).length,0);
   for(const change of [(f,i)=>{if(i===2)f.tracks=[];},(f,i)=>{if(i>=2)f.stream_session_id='new';},(f,i)=>{if(i===2)f.gap=true;}])assert.equal(run([.2,.4,.5,.8],change).length,0);
 });
 test('boundary hysteresis does not emit repeated events; angles use original aspect ratio',()=>{

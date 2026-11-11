@@ -1,4 +1,5 @@
-// Observed outside -> inside -> outside only. Ambiguous polygon crossings reset.
+// Outside -> inside -> outside, or one step from outside to outside that passes straight
+// through the zone. Ambiguous polygon crossings reset.
 import {inside,boundaryStable} from './geometry.mjs';
 const eps=1e-9;
 // The anchor (box bottom/centre) of one observed target jitters in proportion to
@@ -130,7 +131,26 @@ export function traversalStep(rule,frame,point,state,box=null){
   if(prev.inside===current.inside){
     // A concave shortcut may leave and re-enter between samples; never assume continuity.
     if(current.inside&&crossesBoundary(rule.points,prev.point,point)){t.entry=null;state.traversal_issue='ambiguous_concave_crossing';}
-    if(!current.inside&&rule.passage?.kind!=='gates'&&crossesBoundary(rule.points,prev.point,point))state.traversal_issue='interior_not_observed';
+    if(!current.inside&&rule.passage?.kind!=='gates'){
+      // No frame caught the target inside (narrow zone, low frame rate). The same identity
+      // on opposite sides, joined by one line through two different edges, has passed through.
+      // The stretch inside the zone must clear the anchor's jitter, or a target standing
+      // beside a corner would be counted each time its box wobbles across the tip.
+      const h=hits(rule.points,prev.point,point);
+      if(h.length){
+        const {width,height}=frame.source,tolerance=rule.hysteresis_px??(rule.hysteresis??0)*Math.min(width,height);
+        const chord=h.length===2?Math.hypot((h[1].point[0]-h[0].point[0])*width,(h[1].point[1]-h[0].point[1])*height):0;
+        const clear=chord+eps>=Math.max(2*tolerance,LINE_JITTER_WIDTH_RATIO*(box&&Number.isFinite(box.w)&&box.w>0?box.w:0));
+        if(h.length!==2||h.some(x=>x.ambiguous)||h[0].edge===h[1].edge){state.traversal_issue='ambiguous_boundary_crossing';return null;}
+        // Only two consecutive real detections prove it. Across missed detections the tracker may
+        // have handed the identity to someone else, and nothing seen inside the zone says otherwise.
+        if(t.bridged_pts===current.pts){state.traversal_issue='interior_not_observed';return null;}
+        if(!clear){state.traversal_issue='interior_not_observed';return null;}
+        if(Number(BigInt(current.pts)-BigInt(prev.pts))/1e6<rule.duration_ms)return null;
+        t.entry=null;
+        return {...result(rule,frame,{...prev,boundary:h[0].point,edge:h[0].edge},{...current,boundary:h[1].point,edge:h[1].edge},t),interior_observed:false};
+      }
+    }
     if(!current.inside&&rule.passage?.kind==='gates'){
       const h=hits(rule.points,prev.point,point),gates=rule.passage.edges;
       if(h.length===2&&h.every(h=>!h.ambiguous&&gates.includes(h.edge))&&h[0].edge!==h[1].edge)

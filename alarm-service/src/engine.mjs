@@ -265,6 +265,9 @@ export function evaluate(checkpoint,input,rules) {
       const tr=traversalStep(g,f,p,s,t.bbox);
       if(!oldEntry&&s.traversal?.entry)begin();
       if(s.traversal_issue){issues.push(`${s.traversal_issue}:${r.id}:${t.track_id}`);delete s.traversal_issue;}
+      // Straight through with no frame inside: the last outside sample is both the
+      // "before entering" and the "before leaving" keyframe.
+      if(tr?.interior_observed===false&&sample&&s.review_compact?.last)s.review_compact={before:s.review_compact.last,last:s.review_compact.last};
       if(tr&&allowedEdge(tr.entry.edge,r.entry_edges)&&allowedEdge(tr.exit.edge,r.exit_edges)){
         // Counting bindings classify by stable edge ids: a dragged vertex keeps them.
         const ids=r.edge_ids?{entry_edge_id:r.edge_ids[tr.entry.edge]??null,exit_edge_id:r.edge_ids[tr.exit.edge]??null}:{};

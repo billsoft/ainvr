@@ -36,7 +36,7 @@ test('non-square source: every mode preserves direction, finite edges and reject
    assert.equal(run(kind,[-100,-80,0,-80,-100].map(x=>[x,0])).length,0,'same edge return');
    assert.equal(run(kind,[0,20,80,100].map(x=>[x,0])).length,0,'first observation inside');
   }
-  assert.equal(run('zone',[[-100,0],[100,0]]).length,0,'zone requires observed interior');
+  assert.equal(run('zone',[[-100,0],[100,0]]).length,1,'zone crossed in one step through two different edges');
   assert.equal(run('gates',[[-100,0],[100,0]]).length,1,'gates permit two unambiguous intersections');
  }
 });
