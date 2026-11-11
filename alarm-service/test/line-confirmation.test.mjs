@@ -85,7 +85,7 @@ test('real Mongo persists delayed confirmation once, including checkpoint failur
   const consumer=new ObservationConsumer(repo,{hook:async phase=>{if(phase==='before_checkpoint'&&failOnce&&await repo.behaviors.collection.countDocuments()){failOnce=false;throw Error('checkpoint fault')}}});
   for(const f of frames){const envelope={schema_version:'1.0',producer_id:'p',offset:f.seq,frame:f};try{await consumer.consume(envelope)}catch(e){assert.match(e.message,/checkpoint fault/);await consumer.consume(envelope)}await consumer.consume(envelope)}
   assert.equal(await repo.behaviors.collection.countDocuments(),1);assert.equal(await repo.events.countDocuments(),0);
-  assert.equal((await repo.behaviors.collection.findOne()).analysis_evidence.traversal.confirmation.policy,'line-observed-sides-v2');
+  assert.equal((await repo.behaviors.collection.findOne()).analysis_evidence.traversal.confirmation.policy,'line-observed-sides-v3');
  }finally{await db.dropDatabase();await client.close()}
 });
 
