@@ -1,5 +1,6 @@
 // Copyright AINVR. Replace only source hardware; original channel/publisher owns policy.
 #include "source.hpp"
+#include "async_packet_reader.hpp"
 #include "frame_copy_cadence.hpp"
 #include "source_rate.hpp"
 #include "reference_decode.hpp"
@@ -184,9 +185,12 @@ void StreamSource::Pump(){
       }
       frames_.notify_all();return true;
     };
+    AsyncPacketReader<ainvr::CompressedFrame> reader([media]{return media->Read();}, [media]{media->Cancel();});
     while(!stop_){
       while(!stop_&&receive(0)){}
-      auto packet=media->Read();if(!packet){eof=true;break;}
+      auto read=reader.Poll(std::chrono::milliseconds(2));
+      if(read.pending)continue; // Drain ready VPU output while network input waits.
+      auto packet=std::move(read.packet);if(!packet){eof=true;break;}
       if(!started){
         if(!packet->key_frame){std::lock_guard lock(mutex_);++stats_.pre_keyframe_discarded;continue;}
         started=true;
