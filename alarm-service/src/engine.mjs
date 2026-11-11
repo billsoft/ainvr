@@ -63,8 +63,6 @@ export function evaluate(checkpoint,input,rules) {
   const interval=!sessionChanged&&!ptsReset&&cp.pts!==null?Number(BigInt(f.source_pts_ns)-BigInt(cp.pts))/1e6:null;
   const timeGap=interval!==null&&interval>continuityLimitMs(cp);
   if(interval!==null)cp.intervals=[...(cp.intervals??[]),interval].slice(-INTERVALS);
-  // The channel's usual frame interval, for tolerances counted in frames.
-  const cadenceMs=cp.intervals?.length?[...cp.intervals].sort((a,b)=>a-b)[Math.floor(cp.intervals.length/2)]:0;
   if(sessionChanged||ptsReset){
     for(const e of Object.values(cp.episodes))ended.push({episode_id:e.id,ended_at:f.captured_at,end_reason:sessionChanged?'session_changed':'pts_reset'});
     cp.states={};cp.episodes={};cp.first_seen={};cp.detection_latches={};delete cp.intervals;
@@ -80,7 +78,7 @@ export function evaluate(checkpoint,input,rules) {
     const counting=timeOnly?new Map(rules.map(preparedRule).filter(r=>r.behavior==='region_traverse'&&gapAllowance(r)>0).map(r=>[JSON.stringify([r.id,r.version]),r])):new Map();
     for(const [key,s] of Object.entries(cp.states)){
       const [id,version,track]=JSON.parse(key),rule=counting.get(JSON.stringify([id,version]));
-      if(rule&&!s.tentative&&holdPassage(rule,f,s,cadenceMs)){s.passage_input_pause=true;continue;}
+      if(rule&&!s.tentative&&holdPassage(rule,f,s)){s.passage_input_pause=true;continue;}
       if(s.traversal?.entry||s.traversal?.line_pending)issues.push(`passage_input_gap:${id}:${track}`);
       breakEvidence(s);if(timeGap)delete s.seen_since;
     }
@@ -213,7 +211,7 @@ export function evaluate(checkpoint,input,rules) {
       if(!s.fired)remember();else delete s.review_compact;
       continue;
     }
-    if(!evidence){if(r.behavior!=='region_traverse'||!holdPassage(r,f,s,cadenceMs)){if(s.traversal?.entry||s.traversal?.line_pending)issues.push(`passage_observation_gap:${r.id}:${t.track_id}`);breakEvidence(s);}continue;}
+    if(!evidence){if(r.behavior!=='region_traverse'||!holdPassage(r,f,s)){if(s.traversal?.entry||s.traversal?.line_pending)issues.push(`passage_observation_gap:${r.id}:${t.track_id}`);breakEvidence(s);}continue;}
     const b=t.bbox;let p=anchor([(b.x+b.w/2)/W,(b.y+b.h*(r.anchor==='center'?0.5:1))/H]);
     // The centre-nearest copy is sufficient for membership, not for distance
     // to an asymmetric polygon. Compare adjacent copies for outside approach.
@@ -256,10 +254,10 @@ export function evaluate(checkpoint,input,rules) {
         if(s.traversal?.line_pending){s.traversal.line_pending.samples=0;s.traversal.line_pending.since=null;}
         capture(s.review_compact?.before);capture(s.review_compact?.start);
       }
-      if(!restorePassage(r,f,t,p,s,cadenceMs)){
+      if(!restorePassage(r,f,t,p,s)){
         const reason=s.passage_rejection??"passage_gap_rejected";
         const activePassage=!!(s.traversal?.entry||s.traversal?.line_pending);
-        breakEvidence(s);restorePassage(r,f,t,p,s,cadenceMs);
+        breakEvidence(s);restorePassage(r,f,t,p,s);
         // A far-away track timing out is not evidence of a missed passage.
         if(activePassage)issues.push(`${reason}:${r.id}:${t.track_id}`);
       }
