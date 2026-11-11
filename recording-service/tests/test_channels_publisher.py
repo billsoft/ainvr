@@ -96,3 +96,19 @@ def test_unknown_channel_has_no_confirmed_kind(tmp_path, monkeypatch):
     cm = _manager(tmp_path, monkeypatch, _srs({"active": True, "cid": "x"}))
     asyncio.run(cm.refresh_once())
     assert cm.confirmed_kind("deleted-channel") is None
+
+
+def test_more_than_ten_streams_are_all_seen(tmp_path, monkeypatch):
+    """流媒体服务不带数量参数时只返回前 10 条流；第 11 路起的通道曾被当成离线而不录。"""
+    from urllib.parse import urlparse, parse_qs
+    everything = [{"name": f"cam-{i}", "app": "live", "video": {"codec": "H264", "width": 1920, "height": 1080},
+                   "audio": None, "publish": {"active": True, "cid": f"c{i}"}} for i in range(16)]
+
+    def paged(url, *a, **k):
+        q = parse_qs(urlparse(url).query)
+        start, count = int(q.get("start", ["0"])[0]), int(q.get("count", ["10"])[0])
+        return {"streams": everything[start:start + count]}
+
+    cm = _manager(tmp_path, monkeypatch, _srs({"active": True}))
+    monkeypatch.setattr(channels_mod, "_http_get_json", paged)
+    assert len(cm._fetch_srs_streams()) == 16

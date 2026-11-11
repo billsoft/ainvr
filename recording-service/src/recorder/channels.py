@@ -140,7 +140,8 @@ class ChannelManager:
 
     def _fetch_srs_streams(self) -> dict[str, dict]:
         cfg = self.store.get()
-        data = _http_get_json(cfg.srs_api_url.rstrip("/") + "/api/v1/streams/")
+        # 流媒体服务不带数量参数时只返回前 10 条流，第 11 路起会被当成离线。
+        data = _http_get_json(cfg.srs_api_url.rstrip("/") + "/api/v1/streams/?start=0&count=1000")
         out = {}
         progress_snapshot = {}
         for s in data.get("streams", []):

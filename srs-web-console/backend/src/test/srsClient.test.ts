@@ -112,3 +112,23 @@ describe('SrsClient', () => {
     expect(supportsRtcHevc('garbage')).toBe(false);
   });
 });
+
+describe('SrsClient with more than ten streams', () => {
+  it('lists every stream: the media server returns only ten unless a count is asked for', async () => {
+    const all = Array.from({ length: 16 }, (_, i) => ({ id: 'vid-' + i, name: 'cam-' + i, app: 'live', publish: { active: true }, video: { width: 1920, height: 1080 } }));
+    const server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://x');
+      const count = Number(url.searchParams.get('count') ?? 10), start = Number(url.searchParams.get('start') ?? 0);
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ code: 0, streams: url.pathname.startsWith('/api/v1/streams') ? all.slice(start, start + count) : [] }));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const client = new SrsClient({ apiHost: '127.0.0.1:' + (server.address() as AddressInfo).port, timeoutMs: 2000, cacheTtlMs: 0 });
+      const streams = await client.listStreams();
+      expect(streams.map(s => s.name).sort()).toEqual(all.map(s => s.name).sort());
+    } finally {
+      await new Promise(resolve => server.close(resolve));
+    }
+  });
+});

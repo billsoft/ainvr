@@ -152,7 +152,9 @@ export class SrsClient {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
-      const res = await fetch(`${this.apiBase}/streams/`, {
+      // The media server returns only the first 10 streams unless a count is given; with more
+      // channels the rest looked offline (no preview state, arming refused as unavailable).
+      const res = await fetch(`${this.apiBase}/streams/?start=0&count=1000`, {
         method: 'GET',
         signal: controller.signal,
         headers: { 'Accept': 'application/json' },
