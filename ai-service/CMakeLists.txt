@@ -416,7 +416,7 @@ if(BUILD_TESTING)
 endif()
 
 if(AINVR_S100P AND BUILD_TESTING)
-  foreach(probe analytics_frame bytetrack_recovery bytetrack_rules analytics_motion analytics_tracker)
+  foreach(probe analytics_frame bytetrack_recovery bytetrack_rules bytetrack_duplicates analytics_motion analytics_tracker)
     add_executable(${probe}_test ../test/ai_port/${probe}_test.cpp)
     target_link_libraries(${probe}_test PRIVATE ainvr_bytetrack ainvr_ai_core)
     target_compile_options(${probe}_test PRIVATE -UNDEBUG)

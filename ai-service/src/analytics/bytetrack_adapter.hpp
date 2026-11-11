@@ -29,7 +29,7 @@ class ByteTrackAdapter {
     if(!std::isfinite(gap_) || gap_<=0 || gap_>60 || fps_<1 || fps_>120)
       throw std::invalid_argument("Invalid ByteTrack timing");
   }
-  void Reset() { groups_.clear(); last_=-1; alias_.clear(); identities_.clear(); next_id_=0; }
+  void Reset() { groups_.clear(); last_=-1; alias_.clear(); identities_.clear(); reliable_.clear(); next_id_=0; }
   std::vector<ByteTrackMatch> Process(double pts,const std::vector<ScoredBox>& boxes) {
     if(!std::isfinite(pts)||pts<0||pts<=last_)
       throw std::invalid_argument("Source time must increase");
@@ -42,7 +42,20 @@ class ByteTrackAdapter {
          !std::isfinite(b.box.y) || !std::isfinite(b.box.width) ||
          !std::isfinite(b.box.height) || b.box.width<=0 || b.box.height<=0)
         throw std::invalid_argument("Invalid scored tracking candidate");
-      if(b.score<0.1f) continue;
+    }
+    // Near-identical boxes are competing measurements, not two people. Keep
+    // source indices stable, and apply the same mask to recovery below.
+    std::vector<size_t> order;
+    for(size_t i=0;i<boxes.size();++i) if(boxes[i].score>=0.1f) order.push_back(i);
+    std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b){return boxes[a].score>boxes[b].score;});
+    std::vector<bool> eligible(boxes.size(),false);
+    std::vector<size_t> kept;
+    for(size_t i:order) {
+      bool duplicate=false;
+      for(size_t j:kept) if(boxes[i].label==boxes[j].label && Iou(boxes[i].box,boxes[j].box)>=0.9f) {duplicate=true;break;}
+      if(duplicate) continue;
+      kept.push_back(i);eligible[i]=true;
+      const auto& b=boxes[i];
       input[b.label].push_back({b.box,0,b.score,static_cast<int>(i)});
     }
     size_t needed=input.size();
@@ -72,7 +85,7 @@ class ByteTrackAdapter {
         labels.push_back(label);
       }
     }
-    Identify(pts,boxes,result);
+    Identify(pts,boxes,eligible,result);
     last_=pts;
     return result;
   }
@@ -109,9 +122,23 @@ class ByteTrackAdapter {
     if(iou<0.3f && distance>0.6f+0.6f*std::min(lost,1.f)) return -1;
     return distance-iou+1;
   }
-  void Identify(double pts,const std::vector<ScoredBox>& boxes,std::vector<ByteTrackMatch>& result) {
+  void Identify(double pts,const std::vector<ScoredBox>& boxes,const std::vector<bool>& eligible,std::vector<ByteTrackMatch>& result) {
     for(auto it=identities_.begin();it!=identities_.end();)
       if(pts-it->second.pts>gap_) it=identities_.erase(it); else ++it;
+    for(auto it=reliable_.begin();it!=reliable_.end();)
+      if(!identities_.count(it->first) || pts-it->second.pts>gap_) it=reliable_.erase(it); else ++it;
+    auto plausible=[&](int id,const cv::Rect_<float>& box) {
+      auto found=reliable_.find(id);
+      if(found==reliable_.end() || found->second.pts==identities_.at(id).pts) return true;
+      const auto& prior=found->second;
+      const float dx=Cx(box)-Cx(prior.box),dy=Cy(box)-Cy(prior.box);
+      // A weak observation is not evidence of a turn. Reject only a large
+      // backwards teleport after it, not ordinary jitter or an observed return.
+      const float motion=std::hypot(prior.vx,prior.vy)*std::min(float(pts-prior.pts),0.5f);
+      return motion<=0.1f*std::min(prior.box.width,prior.box.height) ||
+        dx*prior.vx+dy*prior.vy>=0 ||
+        std::hypot(dx,dy)<=std::hypot(prior.box.width,prior.box.height);
+    };
     for(auto it=alias_.begin();it!=alias_.end();)
       if(!identities_.count(it->second)) it=alias_.erase(it); else ++it;
     std::set<int> used;
@@ -120,7 +147,10 @@ class ByteTrackAdapter {
       // A revived internal track whose identity is already taken this frame
       // competes like a new one, so no identity is ever emitted twice.
       auto alias=alias_.find(result[i].track_id);
-      if(alias!=alias_.end() && !used.count(alias->second)) {result[i].track_id=alias->second;used.insert(alias->second);}
+      if(alias!=alias_.end() && !used.count(alias->second) &&
+         plausible(alias->second,boxes[result[i].observation].box)) {
+        result[i].track_id=alias->second;used.insert(alias->second);
+      }
       else fresh.push_back(i);
     }
     constexpr size_t kNone=static_cast<size_t>(-1);
@@ -130,7 +160,7 @@ class ByteTrackAdapter {
     for(const auto& r:result) matched.insert(r.observation);
     for(size_t i:fresh) candidates.push_back({i,result[i].observation});
     for(size_t o=0;o<boxes.size();++o)
-      if(!matched.count(o) && boxes[o].score>=0.1f) candidates.push_back({kNone,o});
+      if(eligible[o] && !matched.count(o)) candidates.push_back({kNone,o});
     std::vector<int> available;
     for(const auto& [id,state]:identities_)if(!used.count(id)&&state.pts<pts)available.push_back(id);
     std::vector<std::vector<double>> costs(candidates.size(),std::vector<double>(available.size(),4.0));
@@ -138,7 +168,7 @@ class ByteTrackAdapter {
       const auto& box=boxes[candidates[c].observation];
       for(size_t j=0;j<available.size();++j) {
         const auto& state=identities_.at(available[j]);
-        if(state.label!=box.label)continue;
+        if(state.label!=box.label || !plausible(available[j],box.box))continue;
         const float cost=Fit(state,box.box,pts);
         if(cost>=0)costs[c][j]=cost;
       }
@@ -166,12 +196,21 @@ class ByteTrackAdapter {
       if(candidate.result!=kNone) {alias_[result[candidate.result].track_id]=id;result[candidate.result].track_id=id;}
       else continued.push_back({candidate.observation,id,boxes[candidate.observation].box});
     }
+    std::vector<bool> keep_result(result.size(),true);
     for(size_t c=0;c<candidates.size();++c) {
       if(taken[c] || candidates[c].result==kNone) continue;
       auto& r=result[candidates[c].result];
+      // A rejected old alias is not permission to create a new weak identity.
+      // Use the same birth threshold as the pinned ByteTrack implementation.
+      if(boxes[candidates[c].observation].score<0.6f) {
+        alias_.erase(r.track_id);keep_result[candidates[c].result]=false;continue;
+      }
       if(next_id_==std::numeric_limits<int>::max()) throw std::overflow_error("Tracking identity space exhausted");
       alias_[r.track_id]=++next_id_;r.track_id=next_id_;used.insert(next_id_);
     }
+    size_t write=0;
+    for(size_t i=0;i<result.size();++i) if(keep_result[i]) result[write++]=result[i];
+    result.resize(write);
     result.insert(result.end(),continued.begin(),continued.end());
     for(const auto& r:result) {
       const auto& now=boxes[r.observation];
@@ -186,10 +225,25 @@ class ByteTrackAdapter {
         if(speed>limit) {next.vx*=limit/speed;next.vy*=limit/speed;}
       }
       identities_[r.track_id]=next;
+      // Weak (<0.25) continuations retain identity, but cannot steer the recovery
+      // reference. This is a recovery floor, not a model probability estimate.
+      if(now.score>=0.25f) {
+        auto oldReliable=reliable_.find(r.track_id);
+        if(oldReliable!=reliable_.end() && pts>oldReliable->second.pts) {
+          const auto& prior=oldReliable->second;
+          const float dt=static_cast<float>(pts-prior.pts),gain=std::min(1.f,dt/0.5f);
+          next.vx=prior.vx+gain*((Cx(now.box)-Cx(prior.box))/dt-prior.vx);
+          next.vy=prior.vy+gain*((Cy(now.box)-Cy(prior.box))/dt-prior.vy);
+          const float limit=3*std::hypot(now.box.width,now.box.height),speed=std::hypot(next.vx,next.vy);
+          if(speed>limit) {next.vx*=limit/speed;next.vy*=limit/speed;}
+        }
+        reliable_[r.track_id]=next;
+      }
     }
   }
   std::map<int,int> alias_;
   std::map<int,Identity> identities_;
+  std::map<int,Identity> reliable_;
   int next_id_=0;
   std::map<std::string,Group> groups_;
   double gap_,last_=-1;
