@@ -8,6 +8,7 @@ import threading
 import time
 import asyncio
 import logging
+from .timeline_summary import TimelineSummaryCache
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -58,6 +59,7 @@ class SegmentIndex:
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self._lock = threading.RLock()
+        self._timeline_cache = TimelineSummaryCache()
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -236,7 +238,7 @@ class SegmentIndex:
             r = cur.fetchone()
         return self._to_dict(r) if r else None
 
-    def query(self, channel_id: str, from_ts: int, to_ts: int) -> list[dict[str, Any]]:
+    def query(self, channel_id: str, from_ts: int, to_ts: int, sei_bucket_ms: int = 0) -> list[dict[str, Any]]:
         with self._lock:
             cur = self.conn.execute(
                 "SELECT * FROM active_segments WHERE channel_id=? AND complete=1 "
@@ -244,7 +246,16 @@ class SegmentIndex:
                 (channel_id, to_ts, from_ts),
             )
             rows = cur.fetchall()
-        return [self._to_dict(r) for r in rows]
+        if not sei_bucket_ms:
+            return [self._to_dict(r) for r in rows]
+        result = []
+        for r in rows:
+            item = self._to_dict(r, include_sei=False)
+            item['seiRanges'] = self._timeline_cache.get(r['sei_ranges'], sei_bucket_ms, r['duration_ms'])
+            item['seiPresent'] = bool(item['seiRanges'])
+            item['seiResolutionMs'] = sei_bucket_ms
+            result.append(item)
+        return result
 
     @staticmethod
     def _to_dict(r: sqlite3.Row, include_sei: bool = True) -> dict[str, Any]:

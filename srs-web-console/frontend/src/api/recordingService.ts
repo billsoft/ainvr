@@ -63,6 +63,8 @@ export function createHttpRecordingService(): RecordingService {
         channel: channelId,
         from: String(fromTs),
         to: String(toTs),
+        // Display-only coverage: exact frame metadata still comes from /sei.
+        sei_bucket_ms: String(Math.max(1, Math.ceil((toTs - fromTs) / 4096))),
       })
       return request<RecordingSegment[]>(`/v1/recordings/segments?${q.toString()}`, {
         cache: 'no-store', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000),

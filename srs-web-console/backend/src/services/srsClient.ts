@@ -148,10 +148,9 @@ export class SrsClient {
   // ---- 低级 ----
 
   private async fetchStreams(): Promise<SrsStream[]> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-
       // The media server returns only the first 10 streams unless a count is given; with more
       // channels the rest looked offline (no preview state, arming refused as unavailable).
       const res = await fetch(`${this.apiBase}/streams/?start=0&count=1000`, {
@@ -159,8 +158,6 @@ export class SrsClient {
         signal: controller.signal,
         headers: { 'Accept': 'application/json' },
       });
-
-      clearTimeout(timer);
 
       if (!res.ok) {
         console.warn(`[srsClient] /streams HTTP ${res.status}`);
@@ -191,6 +188,8 @@ export class SrsClient {
         console.warn(`[srsClient] /streams 失败: ${err.message}`);
       }
       return [];
+    } finally {
+      clearTimeout(timer);
     }
   }
 

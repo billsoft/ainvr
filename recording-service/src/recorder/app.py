@@ -144,6 +144,7 @@ def segment_public(seg: dict, playable: bool) -> dict:
         "hasAudio": seg["hasAudio"],
         "seiPresent": seg["seiPresent"],
         "seiRanges": seg.get("seiRanges"),
+        **({"seiResolutionMs": seg["seiResolutionMs"]} if "seiResolutionMs" in seg else {}),
         "storage": seg["storage"],
         "playable": playable,
     }
@@ -569,6 +570,7 @@ def create_app(store: ConfigStore, data_dir: str, guard_factory=build_guard) -> 
         channel: str = Query(...),
         start: int | None = Query(default=None, alias="from"),
         to: int | None = Query(default=None),
+        sei_bucket_ms: int = Query(default=0, ge=0, le=86400000),
         _: None = Depends(require_console_token),
     ):
         now_ms = int(time.time() * 1000)
@@ -579,7 +581,7 @@ def create_app(store: ConfigStore, data_dir: str, guard_factory=build_guard) -> 
             # Hundreds of thousands of SEI intervals must not go through
             # FastAPI's recursive encoder on the event-loop thread. Keep the
             # exact response contract and use the existing bounded DB lane.
-            rows = index.query(channel, start, to)
+            rows = index.query(channel, start, to, sei_bucket_ms=sei_bucket_ms)
             status = storage_mgr.current_status()
             return JSONResponse(
                 [segment_public(r, playable=status.healthy and r["storage"] == status.kind) for r in rows],

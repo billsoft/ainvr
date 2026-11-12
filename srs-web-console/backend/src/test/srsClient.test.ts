@@ -132,3 +132,23 @@ describe('SrsClient with more than ten streams', () => {
     }
   });
 });
+
+
+it('bounds stalled JSON bodies and allows the next request to recover', async () => {
+  let stalled = true;
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    if (stalled) { res.write('{"code":'); return; }
+    res.end(JSON.stringify({code:0, streams:[]}));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const client = new SrsClient({apiHost:`127.0.0.1:${(server.address() as AddressInfo).port}`, timeoutMs:100, cacheTtlMs:0});
+    expect(await client.isOnline()).toBe(false);
+    stalled = false;
+    expect(await client.isOnline()).toBe(true);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}, 3000);
