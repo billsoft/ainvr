@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { mockChannels } from '@/mock/channels'
 import { useMonitorStore } from '@/store/monitor'
 import MonitorPage from '@/pages/Monitor'
+import { autoMonitorCapacity } from '@/pages/Monitor/autoLayout'
 
 vi.mock('@/components/player/VideoPlayer', () => ({ VideoPlayer: (props:{onArming?:(video:HTMLVideoElement)=>void;savedZoneSource?:{id:string;createdAt?:string;inputGeneration?:string}}) => <div data-testid="vp" data-zone-source={JSON.stringify(props.savedZoneSource)}>{props.onArming&&<button onClick={()=>props.onArming!(document.createElement('video'))}>布防</button>}</div> }))
 vi.mock('@/pages/AlarmCenter/ArmingLauncher',()=>({ArmingLauncher:({onClose}:{onClose:()=>void})=><div role="dialog" aria-label="布防"><button onClick={onClose}>取消布防</button></div>}))
@@ -15,7 +16,15 @@ const settings = { monitorHardLimit: 2, monitorSoftLimit: 2 }
 const fetchSettings = vi.fn()
 vi.mock('@/store/settings', () => ({ useSettingsStore: () => ({ settings, fetchSettings }) }))
 
+let visibility: IntersectionObserverCallback
+afterEach(() => vi.unstubAllGlobals())
 beforeEach(() => {
+  vi.stubGlobal('IntersectionObserver', class {
+    callback: IntersectionObserverCallback
+    constructor(callback: IntersectionObserverCallback) { this.callback = callback; visibility = callback }
+    observe(target: Element) { this.callback([{ target, isIntersecting: true, intersectionRatio: 1 } as IntersectionObserverEntry], this as unknown as IntersectionObserver) }
+    disconnect() {}
+  })
   mockChannels[1]!.status.online=true;
   useMonitorStore.setState({ layout: '2x2', mode: 'auto', page: 0, slots: [null, null, null, null], selectedOutputs: {}, initialized: false, focusedChannelId: null })
 })
@@ -36,6 +45,9 @@ it('updates the source label when the selected playback switches to AI output', 
   renderPage()
   await user.selectOptions(screen.getByLabelText(`播放来源 ${mockChannels[0]!.name}`), mockChannels[1]!.id)
   expect(screen.getAllByText(`来源：${mockChannels[0]!.name}`)).toHaveLength(2)
+  expect(useMonitorStore.getState().initialized).toBe(true)
+  expect(useMonitorStore.getState().slots.filter(Boolean)).toEqual(mockChannels.map(c => c.id))
+  expect(useMonitorStore.getState().selectedOutputs[mockChannels[0]!.id]).toBe(mockChannels[1]!.id)
 })
 
 describe('MonitorPage stable layout', () => {
@@ -46,26 +58,24 @@ describe('MonitorPage stable layout', () => {
     renderPage()
     const selector = screen.getByLabelText(`播放来源 ${source.name}`)
     expect(selector).toHaveValue('removed-ai-output')
-    expect(screen.queryByTestId('vp')).not.toBeInTheDocument()
+    expect(screen.getByLabelText(`播放来源 ${source.name}`)).toHaveValue('removed-ai-output')
     await user.selectOptions(selector, source.id)
     expect(useMonitorStore.getState().selectedOutputs[source.id]).toBe(source.id)
   })
   it('keeps service order and caps mounted players', async () => {
     renderPage()
-    await waitFor(() => expect(useMonitorStore.getState().initialized).toBe(true))
+    await waitFor(() => expect(screen.getByTestId('monitor-grid')).toBeInTheDocument())
     const items = screen.getAllByTestId(/^monitor-item-/)
     expect(items.map(i => i.getAttribute('data-testid'))).toEqual(mockChannels.map(c => `monitor-item-${c.id}`))
     expect(screen.getAllByTestId('vp').length).toBeLessThanOrEqual(2)
   })
-  it('selecting a smaller layout preserves all arranged channels', async () => {
-    const user = userEvent.setup()
+  it('automatically shows all catalogue entries without manual layout or paging controls', () => {
     renderPage()
-    await waitFor(() => expect(useMonitorStore.getState().initialized).toBe(true))
-    await user.click(screen.getByRole('button', { name: '4 宫格' }))
-    expect(useMonitorStore.getState().slots.filter(Boolean)).toHaveLength(mockChannels.length)
-    expect(screen.getByLabelText('下一页')).toBeEnabled()
-    await user.click(screen.getByLabelText('下一页'))
-    expect(useMonitorStore.getState().page).toBe(1)
+    expect(screen.queryByRole('group', { name: '监看布局' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('下一页')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '清空监看' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '恢复通道顺序' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('monitor-grid').children).toHaveLength(autoMonitorCapacity(mockChannels.length))
   })
   it('focus unmounts grid and returning restores it', async () => {
     const user = userEvent.setup()
@@ -94,22 +104,33 @@ it('arming opens over the focused player without replacing its playback element'
  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();expect(screen.getByTestId('vp')).toBe(player)
 })
 
-it('restores every channel in catalogue order after clearing and keeps the chosen capacity', async () => {
+it('ignores old manual arrangements and close focus does not remove a channel', async () => {
+  useMonitorStore.setState({ slots: [mockChannels[1]!.id], initialized: true })
   const user = userEvent.setup(); renderPage()
-  await user.click(screen.getByRole('button', {name: '32 宫格'}))
-  expect(screen.getByRole('button', {name: '32 宫格'})).toHaveAttribute('aria-pressed', 'true')
-  expect(screen.queryByRole('combobox', {name: '监看布局'})).not.toBeInTheDocument()
-  await user.click(screen.getByRole('button', {name: '清空监看'}))
-  expect(useMonitorStore.getState().slots.filter(Boolean)).toHaveLength(0)
-  await user.click(screen.getByRole('button', {name: '恢复通道顺序'}))
-  expect(useMonitorStore.getState().slots.filter(Boolean)).toEqual(mockChannels.map(c => c.id))
-  expect(useMonitorStore.getState().layout).toBe('8x4')
-  expect(useMonitorStore.getState().page).toBe(0)
-  expect(screen.getAllByTestId('vp').length).toBeLessThanOrEqual(2)
+  const names = () => Array.from(screen.getByTestId('monitor-grid').children).map(e => e.getAttribute('data-channel-id')).filter(Boolean)
+  expect(names()).toEqual(mockChannels.map(c => c.id))
+  await user.click(screen.getByTestId(`monitor-item-${mockChannels[0]!.id}`))
+  await user.click(screen.getByTestId('focus-close'))
+  expect(names()).toEqual(mockChannels.map(c => c.id))
+})
+
+it.each([[0,4],[2,4],[5,6],[7,8],[9,10],[11,16],[17,18],[19,20],[21,22],[255,256],[256,256],[257,258]])('automatically sizes %i channels to %i slots without losing channels', (count, size) => {
+  expect(autoMonitorCapacity(count)).toBe(size)
 })
 
 it('raw input has neither arming action nor saved-zone overlay',async()=>{
  const user=userEvent.setup();renderPage();await user.click(await screen.findByTestId('slot-focus-0'))
  expect(screen.getByTestId('vp')).not.toHaveAttribute('data-zone-source')
  expect(screen.queryByRole('button',{name:'布防'})).not.toBeInTheDocument()
+})
+
+it('releases offscreen players while preserving their channel tiles', () => {
+  renderPage()
+  const tiles = Array.from(screen.getByTestId('monitor-grid').querySelectorAll('[data-channel-id]'))
+  expect(screen.getAllByTestId('vp').length).toBeGreaterThan(0)
+  act(() => visibility(tiles.map(target => ({ target, isIntersecting: false, intersectionRatio: 0 } as IntersectionObserverEntry)), {} as IntersectionObserver))
+  expect(screen.queryAllByTestId('vp')).toHaveLength(0)
+  expect(screen.getByTestId('monitor-grid').querySelectorAll('[data-channel-id]')).toHaveLength(mockChannels.length)
+  act(() => visibility([{ target: tiles[1]!, isIntersecting: true, intersectionRatio: 1 } as IntersectionObserverEntry], {} as IntersectionObserver))
+  expect(screen.getAllByTestId('vp')).toHaveLength(1)
 })

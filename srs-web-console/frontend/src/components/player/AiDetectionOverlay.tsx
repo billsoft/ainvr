@@ -7,7 +7,7 @@ import { TrackTrailBuffer, trailSegments, type TrackTrail } from './trackTrails'
 import { drawGroundingPoints, type GroundingOverlay } from './groundingPoints'
 
 const TRAIL_IDLE_MS = 1000
-type DisplayResult = { detections: AiDetection[]; ptsNs?: number | null; displayAgeMs?: number; grounding?: GroundingOverlay }
+type DisplayResult = { detections: AiDetection[]; ptsNs?: number | null; displayAgeMs?: number; displayHoldMs?: number; grounding?: GroundingOverlay }
 
 interface Props {
   drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay, trails?: TrackTrail[]) => void
@@ -20,7 +20,7 @@ interface Props {
   protocol?: string
   /** Changes whenever the player opens a new transport session. */
   resetKey?: string | number
-  /** Returns metadata at/before the displayed frame, at most 300 ms old. */
+  /** Returns metadata at/before the displayed frame, within the bounded adaptive display window. */
   getSeiForFrame?: (rtpTimestamp: number) => DisplayResult | null
   /** 近似对齐（设计 §8.2）：浏览器不给显示帧的 rtpTimestamp 时，按显示时刻（performance.now 时基）
    *  取"到达时刻 + 实测延迟"最接近的那一帧；延迟还没估出来时返回 null（不画）。 */
@@ -34,7 +34,7 @@ interface Props {
 const DIAG_HEARTBEAT_MS = 15_000
 
 /**
- * 识别框以显示帧为基准，最多复用此前 300ms 的检测，复用时降低不透明度：
+ * 识别框以显示帧为基准，按识别节奏限时复用此前检测（300–1000ms），短时保持亮度、陈旧时淡出：
  * - 逐帧：rVFC 给出显示帧的 rtpTimestamp，按它精确取；
  * - 近似：rVFC 不给 rtpTimestamp（或没有 rVFC），按显示时刻取"到达 + 实测延迟"最近的帧，
  *   每帧都用最新的延迟估计，没有累加项，误差不随时间累计；
@@ -46,6 +46,10 @@ export function AiDetectionOverlay({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const frameRef = useRef<DisplayResult | null>(null)
   const expiresRef = useRef(0)
+  const sourceAtRef = useRef(0)
+  const holdRef = useRef(300)
+  const displayedIntervalsRef = useRef<number[]>([])
+  const mediaExpiresRef = useRef(0)
   const lastPtsRef = useRef<number | null>(null)
   const startedRef = useRef(0)
   const presentedAtRef = useRef(0)
@@ -64,6 +68,10 @@ export function AiDetectionOverlay({
     frameRef.current = null
     modeSeenRef.current = null
     expiresRef.current = 0
+    sourceAtRef.current = 0
+    holdRef.current = 300
+    displayedIntervalsRef.current = []
+    mediaExpiresRef.current = 0
     lastPtsRef.current = null
     startedRef.current = performance.now()
     presentedAtRef.current = startedRef.current
@@ -126,6 +134,15 @@ export function AiDetectionOverlay({
     const hasRvfc = typeof current.requestVideoFrameCallback === 'function'
     // 没有 rVFC 时只有近似路径能用（逐帧需要显示帧的 rtpTimestamp）
     if (!hasRvfc && !getSeiApprox) return
+    const clearForSeek = () => {
+      frameRef.current = null
+      expiresRef.current = 0
+      lastPtsRef.current = null
+      displayedIntervalsRef.current = []
+      trailBuffer.current.clear()
+      trails.current = []
+    }
+    video.addEventListener('seeking', clearForSeek)
     let cancelled = false
     let handle = 0
     const apply = (hit: DisplayResult | null, mode: 'exact' | 'approx') => {
@@ -135,14 +152,30 @@ export function AiDetectionOverlay({
       // Repeated SEI or out-of-order metadata must not renew a stale box/trail.
       const fresh = !!hit && (!hasPts || lastPtsRef.current === null || pts > lastPtsRef.current)
       if (fresh) {
+        if (hasPts && lastPtsRef.current !== null) {
+          const interval = (pts - lastPtsRef.current) / 1e6
+          if (interval > 0 && interval <= 1000) {
+            displayedIntervalsRef.current.push(interval)
+            if (displayedIntervalsRef.current.length > 5) displayedIntervalsRef.current.shift()
+          }
+        }
         if (hasPts) lastPtsRef.current = pts
         trails.current = trailBuffer.current.update(hit!.ptsNs, hit!.detections)
         lastResultRef.current = nowMono
-        expiresRef.current = nowMono + Math.max(0, 300 - (hit!.displayAgeMs ?? 0))
+        const intervals = [...displayedIntervalsRef.current].sort((a, b) => a - b)
+        const hold = Math.min(1000, Math.max(300, hit!.displayHoldMs ?? 300,
+          3 * (intervals[Math.floor(intervals.length / 2)] ?? 0)))
+        holdRef.current = hold
+        sourceAtRef.current = nowMono - (hit!.displayAgeMs ?? 0)
+        expiresRef.current = sourceAtRef.current + hold
+        mediaExpiresRef.current = video.currentTime + Math.max(0, expiresRef.current - nowMono) / 1000
       }
       const same = hasPts && pts === lastPtsRef.current
-      frameRef.current = hit && (fresh || same) && nowMono < expiresRef.current ? hit : null
-      if (!fresh && hit) expiresRef.current = Math.min(expiresRef.current, nowMono + Math.max(0, 300 - (hit.displayAgeMs ?? 0)))
+      if (hit && (fresh || same)) frameRef.current = hit
+      if (!fresh && hit && same) expiresRef.current = Math.min(expiresRef.current,
+        nowMono + Math.max(0, holdRef.current - (hit.displayAgeMs ?? 0)))
+      // Missing metadata is not an explicit empty detection. Never renew its lease.
+      if (nowMono >= expiresRef.current || video.currentTime >= mediaExpiresRef.current) frameRef.current = null
       const counters = countersRef.current
       counters.displayed++
       if (!hit) counters.missing++
@@ -193,6 +226,7 @@ export function AiDetectionOverlay({
       }
       handle = current.requestVideoFrameCallback!(onFrame)
       return () => {
+        video.removeEventListener('seeking', clearForSeek)
         cancelled = true
         current.cancelVideoFrameCallback?.(handle)
       }
@@ -204,6 +238,7 @@ export function AiDetectionOverlay({
     }
     handle = requestAnimationFrame(tick)
     return () => {
+      video.removeEventListener('seeking', clearForSeek)
       cancelled = true
       cancelAnimationFrame(handle)
     }
@@ -229,9 +264,11 @@ export function AiDetectionOverlay({
       context.setTransform(dpr, 0, 0, dpr, 0, 0)
       context.clearRect(0, 0, rect.width, rect.height)
       if (!video.videoWidth || !video.videoHeight) return
-      if (performance.now() >= expiresRef.current) frameRef.current = null
+      if (performance.now() >= expiresRef.current || video.currentTime >= mediaExpiresRef.current) frameRef.current = null
       const frame = frameRef.current
-      context.globalAlpha = (frame?.displayAgeMs ?? 0) > 0 ? 0.65 : 1
+      const age = Math.max(0, performance.now() - sourceAtRef.current)
+      const hold = Math.max(300, expiresRef.current - sourceAtRef.current)
+      context.globalAlpha = age <= 150 ? 1 : Math.max(0.25, 1 - 0.75 * (age - 150) / (hold - 150))
       if (frame?.detections.length || frame?.grounding?.points.length) countersRef.current.drawn++
       // Box visibility applies to detected and display-only boxes; trails remain independent.
       const visibleDetections = showDetections ? frame?.detections ?? []

@@ -81,18 +81,41 @@ describe('live overlay expiry', () => {
     try {
       const v = makeVideo()
       vi.spyOn(v.el, 'getBoundingClientRect').mockReturnValue({ width: 400, height: 200 } as DOMRect)
-      render(<AiDetectionOverlay video={v.el} enabled getSeiForFrame={() => ({
-        displayAgeMs: 200,
-        detections: [{ class_id: 0, class_name: 'face', confidence: 1, bbox: { x: 1, y: 2, w: 3, h: 4 } }],
+      let missing = false
+      let empty = false
+      let displayAge = 200
+      let pts = 1
+      render(<AiDetectionOverlay video={v.el} enabled getSeiForFrame={() => missing ? null : ({
+        ptsNs: pts, displayAgeMs: displayAge,
+        detections: empty ? [] : [{ class_id: 0, class_name: 'face', confidence: 1, bbox: { x: 1, y: 2, w: 3, h: 4 } }],
       })} />)
       const draw = () => { const pending = [...callbacks]; callbacks.clear(); pending.forEach(([, cb]) => cb(now)) }
       v.present(9000)
       draw()
       expect(strokeRect).toHaveBeenCalledTimes(1)
+      missing = true
+      now = 1020
+      v.present(10800)
+      draw()
+      expect(strokeRect).toHaveBeenCalledTimes(2)
       now = 1101
       draw()
-      expect(strokeRect).toHaveBeenCalledTimes(1)
-      expect(context.clearRect).toHaveBeenCalledTimes(2)
+      expect(strokeRect).toHaveBeenCalledTimes(2)
+      expect(context.clearRect).toHaveBeenCalledTimes(3)
+      missing = false; displayAge = 0; pts = 500000001; now = 1200
+      v.present(18000); draw()
+      expect(strokeRect).toHaveBeenCalledTimes(3)
+      expect(context.globalAlpha).toBe(1)
+      now = 1233; displayAge = 33
+      v.present(21000); draw()
+      expect(context.globalAlpha).toBe(1)
+      expect(strokeRect).toHaveBeenCalledTimes(4)
+      missing = true; now = 1600
+      v.present(60000); draw()
+      expect(strokeRect).toHaveBeenCalledTimes(5)
+      missing = false; empty = true; pts = 600000001; displayAge = 0; now = 1640
+      v.present(24000); draw()
+      expect(strokeRect).toHaveBeenCalledTimes(5)
     } finally {
       cleanup()
       vi.restoreAllMocks()

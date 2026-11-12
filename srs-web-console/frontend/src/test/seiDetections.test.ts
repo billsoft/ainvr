@@ -189,3 +189,28 @@ describe('SeiFrameCache —— 收到帧与显示帧之间的缓冲', () => {
     expect(c.getForDisplay(1)).toBeNull()
   })
 })
+
+
+describe('adaptive live display lease', () => {
+  it('holds low cadence results for at most one second, never future frames', () => {
+    const c = new SeiFrameCache()
+    c.put(0, {ageMs: 0, ptsNs: 0, detections: []})
+    c.put(45000, {ageMs: 0, ptsNs: 500000000, detections: []})
+    expect(c.holdMs).toBe(1000)
+    expect(c.getForDisplay(120000)?.ptsNs).toBe(500000000)
+    expect(c.getForDisplay(135001)).toBeNull()
+    expect(c.getForDisplay(-1)).toBeNull()
+    c.clear()
+    expect(c.holdMs).toBe(300)
+  })
+  it('keeps 15 FPS bounded, ignores duplicate/out-of-order cadence and respects empty results', () => {
+    const c = new SeiFrameCache()
+    for(let i=0;i<10;i++) c.put(i*6000, {ageMs: 0, ptsNs:i*66666667, detections:[]})
+    expect(c.holdMs).toBe(300)
+    c.put(54000, {ageMs: 0, ptsNs:600000003, detections:[]})
+    c.put(100, {ageMs: 0, ptsNs:1, detections:[]})
+    expect(c.holdMs).toBe(300)
+    expect(c.getForDisplay(60000)?.detections).toEqual([])
+    expect(c.getForDisplay(81001)).toBeNull()
+  })
+})

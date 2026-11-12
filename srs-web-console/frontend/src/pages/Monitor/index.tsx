@@ -1,13 +1,13 @@
 import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, ChevronLeft, ChevronRight, GripVertical, History, Maximize2, X } from 'lucide-react'
+import { ArrowLeft, History, Maximize2, X } from 'lucide-react'
 import { VideoPlayer } from '@/components/player/VideoPlayer'
 import { Toaster } from '@/components/ui/Toaster'
 import { toast } from '@/store/toast'
 import { useMonitorStore } from '@/store/monitor'
 import { useSettingsStore } from '@/store/settings'
-import { LAYOUT_CAPACITY, MONITOR_LAYOUTS, gridClassFor } from '@/utils/monitorLayout'
+import { autoMonitorCapacity } from './autoLayout'
 import { useMonitorCatalog } from './useMonitorCatalog'
 import {usePtzCatalog} from './usePtzCatalog'
 import {PtzPanel} from '@/components/player/PtzPanel'
@@ -36,24 +36,54 @@ export default function MonitorPage() {
   const { allChannels, outputIds, variants, gbBindings, ready, error } = catalogue
   const sourceInfo = useMemo(() => buildMonitorSources(allChannels, outputIds, variants, gbBindings), [allChannels, outputIds, variants, gbBindings])
   const state = useMonitorStore()
-  const { layout, slots, page, hardLimit, focusedChannelId } = state
+  const { hardLimit, focusedChannelId } = state
   const { settings, fetchSettings } = useSettingsStore()
   const [search, setSearch] = useState('')
   const [arming,setArming]=useState<{channel:ChannelWithStatus;processorId:string;outputName:string;video:HTMLVideoElement}|null>(null)
   const zoneChannelId=arming?.channel.id??null
   const outputs = state.selectedOutputs
-  const [moving, setMoving] = useState<number | null>(null)
-  const dragFrom = useRef<number | null>(null)
+  const gridRef = useRef<HTMLDivElement | null>(null)
+  const [visibleIds, setVisibleIds] = useState<Set<string> | null>(null)
+  const [gridSize, setGridSize] = useState({ width: 960, height: 640 })
   const softWarned = useRef(false)
   const defaults = useMemo(() => allChannels.map(c => c.id), [allChannels])
   const byId = useMemo(() => new Map(allChannels.map(c => [c.id, c])), [allChannels])
   useEffect(() => { void fetchSettings() }, [fetchSettings])
   useEffect(() => { if (settings) state.setHardLimit(settings.monitorHardLimit) }, [settings, state.setHardLimit])
-  useEffect(() => { if (ready) state.initialize(defaults) }, [ready, defaults, state.initialize])
-  const capacity = LAYOUT_CAPACITY[layout]
-  const start = page * capacity
-  const pageSlots = slots.slice(start, start + capacity)
-  const pageCount = Math.max(1, Math.ceil(slots.length / capacity))
+  const capacity = autoMonitorCapacity(defaults.length)
+  const slots: (string | null)[] = Array.from({ length: capacity }, (_, i) => defaults[i] ?? null)
+  const catalogueKey = defaults.join('\n')
+  useEffect(() => {
+    if (!ready) return
+    // Persist source choices against the current catalogue, including newly added channels.
+    // Legacy manual slots no longer determine the visible grid.
+    useMonitorStore.setState({ slots: Array.from({ length: capacity }, (_, i) => defaults[i] ?? null), initialized: true, page: 0 })
+  }, [ready, catalogueKey, capacity])
+  useEffect(() => {
+    if (ready && focusedChannelId && !byId.has(focusedChannelId)) state.exitFocus()
+  }, [ready, focusedChannelId, byId, state.exitFocus])
+  useEffect(() => {
+    const grid = gridRef.current
+    if (!grid) return
+    setVisibleIds(null)
+    const resize = () => setGridSize({ width: grid.clientWidth || 960, height: grid.clientHeight || 640 })
+    resize()
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize)
+    ro?.observe(grid)
+    const seen = new Set<string>()
+    const observer = typeof IntersectionObserver === 'undefined' ? null : new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        const id = (entry.target as HTMLElement).dataset.channelId!
+        if (entry.isIntersecting && entry.intersectionRatio >= 0.25) seen.add(id)
+        else seen.delete(id)
+      }
+      setVisibleIds(new Set(seen))
+    }, { root: grid, threshold: [0, 0.25] })
+    grid.querySelectorAll('[data-channel-id]').forEach(tile => observer?.observe(tile))
+    return () => { ro?.disconnect(); observer?.disconnect() }
+  }, [catalogueKey, focusedChannelId])
+  const columns = Math.max(1, Math.min(Math.ceil(Math.sqrt(capacity)), Math.floor(gridSize.width / 240)))
+  const rowHeight = Math.max(190, (gridSize.height - 8 * (Math.ceil(capacity / columns) - 1)) / Math.ceil(capacity / columns))
   const chosenOutput = (id: string) => Object.hasOwn(outputs, id) ? outputs[id]! : id
   const resolved = (id: string) => {
     const selected = chosenOutput(id)
@@ -62,8 +92,8 @@ export default function MonitorPage() {
     return byId.get(selected)
   }
   // Only mounted players consume connections. Offline/deleted slots never reshuffle the catalogue.
-  const playable = pageSlots.filter((id): id is string => !!id && !!resolved(id)?.status.online)
-  const active = new Set(settings ? playable.slice(0, hardLimit) : [])
+  const playable = slots.filter((id): id is string => !!id && !!resolved(id)?.status.online)
+  const active = new Set(settings ? playable.filter(id => visibleIds === null || visibleIds.has(id)).slice(0, hardLimit) : [])
   const softLimit = settings?.monitorSoftLimit ?? 6
   useEffect(() => {
     if (!focusedChannelId && active.size > softLimit && !softWarned.current) {
@@ -88,17 +118,6 @@ export default function MonitorPage() {
   const used = slots.filter(Boolean).length
   const filtered = allChannels.filter(c => `${c.name} ${c.upstream.app}/${c.upstream.stream}`.toLowerCase().includes(search.toLowerCase()))
 
-  function arrange() {
-    if (!ready) { toast.info('接入通道尚未加载完成，请稍后重试'); return }
-    state.arrange(defaults)
-    setMoving(null)
-  }
-  function move(to: number) {
-    const from = dragFrom.current ?? moving
-    if (from !== null) state.swap(from, to)
-    dragFrom.current = null
-    setMoving(null)
-  }
   function player(id: string) {
     const c = resolved(id)
     if (!c) return <div className="p-4 text-center text-sm text-slate-300">通道暂不可用，位置已保留</div>
@@ -139,68 +158,54 @@ export default function MonitorPage() {
           const index = slots.indexOf(c.id)
           const isOutput = outputIds.has(`${c.upstream.app}/${c.upstream.stream}`)
           return <li key={c.id}><button className={`flex w-full items-center gap-2 rounded-base p-2 text-left text-sm ${index >= 0 ? 'bg-primary-50 text-primary-600' : 'text-ink-subtle hover:bg-surface-page'}`}
-            title={index >= 0 ? `${c.name}：定位到第 ${Math.floor(index / capacity) + 1} 页` : `${c.name}：加入监看`}
-            disabled={!!zoneChannelId} data-testid={`monitor-item-${c.id}`} onClick={() => { if (focusedChannelId) state.enterFocus(c.id); else if (!state.add(c.id)) toast.error('监看排列已达到容量上限') }}>
+            title={`${c.name}：放大查看`}
+            disabled={!!zoneChannelId} data-testid={`monitor-item-${c.id}`} onClick={() => state.enterFocus(c.id)}>
             <span className={`h-2 w-2 shrink-0 rounded-full ${c.status.online ? 'bg-success' : 'bg-ink-faint'}`} />
             <span className="min-w-0 flex-1 truncate">{c.name}{isOutput && <span className="ml-1 text-xs">AI</span>}</span>
             {index >= 0 && <span className="text-xs tabular-nums">{index + 1}</span>}
           </button></li>
         })}
       </ul>{!filtered.length && <p className="p-3 text-xs text-ink-subtle">{ready ? '没有匹配的通道' : '正在加载通道…'}</p>}</div>
-      <p className="border-t border-line p-3 text-xs leading-5 text-ink-subtle">恢复通道顺序会按本列表顺序安排全部通道，超出一页自动分页。已加入的通道点击定位，移除请使用画面右上角。</p>
+      <p className="border-t border-line p-3 text-xs leading-5 text-ink-subtle">按通道顺序自动排列。点击通道放大查看，新增或删除通道后布局自动调整。</p>
     </aside>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
       <PtzProtectionNotice/>
       <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 id="monitor-title" className="page-title">实时监看</h1>
-        {focusedChannelId ? <button className={button} disabled={!!zoneChannelId} onClick={state.exitFocus} data-testid="focus-back"><ArrowLeft size={14} className="mr-1 inline" />返回宫格</button> :
-          <div className="flex flex-wrap items-center gap-2">
-            <div role="group" aria-label="监看布局" className="flex items-center gap-1 rounded-base border border-line bg-surface p-1">
-              {MONITOR_LAYOUTS.map(l => <button key={l} type="button" aria-label={`${LAYOUT_CAPACITY[l]} 宫格`} aria-pressed={layout === l}
-                className={`min-h-11 min-w-11 rounded px-2 text-sm font-medium transition-colors ${layout === l ? 'bg-primary text-white' : 'text-ink-subtle hover:bg-primary-50'}`}
-                onClick={() => { setMoving(null); state.setLayout(l) }}>{LAYOUT_CAPACITY[l]}</button>)}
-            </div>
-            <button className={button} disabled={!ready} onClick={() => arrange()}>恢复通道顺序</button>
-            <button className={button} onClick={() => { state.clear(); setMoving(null) }}>清空监看</button>
-          </div>}
+        {focusedChannelId && <button className={button} disabled={!!zoneChannelId} onClick={state.exitFocus} data-testid="focus-back"><ArrowLeft size={14} className="mr-1 inline" />返回总览</button>}
+
       </header>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-subtle">
-        <span data-testid="monitor-usage">已安排 {used} 路 · 本页可播放 {focusedChannelId ? (focus?.status.online && settings ? 1 : 0) : active.size} 路 · 并发上限 {settings ? hardLimit : '读取中'}</span>
-        {!focusedChannelId && <div className="flex items-center gap-2"><button aria-label="上一页" className={button} disabled={page === 0} onClick={() => { state.setPage(page - 1); setMoving(null) }}><ChevronLeft size={14} /></button>
-          <span>第 {page + 1} / {pageCount} 页</span><button aria-label="下一页" className={button} disabled={page + 1 >= pageCount} onClick={() => { state.setPage(page + 1); setMoving(null) }}><ChevronRight size={14} /></button></div>}
+        <span data-testid="monitor-usage">共 {used} 路 · 自动 {capacity} 宫格 · {focusedChannelId ? (focus?.status.online && settings ? 1 : 0) : active.size} 路播放中</span>
       </div>
-      {(error || state.persistenceUnavailable || !settings) && <p role="status" className="rounded-base bg-amber-50 p-3 text-xs text-amber-800">{error || (state.persistenceUnavailable ? '浏览器无法保存布局，本次调整仅在当前会话有效。' : '监看参数尚未就绪，暂不建立播放连接。')} {!settings && <button className="underline" onClick={() => void fetchSettings()}>重试读取</button>}</p>}
-      {!focusedChannelId && playable.length > hardLimit && <p className="text-xs text-amber-800">超出并发上限的画面暂不播放；可切换较小宫格分页查看，或单独放大。</p>}
-      {heavyH265 >= 2 && <p role="note" className="text-xs text-amber-800">本页有 {heavyH265} 路 4K H.265 同时播放，受本机硬件解码路数限制可能卡顿或黑屏；卡顿时请减少宫格路数或单独放大。</p>}
-      {moving !== null && <p role="status" className="text-xs text-primary-600">已选位置 {moving + 1}，点击目标位置的“放到这里”完成交换。<button className="ml-2 underline" onClick={() => setMoving(null)}>取消</button></p>}
+      {(error || state.persistenceUnavailable || !settings) && <p role="status" className="rounded-base bg-amber-50 p-3 text-xs text-amber-800">{error || (state.persistenceUnavailable ? '浏览器无法保存播放来源选择，本次选择仅在当前会话有效。' : '监看参数尚未就绪，暂不建立播放连接。')} {!settings && <button className="underline" onClick={() => void fetchSettings()}>重试读取</button>}</p>}
+      {!focusedChannelId && playable.length > hardLimit && <p className="text-xs text-amber-800">优先播放可见画面，滚动时自动释放屏外连接；未播放的通道可点击放大查看。</p>}
+      {heavyH265 >= 2 && <p role="note" className="text-xs text-amber-800">当前有 {heavyH265} 路 4K H.265 同时播放，受本机硬件解码路数限制可能卡顿或黑屏；可单独放大查看。</p>}
       {focusedChannelId ? <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-panel bg-slate-950">
-        <div className="flex shrink-0 items-center justify-between gap-2 p-3 text-white"><div className="min-w-0 flex-1"><span className="block truncate" data-testid="focus-title">{focus?.name ?? byId.get(focusedChannelId)?.name ?? '通道暂不可用'}</span><SourceLabel value={focus && sourceInfo.get(focus.id)} /></div><div className="flex shrink-0 items-center gap-2">{!zoneChannelId&&variantSelect(focusedChannelId)}<button aria-label="关闭聚焦画面" disabled={!!zoneChannelId} onClick={state.closeFocus} data-testid="focus-close"><X size={16} /></button></div></div>
+        <div className="flex shrink-0 items-center justify-between gap-2 p-3 text-white"><div className="min-w-0 flex-1"><span className="block truncate" data-testid="focus-title">{focus?.name ?? byId.get(focusedChannelId)?.name ?? '通道暂不可用'}</span><SourceLabel value={focus && sourceInfo.get(focus.id)} /></div><div className="flex shrink-0 items-center gap-2">{!zoneChannelId&&variantSelect(focusedChannelId)}<button aria-label="关闭聚焦画面" disabled={!!zoneChannelId} onClick={state.exitFocus} data-testid="focus-close"><X size={16} /></button></div></div>
         <div className="relative flex min-h-0 flex-1 items-center justify-center">{player(focusedChannelId)}</div>
-      </div> : <div className={`grid min-h-0 flex-1 gap-2 ${gridClassFor(layout)}`} data-testid="monitor-grid">
-        {pageSlots.map((id, offset) => {
-          const index = start + offset
+      </div> : <div ref={gridRef} className="grid min-h-0 flex-1 gap-2 overflow-y-auto" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gridAutoRows: `${rowHeight}px` }} data-testid="monitor-grid">
+        {slots.map((id, offset) => {
+          const index = offset
           const c = id ? resolved(id) : undefined
           const aiId = c && outputIds.get(`${c.upstream.app}/${c.upstream.stream}`)
-          return <div key={`${index}:${id ?? 'empty'}`} data-slot-index={index} onDragOver={e => { if (dragFrom.current !== null) e.preventDefault() }} onDrop={e => { e.preventDefault(); move(index) }}
-            className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-panel border ${moving === index ? 'border-primary ring-2 ring-primary/30' : 'border-line'} bg-slate-950`}>
+          return <div key={id ?? `empty:${index}`} data-channel-id={id ?? undefined} data-slot-index={index}
+            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-panel border border-line bg-slate-950">
             <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-1 px-2 py-1 text-xs text-white">
               <div className="min-w-0 flex-1"><span className="block truncate" title={c?.name}>{index + 1} · {c?.name ?? (id ? byId.get(id)?.name ?? '通道暂不可用' : '空位')}</span><SourceLabel value={c && sourceInfo.get(c.id)} /></div>
               {id && <>
                 {variantSelect(id)}
-                <button draggable aria-label={`移动位置 ${index + 1}`} title="拖动换位，或点击后选择目标位置" onDragStart={e => { dragFrom.current = index; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(index)) }} onDragEnd={() => { dragFrom.current = null }} onClick={() => setMoving(index)}><GripVertical size={15} /></button>
                 {aiId && <button aria-label="识别历史" onClick={() => navigate(`/recognition-history/${aiId}`)}><History size={14} /></button>}
                 <button aria-label={`放大 ${c?.name ?? '通道'}`} data-testid={`slot-focus-${index}`} onClick={() => state.enterFocus(id)}><Maximize2 size={14} /></button>
-                <button aria-label={`移除位置 ${index + 1}`} data-testid={`slot-remove-${index}`} onClick={() => state.remove(index)}><X size={15} /></button>
               </>}
             </div>
             <div className="relative flex min-h-0 flex-1 items-center justify-center" data-testid={`slot-tile-${index}`} onDoubleClick={e => { if (id && !(e.target as HTMLElement).closest('button,select,input')) state.enterFocus(id) }}>
-              {id ? active.has(id) || (!!c && !c.status.online && ptzCandidates.has(c.id)) ? player(id) : <p className="p-3 text-center text-xs text-slate-300">{!c ? '通道暂不可用，位置已保留' : !c.status.online ? '通道离线，位置已保留' : !settings ? '等待读取监看上限' : '并发上限已达 · 可单独放大'}</p> : <p className="p-3 text-center text-xs text-slate-400">从左侧选择通道</p>}
+              {id ? active.has(id) || (!!c && !c.status.online && ptzCandidates.has(c.id)) ? player(id) : <p className="p-3 text-center text-xs text-slate-300">{!c ? '通道暂不可用，位置已保留' : !c.status.online ? '通道离线，位置已保留' : !settings ? '等待读取监看上限' : '点击右上角放大查看'}</p> : <p className="p-3 text-center text-xs text-slate-400">暂无通道</p>}
             </div>
-            {moving !== null && <button className="absolute inset-0 z-20 bg-primary/80 text-sm text-white" onClick={() => move(index)}>放到这里 · {index + 1}</button>}
           </div>
         })}
       </div>}
-      <p className="text-xs leading-5 text-ink-subtle">仅播放当前页；放大时释放其他连接。双击画面放大，拖动手柄交换位置。布局保存在当前浏览器，新增通道不会挤动已有画面。</p>
+      <p className="text-xs leading-5 text-ink-subtle">布局随通道数量自动调整，无需选择宫格或翻页。双击画面放大，返回后恢复总览；布防、云台和识别历史仍在对应画面中操作。</p>
     </div>
     {arming&&<ArmingLauncher outputName={arming.outputName} processorId={arming.processorId} channel={arming.channel} video={arming.video} onClose={()=>setArming(null)} onSaved={()=>{toast.success("布防已保存，应用状态将在配置同步后更新");window.dispatchEvent(new Event("ainvr-arming-saved"))}}/>}
     <Toaster />

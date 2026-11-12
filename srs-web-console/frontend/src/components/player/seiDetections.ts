@@ -50,6 +50,7 @@ export interface SeiFrameDetections {
   /** false means no inference metadata, not an explicit no-object result. */
   inferred?: boolean
   /** Age relative to the displayed video frame, never the newest received frame. */
+  displayHoldMs?: number
   displayAgeMs?: number
   /** 该 AU 在源流上的 PTS（纳秒）——诊断/对账用，画框本身不需要 */
   ptsNs: number | null
@@ -225,6 +226,13 @@ export function extractSeiDetections(data: Uint8Array): SeiFrameDetections | nul
  */
 export class SeiFrameCache {
   private readonly capacity: number
+  private lastInferenceStamp: number | null = null
+  private intervals: number[] = []
+
+  get holdMs(): number {
+    const sorted = [...this.intervals].sort((a, b) => a - b)
+    return Math.min(1000, Math.max(300, (sorted[Math.floor(sorted.length / 2)] ?? 100) * 3))
+  }
   private readonly map = new Map<number, SeiFrameDetections>()
 
   constructor(capacity: number = 300) {
@@ -233,6 +241,16 @@ export class SeiFrameCache {
   }
 
   put(rtpTimestamp: number, value: SeiFrameDetections): void {
+    if (value.inferred !== false) {
+      const delta = this.lastInferenceStamp === null ? 0 : (rtpTimestamp - this.lastInferenceStamp) | 0
+      if (this.lastInferenceStamp === null || delta > 0) {
+        if (delta > 0 && delta <= 90_000) {
+          this.intervals.push(delta / 90)
+          if (this.intervals.length > 8) this.intervals.shift()
+        }
+        this.lastInferenceStamp = rtpTimestamp
+      }
+    }
     // 已存在时先删再插，保证 Map 的插入顺序就是淘汰顺序
     if (this.map.has(rtpTimestamp)) this.map.delete(rtpTimestamp)
     this.map.set(rtpTimestamp, value)
@@ -243,26 +261,29 @@ export class SeiFrameCache {
     }
   }
 
-  /** Live-only smoothing, bounded to 300 ms on the 90 kHz video RTP clock.
+  /** Live-only smoothing, cadence-adaptive and bounded to 1000 ms on the 90 kHz video RTP clock.
    * Also recovers metadata on decoded frames the browser did not present.
    * Explicit empty results clear boxes; unprocessed frames do not.
    */
   getForDisplay(rtpTimestamp: number): SeiFrameDetections | null {
     let best: SeiFrameDetections | null = null
-    let age = 27_001
+    const limit = this.holdMs * 90
+    let age = limit + 1
     for (const [stamp, value] of this.map) {
       if (value.inferred === false) continue
       const delta = (rtpTimestamp - stamp) | 0
-      if (delta >= 0 && delta <= 27_000 && delta < age) {
+      if (delta >= 0 && delta <= limit && delta < age) {
         age = delta
         best = value
       }
     }
-    return best ? { ...best, displayAgeMs: age / 90 } : null
+    return best ? { ...best, displayAgeMs: age / 90, displayHoldMs: this.holdMs } : null
   }
 
   clear(): void {
     this.map.clear()
+    this.lastInferenceStamp = null
+    this.intervals = []
   }
 
   get size(): number {

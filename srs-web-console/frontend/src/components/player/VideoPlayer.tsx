@@ -267,8 +267,8 @@ export function VideoPlayer({
   const getSeiApprox = useCallback((displayMs: number) => {
     const d = delayRef.current.current
     if (d === null) return null
-    const hit = arrivalRef.current.pickPast(displayMs - d, 300, value => value.inferred !== false)
-    return hit ? { ...hit.value, displayAgeMs: hit.ageMs } : null
+    const hit = arrivalRef.current.pickPast(displayMs - d, seiCacheRef.current.holdMs, value => value.inferred !== false)
+    return hit ? { ...hit.value, displayAgeMs: hit.ageMs, displayHoldMs: seiCacheRef.current.holdMs } : null
   }, [])
   // aiChannelId 的 ref 版本：给 onEncodedVideoFrame 回调内部做动态判定用。
   //
