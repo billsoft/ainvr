@@ -1,3 +1,4 @@
+import { projectLandmark, computeContainLayout } from './overlayGeometry'
 import type { AiDetection } from '@/types/aiChannel'
 
 export interface TrailPoint { x: number; y: number; ptsNs: number; predicted?: boolean }
@@ -113,4 +114,25 @@ function sampleTrail(points: TrailPoint[], limit: number): TrailPoint[] {
     previous = index
   }
   return result
+}
+
+export function drawTrackTrails(context: CanvasRenderingContext2D, trails: TrackTrail[], layout: ReturnType<typeof computeContainLayout>, frameW: number, frameH: number) {
+          context.lineWidth = 2
+          for (const trail of trails) {
+            if (trail.points.length < 2) continue
+            let hash = 0
+            for (const char of trail.id) hash = (hash * 31 + char.charCodeAt(0)) | 0
+            context.strokeStyle = `hsl(${Math.abs(hash) % 360} 85% 65%)`
+            // 推算段虚线，真实观测段实线。
+            for (const segment of trailSegments(trail.points)) {
+              const a = projectLandmark(segment.from, layout, frameW, frameH)
+              const b = projectLandmark(segment.to, layout, frameW, frameH)
+              context.setLineDash?.(segment.predicted ? [6, 4] : [])
+              context.beginPath()
+              context.moveTo(a.x, a.y)
+              context.lineTo(b.x, b.y)
+              context.stroke()
+            }
+          }
+          context.setLineDash?.([])
 }

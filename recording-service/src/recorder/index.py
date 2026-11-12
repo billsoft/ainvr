@@ -247,7 +247,8 @@ class SegmentIndex:
         return [self._to_dict(r) for r in rows]
 
     @staticmethod
-    def _to_dict(r: sqlite3.Row) -> dict[str, Any]:
+    def _to_dict(r: sqlite3.Row, include_sei: bool = True) -> dict[str, Any]:
+        ranges = json.loads(r["sei_ranges"]) if include_sei and r["sei_ranges"] else None
         return {
             "id": r["id"],
             "channelId": r["channel_id"],
@@ -262,8 +263,8 @@ class SegmentIndex:
             "height": r["height"],
             "fps": r["fps"],
             "hasAudio": bool(r["has_audio"]),
-            "seiPresent": bool(json.loads(r['sei_ranges'])) if r['sei_ranges'] else False,
-            "seiRanges": json.loads(r['sei_ranges']) if r['sei_ranges'] else None,
+            "seiPresent": bool(ranges) if include_sei else bool(r["sei_present"]),
+            "seiRanges": ranges,
             "storage": r["storage"],
             "storageId": r["storage_id"],
             "relPath": r["rel_path"],
@@ -362,11 +363,11 @@ class SegmentIndex:
 
     # ---------- 扫描器支持 ----------
 
-    def all_segments(self) -> list[dict[str, Any]]:
+    def all_segments(self, include_sei: bool = True) -> list[dict[str, Any]]:
         with self._lock:
             cur = self.conn.execute("SELECT * FROM segments")
             rows = cur.fetchall()
-        return [self._to_dict(r) for r in rows]
+        return [self._to_dict(r, include_sei=include_sei) for r in rows]
 
     def set_complete(self, segment_id: str, end_ts: int, duration_ms: int, size_bytes: int) -> None:
         with self._lock:

@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction, RefObject, MouseEventHandler } from 'react'
-import { Camera, Download, Pause, Play, Scan, Volume2, VolumeX, ChevronUp } from 'lucide-react'
+import { Camera, Download, Pause, Play, Scan, Route, Volume2, VolumeX, ChevronUp } from 'lucide-react'
 import type { RecordingSegment } from '@/types/recording'
 import { formatClockAt, formatDurationClock } from '@/utils/recording'
 import { PlayerViewControls, type usePlayerView } from '@/components/player/PlayerViewControls'
@@ -15,6 +15,8 @@ interface Props {
   playing: boolean
   speedMenuOpen: boolean
   muted: boolean
+  showTrails: boolean
+  setShowTrails: Dispatch<SetStateAction<boolean>>
   showDetections: boolean
   error: boolean
   hoverPct: number | null
@@ -50,6 +52,7 @@ export function RecordingToolbar({
   playing,
   speedMenuOpen,
   muted,
+  showTrails, setShowTrails,
   showDetections,
   error,
   hoverPct,
@@ -235,6 +238,11 @@ export function RecordingToolbar({
               className={`min-h-8 min-w-8 rounded-base p-2 transition-colors hover:bg-white/10 disabled:opacity-30 ${showDetections ? 'text-primary-300' : 'text-white/60'}`}
               onClick={() => setShowDetections(v => !v)}
             ><Scan size={17} /></button>}
+            {(segment?.seiPresent || channelMeta?.kind === 'ai') && <button type="button"
+              aria-label={showTrails ? '隐藏轨迹' : '显示轨迹'} title={showTrails ? '隐藏轨迹' : '显示轨迹'}
+              aria-pressed={showTrails} disabled={!videoEl}
+              className={`min-h-8 min-w-8 rounded-base p-2 hover:bg-white/10 ${showTrails ? 'text-primary-300' : 'text-white/60'}`}
+              onClick={() => setShowTrails(v => !v)}><Route size={17} /></button>}
             <PlayerViewControls view={view} disabled={!videoEl || checking || error} />
           </div>
         </div>

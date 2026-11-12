@@ -36,6 +36,9 @@ export default function PlaybackPage() {
   const [playing, setPlaying] = useState<{ channelId: string; segmentId: string; offsetMs: number; request: number; scope: string } | null>(null)
   const playingRef = useRef(playing); playingRef.current = playing
   const selectionRequest = useRef(0)
+  const prepareAbort = useRef<AbortController | null>(null)
+  const [pendingPosition, setPendingPosition] = useState<number | null>(null)
+  useEffect(() => () => prepareAbort.current?.abort(), [])
   // 正在播放的段在一次 catalogue 成功刷新里缺失，可能只是 NAS（SMB）列举
   // 暂时不完整，立刻按"已删除/覆盖"处理会误杀播放、清空时间轴指针；
   // 必须连续两次独立成功刷新都确认缺失才移除。
@@ -89,6 +92,8 @@ export default function PlaybackPage() {
     if (!channelId && channels[0]) navigate(`/playback/${channels[0].id}`, { replace: true })
   }, [channelId, channels, navigate])
   useEffect(() => {
+    prepareAbort.current?.abort()
+    setPendingPosition(null)
     ++selectionRequest.current
     setPlaying(null); setPlayheadTs(null); setCursorScope(null); setChecking(false); setPlayNotice('')
     setExpandedChannelId(channelId ?? null); setExpandedDates({}); setVisibleCounts({})
@@ -118,17 +123,21 @@ export default function PlaybackPage() {
     if (playingRef.current?.segmentId === id) setPlaying(null)
     setPlayNotice('这段录像已被删除或循环覆盖，列表和时间轴已更新，请选择其他片段。')
   }
-  async function playSegment(id: string, segment: RecordingSegment, offset = 0) {
+  async function playSegment(id: string, segment: RecordingSegment, offset = 0, requestedPosition?: number) {
     if (id !== channelId || !segment.playable) return
     const target = Math.max(range.from, segment.startTs, Math.min(range.to - 1, segment.endTs - 1, segment.startTs + offset))
+    prepareAbort.current?.abort()
+    const controller = new AbortController()
+    prepareAbort.current = controller
+    const sameSegment = playingRef.current?.segmentId === segment.id && playingRef.current.scope === scope && !checking && !playNotice
     const request = ++selectionRequest.current
     const requestedScope = scope
     // Show the requested position immediately, including preflight and buffering.
     // Only this request's decoded media clock may subsequently advance it.
-    setCursorScope(scope); setPlayheadTs(target)
+    setCursorScope(scope); setPlayheadTs(requestedPosition ?? target); setPendingPosition(requestedPosition ?? target)
     setChecking(true); setPlayNotice('')
     try {
-      await recordingService.preparePlayback(segment.id)
+      if (!sameSegment) await recordingService.preparePlayback(segment.id, controller.signal)
       if (request !== selectionRequest.current || currentScope.current !== requestedScope) return
       setPlaying({ channelId: id, segmentId: segment.id, offsetMs: target - segment.startTs, request, scope })
       const key = dateKey(Math.max(range.from, segment.startTs))
@@ -140,14 +149,15 @@ export default function PlaybackPage() {
       setPlaying(null)
       if (status === 404 || status === 410) removeUnavailable(segment.id)
       else setPlayNotice(error instanceof Error ? error.message : '暂时无法读取录像，请重试')
+      setPendingPosition(null)
       catalogue.refresh()
     } finally { if (request === selectionRequest.current && currentScope.current === requestedScope) setChecking(false) }
   }
   function seekTo(ts: number) {
     if (!channelId) return
     const target = resolvePlayback(rangeSegments, ts, range)
-    if (target) void playSegment(channelId, target.segment, target.offsetMs)
-    else setPlayNotice('所选时间范围内没有可播放录像。')
+    if (target) void playSegment(channelId, target.segment, target.offsetMs, Math.max(range.from, Math.min(range.to - 1, ts)))
+    else { prepareAbort.current?.abort(); ++selectionRequest.current; setChecking(false); setPendingPosition(null); setCursorScope(scope); setPlayheadTs(ts); setPlayNotice('所选时间范围内没有可播放录像。') }
   }
   const linkedPlayback = useRef<string | null>(null)
   useEffect(() => {
@@ -486,7 +496,7 @@ export default function PlaybackPage() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
         {smartSearchHref(channelId, range.from, range.to) && <Link className="inline-flex min-h-11 items-center gap-2 self-start rounded-base border border-line px-3 text-sm" to={smartSearchHref(channelId, range.from, range.to)!}><Search size={16} />搜索所选摄像头与时间</Link>}
         {(playNotice || checking || catalogue.loading || catalogue.error) && <div role="status" className="rounded-base border border-line bg-surface px-4 py-2 text-sm">
-          {checking ? '正在确认录像文件…' : catalogue.error || (catalogue.loading ? '正在加载所选时间范围…' : playNotice)}
+          {checking ? '正在加载所选位置的录像…' : catalogue.error || (catalogue.loading ? '正在加载所选时间范围…' : playNotice)}
         </div>}
         {healthState === 'down' && (
           <div
@@ -529,6 +539,7 @@ export default function PlaybackPage() {
                   }}
                   segment={currentSegment}
                   checking={checking}
+                  requestedTs={pendingPosition}
                   errorMessage={playNotice}
                   offsetMs={playing?.offsetMs ?? 0}
                   playUrl={playbackUrl ? `${playbackUrl}${playbackUrl.includes('?') ? '&' : '?'}retry=${retry}` : null}
@@ -539,7 +550,7 @@ export default function PlaybackPage() {
                   playbackRange={range}
                   onTimeUpdate={ts => {
                     if (currentSegment && playing?.request === selectionRequest.current && playingRef.current?.request === playing.request && currentScope.current === scope)
-                      setPlayheadTs(Math.max(range.from, Math.min(range.to, ts)))
+                      { setPendingPosition(null); setPlayheadTs(Math.max(range.from, Math.min(range.to, ts))) }
                   }}
                   onNext={() => { if (playing?.request === selectionRequest.current) jump(1) }}
                   onSeek={seekTo}

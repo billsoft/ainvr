@@ -16,10 +16,10 @@ describe('recording SEI follows media time', () => {
     expect(pickRecordingSei(frames, 999)).toBeNull()
     expect(pickRecordingSei(frames, 1100)?.detections).toHaveLength(1)
   })
-  it('explicit empty clears immediately; skipped frames hold at most 300ms', () => {
+  it('explicit empty clears immediately; cadence-adaptive hold remains bounded', () => {
     expect(pickRecordingSei(frames, 1200)?.detections).toHaveLength(0)
     expect(pickRecordingSei(frames, 1800)?.detections).toHaveLength(1)
-    expect(pickRecordingSei(frames, 1801)).toBeNull()
+    expect(pickRecordingSei(frames, 2401)).toBeNull()
   })
   it('supports backward seek and pause without a wall-clock expiry', () => {
     expect(pickRecordingSei(frames, 1500)?.detections[0]!.bbox.x).toBe(1)
@@ -27,4 +27,10 @@ describe('recording SEI follows media time', () => {
     expect(pickRecordingSei(frames, 1000)).toEqual(pickRecordingSei(frames, 1000))
     expect(pickRecordingSei([], 1000)).toBeNull()
   })
+})
+
+it('holds sparse inference for at most a second and ignores unprocessed metadata', () => {
+  const rows = parseRecordingSei({ frames: [0, 500, 1000].map(timeMs => ({ timeMs, payload: { v: 1, det: [{ n: 'person', b: [1,2,3,4] }] } })) })
+  expect(pickRecordingSei(rows, 1900)?.displayHoldMs).toBe(1000)
+  expect(pickRecordingSei(rows, 2001)).toBeNull()
 })

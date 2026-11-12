@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from . import __version__
@@ -574,10 +575,17 @@ def create_app(store: ConfigStore, data_dir: str, guard_factory=build_guard) -> 
         response.headers['Cache-Control'] = 'no-store'
         start = start or 0
         to = to or now_ms
-        rows = (await index.run(index.query, channel, start, to))
-        status = storage_mgr.current_status()
-        return [segment_public(r, playable=status.healthy and r["storage"] == status.kind)
-                for r in rows]
+        def render_list():
+            # Hundreds of thousands of SEI intervals must not go through
+            # FastAPI's recursive encoder on the event-loop thread. Keep the
+            # exact response contract and use the existing bounded DB lane.
+            rows = index.query(channel, start, to)
+            status = storage_mgr.current_status()
+            return JSONResponse(
+                [segment_public(r, playable=status.healthy and r["storage"] == status.kind) for r in rows],
+                headers={"Cache-Control": "no-store"},
+            )
+        return await index.run(render_list)
 
     async def require_licensed_media(_: None = Depends(require_media_token)):
         if not license_guard.licensed()[0]:

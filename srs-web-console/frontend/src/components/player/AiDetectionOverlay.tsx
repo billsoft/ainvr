@@ -1,9 +1,10 @@
+import { overlayHoldMs, overlayOpacity } from './overlayPresentation'
 import { useEffect, useRef, useState } from 'react'
 import type { AiDetection } from '@/types/aiChannel'
 import { drawDetections } from './detectionDrawing'
 import { reportOverlayDiag } from '@/api/diagService'
-import { computeContainLayout, projectLandmark } from './overlayGeometry'
-import { TrackTrailBuffer, trailSegments, type TrackTrail } from './trackTrails'
+import { computeContainLayout } from './overlayGeometry'
+import { TrackTrailBuffer, drawTrackTrails, type TrackTrail } from './trackTrails'
 import { drawGroundingPoints, type GroundingOverlay } from './groundingPoints'
 
 const TRAIL_IDLE_MS = 1000
@@ -162,9 +163,7 @@ export function AiDetectionOverlay({
         if (hasPts) lastPtsRef.current = pts
         trails.current = trailBuffer.current.update(hit!.ptsNs, hit!.detections)
         lastResultRef.current = nowMono
-        const intervals = [...displayedIntervalsRef.current].sort((a, b) => a - b)
-        const hold = Math.min(1000, Math.max(300, hit!.displayHoldMs ?? 300,
-          3 * (intervals[Math.floor(intervals.length / 2)] ?? 0)))
+        const hold = Math.min(1000, Math.max(hit!.displayHoldMs ?? 300, overlayHoldMs(displayedIntervalsRef.current)))
         holdRef.current = hold
         sourceAtRef.current = nowMono - (hit!.displayAgeMs ?? 0)
         expiresRef.current = sourceAtRef.current + hold
@@ -268,7 +267,7 @@ export function AiDetectionOverlay({
       const frame = frameRef.current
       const age = Math.max(0, performance.now() - sourceAtRef.current)
       const hold = Math.max(300, expiresRef.current - sourceAtRef.current)
-      context.globalAlpha = age <= 150 ? 1 : Math.max(0.25, 1 - 0.75 * (age - 150) / (hold - 150))
+      context.globalAlpha = overlayOpacity(age, hold)
       if (frame?.detections.length || frame?.grounding?.points.length) countersRef.current.drawn++
       // Box visibility applies to detected and display-only boxes; trails remain independent.
       const visibleDetections = showDetections ? frame?.detections ?? []
@@ -280,24 +279,7 @@ export function AiDetectionOverlay({
       } else {
         const layout = computeContainLayout(video.videoWidth, video.videoHeight, rect.width, rect.height)
         if (showTrails && !drawFrame && performance.now() - lastResultRef.current <= TRAIL_IDLE_MS) {
-          context.lineWidth = 2
-          for (const trail of trails.current) {
-            if (trail.points.length < 2) continue
-            let hash = 0
-            for (const char of trail.id) hash = (hash * 31 + char.charCodeAt(0)) | 0
-            context.strokeStyle = `hsl(${Math.abs(hash) % 360} 85% 65%)`
-            // 推算段虚线，真实观测段实线。
-            for (const segment of trailSegments(trail.points)) {
-              const a = projectLandmark(segment.from, layout, video.videoWidth, video.videoHeight)
-              const b = projectLandmark(segment.to, layout, video.videoWidth, video.videoHeight)
-              context.setLineDash?.(segment.predicted ? [6, 4] : [])
-              context.beginPath()
-              context.moveTo(a.x, a.y)
-              context.lineTo(b.x, b.y)
-              context.stroke()
-            }
-          }
-          context.setLineDash?.([])
+          drawTrackTrails(context, trails.current, layout, video.videoWidth, video.videoHeight)
         }
         drawDetections(context, visibleDetections, layout, video.videoWidth, video.videoHeight)
         if (showDetections) {

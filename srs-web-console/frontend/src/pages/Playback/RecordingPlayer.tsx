@@ -31,6 +31,7 @@ interface Props {
   /** 顶部透明标题层的通道元信息（编解码/分辨率/录制状态等） */
   channelMeta?: PlayerChannelMeta
   segment: RecordingSegment | null
+  requestedTs?: number | null
   checking?: boolean
   errorMessage?: string
   /** 段内起播偏移 ms（点击时间轴跨段 seek 时非 0） */
@@ -63,7 +64,7 @@ interface Props {
  */
 export function RecordingPlayer({
   channelName, channelMeta, segment, offsetMs, playUrl, downloadUrl, initiallyMuted = false,
-  isToday, onJumpNow, onTimeUpdate, onNext, onSeek, seekVersion, onError, onRetry, playbackRange, checking = false, errorMessage,
+  isToday, onJumpNow, onTimeUpdate, onNext, onSeek, seekVersion, onError, onRetry, playbackRange, checking = false, errorMessage, requestedTs,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const progressRef = useRef<HTMLDivElement>(null)
@@ -81,6 +82,7 @@ export function RecordingPlayer({
 
   const [speed, setSpeed] = useState(1)
   const [showDetections, setShowDetections] = useState(true)
+  const [showTrails, setShowTrails] = useState(false)
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [error, setError] = useState(false)
@@ -260,6 +262,7 @@ export function RecordingPlayer({
         request.assigned = Math.abs(v.currentTime - wanted) <= 0.3
       } catch { /* Metadata may not be usable yet; canplay retries this same token. */ }
       setAbsTs(segment.startTs + wanted * 1000)
+      setCurrentTime(wanted)
       void v.play().catch(reason => handlePlayFailure(v, reason, request.token, request.src))
     }
     // 同段内拖动时间轴时元数据早已加载，直接 seek；换段则等 metadata，
@@ -556,7 +559,7 @@ export function RecordingPlayer({
         {view.panorama && videoEl && !error && <PanoramaView video={videoEl}
           onError={view.panoramaFailed} resetToken={view.panoramaReset} onCamera={view.receivePanoramaCamera} />}
         {segment && playUrl && !error && (segment.seiPresent || channelMeta?.kind === 'ai') && (
-          <RecordingDetectionOverlay key={`overlay:${playUrl}`} videoRef={videoRef} segmentId={segment.id} currentTime={currentTime} enabled={showDetections} drawFrame={view.panorama ? view.drawPanoramaFrame : undefined} />
+          <RecordingDetectionOverlay key={`overlay:${playUrl}`} videoRef={videoRef} segmentId={segment.id} currentTime={currentTime} enabled={showDetections || showTrails} showDetections={showDetections} showTrails={showTrails} suspended={checking || seekVeil} drawFrame={view.panorama ? view.drawPanoramaFrame : undefined} />
         )}
         {error && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/70 text-center text-sm text-white/80">
@@ -570,7 +573,7 @@ export function RecordingPlayer({
         {/* 段内起播偏移落地前的遮罩：盖住"先闪段头、再跳到目标位置"的过渡帧，
             仅在落位后揭开；超时显示可重试错误，不露出错误帧。 */}
         {(checking || seekVeil) && !error && (
-          <div className="absolute inset-0 z-[1] flex items-center justify-center bg-black text-sm text-white/60" data-testid="recording-player-seek-veil">{checking ? '正在确认录像文件…' : '正在定位录像…'}</div>
+          <div className="absolute inset-0 z-[1] flex items-center justify-center bg-black text-sm text-white/60" data-testid="recording-player-seek-veil">{requestedTs != null ? `正在加载 ${new Date(requestedTs).toLocaleTimeString('zh-CN', { hour12: false })} 的录像…` : checking ? '正在加载录像…' : '正在定位录像…'}</div>
         )}
         {/* 页面切到后台时的自动暂停提示：不是错误，回前台一般会自动续播并
             立即消失；仅当浏览器拒绝自动起播时停留，用户点一下即可继续。
@@ -649,6 +652,8 @@ export function RecordingPlayer({
           playing={playing}
           speedMenuOpen={speedMenuOpen}
           muted={muted}
+          showTrails={showTrails}
+          setShowTrails={setShowTrails}
           showDetections={showDetections}
           error={error}
           hoverPct={hoverPct}

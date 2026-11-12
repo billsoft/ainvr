@@ -19,7 +19,7 @@ export interface RecordingService {
   stats(): Promise<RecorderStats>
   listChannels(): Promise<RecorderChannel[]>
   getConfig(): Promise<RecorderConfig>
-  preparePlayback(segmentId: string): Promise<void>
+  preparePlayback(segmentId: string, signal?: AbortSignal): Promise<void>
   listSegments(channelId: string, fromTs: number, toTs: number, signal?: AbortSignal): Promise<RecordingSegment[]>
   /** 存储写入不足时按完整画面组丢弃的区间（时间轴琥珀色块） */
   listDrops(channelId: string, fromTs: number, toTs: number, signal?: AbortSignal): Promise<RecordingDrop[]>
@@ -31,16 +31,19 @@ export interface RecordingService {
 
 export function createHttpRecordingService(): RecordingService {
   return {
-    async preparePlayback(segmentId) {
+    async preparePlayback(segmentId, signal) {
+      const timeout = AbortSignal.timeout(12000)
+      const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
+      requestSignal.throwIfAborted()
       // Native video requests use the HttpOnly cookie, not the console header.
-      await request('/auth/media-session', { method: 'POST', signal: AbortSignal.timeout(12000) })
+      await request('/auth/media-session', { method: 'POST', signal: requestSignal })
       const media = await fetch('/api/auth/media-check', {
-        credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(12000),
+        credentials: 'same-origin', cache: 'no-store', signal: requestSignal,
       })
       if (!media.ok) throw Object.assign(new Error(media.status === 401
         ? '媒体登录状态未恢复，请重新登录后播放' : '媒体鉴权服务暂不可用，请稍后重试'), { status: media.status })
       await request(`/v1/recordings/${encodeURIComponent(segmentId)}/availability`, {
-        cache: 'no-store', signal: AbortSignal.timeout(12000),
+        cache: 'no-store', signal: requestSignal,
       })
     },
     async health() {

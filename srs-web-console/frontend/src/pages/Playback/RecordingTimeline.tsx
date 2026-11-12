@@ -7,6 +7,7 @@ import {
 import { DateTimeRangePicker } from '@/components/ui/DateTimeRangePicker'
 import { formatRangeShort, parseDatetimeLocalValue, toDatetimeLocalValue, type RangePreset } from '@/utils/timeRange'
 import { timelineTicks } from './model'
+import { timelineCoveragePath } from './timelineCoverage'
 import type { RecordingDrop, RecordingSegment } from '@/types/recording'
 
 interface Props {
@@ -30,7 +31,7 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
   useEffect(() => { setDragTs(null) }, [win.from, win.to])
   const pointerIdRef = useRef<number | null>(null)
 
-  const effectivePlayhead = dragTs != null ? dragTs : playheadTs
+  const effectivePlayhead = Math.max(win.from, Math.min(win.to, dragTs ?? playheadTs ?? win.from))
   // 轨道像素宽：时间气泡在边缘处要按像素 clamp，保证不溢出又始终贴着指针
   const [trackWidth, setTrackWidth] = useState(0)
   useLayoutEffect(() => {
@@ -51,16 +52,16 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
   // All ranges fit one viewport; tick granularity adapts to available width.
   const actualBlocks = useMemo(() => mergeContiguous(segments.filter(s => s.playable), 0), [segments])
   const blocks = useMemo(() => recordingDisplayBlocks(segments, drops), [segments, drops])
-  // 红条与可播放录像块求交：仅在可播放录像内绘制已验证的 SEI
+  // 识别条与可播放录像块求交：仅在可播放录像内绘制已验证的 SEI
   const visibleAiMarks = useMemo(() => intersectMarksWithBlocks(aiMarks, actualBlocks), [aiMarks, actualBlocks])
 
   const tickList = useMemo(() => timelineTicks(win.from, win.to, trackWidth), [win.from, win.to, trackWidth])
 
-  const seiPath = useMemo(() => visibleAiMarks.map(mark => {
-    const left = Math.max(0, (mark.start - win.from) / spanMs * 100)
-    const right = Math.min(100, (mark.end - win.from) / spanMs * 100)
-    return right > left ? `M${left} 0H${right}V24H${left}Z` : ''
-  }).join(''), [visibleAiMarks, win.from, spanMs])
+  // Rasterize only the display coverage: raw SEI timestamps remain unchanged.
+  // A day can contain hundreds of thousands of intervals; never hand that
+  // unbounded geometry to the SVG painter (it can discard subsequent layers).
+  const seiPath = useMemo(() => timelineCoveragePath(visibleAiMarks, win, trackWidth),
+    [visibleAiMarks, win.from, win.to, trackWidth])
 
   const pct = (ts: number) => ((ts - win.from) / spanMs) * 100
   const now = Date.now()
@@ -123,7 +124,7 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
           ref={trackRef}
           // touch-none：触屏拖动指针时不被横向滚动抢走；轨道内容全部
           // pointer-events-none + select-none，除指针外均为只读、不可选中
-          className="relative h-24 cursor-pointer touch-none select-none rounded-base bg-surface-page active:cursor-ew-resize"
+          className="relative h-24 cursor-pointer touch-none select-none rounded-base bg-surface-page"
           style={{ width: '100%' }}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
@@ -143,7 +144,7 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
           aria-label="录像时间轴"
           aria-valuetext={effectivePlayhead != null ? new Date(effectivePlayhead).toLocaleString('zh-CN') : undefined}
         >
-          {/* 录像覆盖（绿色条高 40px；红色条高 24px） */}
+          {/* 录像覆盖：原始绿色底条，识别覆盖用独立的半透明红条 */}
           {blocks.map((b, i) => {
             const left = Math.max(0, pct(b.startTs))
             const width = Math.min(100, pct(b.endTs)) - left
@@ -177,7 +178,7 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
             )
           })}
 
-          {/* Actual SEI intervals, centered at 60% of the green bar height. */}
+          {/* Actual SEI intervals: a pink inset leaves green coverage visible above and below. */}
           {seiPath && <svg aria-label="录像内 SEI 识别覆盖" data-testid="timeline-ai-mark"
             className="pointer-events-none absolute inset-x-0 top-10 h-6 w-full text-danger"
             viewBox="0 0 100 24" preserveAspectRatio="none">
@@ -264,7 +265,7 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
           与 testid 约定也保持一致（range-trigger），两个页面看着是同一个
           控件，改一处两边都跟着变。 */}
       <div className="mt-1 flex gap-3 text-[10px] text-ink-faint">
-        <span title="旧录像起点仅精确到秒，未标记丢弃的小于1秒接缝按连续显示；实际播放仍按文件定位。">绿色：可播放录像</span><span>红色：录像内 SEI 识别信息</span>
+        <span title="旧录像起点仅精确到秒，未标记丢弃的小于1秒接缝按连续显示；实际播放仍按文件定位。" className="inline-flex items-center gap-1.5"><span aria-hidden className="h-2 w-3 rounded-sm bg-success/70" />可播放录像</span><span className="inline-flex items-center gap-1.5"><span aria-hidden className="h-2 w-3 rounded-sm bg-danger/40" />识别信息（SEI）</span>
         {drops.length > 0 && <span className="text-amber-700">琥珀：未保存录像（悬停查看原因）</span>}
       </div>
       <div className="mt-2.5 flex flex-wrap items-center gap-2">

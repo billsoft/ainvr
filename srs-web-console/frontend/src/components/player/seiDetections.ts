@@ -1,3 +1,4 @@
+import { overlayHoldMs } from './overlayPresentation'
 import type { AiDetection } from '@/types/aiChannel'
 import { parseGroundingOverlay, type GroundingOverlay } from './groundingPoints'
 
@@ -230,8 +231,7 @@ export class SeiFrameCache {
   private intervals: number[] = []
 
   get holdMs(): number {
-    const sorted = [...this.intervals].sort((a, b) => a - b)
-    return Math.min(1000, Math.max(300, (sorted[Math.floor(sorted.length / 2)] ?? 100) * 3))
+    return overlayHoldMs(this.intervals)
   }
   private readonly map = new Map<number, SeiFrameDetections>()
 

@@ -20,6 +20,21 @@ from .internal_network import NetworkPolicy
 from starlette.responses import JSONResponse
 
 
+class InternalPeerMiddleware:
+    """Inspect the TCP peer without wrapping the streaming/disconnect protocol."""
+    def __init__(self, app, peers=None):
+        self.app = app
+        self.peers = peers if peers is not None else NetworkPolicy()
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'http':
+            peer = scope.get('client')
+            if not peer or not self.peers.allows(peer[0]):
+                await JSONResponse({'detail': '请通过控制台访问'}, status_code=403)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="ainvr-recorder")
     default_data = os.environ.get(
@@ -36,12 +51,7 @@ def main() -> None:
         "RECORDER_CONFIG", os.path.join(args.data_dir, "config.json"))
     store = ConfigStore(config_path)
     app = create_app(store, args.data_dir)
-    peers = NetworkPolicy()
-    @app.middleware('http')
-    async def internal_peer_only(request, call_next):
-        if not request.client or not peers.allows(request.client.host):
-            return JSONResponse({'detail': '请通过控制台访问'}, status_code=403)
-        return await call_next(request)
+    app.add_middleware(InternalPeerMiddleware)
     cfg = store.get()
     uvicorn.run(
         app,

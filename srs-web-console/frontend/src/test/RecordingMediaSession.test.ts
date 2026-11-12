@@ -24,3 +24,9 @@ it('keeps missing-file status separate from authentication', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })))
   await expect(createHttpRecordingService().preparePlayback('one')).rejects.toMatchObject({ status: 410 })
 })
+
+it('cancels an obsolete selection before making any requests', async () => {
+  const abort = new AbortController(); abort.abort()
+  await expect(createHttpRecordingService().preparePlayback('old', abort.signal)).rejects.toMatchObject({ name: 'AbortError' })
+  expect(request).not.toHaveBeenCalled()
+})

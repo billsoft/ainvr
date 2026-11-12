@@ -1,3 +1,5 @@
+import { TrackTrailBuffer, drawTrackTrails, type TrackTrail } from '@/components/player/trackTrails'
+import { overlayOpacity } from '@/components/player/overlayPresentation'
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import type { AiDetection } from '@/types/aiChannel'
 import { drawDetections } from '@/components/player/detectionDrawing'
@@ -11,13 +13,18 @@ interface Props {
   segmentId: string
   currentTime: number
   enabled?: boolean
-  drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay) => void
+  showDetections?: boolean
+  showTrails?: boolean
+  suspended?: boolean
+  drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay, trails?: TrackTrail[]) => void
 }
 
 /** File playback has no WebRTC encoded-frame tap. Metadata uses MP4 PTS and
  * shares live preview's payload parser, box projection and canvas renderer. */
-export function RecordingDetectionOverlay({ videoRef, segmentId, currentTime, drawFrame, enabled = true }: Props) {
+export function RecordingDetectionOverlay({ videoRef, segmentId, currentTime, drawFrame, enabled = true, showDetections = true, showTrails = false, suspended = false }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const trailBuffer = useRef(new TrackTrailBuffer())
+  useEffect(() => { windows.current.clear(); trailBuffer.current.clear() }, [segmentId])
   const windows = useRef(new Map<number, RecordingSeiFrame[]>())
   const [error, setError] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -75,6 +82,8 @@ export function RecordingDetectionOverlay({ videoRef, segmentId, currentTime, dr
     }
     if (hasRvfc) frame = video.requestVideoFrameCallback(onFrame)
     const onSeeked = () => { mediaTime = video.currentTime }
+    const onSeeking = () => { trailBuffer.current.clear() }
+    video.addEventListener('seeking', onSeeking)
     video.addEventListener('seeked', onSeeked)
     const draw = () => {
       paint = requestAnimationFrame(draw)
@@ -87,18 +96,23 @@ export function RecordingDetectionOverlay({ videoRef, segmentId, currentTime, dr
       }
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       ctx.clearRect(0, 0, rect.width, rect.height)
+      if (suspended) { trailBuffer.current.clear(); return }
       if (!enabled || video.seeking || !video.videoWidth || video.readyState < 2) return
       const seconds = hasRvfc ? mediaTime : video.currentTime
-      const rows = windows.current.get(Math.floor(seconds / 10)) ?? []
+      const b = Math.floor(seconds / 10)
+      const rows = [...(windows.current.get(b - 1) ?? []), ...(windows.current.get(b) ?? [])]
       const hit = pickRecordingSei(rows, seconds * 1000)
-      ctx.globalAlpha = (hit?.displayAgeMs ?? 0) > 1 ? 0.65 : 1
+      ctx.globalAlpha = overlayOpacity(hit?.displayAgeMs ?? 0, hit?.displayHoldMs ?? 300)
+      const trails = hit ? trailBuffer.current.update(hit.ptsNs ?? (seconds * 1000 - (hit.displayAgeMs ?? 0)) * 1e6, hit.detections) : []
+      const boxes = showDetections ? hit?.detections ?? [] : []
       if (drawFrame) {
-        if (hit?.grounding) drawFrame(ctx, hit.detections, rect.width, rect.height, video.videoWidth, video.videoHeight, hit.grounding)
-        else drawFrame(ctx, hit?.detections ?? [], rect.width, rect.height, video.videoWidth, video.videoHeight)
+        drawFrame(ctx, boxes, rect.width, rect.height, video.videoWidth, video.videoHeight,
+          showDetections ? hit?.grounding : undefined, showTrails ? trails : [])
       } else {
         const layout = computeContainLayout(video.videoWidth, video.videoHeight, rect.width, rect.height)
-        drawDetections(ctx, hit?.detections ?? [], layout, video.videoWidth, video.videoHeight)
-        drawGroundingPoints(ctx, hit?.grounding, layout)
+        if (showTrails) drawTrackTrails(ctx, trails, layout, video.videoWidth, video.videoHeight)
+        drawDetections(ctx, boxes, layout, video.videoWidth, video.videoHeight)
+        if (showDetections) drawGroundingPoints(ctx, hit?.grounding, layout)
       }
       ctx.globalAlpha = 1
     }
@@ -108,8 +122,9 @@ export function RecordingDetectionOverlay({ videoRef, segmentId, currentTime, dr
       cancelAnimationFrame(paint)
       if (hasRvfc) video.cancelVideoFrameCallback(frame)
       video.removeEventListener('seeked', onSeeked)
+      video.removeEventListener('seeking', onSeeking)
     }
-  }, [videoRef, enabled, segmentId, drawFrame])
+  }, [videoRef, enabled, segmentId, drawFrame, showDetections, showTrails, suspended])
 
   return <>
     <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" data-testid="recording-detection-overlay" />

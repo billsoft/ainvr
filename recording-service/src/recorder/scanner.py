@@ -181,7 +181,7 @@ class Scanner:
             self._missing.clear()
             self._scan_scope = scope
         # 只清理扫描开始前已存在的行，不碰扫描期间其它任务新增的索引。
-        before = [r for r in (await self.index.run(self.index.all_segments, ))
+        before = [r for r in (await self.index.run(self.index.all_segments, include_sei=False))
                   if r["storage"] == kind and r.get('storageId', '') == storage_id]
         # 全部 listdir/isdir/stat/getsize 作为一个任务在隔离工作线程执行：
         # 本机慢维护不改变录制状态；NAS 超时仍熔断，事件循环不会堵塞。

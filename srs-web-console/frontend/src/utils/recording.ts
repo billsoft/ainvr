@@ -62,11 +62,23 @@ export function intersectMarksWithBlocks(
   blocks: readonly TimelineBlock[],
 ): { start: number; end: number }[] {
   const out: { start: number; end: number }[] = []
+  const sorted = blocks.filter(b => b.playable).slice().sort((a, b) => a.startTs - b.startTs)
+  const maxEnds: number[] = []
+  for (let i = 0; i < sorted.length; i++) maxEnds.push(Math.max(maxEnds[i - 1] ?? -Infinity, sorted[i]!.endTs))
   for (const m of marks) {
-    for (const b of blocks) {
+    // Skip preceding blocks in logarithmic time. The prefix maximum also
+    // handles overlapping blocks without dropping a containing interval.
+    let low = 0, high = sorted.length
+    while (low < high) {
+      const mid = (low + high) >>> 1
+      if (maxEnds[mid]! <= m.start) low = mid + 1
+      else high = mid
+    }
+    for (let i = low; i < sorted.length && sorted[i]!.startTs < m.end; i++) {
+      const b = sorted[i]!
       const start = Math.max(m.start, b.startTs)
       const end = Math.min(m.end, b.endTs)
-      if (end > start && b.playable) out.push({ start, end })
+      if (end > start) out.push({ start, end })
     }
   }
   return out

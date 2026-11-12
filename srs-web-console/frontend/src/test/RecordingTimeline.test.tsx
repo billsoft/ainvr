@@ -144,6 +144,8 @@ describe('RecordingTimeline 指针定位与时间气泡', () => {
     const track = screen.getByRole('slider', { name: '录像时间轴' })
     expect(track.className).toContain('select-none')
     expect(track.className).toContain('touch-none')
+    expect(track.className).not.toContain('cursor-ew-resize')
+    expect(screen.getByTestId('timeline-playhead')).toBeVisible()
     // 绿块/AI 条/刻度全部 pointer-events-none（事件只能落在轨道本体）
     const interactive = container.querySelectorAll('.bg-success\\/70, .bg-danger\\/40')
     interactive.forEach((el) => expect(el.className).toContain('pointer-events-none'))
