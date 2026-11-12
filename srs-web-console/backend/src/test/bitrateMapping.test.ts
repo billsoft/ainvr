@@ -19,7 +19,10 @@ describe('码率字段映射（回归：kb_ps → kbps.recv_30s）', () => {
 
   beforeAll(async () => {
     fakeSrs = http.createServer((req, res) => {
-      if (req.url === '/api/v1/streams/') {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (url.pathname === '/api/v1/streams/') {
+        expect(url.searchParams.get('start')).toBe('0');
+        expect(url.searchParams.get('count')).toBe('1000');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           code: 0,

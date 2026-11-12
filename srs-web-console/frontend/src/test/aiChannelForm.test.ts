@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  DEFAULT_WIZARD_VALUE, applyModelPreset, fromChannel, generateChannelId,
+  DEFAULT_WIZARD_VALUE, applyModelPreset, fromChannel, generateChannelId, buildModelAndPreprocess, wizardModelList, updateWizardModelList,
   needsIouThreshold, toCreatePatch, toUpdatePatch, validatePublishRequiresRtmp,
   validateStep1, validateStep2, validateStep3,
   type AiWizardFormValue,
@@ -377,4 +377,15 @@ describe('H.265 源（设计 §8.4③）', () => {
     const ch = withPublish({ flv_format: 'codec12' })
     expect(toUpdatePatch(fromChannel(ch), ch)).not.toHaveProperty('publish')
   })
+})
+
+it('sort-only edits retain deployed paths; removing the imported model atomically promotes its peer',()=>{
+ const face={id:'face',...buildModelAndPreprocess('yolo26x-face',DEFAULT_WIZARD_VALUE),postprocess:{conf_threshold:.42,iou_threshold:.45,max_detections:120}}
+ const original=makeChannel({analysis_pipeline:{execution:'serial',nodes:[face]}})
+ let v=fromChannel(original)
+ const all=wizardModelList(v);v=updateWizardModelList(v,[all[1]!,all[0]!])
+ const sortPatch=toUpdatePatch(v,original)
+ expect(sortPatch.model).toBeUndefined();expect(sortPatch.preprocess).toBeUndefined();expect(sortPatch.analysis_pipeline?.order).toEqual(['face','primary'])
+ v=updateWizardModelList(v,[face]);const patch=toUpdatePatch(v,original)
+ expect(patch.model).toMatchObject({adapter:'yoloface_bpu',path:face.model.path});expect(patch.postprocess?.conf_threshold).toBe(.42);expect(patch.analysis_pipeline).toMatchObject({root_id:'face',order:['face'],nodes:[]})
 })

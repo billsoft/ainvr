@@ -66,6 +66,18 @@ export class PgConfigStore {
   constructor(opts: { poolConfig: PoolConfig; masterKeyPath: string }) {
     this.pool = new Pool({ connectionTimeoutMillis: 5000, statement_timeout: 15000,
       query_timeout: 20000, idle_in_transaction_session_timeout: 20000, ...opts.poolConfig });
+    // Checked-out clients can emit error while application code is between queries
+    // (e.g. PostgreSQL idle-in-transaction timeout). The pool's idle listener is
+    // detached then. Observe this event without hiding subsequent query failures.
+    let nextClientErrorLog = 0;
+    this.pool.on('connect', (client) => {
+      client.on('error', (error: Error & {code?: string}) => {
+        if (Date.now() < nextClientErrorLog) return;
+        nextClientErrorLog = Date.now() + 30000;
+        const code = typeof error.code === 'string' && /^[A-Z0-9]{5}$/.test(error.code) ? error.code : 'unknown';
+        console.error('[pgStore] checked-out connection failed; transaction must fail:', code);
+      });
+    });
     this.crypto = new CryptoStore(opts.masterKeyPath);
     // 首次查询时触发密钥加载/生成（避免构造函数抛错影响测试）
 

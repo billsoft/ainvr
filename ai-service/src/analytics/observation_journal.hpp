@@ -99,6 +99,15 @@ class ObservationJournal {
       {"timestamp",result.timestamp},{"width",result.frame_width},{"height",result.frame_height},
       {"model",{{"id",result.model_name},{"label_catalog",result.model_extra.at("label_catalog")}}},
       {"tracks",analytics.at("tracks")}};
+    if(result.model_extra.contains("compatible_label_catalogs"))value["model"]["compatible_label_catalogs"]=result.model_extra.at("compatible_label_catalogs");
+    // Attributes belong to this exact observed target, never copied to lost/predicted tracks.
+    for(auto& t:value["tracks"])if(t.value("observation",std::string())=="detected"){
+      for(const auto& d:result.detections)if(!d.track_id.empty()&&t.at("track_id")==d.track_id){
+        if(d.model_extra.contains("attributes"))t["attributes"]=d.model_extra.at("attributes");
+        if(d.model_extra.contains("source_node"))t["source_node"]=d.model_extra.at("source_node");
+        break;
+      }
+    }
     if(analytics.value("continuity_gap",false))value["gap"]=true;
     if(result.model_extra.contains("evidence_delivery"))value["evidence_delivery"]=result.model_extra.at("evidence_delivery");
     // Reserve the longest delivery state before byte admission. Pending is

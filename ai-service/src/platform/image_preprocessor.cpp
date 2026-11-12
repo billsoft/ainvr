@@ -35,7 +35,7 @@ PreprocessedImage ImagePreprocessor::RunImpl(const Nv12Frame& input,const ImageT
       final_transform.erp_perspective=false;final_transform.letterbox=false;
     }catch(const std::runtime_error& e){gdc_.reset();gdc_failed_=true;failures_.push_back(std::string("GDC unavailable: ")+e.what());}
   }else if(options_.dedicated_hardware&&!pym_failed_&&!transform.nearest&&transform.interpolation==ImageInterpolation::Bilinear&&!transform.erp_perspective&&
-           !transform.source_region&&(ow<input.width||oh<input.height)&&PymScaler::Supports(input.width,input.height,ow,oh)){
+           !transform.source_region&&!transform.projective_uv&&!transform.plate_split_height&&(ow<input.width||oh<input.height)&&PymScaler::Supports(input.width,input.height,ow,oh)){
     try{
       std::array<int,4> dimensions{input.width,input.height,ow,oh};
       if(!pym_||dimensions_!=dimensions){

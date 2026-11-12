@@ -1,3 +1,4 @@
+import {VehicleWatchlistSettings} from '@/features/vehicles/VehicleSettings'
 import { configApplySummary, usesStartupConfig } from '@/features/configApplySummary'
 import {AlarmServiceConfigForm} from './AlarmServiceConfigForm'
 import {LlmServiceConfigForm} from './LlmServiceConfigForm'
@@ -36,6 +37,7 @@ export const SERVICES: { key: string; label: string; description: string }[] = [
   { key: 'search-service', label: '智能搜索服务', description: '搜索模型、采集范围与索引' },
 ]
 const categories: [string, string, string][] = [
+  ['vehicles', '车辆关注名单', '准备名单 · 车牌功能待接入'],
   ['basic', '基础配置', '监看上限、访问密码'],
   ['database', '数据库配置', '参数库、AI识别历史库'],
   ['streaming', '流媒体配置', '流媒体服务连接、WebRTC 候选地址'],
@@ -149,7 +151,7 @@ export default function ConfigCenterPage() {
   const savePartial = (service: string, group: string, name: string, config: Record<string, unknown>, description?: string) =>
     saveBatch([{ service, group, name, config, description }])
   // 授权管理、远程协助不走配置发布，不显示配置应用状态
-  const standalone = category === 'onvif' || category === 'gb28181' || category === 'license' || category === 'remote-assist' || category === 'time' || category === 'network'
+  const standalone = category === 'vehicles' || category === 'onvif' || category === 'gb28181' || category === 'license' || category === 'remote-assist' || category === 'time' || category === 'network'
   const doc = (service: string) => documents.find(d => d.service === service && d.group === 'system' && d.name === 'settings')
     ?? (service === 'backend' && runtimeSettings ? { service, group: 'system', name: 'settings', config: runtimeSettings } as ConfigDocument : undefined)
   return <div className="flex flex-col gap-4">
@@ -171,7 +173,7 @@ export default function ConfigCenterPage() {
         </button>)}
       </nav>
       <div ref={form} className="min-w-0">
-      {category === 'license' ? <div className="min-w-0"><LicensePage embedded /></div>
+      {category === 'vehicles' ? <VehicleWatchlistSettings /> : category === 'license' ? <div className="min-w-0"><LicensePage embedded /></div>
         // 远程协助不依赖参数库：参数库故障时恰恰需要它，不能被文档加载挡住。
         : category === 'remote-assist' ? <div className="min-w-0"><RemoteAssistForm /></div>
         // 日期和时间同样不依赖参数库：时间无效、业务暂停时必须能进来校准

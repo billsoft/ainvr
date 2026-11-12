@@ -40,7 +40,7 @@ std::vector<uint8_t> BuildArchiveDocument(const ArchiveDocumentInput& in){
     for(auto p:*d.landmarks){if(!std::isfinite(p[0])||!std::isfinite(p[1]))throw std::invalid_argument("Invalid archive landmark");landmarks.push_back({{"x",p[0]},{"y",p[1]}});}
   }
   nlohmann::json metadata={{"image_id",in.image_id},{"channel_id",f.channel_id},{"channel_name",in.channel_name},
-    {"timestamp",f.timestamp},{"model_name",f.model_name},{"task_type",f.task_type},{"class_id",d.class_id},{"class_name",d.class_name},
+    {"timestamp",f.timestamp},{"model_name",d.model_extra.value("model_name",f.model_name)},{"task_type",d.model_extra.value("task_type",f.task_type)},{"class_id",d.class_id},{"class_name",d.class_name},
     {"confidence",d.confidence_known?nlohmann::json(d.confidence):nlohmann::json(nullptr)},
     {"bbox",{{"x",d.bbox[0]},{"y",d.bbox[1]},{"w",d.bbox[2]},{"h",d.bbox[3]}}},{"landmarks",landmarks},
     {"enhanced",in.enhanced},{"enhance_model",in.enhanced?nlohmann::json(in.enhance_model):nlohmann::json(nullptr)},

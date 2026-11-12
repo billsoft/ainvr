@@ -30,6 +30,9 @@ import {ptzAi} from './services/ptzAi.js';
 import {OnvifStore} from './store/onvifStore.js';
 import {OnvifManager} from './services/onvifManager.js';
 import {alarmTriggerRoutes} from './routes/alarmTriggerRoutes.js';
+import {VehicleRuntime} from './services/vehicleRuntime.js';
+import {vehicleRoutes} from './routes/vehicleRoutes.js';
+import {VehiclePreparation} from './store/vehiclePreparation.js';
 import {flowRoutes} from './routes/flowRoutes.js';
 import {floorPlanRoutes} from './routes/floorPlanRoutes.js';
 import {FloorPlans} from './store/floorPlans.js';
@@ -245,7 +248,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const boundService = resolveServiceByToken(serviceTokens, req.headers['x-service-token']);
     if (boundService === 'recorder' && req.method === 'GET' &&
         ['/api/channels', '/api/ai/channels'].includes(pathname)) return;
-    if(boundService==='alarm-service'&&req.method==='POST'&&['/api/internal/alarm-review','/api/internal/alarm-recording-evidence'].includes(pathname))return;
+    if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/vehicle-watchlist\/\d+$/.test(pathname))return;
+    if(boundService==='alarm-service'&&req.method==='POST'&&['/api/internal/alarm-review','/api/internal/alarm-recording-evidence','/api/internal/vehicle-recognize'].includes(pathname))return;
     if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/alarm-evidence\/[a-f0-9]{64}(?:\/image)?$/.test(pathname))return;
     if (boundService === 'search-service' &&
       ((req.method === 'GET' && pathname === '/api/internal/search/runtime-config') ||
@@ -631,6 +635,22 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       return selectedFloorPlanDirectory(await storageRequest(helper, '/storage/volumes'), generation);
     });
     await instance.register(floorPlanRoutes,{store:pgStore ? new FloorPlans(pgStore.pool,floorPlanImages) : null,principal:alarmPrincipal});
+    const vehicleStore=pgStore?new VehiclePreparation(pgStore.pool):null;
+    const vehicleChannelExists=async(id:string)=>{const raw=await readSearchAiProcessors(await settingsStore.read(),pgStore,aiServiceBaseUrl);return Array.isArray(raw)&&raw.some(p=>p?.id===id);};
+    const vehicleRuntime=vehicleStore&&armingStore?new VehicleRuntime(vehicleStore,armingStore,async()=>{
+      const settings=await settingsStore.read(),apiToken=await resolveAiApiKey(settings,pgStore);
+      return apiToken?{baseUrl:settings.aiService.baseUrl||aiServiceBaseUrl,apiToken,timeoutMs:30000}:null;
+    },alarmConnection,vehicleChannelExists,async id=>{const c=await readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore);return c?{width:c.width,height:c.height}:null;},async()=>{
+      const processors=await readSearchAiProcessors(await settingsStore.read(),pgStore,aiServiceBaseUrl);
+      // Only configurations predating the graph retain the old intent during migration.
+      const legacy=new Set(await vehicleStore.requestedChannels());
+      return processors.filter(p=>p.config.model?.adapter==='plate_bpu'||p.config.analysis_pipeline?.nodes.some(n=>n.model.adapter==='plate_bpu')||(!p.config.analysis_pipeline&&legacy.has(p.id))).map(p=>p.id);
+    }):null;
+    instance.addHook('onReady',async()=>{vehicleRuntime?.start();});
+    instance.addHook('onClose',async()=>{await vehicleRuntime?.close();});
+    await instance.register(vehicleRoutes,{store:vehicleStore,arming:armingStore,principal:alarmPrincipal,runtime:vehicleRuntime,channelExists:vehicleChannelExists,
+      internalPrincipal:async req=>resolveServiceByToken(serviceTokens,req.headers['x-service-token'])==='alarm-service',
+    });
     await instance.register(flowRoutes,{
       store:armingStore,
       principal:alarmPrincipal,connection:alarmConnection,synchronization:ruleSync,

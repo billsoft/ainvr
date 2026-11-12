@@ -19,11 +19,14 @@ inline ConfiguredModels CollectConfiguredModels(
     if (path.is_relative()) path = root / path;
     return std::filesystem::weakly_canonical(path).string();
   };
-  for (const auto& channel : config.channels) {
+  auto expanded=config.channels;
+  for(const auto& parent:config.channels)for(const auto& n:parent.analysis_nodes){auto child=parent;child.id=parent.id+"/node:"+n.id;child.model=n.model;child.analysis_nodes.clear();child.snapshot.enabled=false;expanded.push_back(std::move(child));}
+  for (const auto& channel : expanded) {
     if (!channel.enabled || channel.deletion_pending) continue;
     const auto path = resolve(channel.model.path);
     const auto owner = "channel:" + channel.id;
     result.demand[path + ":"].insert(owner + "/detection");
+    if(channel.model.adapter=="plate_bpu")result.demand[resolve(std::filesystem::path(path).parent_path()/"plate-recog-color.hbm")+":"].insert(owner+"/recognition");
     if (channel.model.adapter == "yoloe_bpu") {
       try {
       const auto sidecar = path + ".ainvr.json";

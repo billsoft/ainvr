@@ -63,6 +63,8 @@ export interface SeiFrameDetections {
 /** SEI 载荷里单个检测的紧凑编码（sei.py::_det_json）：
  *  c=class_id n=class_name p=confidence b=[x,y,w,h] k=[[x,y]...] 关键点 */
 interface CompactDetection {
+  src?: unknown
+  a?: unknown
   c?: unknown
   n?: unknown
   p?: unknown
@@ -174,7 +176,15 @@ function toDetection(c: CompactDetection): AiDetection | null {
   if (!c || !Array.isArray(c.b) || c.b.length < 4) return null
   const [x, y, w, h] = c.b as unknown[]
   if (![x, y, w, h].every((v) => typeof v === 'number' && Number.isFinite(v))) return null
+  const attributes: NonNullable<AiDetection['model_extra']>['attributes'] = {}
+  if(c.a && typeof c.a==='object' && !Array.isArray(c.a))for(const [key,raw] of Object.entries(c.a).slice(0,16)){
+    if(!/^[a-z_]{1,64}$/.test(key)||!raw||typeof raw!=='object')continue
+    const a=raw as {type?:unknown;value?:unknown;status?:unknown}
+    if(a.value===null || typeof a.value==='boolean'||typeof a.value==='number'&&Number.isFinite(a.value)||typeof a.value==='string'&&a.value.length<=128)
+      attributes[key]={value:a.value as string|number|boolean|null,...(typeof a.type==='string'?{type:a.type}:{}),...(typeof a.status==='string'?{status:a.status}:{})}
+  }
   const det: AiDetection = {
+    ...((typeof c.src==='string'&&c.src.length<=48)||Object.keys(attributes).length?{model_extra:{...(typeof c.src==='string'&&c.src.length<=48?{source_node:c.src}:{}),...(Object.keys(attributes).length?{attributes}:{})}}:{}),
     class_id: typeof c.c === 'number' ? c.c : 0,
     class_name: typeof c.n === 'string' ? c.n : '',
     confidence: typeof c.p === 'number' ? c.p : c.p === null ? null : 0,

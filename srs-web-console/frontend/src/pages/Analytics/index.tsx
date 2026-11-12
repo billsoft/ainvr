@@ -1,3 +1,4 @@
+import {vehicleService} from '@/api/vehicleService'
 import { CalendarClock, ChevronDown, Download, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
@@ -50,10 +51,11 @@ function Kpi({ label, value, children }: { label: string; value: ReactNode; chil
 }
 export default function AnalyticsPage() {
   const [params]=useSearchParams()
-  return params.get('subject')==='alarms'?<AlarmAnalyticsPage/>:<FlowAnalyticsPage/>
+  return params.get('subject')==='alarms'?<AlarmAnalyticsPage/>:<FlowAnalyticsPage key={params.get('subject')==='vehicles'?'vehicles':'flow'}/>
 }
 function FlowAnalyticsPage() {
   const [params,setParams]=useSearchParams()
+  const vehicles=params.get('subject')==='vehicles'
   const tab=tabs.find(t=>t[0]===params.get('tab'))?.[0] ?? 'overview'
   const preset=(presets.find(p=>p[0]===params.get('range'))?.[0] ?? 'today') as Preset
   const initialParams=useRef(new URLSearchParams(params))
@@ -93,7 +95,7 @@ function FlowAnalyticsPage() {
   const setParam=(key:string,value:string)=>setParams(old=>{const p=new URLSearchParams(old);p.set(key,value);return p},{replace:true})
   useEffect(()=>{
     let live=true;setConfigError('')
-    void flowService.list({includeInactiveBindings:true}).then(r=>{
+    void (vehicles?vehicleService.counters():flowService.list({includeInactiveBindings:true})).then(r=>{
       if(!live)return
       const requested=initialized.current?selectionRef.current.counterIds:parseIds(initialParams.current.get('counters'))
       const requestedBindings=initialized.current?selectionRef.current.bindings:parseIds(initialParams.current.get('bindings'))
@@ -197,8 +199,8 @@ function FlowAnalyticsPage() {
   const selectedRecordRow=rows.find(r=>r.result.counter.counter_id+':'+r.zone.binding_id===recordBinding)
   const trendPanel = <section className={`ui-panel flex min-w-0 flex-col gap-1 overflow-auto p-3 ${tab === 'overview' ? 'min-h-[14rem] lg:min-h-0' : 'min-h-[16rem] lg:min-h-0'}`} aria-label="客流趋势">
     <header className="flex flex-wrap items-center gap-2">
-      <h2 className="text-sm font-semibold text-ink">客流趋势</h2>
-      {tab === 'overview' ? <button type="button" className={button + ' ml-auto'} onClick={() => setParam('tab', 'flow')}>查看客流</button> : <div className="ml-auto flex gap-1" role="group" aria-label="视图">
+      <h2 className="text-sm font-semibold text-ink">{vehicles?'车流趋势':'客流趋势'}</h2>
+      {tab === 'overview' ? <button type="button" className={button + ' ml-auto'} onClick={() => setParam('tab', 'flow')}>{vehicles?'查看车流':'查看客流'}</button> : <div className="ml-auto flex gap-1" role="group" aria-label="视图">
         <button type="button" className={button} aria-pressed={view === 'trend'} onClick={() => setView('trend')}>趋势</button>
         <button type="button" className={button} aria-pressed={view === 'rank'} onClick={() => setView('rank')}>排名</button>
       </div>}
@@ -231,6 +233,7 @@ function FlowAnalyticsPage() {
   const alarmDescription = alarmError ? '告警统计不可用：' + alarmError : alarm ? `按告警去重；另有 ${alarm.association?.unassociated ?? '未知'} 条未关联位置（未计入总数）` : '正在读取告警统计'
   const cutoff = new Date(query.to).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
   return <main className="alarm-workspace flex min-h-0 min-w-0 flex-col gap-2 overflow-auto lg:h-full">
+    {vehicles&&<p className="shrink-0 text-xs text-ink-subtle">真实车辆计数 · 读牌结果不影响通行计数；仅纳入车辆类别及兼容历史的计数器。热区告警仍为该位置全部类别告警。</p>}
     <header aria-label="统计筛选与操作" className="flex shrink-0 flex-wrap items-center gap-2">
       <h1 className="text-lg font-semibold leading-7 text-ink">统计分析</h1>
       <AnalyticsSubjectSwitch locations={locations} disabled={counters===null&&!configError}/>
@@ -272,10 +275,11 @@ function FlowAnalyticsPage() {
     {loading && <p role="status" className="py-3 text-center text-sm text-ink-subtle">正在读取统计…</p>}
     {!counterIds.length && counters && !configError && <p className="py-3 text-center text-sm text-ink-subtle">请选择计数器；如尚未配置，请先在流量统计中创建。</p>}
     {counterIds.length > 0 && !bindings.length && <p className="py-3 text-center text-sm text-ink-subtle">请选择至少一个统计位置。</p>}
+    {vehicles&&counters?.length===0&&!configError&&<section className="ui-panel space-y-2 p-5 text-center"><h2 className="text-sm font-semibold">还没有独立的车辆计数器</h2><p className="text-xs text-ink-subtle">先选车辆标签创建计数器，再绑定原有布防区。混合人车或历史标签无法确认的计数器不纳入车辆分析。</p><Link className="btn-secondary text-xs" to="/flow-statistics">配置车辆计数器</Link></section>}
     <nav role="tablist" aria-label="统计视图" className="flex shrink-0 items-stretch gap-1 border-b border-line">
       {tabs.map(([id, name]) => <button key={id} id={`analytics-tab-${id}`} type="button" role="tab" aria-controls="analytics-panel" aria-selected={tab === id}
         className={`-mb-px shrink-0 border-b-2 px-4 py-1.5 text-sm [@media(pointer:coarse)]:min-h-11 ${tab === id ? 'border-primary font-medium text-primary' : 'border-transparent text-ink-subtle hover:text-ink'}`}
-        onClick={() => setParam('tab', id)}>{name}</button>)}
+        onClick={() => setParam('tab', id)}>{vehicles&&name==='客流'?'车流':name}</button>)}
       {dataReady && <p role="status" aria-label="数据状态" title={qualitySummary + ' ' + peakDescription}
         className={`ml-auto flex min-w-0 items-center pl-3 text-xs ${coverageIssue ? 'text-amber-700' : 'text-ink-subtle'}`}>
         <span aria-hidden="true" className={`mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${coverageIssue ? 'bg-warning' : 'bg-success'}`} />

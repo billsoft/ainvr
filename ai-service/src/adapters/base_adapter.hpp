@@ -98,13 +98,10 @@ class BaseModelAdapter {
   // ApplyTaskTypeHint 推导。
   virtual std::string TaskType() const { return task_type_; }
 
-  // v1 BaseModelAdapter.__init__ 的推导规则:只对"类自身默认是
-  // object_detection"的适配器生效——class_names 恰好是 {face}(忽略大小
-  // 写),或 "name path" 里含 face/scrfd,判定为 face_detection。生产的人脸
-  // 模型也可能挂在通用 yolo26_trt 上,不推导的话下游只对人脸生效的能力
-  // (识别历史的人脸增强)会被静默跳过。
+  // Only explicit class semantics may infer a face-only task. Artifact names
+  // such as helmet-face must never route object detections into face enhancement.
   void ApplyTaskTypeHint(const std::vector<std::string>& class_names,
-                         const std::string& model_name, const std::string& model_path) {
+                         const std::string& /*model_name*/, const std::string& /*model_path*/) {
     if (TaskType() != "object_detection") return;
     auto lower = [](std::string s) {
       for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -114,9 +111,7 @@ class BaseModelAdapter {
     for (auto&& n : class_names) {
       if (lower(n) != "face") only_face = false;
     }
-    std::string hint = lower(model_name + " " + model_path);
-    if (only_face || hint.find("face") != std::string::npos ||
-        hint.find("scrfd") != std::string::npos) {
+    if (only_face) {
       task_type_ = "face_detection";
     }
   }

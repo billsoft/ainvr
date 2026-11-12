@@ -115,6 +115,13 @@ struct SnapshotConfig {
   // face_enhance_model,不保留在结构体里(对应 Python 的 exclude=True)。
 };
 
+struct AnalysisNodeConfig {
+  std::string id;
+  ModelConfig model;
+  pipeline::PreprocessConfig preprocess;
+  PostprocessConfig postprocess;
+};
+
 struct ChannelConfig {
   std::string id;  // 必填,无默认值
   std::string name;
@@ -125,6 +132,14 @@ struct ChannelConfig {
   double inference_fps = 5.0;  // 0 = 跟源流帧率
   int max_consecutive_failures = 10;
   ModelConfig model;
+  // Primary fields remain the compatibility view; additional nodes share this frame clock.
+  std::vector<AnalysisNodeConfig> analysis_nodes;
+  std::string analysis_execution = "serial";
+  // Wire compatibility: the legacy model fields hold one ordinary list member.
+  std::string analysis_root_id = "primary";
+  std::vector<std::string> analysis_order;
+  bool UsesAnalysisPipeline() const { return !analysis_nodes.empty() || analysis_root_id != "primary"; }
+  bool analysis_pipeline_present=false;
   pipeline::PreprocessConfig preprocess;
   PostprocessConfig postprocess;
   ResultBufferConfig result_buffer;

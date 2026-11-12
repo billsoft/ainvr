@@ -29,7 +29,7 @@ class PreparedSnapshotSink final:public FrameArchiveSink {
   // propagates to the channel; it must not report an unaccepted frame complete.
   for(size_t i=0;i<result.detections.size();++i){
    auto image=renderer_.RenderOriginal(frame,result.detections[i].bbox,config_,
-       result.task_type=="face_detection",context.bt709,context.full_range);
+       result.detections[i].model_extra.value("task_type",result.task_type)=="face_detection",context.bt709,context.full_range);
    if(!image){++stats_.invalid_crops;continue;}
    bson_oid_t oid;bson_oid_init(&oid,nullptr);char hex[25];bson_oid_to_string(&oid,hex);
    ArchiveDocumentInput input;input.image_id=hex;input.channel_name=name_;

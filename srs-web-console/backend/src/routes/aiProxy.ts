@@ -165,18 +165,51 @@ export async function aiProxyRoutes(fastify: FastifyInstance, opts: AiProxyOptio
       });
     };
 
+  // A channel graph is checked against the currently published source before
+  // mutation. Unknown/offline geometry is checked by native capture on arrival.
+  const mutation = (update: boolean) => async (req: FastifyRequest, reply: FastifyReply) => {
+    const body=req.body as any;
+    if(body&&typeof body==='object'&&(body.model||body.analysis_pipeline||body.stream)) {
+      let config:any=body;
+      if(update) {
+        const settings=await opts.settingsStore.read();
+        const key=await resolveAiApiKey(settings,opts.pgStore);
+        try {
+          const response=await fetch(`${(settings.aiService.baseUrl||opts.fallbackBaseUrl).replace(/\/+$/,'')}/api/v1/channels/${encodeURIComponent((req.params as any).id)}`,{headers:{'x-api-key':key},signal:AbortSignal.timeout(timeoutMs)});
+          if(!response.ok)return reply.code(response.status).send({error:'读取通道失败，配置未保存'});
+          const current=(await response.json() as any).config;
+          if(!current)return reply.code(502).send({error:'读取通道配置失败，配置未保存'});
+          config={...current,...body,model:{...current.model,...body.model},stream:{...current.stream,...body.stream}};
+        }catch{return reply.code(502).send({error:'AI 服务不可达，配置未保存'});}
+      }
+      const plate=config.model?.adapter==='plate_bpu'||(Array.isArray(config.analysis_pipeline?.nodes)&&config.analysis_pipeline.nodes.some((n:any)=>n?.model?.adapter==='plate_bpu'));
+      if(plate&&typeof config.stream?.url==='string') {
+        let source:URL|null=null;try{source=new URL(config.stream.url);}catch{}
+        if(source&&['127.0.0.1','localhost',req.hostname].includes(source.hostname)) {
+          const parts=source.pathname.split('/').filter(Boolean);
+          const streams=await opts.srsClient.listStreams().catch(()=>[]);
+          const current=streams.find(x=>x.app===parts[0]&&x.name===parts.slice(1).join('/'));
+          const w=current?.video?.width,h=current?.video?.height;
+          if(typeof w==='number'&&typeof h==='number'&&w>0&&h>0&&(!Number.isInteger(w)||!Number.isInteger(h)||w%2||h%2||w<16||h<16||w*h>8388608))
+            return reply.code(422).send({code:422,error:'unsupported_source_geometry',message:'车牌识别输入尺寸不支持：需偶数宽高且不超过8388608像素，配置未保存'});
+        }
+      }
+    }
+    return update?fwdWithId('/config',configTimeoutMs)(req,reply):fwd('api/v1/channels')(req,reply);
+  };
+
   // /health 是 ai-service 专门设计成豁免鉴权的轻量探活端点，没有 /api 前缀
   fastify.get('/ai/health', fwd('health'));
 
   fastify.get('/ai/channels', fwd('api/v1/channels'));
-  fastify.post('/ai/channels', fwd('api/v1/channels'));
+  fastify.post('/ai/channels', mutation(false));
 
   fastify.get('/ai/channels/:id', fwdWithId(''));
   // Stop inference + join the archive writer + acknowledged Mongo drop.
   // If this deadline is exceeded the durable pending entry remains retryable.
   fastify.delete('/ai/channels/:id', fwdWithId('', 25000));
 
-  fastify.put('/ai/channels/:id/config', fwdWithId('/config', configTimeoutMs));
+  fastify.put('/ai/channels/:id/config', mutation(true));
 
   fastify.post('/ai/channels/:id/start', fwdWithId('/start', startTimeoutMs));
   fastify.post('/ai/channels/:id/stop', fwdWithId('/stop', stopTimeoutMs));

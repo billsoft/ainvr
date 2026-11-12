@@ -25,7 +25,11 @@ void SnapshotStore::OfferResult(const FrameProvider& provider, const FrameResult
   if (!targets.empty() && (provider.size.width <= 0 || provider.size.height <= 0))
     throw std::invalid_argument("Snapshot point context requires a valid source frame");
   const auto stored=BindObservationEvidence(result);
-  Offer(provider, result.channel_id, channel_name, result.frame_pts_ns, result.timestamp,
+  if(result.model_extra.contains("analysis_pipeline")) {
+    std::map<std::pair<std::string,std::string>,std::pair<std::vector<Detection>,std::vector<Detection>>> groups;
+    for(size_t i=0;i<stored.size()&&i<crop_detections.size();++i){const auto& d=stored[i];auto& g=groups[{d.model_extra.value("model_name",result.model_name),d.model_extra.value("task_type",result.task_type)}];g.first.push_back(crop_detections[i]);g.second.push_back(d);}
+    for(const auto& [key,g]:groups)Offer(provider,result.channel_id,channel_name,result.frame_pts_ns,result.timestamp,key.first,key.second,g.first,g.second,key.second=="face_detection",cfg);
+  } else Offer(provider, result.channel_id, channel_name, result.frame_pts_ns, result.timestamp,
         result.model_name, result.task_type, crop_detections, stored, square_crop, cfg);
   if (targets.empty()) return;
   std::vector<Detection> contexts, properties;

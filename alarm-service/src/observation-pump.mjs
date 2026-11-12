@@ -19,11 +19,22 @@ export function observationEnvelope(sample,rules){
   });
   if(new Set(labels.map(l=>l.label_id)).size!==labels.length)throw Error('Duplicate labels');
   const labelVersion='labels-'+digest([catalog.adapter,labels]);
+  // Accept an older primary catalogue only when every ID, name and description
+  // is exactly preserved in the merged result. Never alias renamed prompt labels.
+  const compatible=[];
+  const oldCatalogs=sample.model.compatible_label_catalogs??[];
+  if(!Array.isArray(oldCatalogs)||oldCatalogs.length>4)throw Error('Invalid compatible catalogs');
+  for(const old of oldCatalogs){
+    if(old?.schema_version!=='1.0'||typeof old.adapter!=='string'||!Array.isArray(old.labels)||!old.labels.length||old.labels.length>128)throw Error('Invalid compatible catalog');
+    const rows=old.labels.map((l,i)=>{const clean={class_id:l.class_id,label_id:l.label_id,name:l.name,description:l.description};if(l.class_id!==i||!labels.some(n=>JSON.stringify(n)===JSON.stringify(clean)))throw Error('Incompatible label alias');return clean;});
+    compatible.push({version:'labels-'+digest([old.adapter,rows]),label_ids:rows.map(l=>l.label_id)});
+  }
+  const compatibleVersion=version=>version===labelVersion||compatible.some(c=>c.version===version);
   const channelRules=rules.filter(r=>r.state==='enabled'&&r.channel_id===sample.channel_id);
   if(!channelRules.length)return {ignored:'no_active_monitor'};
   const bindings=channelRules.map(r=>r.source_binding);
   if(bindings.some(b=>!b))return {waiting:'source_binding_unavailable'};
-  const matches=bindings.filter(b=>b.stream_fingerprint===rawHash(sample.stream_url)&&b.width===sample.width&&b.height===sample.height&&b.label_map_version===labelVersion);
+  const matches=bindings.filter(b=>b.stream_fingerprint===rawHash(sample.stream_url)&&b.width===sample.width&&b.height===sample.height&&compatibleVersion(b.label_map_version));
   if(!matches.length)return {ignored:'source_binding_mismatch'};
   const eligible=matches.filter(b=>Number.isFinite(sample.timestamp)&&sample.timestamp*1000>=Date.parse(b.not_before));
   if(!eligible.length)return {ignored:'before_monitor_binding'};
@@ -46,7 +57,7 @@ export function observationEnvelope(sample,rules){
     frame_id:`${sample.stream_session_id}:${sample.source_frame_index}`,source_pts_ns:sample.source_pts_ns,source_frame_index:sample.source_frame_index,
     captured_at:new Date(sample.timestamp*1000).toISOString(),
     source:{width:sample.width,height:sample.height,coordinate_space:'source_pixels',geometry_revision:binding.geometry_revision},
-    model:{id:sample.model.id,label_map_version:labelVersion},observation_mode:detectionOnly?'detections':'tracks',tracks,
+    model:{id:sample.model.id,label_map_version:labelVersion,...(compatible.length?{compatible_label_versions:compatible}:{})},observation_mode:detectionOnly?'detections':'tracks',tracks,
     ...(sample.gap===true?{gap:true}:{}),
     ...(sample.evidence_delivery?{evidence_delivery:sample.evidence_delivery}:{})});
   if(frame.tracks.some(t=>!labels.some(l=>l.label_id===t.label_id)))throw Error('Unknown track label');

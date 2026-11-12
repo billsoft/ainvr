@@ -109,6 +109,8 @@ std::string det_to_json(const Detection& d) {
   s += d.confidence_known ? format_confidence_4dp(d.confidence) : "null";
   if (!d.label_id.empty()) s += ",\"l\":" + json_escape_string(d.label_id);
   if (!d.track_id.empty()) s += ",\"t\":" + json_escape_string(d.track_id);
+  if(d.model_extra.contains("attributes") && d.model_extra["attributes"].is_object() && d.model_extra["attributes"].dump().size()<=2048) s+=",\"a\":"+d.model_extra["attributes"].dump();
+  if(d.model_extra.contains("source_node"))s+=",\"src\":"+json_escape_string(d.model_extra.at("source_node").get<std::string>());
   s += ",\"b\":[";
   for (size_t i = 0; i < d.bbox.size(); ++i) {
     if (i) s += ",";
@@ -298,8 +300,9 @@ std::vector<uint8_t> build_result_payload(const std::string& channel_id,
   // observation journal. Filter at the serialization boundary before validation
   // and budgeting so every caller gets the same bounded video protocol.
   auto video_extra = model_extra;
-  for (const auto* key : {"analytics", "label_catalog", "observation_delivery"})
+  for (const auto* key : {"analytics", "label_catalog", "compatible_label_catalogs", "observation_delivery"})
     video_extra.erase(key);
+  if(video_extra.contains("analysis_pipeline"))video_extra["analysis_pipeline"].erase("configuration");
   validate_numbers(validate_numbers, video_extra);
   const bool has_points = model_extra.contains("grounding") &&
       model_extra.at("grounding").is_object() &&

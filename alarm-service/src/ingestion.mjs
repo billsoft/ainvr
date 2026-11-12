@@ -14,7 +14,7 @@ export function evidenceCaptureIntents(pending) {
   const intents=new Map();
   for(const intent of pending.capture_intents??[])intents.set(digest([intent.channel_id,intent.stream_session_id,intent.sample.frame_id]),intent);
   for(const event of pending.events??[]){
-    if(event.rule.snapshot.alarm_enabled===false)continue;
+    if(event.rule.snapshot.alarm_enabled===false&&!event.rule.snapshot.vehicle_capture)continue;
     const group=event.analysis_evidence?.group;
     const samples=group?group.members.flatMap(m=>[m.start,...m.transition,m.sample,m.identity_sample].filter(Boolean)):event.analysis_evidence?.review_context?.samples??[];
     for(const sample of samples){
@@ -66,7 +66,8 @@ export class ObservationConsumer {
         return {durable:true,outcome:'already_consumed',offset:envelope.offset,events:[]};
       }
       const gap=doc.offset!==null&&offset!==BigInt(doc.offset)+1n;
-      const rules=(await this.repository.listRules(channel)).map(({history,...r})=>r);
+      const baseRules=(await this.repository.listRules(channel)).map(({history,...r})=>r);
+      const rules=this.repository.vehicles?this.repository.vehicles.rules(baseRules,channel):baseRules;
       const result=evaluate(doc.checkpoint,{...frame,...(gap?{gap:true}:{})},rules);
       for(const entry of result.checkpoint.dwell_gaps??[])if(entry.to===null&&entry.stream_session_id!==frame.stream_session_id)entry.to=frame.captured_at;
       const duplicate=result.issues.includes('duplicate_or_old_seq'),options={gap,previous:doc.checkpoint,restart:!this.dwellStarted.has(channel)};
@@ -143,7 +144,7 @@ export class ObservationConsumer {
       if(event.rule.snapshot.alarm_enabled!==false&&await this.repository.isCleared?.(event))continue;
       // Source v2 journals are published only after the exact frame has reached
       // SSD. Complete the immutable evidence handoff before publishing an alarm.
-      if(event.rule.snapshot.alarm_enabled!==false&&event.analysis_evidence?.delivery?.schema_version===2){
+      if((event.rule.snapshot.alarm_enabled!==false||event.rule.snapshot.vehicle_capture)&&event.analysis_evidence?.delivery?.schema_version===2){
         const delivery=event.analysis_evidence.delivery;
         if(delivery.state==='durable'){
           const context=this.repository.reviewContext;
@@ -185,6 +186,7 @@ export class ObservationConsumer {
         continue;
       }
       const behaviorId=await this.repository.behaviors.insert(event);
+      await this.repository.vehicles?.enqueue(event);
       await this.hook('behavior_inserted');
       if(event.rule.snapshot.alarm_enabled!==false&&!await this.repository.isCleared?.(event)){
         await this.repository.insert({...event,behavior_event_ids:[behaviorId]});

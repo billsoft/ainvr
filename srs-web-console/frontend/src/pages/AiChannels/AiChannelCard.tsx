@@ -1,6 +1,6 @@
 import { AnalyticsEvents } from './AnalyticsEvents'
 import { ANALYTICS_PHASE } from '@/features/analyticsPhase'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { MoreVertical, Play, Square, Eye, Pencil, Trash2 } from 'lucide-react'
 import { AiChannelStatusBadge } from '@/components/common/AiChannelStatusBadge'
 import { getAiModelDisplayName, type AiChannel } from '@/types/aiChannel'
@@ -23,7 +23,10 @@ interface Props {
 export function AiChannelCard({ channel, disabled, sourceChannelName, sourceAvailability = 'unknown', onStart, onStop, onEdit, onDelete, onViewResult, onPreview }: Props) {
   const [eventsOpen,setEventsOpen]=useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const menuButton=useRef<HTMLButtonElement>(null)
   const { config, stats } = channel
+  const modelNodes=[{id:config.analysis_pipeline?.root_id??'primary',model:config.model},...(config.analysis_pipeline?.nodes??[])]
+  if(config.analysis_pipeline?.order)modelNodes.sort((a,b)=>config.analysis_pipeline!.order!.indexOf(a.id)-config.analysis_pipeline!.order!.indexOf(b.id))
   const presentation = aiPresentationState(channel, disabled ? 'unknown' : sourceAvailability)
   const waiting = presentation === 'waiting-source'
   const stopped = presentation === 'idle'
@@ -75,8 +78,9 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, sourceAvai
         <div className="relative shrink-0">
           <button
             type="button"
+            ref={menuButton}
             onClick={() => setMenuOpen((v) => !v)}
-            className="rounded-base p-1.5 text-ink-faint hover:bg-surface-page hover:text-ink"
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-base p-1.5 text-ink-faint hover:bg-surface-page hover:text-ink"
             aria-label="更多操作"
           >
             <MoreVertical size={18} />
@@ -95,7 +99,7 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, sourceAvai
                     <Square size={15} /> 停止
                   </button>
                 )}
-                <button type="button" disabled={disabled || config.deletion_pending} onClick={() => { setMenuOpen(false); onEdit() }} className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-ink hover:bg-surface-page disabled:opacity-40">
+                <button type="button" disabled={disabled || config.deletion_pending} onClick={() => { menuButton.current?.focus(); setMenuOpen(false); onEdit() }} className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-ink hover:bg-surface-page disabled:opacity-40">
                   <Pencil size={15} /> 编辑
                 </button>
                 <button type="button" disabled={disabled} onClick={() => { setMenuOpen(false); onDelete() }} className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-danger hover:bg-danger-50 disabled:opacity-40">
@@ -119,7 +123,7 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, sourceAvai
         计数、侵入、穿过及持续停留暂停；已有配置和历史保留。无持续时间的出现、区内检出和接近带检出仍可用。
       </p>}
       <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm text-ink-subtle">
-        <span>模型：{getAiModelDisplayName(config.model)}</span>
+        <span>模型：{modelNodes.map(n=>n.model).map(getAiModelDisplayName).join(" + ")}</span>
         <span>{slowOpenVocabulary
           ? `采集：每 ${(1 / config.inference_fps).toFixed(1)} 秒一次（${receiving && stats.inference_fps_actual > 0 ? `实测约 ${(1 / stats.inference_fps_actual).toFixed(1)} 秒` : '等待识别结果'}）`
           : `推理：${config.inference_fps > 0 ? `${config.inference_fps} FPS` : '跟随源流'}（${receiving ? `实测 ${stats.inference_fps_actual?.toFixed?.(1) ?? '0.0'}` : stopped ? '已停止' : waiting ? '等待源视频' : '等待处理恢复'}）`}</span>
@@ -224,6 +228,7 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, sourceAvai
           <Play size={14} className="mr-1 inline" aria-hidden />播放衍生流
         </button>
       </div>
+      {modelNodes.map(n=>n.model).some(m=>m.adapter==='plate_bpu')&&<div className="mt-4 flex flex-wrap gap-3 border-t border-line pt-3 text-xs text-ink-subtle"><span>车牌已纳入联合识别 · 现场准确率待验证</span><a className="text-primary" href="/recognition-history?view=vehicles">车辆通行</a><a className="text-primary" href="/config-center?category=vehicles">关注名单</a></div>}
     </div>
   )
 }

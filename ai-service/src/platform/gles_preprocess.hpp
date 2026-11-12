@@ -24,6 +24,12 @@ struct ImageTransform {
   std::optional<std::array<float,4>> source_region;
   // Opt-in constant padding for evidence crops; ordinary detector crops retain replication.
   bool source_region_padding = false;
+  // Optional unit output square -> normalized source UV homography (row major).
+  // Exclusive with crop, ERP and letterbox; GLES owns pixel resampling.
+  std::optional<std::array<float,9>> projective_uv;
+  // Double-row plate: top [0,floor(5h/12)), bottom [floor(h/3),h).
+  // Resample top to bottom height and join horizontally, on GPU.
+  int plate_split_height = 0;
   // nearest keeps the established crop sampler. Other filters round resized
   // RGB8 before model normalization, as the original byte-image pipeline does.
   ImageInterpolation interpolation=ImageInterpolation::Bilinear;

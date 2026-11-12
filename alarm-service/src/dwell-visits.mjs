@@ -1,3 +1,4 @@
+import {matchesLabelVersion} from './domain.mjs';
 // Copyright AINVR. Bounded, checkpointed region visits from existing observations.
 import {digest,validateRule} from './domain.mjs';
 import {inside} from './geometry.mjs';
@@ -19,7 +20,7 @@ function regions(frame,rules,issues){
     const r=validateRule(raw);
     if(r.alarm_enabled!==false||r.state!=='enabled'||r.channel_id!==frame.channel_id||
        r.behavior!=='region_traverse'||!r.zone_id||!Number.isSafeInteger(r.zone_version)||!r.points)continue;
-    if(r.geometry_revision!==frame.source.geometry_revision||r.label_map_version!==frame.model.label_map_version||
+    if(r.geometry_revision!==frame.source.geometry_revision||!matchesLabelVersion(frame,r)||
        (r.input_stream_id!==undefined&&r.input_stream_id!==frame.input_stream_id)||
        (r.view_not_before&&Date.parse(frame.captured_at)<Date.parse(r.view_not_before))||
        (r.source_binding&&Date.parse(frame.captured_at)<Date.parse(r.source_binding.not_before)))continue;

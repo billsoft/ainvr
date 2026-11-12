@@ -27,7 +27,8 @@ export function describeAlarm(alarm:AlarmEvent,trigger:AlarmContext|undefined){
  const at=(behavior:string)=>stages.find(s=>s.behavior===behavior)?.at
  let sentence:string
  const group=alarm.group_summary??(alarm.analysis_evidence?.group?{...alarm.analysis_evidence.group,count:alarm.analysis_evidence.group.members.length}:undefined)
- if(group)sentence=group.mode==='completed_in_window'?`${group.window_ms/1000} 秒内有 ${group.count} 个不同目标完成穿越。`:`有 ${group.count} 个不同目标同时满足「${behaviorNames[alarm.behavior]??alarm.behavior}」条件。`
+ if(alarm.analysis_evidence?.vehicle?.reason==='watchlist_match')sentence=`车辆 ${alarm.analysis_evidence.vehicle.text} 通行，匹配关注名单。`
+ else if(group)sentence=group.mode==='completed_in_window'?`${group.window_ms/1000} 秒内有 ${group.count} 个不同目标完成穿越。`:`有 ${group.count} 个不同目标同时满足「${behaviorNames[alarm.behavior]??alarm.behavior}」条件。`
  else if(!trigger)sentence=`目标${behaviorNames[alarm.behavior]??'触发'}${alarm.behavior==='appearance'?'':'热区'}。`
  else if(alarm.behavior==='appearance')sentence=`${target}在画面中连续出现 ${trigger.duration_ms/1000} 秒。`
  else if(alarm.behavior==='region_approach'&&edgeOf(top?.direction,'nearest_edge')===null)sentence=`${target}与「${zone??'热区'}」的距离已在设定范围内。`

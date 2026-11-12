@@ -57,3 +57,19 @@ it('names why a source is not usable',()=>{
  expect(buildAlarmSourceCatalog(channel,frame,[input],now,why)).not.toBeNull();
  expect(reasons).toHaveLength(4);
 });
+
+it('multi-model catalogue binds actual graph and retains source-specific labels',()=>{
+ const graph={execution:'parallel',nodes:[{id:'face',model:{adapter:'yoloface_bpu',name:'face'}}]};
+ const c={...channel,config:{...channel.config,analysis_pipeline:graph}};
+ const f={...frame,model_extra:{...frame.model_extra,analysis_pipeline:{configuration:graph},label_catalog:{schema_version:'1.0',adapter:'analysis_pipeline',labels:[{...frame.model_extra.label_catalog.labels[0],source_node:'primary'},{class_id:1,label_id:'node:face:class:0',name:'face',description:'',source_node:'face'}]}}};
+ expect(buildAlarmSourceCatalog(c,f,[input],now)?.label_ids).toEqual(['p','node:face:class:0']);
+ expect(buildAlarmSourceCatalog({...c,config:{...c.config,analysis_pipeline:{...graph,execution:'serial'}}},f,[input],now)).toBeNull();
+ const changed=structuredClone(f);changed.model_extra.label_catalog.labels[0].description='different';expect(buildAlarmSourceCatalog(c,changed,[input],now)).toBeNull();
+});
+it('remaining model keeps rule source support after the imported model is removed',()=>{
+ const graph={execution:'serial',root_id:'face',order:['face'],nodes:[]};
+ const c={...channel,config:{...channel.config,model:{name:'face',adapter:'yoloface_bpu'},analysis_pipeline:graph}};
+ const f={...frame,model:{name:'face'},model_extra:{...frame.model_extra,analysis_pipeline:{configuration:graph},label_catalog:{schema_version:'1.0',adapter:'analysis_pipeline',labels:[{class_id:0,label_id:'node:face:class:0',name:'face',description:'',source_node:'face'}]}}};
+ expect(buildAlarmSourceCatalog(c,f,[input],now)?.label_ids).toEqual(['node:face:class:0']);
+ expect(buildAlarmSourceCatalog(c,{...f,model_extra:{...f.model_extra,analysis_pipeline:{configuration:{...graph,order:['primary']}}}},[input],now)).toBeNull();
+});

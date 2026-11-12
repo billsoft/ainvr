@@ -237,6 +237,10 @@ class ReviewFrameCache {
   if(std::filesystem::canonical(raw_)!=raw_)throw std::runtime_error("Evidence spool symlink");
   chmod(raw_.c_str(),0700);RefreshPolicy();worker_=std::thread([this]{Run();});}
  ~ReviewFrameCache(){{std::lock_guard<std::mutex> l(mutex_);stop_=true;}ready_.notify_all();space_.notify_all();if(worker_.joinable())worker_.join();}
+ bool FullResolution(const std::string& channel){std::lock_guard<std::mutex> l(mutex_);
+  if(!policy_.is_object()||!policy_.contains("vehicle_channels")||!policy_["vehicle_channels"].is_array())return false;
+  for(const auto& c:policy_["vehicle_channels"])if(c==channel)return true;return false;
+ }
  bool Enabled(const std::string& channel){if(root_.empty())return false;std::lock_guard<std::mutex> l(mutex_);
   if(!policy_.is_object()||!policy_.contains("expires_at")||!policy_["expires_at"].is_number_integer()||!policy_.contains("channels")||!policy_["channels"].is_array())return false;
   // Last committed desired configuration survives a database outage.

@@ -4,6 +4,7 @@
 #include <memory>
 #include <utility>
 #include "bpu_channel_adapter.hpp"
+#include "plate_channel_adapter.hpp"
 #include "locateanything_bpu_adapter.hpp"
 
 namespace ai_service::adapters {
@@ -107,6 +108,7 @@ class Yoloe2BpuAdapter final : public YoloeBpuAdapter {
   }
 };
 inline std::unique_ptr<BpuChannelAdapter> CreateBpuRuntimeAdapter(const config::ModelConfig& cfg){
+  if(cfg.adapter=="plate_bpu")return std::make_unique<PlateChannelAdapter>(cfg);
   if(cfg.adapter=="yolo26_bpu")return std::make_unique<Yolo26BpuAdapter>(cfg);
   if(cfg.adapter=="yoloface_bpu")return std::make_unique<YoloFaceBpuAdapter>(cfg);
   if(cfg.adapter=="scrfd_bpu")return std::make_unique<ScrfdBpuAdapter>(cfg);

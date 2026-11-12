@@ -1,3 +1,4 @@
+import {matchesLabelVersion} from './domain.mjs';
 import {groupEvents} from './group-events.mjs';
 import {conditionIncidents} from './condition-incidents.mjs';
 import {counterContinuation} from './low-confidence.mjs';
@@ -104,7 +105,7 @@ export function evaluate(checkpoint,input,rules) {
     if(r.view_not_before&&Date.parse(f.captured_at)<Date.parse(r.view_not_before))continue;
     if(r.source_binding&&Date.parse(f.captured_at)<Date.parse(r.source_binding.not_before))continue;
     if(r.input_stream_id!==undefined&&r.input_stream_id!==f.input_stream_id){issues.push(`rule_input_mismatch:${r.id}`);continue;}
-    if(r.geometry_revision!==f.source.geometry_revision||r.label_map_version!==f.model.label_map_version){issues.push(`rule_config_mismatch:${r.id}`);continue;}
+    if(r.geometry_revision!==f.source.geometry_revision||!matchesLabelVersion(f,r)){issues.push(`rule_config_mismatch:${r.id}`);continue;}
     if(detectionOnly&&(r.group||r.alarm_enabled===false||(!['appearance','region_approach'].includes(r.behavior)&&r.spatial_semantics!=='bbox-state-v1')||r.duration_ms>0||r.entry_edges.length||r.exit_edges.length||r.erp_wrap)) {
       issues.push(`tracking_required:${r.id}`);continue;
     }
@@ -188,7 +189,7 @@ export function evaluate(checkpoint,input,rules) {
     if(rescued)s.passage_pending=true;
     const tentative=s.tentative;delete s.tentative;
     if(tentative){s.first_seq=f.seq;s.since=f.source_pts_ns;s.fired=false;}
-    const sample=r.alarm_enabled!==false?sampleOf(f,t):null;
+    const sample=(r.alarm_enabled!==false||r.vehicle_capture)?sampleOf(f,t):null;
     const capture=x=>{if(!x?.event_eligible||captureIntents.length>=128)return;captureIntents.push({channel_id:f.channel_id,stream_session_id:f.stream_session_id,source:f.source,sample:x});};
     const begin=()=>{if(sample){beginEvidence(s,sample);capture(s.review_compact.before);capture(sample);}};
     const remember=()=>{if(sample?.event_eligible){s.review_compact??={};s.review_compact.last=sample;}};

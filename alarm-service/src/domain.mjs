@@ -134,6 +134,7 @@ export function validateFrame(input) {
   range(f.source.width,1,32768,'width');range(f.source.height,1,32768,'height');
   if(f.source.coordinate_space!=='source_pixels') fail('invalid_coordinates','coordinate_space');
   identity(f.source.geometry_revision,'geometry_revision'); identity(f.model?.label_map_version,'label_map_version');
+  if(f.model.compatible_label_versions!==undefined){const rows=f.model.compatible_label_versions;if(!Array.isArray(rows)||rows.length>4)fail('invalid_model','compatible_label_versions');for(const row of rows){identity(row.version,'compatible_label_version');if(!Array.isArray(row.label_ids)||!row.label_ids.length||row.label_ids.length>128)fail('invalid_model','compatible_label_ids');for(const id of row.label_ids)identity(id,'label_id');}}
   if(f.observation_mode!==undefined&&!['tracks','detections'].includes(f.observation_mode))fail('invalid_observation','mode');
   if(!Array.isArray(f.tracks)||f.tracks.length>4096) fail('invalid_tracks','tracks');
   const ids=new Set();
@@ -182,4 +183,8 @@ export function acknowledge(event,{expected_handling_revision,note='',dispositio
 }
 export function pending(event) {
   return event.handling.state==='unacknowledged' && event.handling.disposition!=='false_positive';
+}
+
+export function matchesLabelVersion(frame,rule){
+ return rule.label_map_version===frame.model.label_map_version || (frame.model.compatible_label_versions??[]).some(c=>c.version===rule.label_map_version&&rule.label_ids.every(id=>c.label_ids.includes(id)));
 }

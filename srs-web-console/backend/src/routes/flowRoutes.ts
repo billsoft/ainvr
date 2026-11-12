@@ -169,7 +169,7 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
  });
  app.post('/flow/records',async req=>{
   const b=req.body;
-  if(!object(b)||Object.keys(b).some(k=>!['counter_id','binding_id','output','from','to','cursor','limit'].includes(k))||!validId(b.counter_id)||!validId(b.binding_id)||!['in','out'].includes(String(b.output))||
+  if(!object(b)||Object.keys(b).some(k=>!['counter_id','binding_id','output','from','to','cursor','limit','plate','vehicle_state'].includes(k))||!validId(b.counter_id)||!validId(b.binding_id)||!['in','out'].includes(String(b.output))||
    b.cursor!==undefined&&(typeof b.cursor!=='string'||b.cursor.length>4096)||b.limit!==undefined&&(!Number.isInteger(b.limit)||(b.limit as number)<1||(b.limit as number)>100))bad('记录查询参数无效');
   const body=b as Record<string,unknown>,window=range(body);
   const [{counter,bindings,definitions}]=await readCounters([body.counter_id as string]);
@@ -178,7 +178,7 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
   const config=await options.connection();if(!config)throw new AlarmConfigError('flow_unavailable','分析服务尚未配置',503);
   const response=await fetch(endpoint(config,'/v1/flow/query'),{method:'POST',redirect:'error',signal:AbortSignal.timeout(config.timeoutMs),
    headers:{authorization:`Bearer ${config.apiToken}`,'content-type':'application/json'},
-   body:JSON.stringify({series:(()=>{const list=seriesOf(counter,row,definitions,body.output as Output,window).map(({grace:_,...s})=>s);return list.length?list:bad('这段时间此热区没有计数')})(),detail:true,...(body.cursor?{cursor:body.cursor}:{}),limit:body.limit??30})});
+   body:JSON.stringify({series:(()=>{const list=seriesOf(counter,row,definitions,body.output as Output,window).map(({grace:_,...s})=>s);return list.length?list:bad('这段时间此热区没有计数')})(),detail:true,...(body.plate!==undefined?{plate:body.plate}:{}),...(body.vehicle_state!==undefined?{vehicle_state:body.vehicle_state}:{}),...(body.cursor?{cursor:body.cursor}:{}),limit:body.limit??30})});
   const result=await limitedJson(response) as {items?:unknown[];next_cursor?:string|null;error?:{code?:string;message?:string}};
   if(!response.ok)throw new AlarmConfigError(response.status===422?result.error?.code??'invalid_query':'flow_unavailable',response.status===422?result.error?.message??'查询条件无效':'分析服务查询失败',response.status===422?422:502);
   return {items:result.items??[],next_cursor:result.next_cursor??null};

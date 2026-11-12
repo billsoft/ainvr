@@ -1,5 +1,6 @@
 // Copyright AINVR. Adapted for the S100P service.
 #include "config.hpp"
+#include "../adapters/pipeline_limits.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -118,7 +119,7 @@ ModelConfig ParseModel(const json& node) {
   m.name = GetS(node, "name", m.name);
   m.adapter = GetS(node, "adapter", m.adapter);
   static const std::set<std::string> kKnownAdapters = {
-      "yolo26_end2end", "yolo26_traditional", "yolo26_bpu", "yoloface_bpu", "scrfd_bpu", "locateanything_bpu", "yoloe_bpu"};
+      "yolo26_end2end", "yolo26_traditional", "yolo26_bpu", "yoloface_bpu", "scrfd_bpu", "locateanything_bpu", "plate_bpu", "yoloe_bpu"};
   if (!kKnownAdapters.count(m.adapter)) {
     Fail("model.adapter 未知取值: " + m.adapter);
   }
@@ -143,6 +144,7 @@ ModelConfig ParseModel(const json& node) {
     Fail("S100P model.provider 只接受 bpu/cpu；CUDA/TensorRT 模型需重新转换，当前: " + m.provider);
   }
   ValidateAdapterProviderCombo(m.adapter, m.provider);
+  if(m.adapter=="plate_bpu"&&m.input_size!=std::vector<int>{640,640})Fail("车牌模型要求 640×640 输入；识别器内部使用 168×48");
   const auto suffix=std::filesystem::path(m.path).extension().string();
   if((m.provider=="bpu"&&suffix!=".hbm")||(m.provider=="cpu"&&suffix!=".onnx"))
     Fail("model.path 必须匹配 provider：bpu 使用 .hbm，cpu 使用 .onnx；重命名文件不能转换模型");
@@ -408,7 +410,7 @@ ChannelConfig ChannelConfigFromJson(const json& node) {
   RejectUnknownFields(node,
                        {"id", "name", "enabled", "deletion_pending", "manually_stopped", "stream", "inference_fps",
                         "max_consecutive_failures", "model", "preprocess", "postprocess",
-                        "result_buffer", "publish", "snapshot", "analytics"},
+                        "result_buffer", "publish", "snapshot", "analytics", "analysis_pipeline"},
                        {}, "channel");
   c.id = node["id"].get<std::string>();
   c.name = GetS(node, "name", c.name);
@@ -441,6 +443,39 @@ ChannelConfig ChannelConfigFromJson(const json& node) {
     c.analytics = analytics::FromJson(node.value("analytics", json()));
   } catch (const std::exception& e) {
     Fail(std::string("analytics: ") + e.what());
+  }
+  if(node.contains("analysis_pipeline")) {
+    c.analysis_pipeline_present=true;
+    const auto& graph=node.at("analysis_pipeline");
+    RejectUnknownFields(graph,{"execution","nodes","root_id","order"},{},"analysis_pipeline");
+    c.analysis_execution=GetS(graph,"execution","serial");
+    if(c.analysis_execution!="serial"&&c.analysis_execution!="parallel")Fail("analysis_pipeline.execution must be serial or parallel");
+    if(!graph.contains("nodes")||!graph.at("nodes").is_array()||graph.at("nodes").size()>3)Fail("At most three additional analysis nodes are supported");
+    if(c.model.adapter=="locateanything_bpu"&&!graph.at("nodes").empty())Fail("Generative models cannot join the bounded frame detection pipeline");
+    auto validId=[](const std::string& id){return !id.empty()&&id.size()<=48&&std::all_of(id.begin(),id.end(),[](unsigned char ch){return std::isalnum(ch)||ch=='_'||ch=='-';});};
+    c.analysis_root_id=GetS(graph,"root_id","primary");
+    if(!validId(c.analysis_root_id))Fail("Invalid model list member ID");
+    std::set<std::string> ids{c.analysis_root_id};
+    for(const auto& n:graph.at("nodes")) {
+      RejectUnknownFields(n,{"id","model","preprocess","postprocess"},{},"analysis node");
+      AnalysisNodeConfig extra;extra.id=GetS(n,"id","");
+      if(extra.id.empty()||extra.id.size()>48||!std::all_of(extra.id.begin(),extra.id.end(),[](unsigned char ch){return std::isalnum(ch)||ch=='_'||ch=='-';})||!ids.insert(extra.id).second)Fail("Analysis node IDs must be unique stable identifiers");
+      extra.model=ParseModel(n.value("model",json()));
+      if(extra.model.provider!="bpu"||extra.model.adapter=="locateanything_bpu")Fail("Analysis nodes require bounded BPU detectors");
+      extra.preprocess=ParsePreprocess(n.value("preprocess",json()));extra.postprocess=ParsePostprocess(n.value("postprocess",json()));
+      if(extra.postprocess.max_detections<1||extra.postprocess.max_detections>(extra.model.adapter=="yoloe_bpu"?300:1000))Fail("Analysis node detection limit exceeds adapter capacity");
+      c.analysis_nodes.push_back(std::move(extra));
+    }
+    if(graph.contains("order")) {
+      if(!graph.at("order").is_array())Fail("Model order must be an array");
+      c.analysis_order=graph.at("order").get<std::vector<std::string>>();
+      if(c.analysis_order.size()!=ids.size()||std::set<std::string>(c.analysis_order.begin(),c.analysis_order.end())!=ids)Fail("Model order must contain every model exactly once");
+    }
+  }
+  if(!c.analysis_nodes.empty()){
+    std::vector<int> limits{c.postprocess.max_detections};
+    for(const auto& n:c.analysis_nodes)limits.push_back(n.postprocess.max_detections);
+    try{adapters::PipelineCandidateLimits(limits);}catch(const std::exception& e){Fail(e.what());}
   }
   ValidatePublishRequiresRtmp(c);
   return c;
@@ -513,6 +548,14 @@ AppConfig LoadAppConfig(const std::string& path) {
 nlohmann::json ChannelConfigToJson(const ChannelConfig& c, bool include_id) {
   json j;
   if (include_id) j["id"] = c.id;
+  if(c.analysis_pipeline_present||!c.analysis_nodes.empty()) {
+    j["analysis_pipeline"]={{"execution",c.analysis_execution},{"nodes",json::array()}};
+    if(c.analysis_root_id!="primary")j["analysis_pipeline"]["root_id"]=c.analysis_root_id;
+    if(!c.analysis_order.empty())j["analysis_pipeline"]["order"]=c.analysis_order;
+    for(const auto& extra:c.analysis_nodes){auto view=c;view.analysis_nodes.clear();view.analysis_pipeline_present=false;view.model=extra.model;view.preprocess=extra.preprocess;view.postprocess=extra.postprocess;
+      auto encoded=ChannelConfigToJson(view,false);j["analysis_pipeline"]["nodes"].push_back({{"id",extra.id},{"model",encoded["model"]},{"preprocess",encoded["preprocess"]},{"postprocess",encoded["postprocess"]}});
+    }
+  }
   j["name"] = c.name;
   j["enabled"] = c.enabled;
   if (c.deletion_pending) j["deletion_pending"] = true;

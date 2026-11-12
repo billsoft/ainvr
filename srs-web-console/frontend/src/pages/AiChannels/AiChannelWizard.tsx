@@ -1,3 +1,5 @@
+import {ConfirmDialog} from '@/components/modals/ConfirmDialog'
+import {AnalysisPipelineEditor} from './AnalysisPipelineEditor'
 import { trackingUnavailableReason } from '@/features/trackingPolicy'
 import { AnalyticsNotificationSettings } from './AnalyticsNotificationSettings'
 import { AnalyticsReviewSettings } from './AnalyticsReviewSettings'
@@ -17,10 +19,12 @@ import type { ChannelWithStatus } from '@/types/channel'
 import { parseStreamPath, streamKey } from '@/utils/channelMatching'
 import type { AiServiceCapabilities } from '@/hooks/useAiServiceCapabilities'
 
+const draftSignature=(v:AiWizardFormValue)=>JSON.stringify({...v,h265:undefined})
+
 const STEPS = ['基本信息', '模型与推理', '目标跟踪', '输出与推流'] as const
 
 const inputCls =
-  'w-full rounded-base border border-line bg-surface px-3 py-2 text-sm outline-none transition-colors focus:border-primary'
+  'min-h-11 w-full rounded-base border border-line bg-surface px-3 py-2 text-sm outline-none transition-colors focus:border-primary'
 
 interface LockedSourceInfo {
   url: string
@@ -89,6 +93,36 @@ export function AiChannelWizard({
   const [errors, setErrors] = useState<FieldErrors>({})
   const [submitError, setSubmitError] = useState<string | null>(null)
   const initializedDraft = useRef<string | null>(null)
+  const draftBaseline=useRef('')
+  const dialogRef=useRef<HTMLDivElement>(null)
+  const closeRef=useRef<()=>void>(()=>{})
+  const [discardOpen,setDiscardOpen]=useState(false)
+  closeRef.current=requestClose
+  useEffect(()=>{
+    if(!open)return
+    const previous=document.activeElement as HTMLElement|null
+    dialogRef.current?.querySelector<HTMLElement>('button:not(:disabled)')?.focus()
+    const keyboard=(e:KeyboardEvent)=>{
+      const stack=document.querySelectorAll('[role="dialog"][aria-modal="true"]')
+      if(stack[stack.length-1]!==dialogRef.current)return
+      if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeRef.current()}
+      if(e.key==='Tab'){
+        const controls=Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]')??[])
+        const first=controls[0],last=controls[controls.length-1]
+        if(!dialogRef.current?.contains(document.activeElement)){e.preventDefault();(e.shiftKey?last:first)?.focus()}
+        else if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}
+        else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}
+      }
+    }
+    document.addEventListener('keydown',keyboard,true)
+    return ()=>{document.removeEventListener('keydown',keyboard,true);if(previous?.isConnected)previous.focus()}
+  },[open])
+  function requestClose(){
+    if(submitting)return
+    if(draftBaseline.current&&draftSignature(value)!==draftBaseline.current){setDiscardOpen(true);return}
+    onClose()
+  }
+
   useEffect(() => {
     if (open) onRefreshStreams()
     // Refresh on opening/selection, not on periodic status-object replacement.
@@ -159,6 +193,7 @@ export function AiChannelWizard({
   useEffect(() => {
     if (!open) {
       initializedDraft.current = null
+      setDiscardOpen(false)
       return
     }
     if (mode === 'edit' && !initial) return
@@ -169,6 +204,7 @@ export function AiChannelWizard({
     initializedDraft.current = draftKey
     if (open && mode === 'edit' && initial) {
       const v = fromChannel(initial)
+      draftBaseline.current=draftSignature({...v,publishEnabled:true})
       setValue({ ...v, publishEnabled: true })
       setStep(0)
       setPendingTrackingChange(null)
@@ -186,6 +222,7 @@ export function AiChannelWizard({
           base.name = `${lockedSource.displayLabel}_AI输出`
         }
       }
+      draftBaseline.current=draftSignature(base)
       setValue(base)
       setStep(0)
       setPendingTrackingChange(null)
@@ -239,6 +276,12 @@ export function AiChannelWizard({
   }
 
   function selectModel(key: keyof typeof AI_MODEL_PRESETS) {
+    const used=new Set(value.analysisPipeline?.nodes.map(n=>n.model.name)??[])
+    if(used.has(AI_MODEL_PRESETS[key].model.name)){
+      const alternative=SELECTABLE_AI_MODEL_PRESET_KEYS.find(k=>isOpenVocabularyPreset(k)===isOpenVocabularyPreset(key)&&!used.has(AI_MODEL_PRESETS[k].model.name)&&!(k==='locateanything-3b'&&used.size))
+      if(!alternative){setErrors({analysisPipeline:'此类型的模型已在列表中，请先调整其他模型'});return}
+      key=alternative
+    }
     changeDraft(applyModelPreset(value, key))
   }
 
@@ -254,6 +297,8 @@ export function AiChannelWizard({
       if (Object.keys(e).length > 0) return
     } else if (step === 1) {
       const e = validateStep2(value)
+      const modelErrors=validateStep3(value)
+      for(const key of ['confThreshold','iouThreshold','maxDetections'] as const)if(modelErrors[key])e[key]=modelErrors[key]
       setErrors(e)
       if (Object.keys(e).length > 0) return
     } else if (step === 2) {
@@ -268,6 +313,7 @@ export function AiChannelWizard({
   async function handleSubmit() {
     const e = validateStep3(value)
     if (e.analytics) setStep(2)
+    if(e.confThreshold||e.iouThreshold||e.maxDetections)setStep(1)
     setErrors(e)
     if (Object.keys(e).length > 0) return
 
@@ -300,6 +346,7 @@ export function AiChannelWizard({
 
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       role="dialog" aria-modal="true"
       aria-label={mode === 'create' ? '新建 AI 通道' : '编辑 AI 通道'}
@@ -310,11 +357,11 @@ export function AiChannelWizard({
             <h3 className="text-base font-semibold text-ink">
               {mode === 'create' ? '新建 AI 通道' : `编辑 AI 通道${initial ? ` · ${initial.name}` : ''}`}
             </h3>
-            <button type="button" onClick={onClose} className="rounded-base p-1 text-ink-faint hover:bg-surface-page hover:text-ink" aria-label="关闭">
+            <button type="button" onClick={requestClose} className="min-h-11 min-w-11 rounded-base p-1 text-ink-faint hover:bg-surface-page hover:text-ink" aria-label="关闭">
               <X size={18} />
             </button>
           </div>
-          <ol className="mt-3 flex items-center gap-2">
+          <ol className="mt-3 flex flex-wrap items-center gap-2">
             {STEPS.map((label, i) => (
               <li key={label} className="flex items-center gap-2">
                 <span className={[
@@ -435,15 +482,16 @@ export function AiChannelWizard({
 
           {step === 1 && (
             <div className="flex flex-col gap-4">
-              <div>
-                <label className="text-sm font-medium text-ink">模型</label>
+              <AnalysisPipelineEditor value={value} onChange={changeDraft} error={errors.analysisPipeline??errors.prompts??errors.confThreshold??errors.iouThreshold??errors.maxDetections} rootError={!!(errors.prompts||errors.description||errors.labelId||errors.labelName||errors.confThreshold||errors.iouThreshold||errors.maxDetections)}
+                rootConfiguration={<div className="space-y-3">              <div>
+                <label className="text-sm font-medium text-ink">识别模型</label>
                 <select aria-label="模型类型" className={`mt-1.5 ${inputCls}`}
                   value={isOpenVocabularyPreset(value.modelPreset) ? 'open' : 'closed'}
                   onChange={(e) => selectModel(e.target.value === 'open' ? 'yoloe-26x' : DEFAULT_AI_MODEL_PRESET)}>
                   <option value="closed">固定类别</option>
                   <option value="open">开放词汇</option>
                 </select>
-                <p className="mt-1.5 text-xs text-ink-faint">固定类别提供 80 类目标检测和人脸检测；开放词汇可按描述检测目标。模型须完成安装与设备验证才能运行。</p>
+                <p className="mt-1.5 text-xs text-ink-faint">固定类别提供通用目标、人脸和车牌识别；开放词汇可按描述检测目标。模型须完成安装与设备验证才能运行。</p>
                 <select
                   value={value.modelPreset}
                   onChange={(e) => selectModel(e.target.value as keyof typeof AI_MODEL_PRESETS)}
@@ -454,7 +502,7 @@ export function AiChannelWizard({
                     <option value={value.modelPreset} disabled>{AI_MODEL_PRESETS[value.modelPreset].label}（旧配置）</option>
                   )}
                   {SELECTABLE_AI_MODEL_PRESET_KEYS.filter((key) =>
-                    isOpenVocabularyPreset(key) === isOpenVocabularyPreset(value.modelPreset)).map((key) => {
+                    isOpenVocabularyPreset(key) === isOpenVocabularyPreset(value.modelPreset) && !(value.analysisPipeline?.nodes.some(n=>n.model.name===AI_MODEL_PRESETS[key].model.name)) && !(key==='locateanything-3b'&&value.analysisPipeline?.nodes.length)).map((key) => {
                     const preset = AI_MODEL_PRESETS[key]
                     return (
                       <option key={key} value={key}>
@@ -471,19 +519,45 @@ export function AiChannelWizard({
                 ? ((['yoloe-26x-1','yoloe-26x-2'].includes(value.modelPreset)) ? `${promptSlotLimit(value.modelPreset)} 槽模型最多配置 ${promptSlotLimit(value.modelPreset)} 个描述；需要更多目标请改用 8 槽或 32 槽。` : '') + '描述决定识别对象，标签用于检索与匹配。修改描述后会重新载入通道，无需重新编译模型；过长描述会提示缩短，实际效果请结合画面核对。'
                 : '描述决定识别对象，标签用于检索与匹配。此模型每帧一次识别全部标签，每多一个标签单帧耗时就会增加（实测中位：1 类约 2 秒、2 类约 4 秒、4 类约 6 秒，画面目标越多越慢），实际采集间隔会随之拉长。画面非常拥挤、标签又多时，一帧最多输出约 40 个目标，超出部分本帧不再列出。描述请用简洁的英文名词（如 person、car、helmet）；中文描述可能被模型改写成英文，这类目标会被忽略并记入运行日志。此模型不提供置信度；此试用版本的 AI 输出画面延后约 95 秒以匹配识别原帧，原始录像不受此延迟影响，每个识别到的目标仍按归档配置保存。'}</p>}
 
-              <div>
-                <label className="text-sm font-medium text-ink">推理方式</label>
-                <div className="mt-1.5 flex gap-2">
-                  <span className="rounded-base border border-primary bg-primary-50 px-3 py-1.5 text-xs font-medium text-primary">
-                    硬件加速
-                  </span>
+              {value.modelPreset !== 'locateanything-3b' && <div>
+                <label className="text-sm font-medium text-ink">置信度阈值：{value.confThreshold.toFixed(2)}</label>
+                <input
+                  type="range" min={0.01} max={0.95} step={0.01}
+                  value={value.confThreshold}
+                  onChange={(e) => set('confThreshold', Number(e.target.value))}
+                  className="mt-1.5 min-h-11 w-full"
+                />
+                {errors.confThreshold && <p className="mt-1 text-xs text-danger">{errors.confThreshold}</p>}
+              </div>}
+
+              {needsIouThreshold(value.modelPreset) && (
+                <div>
+                  <label className="text-sm font-medium text-ink">IoU 阈值：{value.iouThreshold.toFixed(2)}</label>
+                  <input
+                    type="range" min={0.1} max={0.9} step={0.01}
+                    value={value.iouThreshold}
+                    onChange={(e) => set('iouThreshold', Number(e.target.value))}
+                    className="mt-1.5 min-h-11 w-full"
+                  />
+                  {errors.iouThreshold && <p className="mt-1 text-xs text-danger">{errors.iouThreshold}</p>}
                 </div>
-                <p className="mt-1 text-xs text-ink-faint">{value.modelPreset === 'locateanything-3b'
-                  ? '使用已安装的模型，首次载入需要等待。描述长度还受模型实际容量限制。目前每台设备仅允许一路开放词汇通道运行。'
-                  : isYoloePreset(value.modelPreset)
-                  ? '使用已安装的设备模型进行硬件加速推理。文字只在载入或修改描述时计算，逐帧识别复用本次结果。首次载入需要等待，运行帧率以实测为准。'
-                  : '使用已安装并验证的设备模型进行硬件加速推理。模型未就绪时无法启动，页面不会自动编译模型。'}</p>
-              </div>
+              )}
+
+
+                <div>
+                  <label className="text-sm font-medium text-ink">最大检测数</label>
+                  <input
+                    type="number" min={1} max={isYoloePreset(value.modelPreset) ? 300 : 1000}
+                    value={value.maxDetections}
+                    onChange={(e) => set('maxDetections', Number(e.target.value))}
+                    className={`mt-1.5 ${inputCls}`}
+                  />
+                  {errors.maxDetections && <p className="mt-1 text-xs text-danger">{errors.maxDetections}</p>}
+                </div>
+</div>}/>
+
+
+              {value.modelPreset==='locateanything-3b'&&<p className="text-xs text-ink-faint">首次载入需要等待，当前每台设备仅允许一路此慢速开放词汇通道运行。</p>}
 
               <div>
                 <label className="text-sm font-medium text-ink">{value.modelPreset === 'locateanything-3b' ? '采集间隔（秒）' : '推理帧率（FPS）'}</label>
@@ -499,12 +573,7 @@ export function AiChannelWizard({
                 />
                 <p className="mt-1 text-xs text-ink-faint">
                   {value.modelPreset === 'locateanything-3b' ? '支持 1–3600 秒。较短间隔会增加设备负载；实际采集间隔受推理和归档速度限制，可能长于设定值。每个完成识别的目标仍按归档配置保存。' : <>
-                  0 = 跟随源流帧率。不同模型的单帧推理耗时差异很大（同一分辨率下，
-                  人脸检测高精度模型可能比通用检测模型慢数倍），设得比所选模型
-                  实际跑得动的速度高不会报错，但会长期贴着算力上限运行、几乎没有
-                  缓冲余量——一旦叠加瞬时负载或降频等波动，更容易出现推流不稳定
-                  （2026-09-09 生产环境实测过一次）。不确定上限时建议先按一个
-                  明显留有余量的帧率验证稳定跑一段时间，再逐步调高。
+                  0 = 跟随源流。所有模型共用此采样目标；实际帧率取决于模型耗时和设备负载。添加模型后请核对实测帧率与目标跟踪状态。
                   </>}
                 </p>
                 {errors.inferenceFps && <p className="mt-1 text-xs text-danger">{errors.inferenceFps}</p>}
@@ -584,41 +653,7 @@ export function AiChannelWizard({
 
           {step === 3 && (
             <div className="flex flex-col gap-4">
-              {value.modelPreset !== 'locateanything-3b' && <div>
-                <label className="text-sm font-medium text-ink">置信度阈值：{value.confThreshold.toFixed(2)}</label>
-                <input
-                  type="range" min={0.01} max={0.95} step={0.01}
-                  value={value.confThreshold}
-                  onChange={(e) => set('confThreshold', Number(e.target.value))}
-                  className="mt-1.5 w-full"
-                />
-                {errors.confThreshold && <p className="mt-1 text-xs text-danger">{errors.confThreshold}</p>}
-              </div>}
-
-              {needsIouThreshold(value.modelPreset) && (
-                <div>
-                  <label className="text-sm font-medium text-ink">IoU 阈值：{value.iouThreshold.toFixed(2)}</label>
-                  <input
-                    type="range" min={0.1} max={0.9} step={0.01}
-                    value={value.iouThreshold}
-                    onChange={(e) => set('iouThreshold', Number(e.target.value))}
-                    className="mt-1.5 w-full"
-                  />
-                  {errors.iouThreshold && <p className="mt-1 text-xs text-danger">{errors.iouThreshold}</p>}
-                </div>
-              )}
-
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-sm font-medium text-ink">最大检测数</label>
-                  <input
-                    type="number" min={1} max={isYoloePreset(value.modelPreset) ? 300 : 1000}
-                    value={value.maxDetections}
-                    onChange={(e) => set('maxDetections', Number(e.target.value))}
-                    className={`mt-1.5 ${inputCls}`}
-                  />
-                  {errors.maxDetections && <p className="mt-1 text-xs text-danger">{errors.maxDetections}</p>}
-                </div>
                 <div>
                   <label className="text-sm font-medium text-ink">结果缓冲帧数</label>
                   <input
@@ -712,13 +747,13 @@ export function AiChannelWizard({
         <div className="flex items-center justify-between border-t border-line px-6 py-4">
           <button
             type="button"
-            onClick={step === 0 ? onClose : () => setStep((s) => s - 1)}
-            className="rounded-base border border-line px-4 py-2 text-sm text-ink-subtle hover:bg-surface-page"
+            onClick={step === 0 ? requestClose : () => setStep((s) => s - 1)}
+            className="min-h-11 rounded-base border border-line px-4 py-2 text-sm text-ink-subtle hover:bg-surface-page"
           >
             {step === 0 ? '取消' : '← 上一步'}
           </button>
           {step < STEPS.length - 1 ? (
-            <button type="button" onClick={handleNext} className="rounded-base bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary-600" data-testid="wizard-next">
+            <button type="button" onClick={handleNext} className="min-h-11 rounded-base bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary-600" data-testid="wizard-next">
               下一步 →
             </button>
           ) : (
@@ -726,7 +761,7 @@ export function AiChannelWizard({
               type="button"
               disabled={submitting}
               onClick={handleSubmit}
-              className="rounded-base bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
+              className="min-h-11 rounded-base bg-primary px-5 py-2 text-sm font-medium text-white hover:bg-primary-600 disabled:opacity-50"
               data-testid="wizard-submit"
             >
               {submitting ? '保存中…' : mode === 'create' ? '创建通道' : '保存修改'}
@@ -735,6 +770,7 @@ export function AiChannelWizard({
         </div>
       </div>
 
+      <ConfirmDialog open={discardOpen} title="放弃未保存的修改？" content="模型、排序与参数尚未保存。继续编辑可以保留当前草稿。" confirmText="放弃修改" cancelText="继续编辑" autoClose={false} onClose={()=>setDiscardOpen(false)} onConfirm={()=>{setDiscardOpen(false);onClose()}}/>
       {pendingTrackingChange && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" aria-label="关闭目标跟踪" onKeyDown={e=>{
         if(e.key==='Escape'){e.preventDefault();e.stopPropagation();setPendingTrackingChange(null)}
         if(e.key==='Tab'){
@@ -748,7 +784,7 @@ export function AiChannelWizard({
           <button type="button" aria-label="关闭" className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center" onClick={()=>setPendingTrackingChange(null)}><X size={18}/></button>
           <h3 className="pr-8 text-lg font-semibold">关闭目标跟踪？</h3>
           <p className="mt-3 text-sm leading-6 text-ink-subtle">此次变更会关闭目标跟踪。已有计数器和触发器关联及历史保留；计数、跨边界侵入、穿过和持续停留暂停。持续时间为 0 的出现（含区内检出）与接近带检出仍可用。确认后只修改当前草稿，保存后生效。</p>
-          <div className="mt-5 flex justify-end gap-2"><button type="button" className="btn-secondary" autoFocus onClick={()=>setPendingTrackingChange(null)}>取消变更</button><button type="button" className="btn-primary" onClick={()=>{setValue(pendingTrackingChange);setPendingTrackingChange(null)}}>关闭跟踪并继续</button></div>
+          <div className="mt-5 flex justify-end gap-2"><button type="button" className="btn-secondary min-h-11" autoFocus onClick={()=>setPendingTrackingChange(null)}>取消变更</button><button type="button" className="btn-primary min-h-11" onClick={()=>{setValue(pendingTrackingChange);setPendingTrackingChange(null)}}>关闭跟踪并继续</button></div>
         </div>
       </div>}
     </div>

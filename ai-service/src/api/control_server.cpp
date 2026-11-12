@@ -1,3 +1,4 @@
+#include "../adapters/pipeline_limits.hpp"
 #include "../analytics/tracking_cadence.hpp"
 #include "platform/byte_budget.hpp"
 #include "../analytics/event_store.hpp"
@@ -20,6 +21,9 @@
 #include <openssl/crypto.h>
 
 #include "../adapters/factory.hpp"
+#ifdef AINVR_S100P
+#include "../adapters/pipeline_adapter.hpp"
+#endif
 #include "../adapters/prompted_socket.hpp"
 #include "../adapters/locateanything_result_decode.hpp"
 #include "../platform/locateanything_executor_client.hpp"
@@ -74,7 +78,7 @@ namespace {
 const std::set<std::string> kHotTopLevelFields = {"name", "inference_fps", "postprocess",
                                                    "result_buffer"};
 const std::set<std::string> kStructuralTopLevelFields = {
-    "enabled", "stream", "model", "preprocess", "max_consecutive_failures", "analytics"};
+    "enabled", "stream", "model", "preprocess", "max_consecutive_failures", "analytics", "analysis_pipeline"};
 // Service-owned persisted state; clients may only change it through actions.
 void RejectInternalFields(const nlohmann::json& patch) {
   if (patch.contains("snapshot") && patch["snapshot"].is_object() &&
@@ -128,6 +132,17 @@ bool KeysAreSubsetOf(const json& obj, const std::set<std::string>& allowed) {
 // Relative model paths resolve against the model root given to the service,
 // as the channel workers do (the process cwd is the overlay directory).
 std::string& LocateAnythingModelRoot() { static std::string root; return root; }
+
+void ValidatePipelineBeforeSave(const json& raw) {
+#ifdef AINVR_S100P
+ auto cfg=config::ChannelConfigFromJson(raw);
+ if(!cfg.UsesAnalysisPipeline()&&cfg.model.adapter!="plate_bpu")return;
+ try {
+  if(cfg.UsesAnalysisPipeline()){adapters::PipelineAdapter adapter(cfg,LocateAnythingModelRoot());adapter.ValidateStartContract();}
+  else {auto model=cfg.model;auto p=std::filesystem::path(model.path);if(p.is_relative())model.path=(std::filesystem::path(LocateAnythingModelRoot())/p).string();adapters::CreateBpuRuntimeAdapter(model)->ValidateStartContract();}
+ }catch(const std::exception& e){throw ApiError(422,"invalid_model_contract",std::string("模型契约校验失败，配置未保存: ")+e.what());}
+#endif
+}
 
 // Multi-category LocateAnything sends every label in one request;its total
 // length must fit the compiled prefill profile, checked before saving.
@@ -787,6 +802,7 @@ nlohmann::json ChannelManager::CreateChannel(const nlohmann::json& patch) {
   }
   RejectUnportedAdapter(patch);
   ValidatePromptBeforeSave(patch);
+  ValidatePipelineBeforeSave(patch);
   RejectUnavailableAnalytics(patch.value("analytics",json()),json());
 
   config::AppConfig new_app_cfg;
@@ -922,6 +938,9 @@ nlohmann::json ChannelManager::UpdateChannelConfig(const std::string& channel_id
   std::vector<std::string> hot_fields;
   auto classified = ClassifyChannelPatch(patch);
   const auto old_config = worker->Config();
+  // Composite adapters own every node budget; rebuild all nodes on a parameter
+  // change so saved limits and the tracking candidate reservation stay aligned.
+  if(old_config->UsesAnalysisPipeline()&&classified.count("postprocess"))classified["postprocess"]="restart";
   if (classified.count("model") && old_config->model.adapter != "yoloe_pt" &&
       old_config->model.adapter != "locateanything_trt") classified["model"] = "restart";
   if (patch.contains("model") && patch["model"].is_object() &&
@@ -967,6 +986,16 @@ nlohmann::json ChannelManager::UpdateChannelConfig(const std::string& channel_id
     // 只在这次 patch 动了 model 时拦截:旧 overlay 里已有的遗留通道仍然
     // 可以改名/停用/删除,不因为别的字段的修改被卡住。
     if (patch_keys.count("model")) RejectUnportedAdapter(channels[idx]);
+    if(patch_keys.count("model")||patch_keys.count("analysis_pipeline")||patch_keys.count("stream")) {
+      ValidatePipelineBeforeSave(channels[idx]);
+      const auto candidate=config::ChannelConfigFromJson(channels[idx]);
+      const bool has_plate=candidate.model.adapter=="plate_bpu"||std::any_of(candidate.analysis_nodes.begin(),candidate.analysis_nodes.end(),[](const auto& n){return n.model.adapter=="plate_bpu";});
+      if(has_plate&&candidate.stream.url==old_config->stream.url) {
+        const auto latest=worker->GetResultBuffer().Latest();
+        if(latest&&!adapters::PlateSourceSupported(latest->frame_width,latest->frame_height))
+          throw ApiError(422,"unsupported_source_geometry","车牌识别输入尺寸不支持：需偶数宽高且不超过8388608像素，配置未保存");
+      }
+    }
     try {
       // 同理只在动了源/输出时查冲突:存量冲突不该卡住改帧率这类无关修改。
       if (patch_keys.count("stream") || patch_keys.count("publish")) {
@@ -1139,7 +1168,21 @@ int IntParam(const httplib::Request& req, const char* name, int default_value) {
 }  // namespace
 
 void RegisterRoutes(httplib::Server& server, std::shared_ptr<ChannelManager> manager,
-                    std::function<json()> runtime_health,SearchReencodeImage search_reencode) {
+                    std::function<json()> runtime_health,SearchReencodeImage search_reencode,SearchReencodeImage vehicle_runtime) {
+  server.Get("/api/v1/vehicles/status",Wrap(manager,[vehicle_runtime](const auto&,auto& res){
+    WriteJson(res,200,vehicle_runtime?vehicle_runtime(json{{"action","status"}},""):json{{"implemented",false},{"ready",false}});
+  }));
+  server.Post("/api/v1/vehicles/configure",Wrap(manager,[vehicle_runtime](const auto& req,auto& res){
+    if(!vehicle_runtime)throw ApiError(503,"vehicle_unavailable","车牌适配器不可用");
+    if(req.body.size()>8192)throw ApiError(413,"vehicle_config_large","车辆配置过大");
+    auto input=json::parse(req.body);input["action"]="configure";WriteJson(res,200,vehicle_runtime(input,""));
+  }));
+  server.Post("/api/v1/vehicles/recognize",Wrap(manager,[vehicle_runtime](const auto& req,auto& res){
+    if(!vehicle_runtime)throw ApiError(503,"vehicle_unavailable","车牌适配器不可用");
+    if(req.body.size()>8*1024*1024||req.get_header_value("Content-Type")!="image/jpeg")throw ApiError(422,"invalid_vehicle_image","需要有界原始JPEG图像");
+    const auto meta=req.get_header_value("x-ainvr-vehicle");if(meta.size()>4096)throw ApiError(422,"invalid_vehicle_request","车辆请求无效");
+    auto input=json::parse(meta);input["action"]="recognize";WriteJson(res,200,vehicle_runtime(input,req.body));
+  }));
   const auto reencode_gate=std::make_shared<std::mutex>();
   server.Get("/api/v1/search/reencode/capabilities",Wrap(manager,[search_reencode](const auto&,auto& res){
     WriteJson(res,200,json{{"schema_version","search-reencode-capabilities-v1"},{"implemented",bool(search_reencode)},

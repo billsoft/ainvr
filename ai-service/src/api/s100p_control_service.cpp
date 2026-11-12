@@ -19,6 +19,7 @@
 #include "analytics/tracking_cadence.hpp"
 #include "analytics/observation_journal.hpp"
 #include "search_reencode_handler.hpp"
+#include "adapters/plate_runtime.hpp"
 #include "adapters/detection_decode.hpp"
 #include <httplib.h>
 #include <atomic>
@@ -83,6 +84,7 @@ int main(int argc, char** argv) {
     auto search_hardware = ai_service::output::MakeNativeSearchHardwareOwner();
     auto search_port = ai_service::output::MakeSearchExecutionPort(search_hardware);
     auto search_owner = std::make_shared<ai_service::output::SearchSamplingOwner>(search_reader, search_port);
+    auto vehicle_runtime=std::make_shared<ainvr::plate::Runtime>(argv[3],[&]{return !stopping&&license.IsLicensed();});
     std::atomic<uint64_t> search_control_failures{0};
     auto dependency_health=std::make_shared<ainvr::ModelDependencyHealth>();
     auto reconcile_models = [model_root=std::string(argv[3]),dependency_health](const cfg::AppConfig& snapshot) {
@@ -194,11 +196,13 @@ int main(int argc, char** argv) {
         {"capabilities",{{"codecs",{"h264","h265"}},
           {"publish_formats",{"codec12","enhanced"}},
           {"model_providers",{"bpu"}},
-          {"model_adapters",{"yolo26_bpu","yoloface_bpu","scrfd_bpu","yoloe_bpu"}},
+          {"model_adapters",{"yolo26_bpu","yoloface_bpu","scrfd_bpu","yoloe_bpu","plate_bpu"}},
+          {"analysis_pipeline",{{"maximum_models",4},{"maximum_parallel",2},{"frame_atomic",true}}},
           {"required_model_provider","bpu"},{"model_manifest_required",true},
           {"snapshot_archive",true},{"sei_publish",true}}}};
     },ai_service::api::MakeSearchReencodeHandler(search_hardware,
-      [&]{return license.IsLicensed();},[]{return !stopping;}));
+      [&]{return license.IsLicensed();},[]{return !stopping;}),
+      [vehicle_runtime](const nlohmann::json& input,const std::string& jpeg){return vehicle_runtime->Call(input,jpeg);});
     if(config_client)config_client->Start();
     std::signal(SIGTERM, Signal); std::signal(SIGINT, Signal);
     std::atomic<bool> configuration_recovery_restart{false};

@@ -71,7 +71,7 @@ inline size_t PrepareRawSnapshots(RawFrameSpool& raw,ArchiveSpool& prepared,
    if(deletions&&deletions->Matches(m.at("archive_epoch").get<uint64_t>(),ids[i],result.timestamp))continue;
    if(existing.count(ids[i]))continue;
    auto image=renderer.RenderOriginal(task.frame,result.detections[i].bbox,config,
-    result.task_type=="face_detection",m.at("bt709").get<bool>(),m.at("full_range").get<bool>());
+    result.detections[i].model_extra.value("task_type",result.task_type)=="face_detection",m.at("bt709").get<bool>(),m.at("full_range").get<bool>());
    if(!image)continue;
    ArchiveDocumentInput input;input.image_id=ids[i];input.channel_name=m.at("channel_name").get<std::string>();
    input.archive_epoch=m.at("archive_epoch").get<uint64_t>();input.frame=result;input.detection_index=i;

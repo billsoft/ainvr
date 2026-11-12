@@ -28,7 +28,11 @@ nlohmann::json DeepMerge(const nlohmann::json& base, const nlohmann::json& overl
   json result = base.is_object() ? base : json::object();
   for (auto it = overlay.begin(); it != overlay.end(); ++it) {
     const std::string& key = it.key();
-    if (result.contains(key) && result[key].is_object() && it.value().is_object()) {
+    // The graph is a complete ordered model list, including optional identity
+    // and order fields. Retaining omitted fields resurrects deleted members.
+    if (key == "analysis_pipeline") {
+      result[key] = it.value();
+    } else if (result.contains(key) && result[key].is_object() && it.value().is_object()) {
       result[key] = DeepMerge(result[key], it.value());
     } else {
       result[key] = it.value();

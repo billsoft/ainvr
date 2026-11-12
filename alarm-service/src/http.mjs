@@ -41,7 +41,13 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
     behaviors:['appearance','region_approach','region_enter','region_traverse'],
     review:{available:!!repository.reviewContext,mode:'asynchronous_image_and_trajectory'},notification:{available:false},
     schedules:['always','weekly'],limits:{bulk_items:200}}));
-  app.post('/v1/flow/query',async req=>repository.flow.query(req.body));
+  app.post('/v1/vehicles/configure',async req=>repository.vehicles.configure(req.body));
+  app.get('/v1/vehicles/status',async()=>repository.vehicles.status());
+  app.get('/v1/vehicles/:id',async req=>repository.vehicles.details(identity(req.params.id,'event_id')));
+  app.get('/v1/vehicles/:id/images/:key',async(req,reply)=>reply.type('image/jpeg').header('Cache-Control','private, no-store').send(await repository.vehicles.image(identity(req.params.id,'event_id'),identity(req.params.key,'image_key'))));
+  app.post('/v1/vehicles/:id/retry',async req=>repository.vehicles.retry(identity(req.params.id,'event_id'),actor(req)));
+  app.put('/v1/vehicles/:id/correction',async req=>repository.vehicles.correct(identity(req.params.id,'event_id'),req.body,actor(req)));
+  app.post('/v1/flow/query' ,async req=>repository.flow.query(req.body));
   app.post('/v1/flow/dwell',async req=>repository.dwell.query(req.body));
   app.post('/v1/flow/heat',async req=>repository.heat.query(req.body));
   app.post('/v1/flow/clear',async req=>repository.flow.clear(req.body,actor(req),identity(req.headers['idempotency-key'],'Idempotency-Key')));

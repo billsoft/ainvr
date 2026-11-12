@@ -83,7 +83,7 @@ export default function TriggerDefinitionsPage(){
     <p className="mt-1 text-sm text-ink-subtle">定义告警条件，再到实时监看布防；进出流量由计数器统计。</p></div>
    <button type="button" className="btn-primary" disabled={loading||!!error||!!operation||!!archive}
     onClick={()=>setEditor({id:`trigger-${newAlarmOperationId()}`,save:createDefinitionSaveSession(0,saveDefinition)})}><Plus size={16} aria-hidden="true"/>新建触发器</button>
-  </header>
+  </header><details className="text-xs text-ink-subtle"><summary className="cursor-pointer">车辆规则与车牌功能</summary><p className="py-2">车辆出现、接近、侵入、穿过与数量条件沿用现有触发器，选择车辆标签后在原布防中绑定。车牌关注名单在车辆通行后匹配，需先启用通道车牌识别并绑定车辆计数器；不替代原空间规则。<Link className="ml-2 text-primary" to="/config-center?category=vehicles">管理关注名单</Link></p></details>
   <div className="flex flex-wrap items-center gap-2" role="group" aria-label="筛选触发器">
    {[{id:'' as const,name:'全部'},...triggerBehaviors].map(b=><button type="button" key={b.id} aria-pressed={filter===b.id}
     onClick={()=>setFilter(b.id)} className={choice}>{b.name}</button>)}

@@ -1,3 +1,4 @@
+import {matchesLabelVersion} from './domain.mjs';
 // Risk episodes are separate from tracker identities and visual review proofs.
 // Only observed clearance rearms a condition; missing input is never clearance.
 import {digest} from './domain.mjs';
@@ -35,7 +36,7 @@ export function conditionIncidents(cp,frame,rules,periods,events,{discontinuity=
   const held=cp.groups?.[JSON.stringify([r.id,r.version])]?.held;
   const satisfied=r.group?(held??(members.length>=r.group.minimum&&(r.group.labels!=='all'||r.label_ids.every(l=>labels.has(l))))):members.length>0;
   // Coasting/lost targets and unsupported group detection cannot prove departure.
-  const unknown=discontinuity||boundaryUncertain||(r.group&&!tracked)||r.geometry_revision!==frame.source.geometry_revision||r.label_map_version!==frame.model.label_map_version||(r.input_stream_id!==undefined&&r.input_stream_id!==frame.input_stream_id)||frame.tracks.some(t=>r.label_ids.includes(t.label_id)&&(t.observation!=='detected'||t.event_eligible===false||t.state!=='confirmed'));
+  const unknown=discontinuity||boundaryUncertain||(r.group&&!tracked)||r.geometry_revision!==frame.source.geometry_revision||!matchesLabelVersion(frame,r)||(r.input_stream_id!==undefined&&r.input_stream_id!==frame.input_stream_id)||frame.tracks.some(t=>r.label_ids.includes(t.label_id)&&(t.observation!=='detected'||t.event_eligible===false||t.state!=='confirmed'));
   if(satisfied||unknown)delete s.clear_since;
   else if(s.episode_id){
    s.clear_since??=now;

@@ -4,7 +4,7 @@ import { ruleError } from './analyticsRules'
 import { ANALYTICS_PHASE } from './analyticsPhase'
 import {
   AI_MODEL_PRESETS, DEFAULT_AI_MODEL_PRESET, isOpenVocabularyPreset, isYoloePreset, promptSlotLimit, type AiPromptLabel, type AiModelPresetKey, type AiModelAdapter, type AiChannel,
-  type AiChannelCreatePatch, type AiChannelUpdatePatch, type AiAnalyticsConfig,
+  type AiAnalysisNode, type AiAnalysisPipeline, type AiChannelCreatePatch, type AiChannelUpdatePatch, type AiAnalyticsConfig,
 } from '@/types/aiChannel'
 import { streamKey } from '@/utils/channelMatching'
 import { isH265 } from '@/utils/codec'
@@ -15,6 +15,8 @@ import { isH265 } from '@/utils/codec'
 
 /** AI 通道向导表单统一值结构（创建与编辑共用） */
 export interface AiWizardFormValue {
+  analysisPipeline?: AiAnalysisPipeline
+  modelProfile?: Pick<AiAnalysisNode, 'model' | 'preprocess'>
   analytics?: AiAnalyticsConfig
   /** 创建后只读（ai-service 侧 `建后不可改`） */
   id: string
@@ -70,7 +72,7 @@ export const DEFAULT_WIZARD_VALUE: AiWizardFormValue = {
 
 export type FieldErrors = Partial<Record<
   'id' | 'name' | 'streamUrl' | 'inferenceFps' | 'prompts' | 'description' | 'labelId' | 'labelName'
-  | 'analytics' | 'coastSeconds' | 'confThreshold' | 'iouThreshold' | 'maxDetections' | 'resultBufferMaxFrames',
+  | 'analysisPipeline' | 'analytics' | 'coastSeconds' | 'confThreshold' | 'iouThreshold' | 'maxDetections' | 'resultBufferMaxFrames',
   string
 >>
 
@@ -158,6 +160,24 @@ export function validateStep1(v: AiWizardFormValue, isCreate: boolean): FieldErr
  * React 状态里存进非法值，必须显式校验。 */
 export function validateStep2(v: AiWizardFormValue): FieldErrors {
   const errors: FieldErrors = {}
+  const nodes=v.analysisPipeline?.nodes??[]
+  if(nodes.length>3)errors.analysisPipeline='一个通道最多配置 4 个识别模型'
+  if(nodes.length&&v.modelPreset==='locateanything-3b')errors.analysisPipeline='慢速开放词汇模型需单独使用，不能与帧级模型合并'
+  if(nodes.length&&v.maxDetections+nodes.reduce((sum,n)=>sum+n.postprocess.max_detections,0)>1000)errors.analysisPipeline='模型最大检测数合计不能超过1000，请在各模型配置中降低最大检测数'
+  const ids=[v.analysisPipeline?.root_id??'primary',...nodes.map(n=>n.id)]
+  const order=v.analysisPipeline?.order
+  if(new Set(ids).size!==ids.length||order&&(order.length!==ids.length||new Set(order).size!==ids.length||order.some(id=>!ids.includes(id))))errors.analysisPipeline='模型排序与列表不一致，请重新打开配置'
+  for(const n of nodes){
+    if(n.model.adapter==='locateanything_bpu')errors.analysisPipeline='慢速开放词汇模型需单独使用'
+    if(!Number.isInteger(n.postprocess.max_detections)||n.postprocess.max_detections<1||n.postprocess.max_detections>(n.model.adapter==='yoloe_bpu'?300:1000))errors.analysisPipeline='模型最大检测数超出支持范围'
+    if(n.model.adapter==='yoloe_bpu'){
+      const key=Object.keys(AI_MODEL_PRESETS).find(k=>AI_MODEL_PRESETS[k as AiModelPresetKey].model.name===n.model.name) as AiModelPresetKey|undefined
+      if(!Number.isFinite(n.postprocess.iou_threshold)||n.postprocess.iou_threshold<0.1||n.postprocess.iou_threshold>0.9)errors.analysisPipeline=n.model.name+'：IoU 阈值须为 0.1–0.9'
+      const problem=validatePromptRows(n.model.prompts??[],key?promptSlotLimit(key):1)
+      if(problem)errors.analysisPipeline=n.model.name+'：'+problem
+    }
+    if(!Number.isFinite(n.postprocess.conf_threshold)||n.postprocess.conf_threshold<0.01||n.postprocess.conf_threshold>0.95)errors.analysisPipeline='模型置信度须为 0.01–0.95'
+  }
   if (!Number.isFinite(v.inferenceFps) || v.inferenceFps < 0 || v.inferenceFps > 30) {
     errors.inferenceFps = '推理帧率必须在 0-30 之间（0 表示跟随源流帧率）'
   } else if (v.modelPreset === 'locateanything-3b') {
@@ -254,7 +274,7 @@ export function validatePublishRequiresRtmp(v: AiWizardFormValue): string | null
 /** 模型卡片切换时要写入的整组原子字段（不能只切 model.*，否则推理会用
  * 错误的归一化参数产出垃圾结果且不报错，见架构方案 D6） */
 export function applyModelPreset(v: AiWizardFormValue, preset: AiModelPresetKey): AiWizardFormValue {
-  return { ...v, modelPreset: preset, modelPresetTouched: true,
+  return { ...v, modelProfile: undefined, modelPreset: preset, modelPresetTouched: true,
     ...(isYoloePreset(preset) ? { inferenceFps: 5,
       description: v.description ?? '', labelId: v.labelId ?? '', labelName: v.labelName ?? '' } : {}),
     ...(preset === 'locateanything-3b' ? { inferenceFps: 1 / 120,
@@ -262,7 +282,7 @@ export function applyModelPreset(v: AiWizardFormValue, preset: AiModelPresetKey)
       : !isOpenVocabularyPreset(preset) && isOpenVocabularyPreset(v.modelPreset) ? { inferenceFps: 5 } : {}) }
 }
 
-function buildModelAndPreprocess(preset: AiModelPresetKey, v: AiWizardFormValue) {
+export function buildModelAndPreprocess(preset: AiModelPresetKey, v: AiWizardFormValue) {
   const p = AI_MODEL_PRESETS[preset]
   return {
     // AI_MODEL_PRESETS 用 `as const` 声明，class_names/input_size/mean/std
@@ -289,10 +309,37 @@ function buildModelAndPreprocess(preset: AiModelPresetKey, v: AiWizardFormValue)
   }
 }
 
+/** All models are peers. Legacy top-level fields are only wire compatibility. */
+export function wizardModelProfile(v: AiWizardFormValue) {
+  if (!v.modelProfile) return buildModelAndPreprocess(v.modelPreset, v)
+  const profile=structuredClone(v.modelProfile)
+  if (usesPromptSlots(v.modelPreset)) Object.assign(profile.model,promptPatch(v))
+  return profile
+}
+export function wizardModelList(v: AiWizardFormValue): AiAnalysisNode[] {
+  const root={id:v.analysisPipeline?.root_id??'primary',...wizardModelProfile(v),postprocess:{conf_threshold:v.confThreshold,iou_threshold:v.iouThreshold,max_detections:v.maxDetections}}
+  const all=[root,...(v.analysisPipeline?.nodes??[])]
+  const order=v.analysisPipeline?.order??all.map(n=>n.id)
+  return [...all].sort((a,b)=>order.indexOf(a.id)-order.indexOf(b.id))
+}
+export function updateWizardModelList(v: AiWizardFormValue,nodes:AiAnalysisNode[]):AiWizardFormValue {
+  if(!nodes.length)throw new Error('请保留至少一个识别模型')
+  const previousId=v.analysisPipeline?.root_id??'primary'
+  const root=nodes.find(n=>n.id===previousId)??nodes[0]!
+  let next={...v,confThreshold:root.postprocess.conf_threshold,iouThreshold:root.postprocess.iou_threshold,maxDetections:root.postprocess.max_detections}
+  if(root.id!==previousId){
+    const preset=Object.keys(AI_MODEL_PRESETS).find(k=>AI_MODEL_PRESETS[k as AiModelPresetKey].model.name===root.model.name) as AiModelPresetKey|undefined
+    if(!preset)throw new Error('此历史模型需要先明确选择对应模型')
+    next={...v,modelPreset:preset,modelPresetTouched:true,modelProfile:{model:structuredClone(root.model),preprocess:structuredClone(root.preprocess)},prompts:root.model.prompts??undefined,description:root.model.description,labelId:root.model.label_id,labelName:root.model.label_name,confThreshold:root.postprocess.conf_threshold,iouThreshold:root.postprocess.iou_threshold,maxDetections:root.postprocess.max_detections}
+  }
+  return {...next,analysisPipeline:{execution:v.analysisPipeline?.execution??'serial',...(root.id!=='primary'?{root_id:root.id}:{}),order:nodes.map(n=>n.id),nodes:nodes.filter(n=>n.id!==root.id)}}
+}
+
 /** 组装创建 patch */
 export function toCreatePatch(v: AiWizardFormValue): AiChannelCreatePatch {
-  const { model, preprocess } = buildModelAndPreprocess(v.modelPreset, v)
+  const { model, preprocess } = wizardModelProfile(v)
   return {
+    ...(v.analysisPipeline ? { analysis_pipeline: structuredClone(v.analysisPipeline) } : {}),
     id: v.id,
     name: v.name.trim() || v.id,
     stream: { url: v.streamUrl.trim(), protocol: v.streamProtocol },
@@ -338,13 +385,14 @@ export function toUpdatePatch(
 
   // 先组装"目标状态"的完整 patch，再跟 original 做 diff。
   const target: AiChannelUpdatePatch = {
+    ...(v.analysisPipeline ? { analysis_pipeline: structuredClone(v.analysisPipeline) } : {}),
     name: v.name.trim() || v.id,
     stream: { url: v.streamUrl.trim(), protocol: v.streamProtocol },
     inference_fps: v.inferenceFps,
     ...(v.analytics ? { analytics: structuredClone(v.analytics) } : {}),
     ...(includeModelFields
       ? (() => {
-          const { model, preprocess } = buildModelAndPreprocess(v.modelPreset, v)
+          const { model, preprocess } = wizardModelProfile(v)
           return { model, preprocess }
         })()
       : {}),
@@ -370,6 +418,7 @@ export function toUpdatePatch(
 
   const patch: Record<string, unknown> = {}
   const oc = original.config
+  if (target.analysis_pipeline && JSON.stringify(target.analysis_pipeline) !== JSON.stringify(oc.analysis_pipeline)) patch.analysis_pipeline = target.analysis_pipeline
 
   // 顶层标量字段
   if (target.name !== oc.name) patch.name = target.name
@@ -491,6 +540,7 @@ export function fromChannel(ch: AiChannel): AiWizardFormValue {
   }
   if (!preset) preset = DEFAULT_AI_MODEL_PRESET // 兜底
   return {
+    ...(ch.config.analysis_pipeline ? { analysisPipeline: structuredClone(ch.config.analysis_pipeline) } : {}),
     id: ch.id,
     name: ch.name,
     streamUrl: ch.config.stream.url,

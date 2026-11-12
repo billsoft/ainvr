@@ -123,8 +123,11 @@ export class FlowStatistics {
     for(const s of segments??[]){const {to,...base}=s;await this.coverage.updateOne({segment_id:s.segment_id},{$setOnInsert:base,$max:{to}},{upsert:true});}
   }
   async query(request){
-    if(!object(request)||Object.keys(request).some(k=>!['series','bucket','timezone','detail','cursor','limit','totals_only'].includes(k))||!Array.isArray(request.series)||!request.series.length||request.series.length>100)fail('invalid_query','Bounded counting series required');
+    if(!object(request)||Object.keys(request).some(k=>!['series','bucket','timezone','detail','cursor','limit','totals_only','plate','vehicle_state'].includes(k))||!Array.isArray(request.series)||!request.series.length||request.series.length>100)fail('invalid_query','Bounded counting series required');
     if(request.totals_only!==undefined&&typeof request.totals_only!=='boolean')fail('invalid_query','Invalid totals mode');
+    if(request.plate!==undefined&&(typeof request.plate!=='string'||! /^[\p{Script=Han}A-Z0-9]{1,8}$/u.test(request.plate)))fail('invalid_plate','Use 1..8 plate characters');
+    if(request.vehicle_state!==undefined&&!['consistent','single_frame','ambiguous','unreadable','plate_not_detected','pending','waiting_runtime','recognition_failed','evidence_failed','capacity_exceeded','human_corrected'].includes(request.vehicle_state))fail('invalid_vehicle_state','Invalid recognition state');
+    if((request.plate!==undefined||request.vehicle_state!==undefined)&&request.detail!==true)fail('invalid_query','Vehicle filters apply only to passage records');
     const series=request.series.map(parseSeries);
     if(new Set(series.map(s=>s.key)).size!==series.length)fail('invalid_query','Series keys must be unique');
     // One bounded ledger read covers totals, trends and records, including late arrivals.
@@ -135,6 +138,8 @@ export class FlowStatistics {
       // The history pieces of one zone and direction are read as one list.
       const query=series.length===1?visibleQuery(series[0]):{$or:series.map(visibleQuery)},limit=request.limit??50;
       if(!Number.isInteger(limit)||limit<1||limit>100)fail('invalid_limit','Choose 1..100');
+      if(request.plate)query['vehicle.text']={$regex:request.plate};
+      if(request.vehicle_state)query['vehicle.state']=request.vehicle_state;
       const scope=digest(query);let position;
       if(request.cursor!==undefined){
         try{position=JSON.parse(Buffer.from(String(request.cursor),'base64url').toString());}catch{fail('invalid_cursor','Invalid cursor');}

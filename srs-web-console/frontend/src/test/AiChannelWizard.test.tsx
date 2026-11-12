@@ -422,12 +422,10 @@ describe('AiChannelWizard', () => {
     expect(screen.queryByTestId('wizard-model-select')).toBeInTheDocument() // 仍停在第②步没跳走
   })
 
-  it('第④步：yolo26m 预设不展示 IoU 阈值（端到端 NMS 内嵌）', async () => {
+  it('模型参数：yolo26m 预设不展示 IoU 阈值（端到端 NMS 内嵌）', async () => {
     const user = userEvent.setup()
     render(<AiChannelWizard {...baseProps()} />)
     await selectSourceAndNext(user)
-    await user.click(await screen.findByRole('button', { name: '下一步 →' }))
-    await user.click(screen.getByRole('button', { name: '下一步 →' }))
 
     expect(screen.getByText(/置信度阈值/)).toBeInTheDocument()
     expect(screen.queryByText(/IoU 阈值/)).not.toBeInTheDocument()
@@ -440,7 +438,7 @@ describe('AiChannelWizard', () => {
     const types = screen.getByRole('combobox', { name: '模型类型' }) as HTMLSelectElement
     expect(Array.from(types.options, option => option.value)).toEqual(['closed', 'open'])
     const models = screen.getByTestId('wizard-model-select') as HTMLSelectElement
-    expect(Array.from(models.options, option => option.value)).toEqual(['yolo26x', 'yolo26x-face'])
+    expect(Array.from(models.options, option => option.value)).toEqual(['yolo26x', 'yolo26x-face', 'plate-recognition'])
     expect(screen.queryByLabelText('识别描述')).not.toBeInTheDocument()
     await user.selectOptions(types, 'open')
     expect(Array.from(models.options).filter(option => !option.disabled).map(option => option.value)).toEqual(['yoloe-26x-1', 'yoloe-26x-2', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b'])
@@ -711,4 +709,19 @@ describe('单双槽向导容量',()=>{
   expect(screen.getByLabelText('识别描述 2')).toBeInTheDocument();
   expect(screen.getByRole('button',{name:'＋ 添加标签'})).toBeDisabled();
  });
+})
+
+it('switching model category never selects a preset already present in another row',async()=>{
+ const user=userEvent.setup();render(<AiChannelWizard {...baseProps()}/>);await selectSourceAndNext(user)
+ await user.selectOptions(screen.getByLabelText('待添加模型'),'yoloe-26x');await user.click(screen.getByRole('button',{name:'添加模型'}))
+ await user.click(screen.getByRole('button',{name:/配置 通用目标检测/}));await user.selectOptions(screen.getByRole('combobox',{name:'模型类型'}),'open')
+ expect(screen.getByTestId('wizard-model-select')).toHaveValue('yoloe-26x-1')
+})
+
+it('Escape and close share discard protection; continuing keeps model drafts and never saves',async()=>{
+ const user=userEvent.setup();const props=baseProps();render(<AiChannelWizard {...props}/>);await selectSourceAndNext(user)
+ await user.selectOptions(screen.getByLabelText('待添加模型'),'plate-recognition');await user.click(screen.getByRole('button',{name:'添加模型'}))
+ await user.keyboard('{Escape}');expect(screen.getByRole('dialog',{name:'放弃未保存的修改？'})).toBeInTheDocument();expect(props.onClose).not.toHaveBeenCalled()
+ await user.click(screen.getByRole('button',{name:'继续编辑'}));expect(screen.getByRole('button',{name:'移除 车牌检测与识别'})).toBeInTheDocument()
+ await user.click(screen.getByRole('button',{name:'关闭'}));await user.click(screen.getByRole('button',{name:'放弃修改'}));expect(props.onClose).toHaveBeenCalledTimes(1);expect(props.onSubmit).not.toHaveBeenCalled()
 })

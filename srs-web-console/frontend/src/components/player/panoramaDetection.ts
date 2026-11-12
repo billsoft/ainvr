@@ -69,7 +69,7 @@ export function drawPanoramaDetections(ctx: CanvasRenderingContext2D, detections
     ctx.stroke()
     const label = visiblePoint(x + w / 2, top)
     if (label) {
-      const base = d.confidence === null ? d.class_name : `${d.class_name} ${(d.confidence * 100).toFixed(0)}%`
+      const base = d.confidence === null ? (typeof d.model_extra?.attributes?.plate_text?.value === 'string' ? d.model_extra.attributes.plate_text.value : d.class_name) : `${(typeof d.model_extra?.attributes?.plate_text?.value === 'string' ? d.model_extra.attributes.plate_text.value : d.class_name)} ${(d.confidence * 100).toFixed(0)}%`
       const text = base + (d.lowConfidence ? ' 低置信' : d.predicted ? ' 推算' : '')
       const tw = ctx.measureText(text).width + 6
       const lx = Math.max(0, Math.min(width - tw, label[0] - tw / 2)), ly = Math.max(15, label[1] - 4)

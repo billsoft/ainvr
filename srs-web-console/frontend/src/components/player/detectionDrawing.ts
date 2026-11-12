@@ -23,9 +23,9 @@ export function drawDetections(
     ctx.setLineDash?.(d.predicted || d.lowConfidence ? [6, 4] : [])
     ctx.strokeRect(box.x, box.y, box.w, box.h)
     const identity = d.track_id ? ` #${d.track_id.split(':').at(-1)}` : ''
-    const label = d.predicted ? `${d.class_name}${identity} 推算`
-      : d.lowConfidence ? `${d.class_name}${identity} 低置信`
-      : (d.confidence === null ? d.class_name : `${d.class_name} ${(d.confidence * 100).toFixed(0)}%`) + identity
+    const label = d.predicted ? `${(typeof d.model_extra?.attributes?.plate_text?.value === 'string' ? d.model_extra.attributes.plate_text.value : d.class_name)}${identity} 推算`
+      : d.lowConfidence ? `${(typeof d.model_extra?.attributes?.plate_text?.value === 'string' ? d.model_extra.attributes.plate_text.value : d.class_name)}${identity} 低置信`
+      : (d.confidence === null ? (typeof d.model_extra?.attributes?.plate_text?.value === 'string' ? d.model_extra.attributes.plate_text.value : d.class_name) : `${(typeof d.model_extra?.attributes?.plate_text?.value === 'string' ? d.model_extra.attributes.plate_text.value : d.class_name)} ${(d.confidence * 100).toFixed(0)}%`) + identity
     const metrics = ctx.measureText(label)
     const labelY = box.y > 16 ? box.y - 4 : box.y + 16
     ctx.fillStyle = BOX_COLOR

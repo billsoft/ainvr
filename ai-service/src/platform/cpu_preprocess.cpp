@@ -29,6 +29,7 @@ float Sample(const uint8_t* data,int w,int h,int channels,int channel,double u,d
 }
 }
 std::vector<float> CpuPreprocess(const Nv12Frame& input,const ImageTransform& t){
+  if(t.projective_uv||t.plate_split_height)throw std::invalid_argument("Projective images require GPU; CPU oracle is not implemented");
   if(t.interpolation!=ImageInterpolation::Bilinear)
     throw std::invalid_argument("This CPU test oracle does not implement the requested GPU resize filter");
   ValidateTransform(input,t);int w=input.width,h=input.height,nw=t.width,nh=t.height;

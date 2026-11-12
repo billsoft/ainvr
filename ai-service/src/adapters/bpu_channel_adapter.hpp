@@ -31,7 +31,13 @@ class BpuChannelAdapter : public BaseModelAdapter {
   virtual std::future<ainvr::BpuImageResult> RunFrameAsync(const ainvr::Nv12Frame& frame,const pipeline::PreprocessConfig& preprocess,
                                 bool bt709,bool full_range);
   virtual bool SupportsFramePipeline() const { return true; }
+  // The probe returns true when work MUST stop (not when it may continue).
   virtual void SetCancellationProbe(std::function<bool()>) {}
+  virtual std::vector<Detection> PostprocessTracking(const std::vector<std::vector<float>>& output,
+      const pipeline::ScaleInfo& scale,double confidence,double iou,int maximum) {
+    return IsMultiOutput()?PostprocessMulti(output,scale,confidence,iou,maximum)
+      :Postprocess(output.at(0),scale,confidence,iou,maximum);
+  }
   std::vector<Detection> Postprocess(const std::vector<float>& output,const pipeline::ScaleInfo& scale,
                                      double confidence,double iou,int maximum) override;
   std::vector<Detection> PostprocessMulti(const std::vector<std::vector<float>>& output,

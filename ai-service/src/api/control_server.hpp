@@ -190,6 +190,7 @@ class ChannelManager {
 // A missing callback is unavailable, never an alternate encoder or thread.
 using SearchReencodeImage = std::function<nlohmann::json(const nlohmann::json&,const std::string&)>;
 void RegisterRoutes(httplib::Server& server, std::shared_ptr<ChannelManager> manager,
-                    std::function<nlohmann::json()> runtime_health = {},SearchReencodeImage search_reencode = {});
+                    std::function<nlohmann::json()> runtime_health = {},SearchReencodeImage search_reencode = {},
+                    SearchReencodeImage vehicle_runtime = {});
 
 }  // namespace ai_service::api

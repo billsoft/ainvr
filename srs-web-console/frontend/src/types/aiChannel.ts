@@ -26,7 +26,7 @@ export interface AiStreamConfig {
   reconnect: AiReconnectConfig
 }
 
-export type AiModelAdapter = 'yolo26_bpu' | 'yoloface_bpu' | 'scrfd_bpu' | 'locateanything_bpu' | 'yoloe_bpu'
+export type AiModelAdapter = 'plate_bpu' | 'yolo26_bpu' | 'yoloface_bpu' | 'scrfd_bpu' | 'locateanything_bpu' | 'yoloe_bpu'
   | 'yolo26_end2end' | 'yolo26_traditional' | 'yolo26_trt' | 'yoloface_trt' | 'scrfd_trt' | 'locateanything_trt' | 'yoloe_pt'
 
 export interface AiPromptLabel {
@@ -188,7 +188,15 @@ export interface AiAnalyticsConfig {
   rules?: AiAnalyticsRule[]
 }
 
+export interface AiAnalysisNode {
+  id: string
+  model: AiModelConfig
+  preprocess: Partial<AiPreprocessConfig>
+  postprocess: AiPostprocessConfig
+}
+export interface AiAnalysisPipeline { execution: 'serial' | 'parallel'; nodes: AiAnalysisNode[]; root_id?: string; order?: string[] }
 export interface AiChannelConfig {
+  analysis_pipeline?: AiAnalysisPipeline
   analytics?: AiAnalyticsConfig
   deletion_pending?: boolean
   /** 服务端持久化的手动停止：AI 服务重启后仍保持停止，直到再次启动 */
@@ -305,6 +313,7 @@ export interface AiConfigUpdateResult {
  * KNOWN_CHANNEL_FIELDS 保持一致（多传字段会被 pydantic extra="forbid"
  * 拒绝，422），id 只在创建时需要，编辑走 PATCHABLE_TOP_LEVEL_FIELDS。 */
 export interface AiChannelCreatePatch {
+  analysis_pipeline?: AiAnalysisPipeline
   analytics?: AiAnalyticsConfig
   id: string
   name?: string
@@ -333,6 +342,7 @@ export type AiChannelUpdatePatch = Partial<Omit<AiChannelCreatePatch, 'id'>>
 
 /** GET /channels/:id/results/latest 里 detections[] 的单项 */
 export interface AiDetection {
+  model_extra?: { model_name?: string; task_type?: string; source_node?: string; attributes?: Record<string, {type?: string; value: string | number | boolean | null; status?: string}> }
   class_id: number
   class_name: string
   confidence: number | null
@@ -408,6 +418,14 @@ export interface AiServiceHealth {
  * model.* 本身（否则 SCRFD 会用 YOLO 的归一化参数推理出垃圾结果且不报错，
  * 见架构方案 D6）。provider 统一 tensorrt——cuda EP 本机实测不可用。 */
 export const AI_MODEL_PRESETS = {
+  'plate-recognition': {
+    displayName: '车牌检测与识别', streamSlug: 'plates', needsIouThreshold: false,
+    label: '车牌检测与识别', description: '检测车牌并识别号码、颜色和单双层；现场准确率待验证',
+    model: {name: 'plate-recognition', adapter: 'plate_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/plate-detect-yolo26s.hbm', input_size: [640,640] as [number,number],
+      stride: 32, provider: 'bpu' as const, engine_cache: '', class_names: ['license_plate']},
+    preprocess: {mean: [0,0,0] as [number,number,number], std: [255,255,255] as [number,number,number], rgb_order: true},
+  },
   'yoloe-26x-1': {
     displayName: '开放词汇模型 · 1 槽', streamSlug: 'grounding-1',
     needsIouThreshold: true, label: '开放词汇识别 · 1 槽',
@@ -595,7 +613,7 @@ export function isOpenVocabularyPreset(preset: AiModelPresetKey): boolean {
 }
 
 export const SELECTABLE_AI_MODEL_PRESET_KEYS: readonly AiModelPresetKey[] = [
-  'yolo26x', 'yolo26x-face', 'yoloe-26x-1', 'yoloe-26x-2', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b',
+  'yolo26x', 'yolo26x-face', 'plate-recognition', 'yoloe-26x-1', 'yoloe-26x-2', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b',
 ]
 export const DEFAULT_AI_MODEL_PRESET: AiModelPresetKey = 'yolo26x'
 

@@ -25,7 +25,7 @@ class TaskMetadata final : public BaseModelAdapter {
 };
 }
 std::vector<std::string> AvailableAdapters() {
-  return {"yolo26_bpu", "yoloface_bpu", "scrfd_bpu", "yoloe_bpu", "locateanything_bpu"};
+  return {"yolo26_bpu", "yoloface_bpu", "scrfd_bpu", "yoloe_bpu", "plate_bpu", "locateanything_bpu"};
 }
 std::unique_ptr<BaseModelAdapter> CreateAdapter(const config::ModelConfig& cfg) {
   return std::make_unique<TaskMetadata>(cfg);

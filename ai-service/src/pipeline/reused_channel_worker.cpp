@@ -1,3 +1,4 @@
+#include "../adapters/pipeline_limits.hpp"
 #include "../analytics/locate_review.hpp"
 #include "../analytics/webhook_notifier.hpp"
 #include "../analytics/candidate_results.hpp"
@@ -22,6 +23,7 @@
 
 #include "../adapters/factory.hpp"
 #include "../adapters/model_family_adapters.hpp"
+#include "../adapters/pipeline_adapter.hpp"
 #include "../api/control_server.hpp"
 #include "../pipeline/frame_accounting.hpp"
 #include "../pipeline/postprocessor.hpp"
@@ -84,7 +86,9 @@ void ReusedChannelWorker::ValidateStart() const {
   if(!model_root_.empty()&&std::filesystem::path(model.path).is_relative())
     model.path=(std::filesystem::path(model_root_)/model.path).string();
   try {
-    auto runtime=adapters::CreateBpuRuntimeAdapter(model);
+    std::unique_ptr<adapters::BpuChannelAdapter> runtime;
+    if(!cfg->UsesAnalysisPipeline())runtime=adapters::CreateBpuRuntimeAdapter(model);
+    else runtime=std::make_unique<adapters::PipelineAdapter>(*cfg,model_root_);
     runtime->ValidateStartContract();
   }
   catch(const std::exception& e) {
@@ -118,7 +122,9 @@ void ReusedChannelWorker::ValidateSnapshotResources(const config::ChannelConfig&
   // Match the same task semantics that govern actual SnapshotStore processing.
   // This metadata object does not load an HBM or allocate a GPU/BPU context.
   const adapters::BpuChannelAdapter metadata(next.model);
-  if(metadata.TaskType()!="face_detection") return;
+  bool has_face=metadata.TaskType()=="face_detection";
+  for(const auto& node:next.analysis_nodes)has_face=has_face||adapters::BpuChannelAdapter(node.model).TaskType()=="face_detection";
+  if(!has_face) return;
   auto path=std::filesystem::path(snapshot.face_enhance_model=="gpen"
     ?snapshot_store_cfg_.face_enhance_engine:snapshot_store_cfg_.face_enhance_codeformer_engine);
   if(path.is_relative()&&!model_root_.empty()) path=std::filesystem::path(model_root_)/path;
@@ -130,6 +136,8 @@ void ReusedChannelWorker::ValidateSnapshotResources(const config::ChannelConfig&
   }
 }
 std::unique_ptr<adapters::BpuChannelAdapter> ReusedChannelWorker::CreatePlatformAdapter(const config::ModelConfig& model){
+  auto cfg=LoadCfg();
+  if(cfg->UsesAnalysisPipeline())return std::make_unique<adapters::PipelineAdapter>(*cfg,model_root_);
   return adapters::CreateBpuRuntimeAdapter(model);
 }
 
@@ -649,6 +657,13 @@ void ReusedChannelWorker::CaptureLoop() {
     }
 
     if (generation != CurrentStreamGeneration()) continue;
+    const auto source_config=Config();
+    const bool has_plate=source_config->model.adapter=="plate_bpu"||std::any_of(source_config->analysis_nodes.begin(),source_config->analysis_nodes.end(),[](const auto& n){return n.model.adapter=="plate_bpu";});
+    if(has_plate&&!adapters::PlateSourceSupported(frame_opt->width,frame_opt->height)) {
+      FailFromCapture("车牌识别输入尺寸不支持：需要偶数宽高且不超过8388608像素，请调整源分辨率或移除车牌模型");
+      break;
+    }
+
 
     {
       std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -820,7 +835,12 @@ void ReusedChannelWorker::InferLoop() {
   try{
     InitModelComponents();
     if(!LicenseAllowed())throw std::runtime_error("LICENSE_REQUIRED");
-    SetState(ChannelState::kRunning);start_time_.store(NowMono());
+    // Capture can reject geometry while a model is still loading. Do not
+    // overwrite its ERROR with RUNNING after asynchronous initialization.
+    auto prior=state_.load();
+    while(prior!=ChannelState::kError&&!stop_event_.load()&&
+          !state_.compare_exchange_weak(prior,ChannelState::kRunning)){}
+    start_time_.store(NowMono());
     {std::lock_guard lock(init_mutex_);infer_ready_=true;}
     init_cond_.notify_all();
   }catch(const std::exception& e){
@@ -1098,10 +1118,8 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   if(cfg->analytics.enabled) {
     const double floor=std::min(0.1,cfg->postprocess.conf_threshold);
     constexpr int candidate_limit=1000;
-    if(multi_output) tracking_candidates=adapter_->PostprocessMulti(
+    tracking_candidates=adapter_->PostprocessTracking(
       prepared.outputs,scale_info,floor,cfg->postprocess.iou_threshold,candidate_limit);
-    else tracking_candidates=adapter_->Postprocess(
-      prepared.outputs[0],scale_info,floor,cfg->postprocess.iou_threshold,candidate_limit);
   }
   }
   {
@@ -1301,8 +1319,8 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     if(!session.empty()){evidence_identity={{"channel_id",channel_id_},{"stream_session_id",session},
       {"source_pts_ns",std::to_string(result.frame_pts_ns)},{"source_frame_index",std::to_string(result.frame_index)}};
       auto evidence_metadata=evidence_identity;evidence_metadata["frame_width"]=frame.width;evidence_metadata["frame_height"]=frame.height;
-      evidence_receipt=output::SharedReviewFrameCache().OfferPreparedAsync(std::move(evidence_metadata),[owned=frame.ref]{
-        const auto& src=owned->nv12;const double scale=std::min(1.0,1280.0/std::max(src.width,src.height));
+      evidence_receipt=output::SharedReviewFrameCache().OfferPreparedAsync(std::move(evidence_metadata),[owned=frame.ref,full=output::SharedReviewFrameCache().FullResolution(channel_id_)]{
+        const auto& src=owned->nv12;const double scale=full?1.0:std::min(1.0,1280.0/std::max(src.width,src.height));
         output::ReviewEncodedFrame image;image.width=std::max(32,int(src.width*scale)/2*2);image.height=std::max(32,int(src.height*scale)/2*2);
         if(!output::EncodeSnapshotNv12Jpeg(src.pixels,src.width,src.height,image.width,image.height,owned->bt709,owned->full_range,image.jpeg,85))
           throw std::runtime_error("evidence encode");

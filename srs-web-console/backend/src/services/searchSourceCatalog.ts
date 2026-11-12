@@ -12,6 +12,7 @@ const processorSchema = z.object({
     enabled: z.boolean().optional(), inference_fps: z.number().nonnegative().optional(),
     analytics: z.object({ enabled: z.boolean() }).optional(),
     model: z.object({ adapter: z.string().max(128) }).optional(),
+    analysis_pipeline: z.object({execution:z.enum(['serial','parallel']),nodes:z.array(z.object({id:z.string(),model:z.object({adapter:z.string()})})).max(3)}).optional(),
     snapshot: z.object({ projection_mode: z.enum(['none', 'erp_equirect']).optional() }).optional(),
     stream: z.object({ url: z.string().max(2048) }),
     publish: z.object({ enabled: z.boolean(), effective_target_url: z.string().max(2048).optional(),

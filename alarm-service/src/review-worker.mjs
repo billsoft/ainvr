@@ -14,6 +14,7 @@ import {isStorageBusy} from './review-storage.mjs';
 import {ReviewCheckpoint} from './review-checkpoint.mjs';
 export {isStorageBusy} from './review-storage.mjs';
 export function reviewFor(event){
+ if(event.analysis_evidence?.vehicle?.reason==='watchlist_match')return {state:'skipped',attempt:0,reason:'vehicle_watchlist_manual_review',frames:event.analysis_evidence.delivery?.frames??[]};
  if(event.analysis_evidence?.delivery?.state==='failed')return {state:'failed',attempt:0,reason:'source_evidence_failed',context_state:'failed'};
  const retained=event.analysis_evidence?.delivery?.state==='complete'?{frames:event.analysis_evidence.delivery.frames}:{};
  if(event.analysis_evidence?.group)return {...retained,state:'skipped',attempt:0,reason:event.analysis_evidence.group.proof_version===2?'group_review_pending':'group_manual_review',policy:structuredClone(event.rule.snapshot.review)};

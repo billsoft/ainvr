@@ -10,7 +10,7 @@ const label=z.object({class_id:z.number().int().nonnegative(),label_id:id,name:z
 const catalogSchema=z.object({schema_version:z.literal('1.0'),adapter:z.string(),labels:z.array(label).min(1).max(128)});
 const modelSchema=z.object({name:z.string(),adapter:z.string(),class_names:z.array(z.string()).nullable().optional(),description:z.string().optional(),label_id:z.string().optional(),label_name:z.string().optional(),prompts:z.array(z.object({description:z.string(),label_id:z.string(),label_name:z.string()})).nullable().optional()}).passthrough();
 const channelSchema=z.object({id,state:z.string(),config:z.object({model:modelSchema,stream:z.object({url:z.string()}),inference_fps:z.number().nonnegative(),analytics:z.object({enabled:z.boolean()}).passthrough().optional()}).passthrough()}).passthrough();
-const frameSchema=z.object({channel_id:id,stream_url:z.string(),timestamp:z.number().finite(),frame_width:z.number().int().positive().max(32768),frame_height:z.number().int().positive().max(32768),model:z.object({name:z.string()}),model_extra:z.object({label_catalog:catalogSchema,analytics:z.object({status:z.string(),stream_session_id:z.string()}).passthrough().optional()})}).passthrough();
+const frameSchema=z.object({channel_id:id,stream_url:z.string(),timestamp:z.number().finite(),frame_width:z.number().int().positive().max(32768),frame_height:z.number().int().positive().max(32768),model:z.object({name:z.string()}),model_extra:z.object({label_catalog:catalogSchema,analytics:z.object({status:z.string(),stream_session_id:z.string()}).passthrough().optional()}).passthrough()}).passthrough();
 export interface AlarmSourceCatalog extends TriggerSourceCatalog {target_model:{name:string;adapter:string;mode:'fixed'|'open'};channel_name:string;input_name:string;labels:z.infer<typeof label>[];width:number;height:number;observed_at:string;stream_fingerprint:string}
 /** `why` receives the reason a source is not usable; callers that only need the answer omit it. */
 export function buildAlarmSourceCatalog(rawChannel:unknown,rawFrame:unknown,inputs:Channel[],now=Date.now(),why:(reason:string)=>void=()=>{}):AlarmSourceCatalog|null {
@@ -18,8 +18,10 @@ export function buildAlarmSourceCatalog(rawChannel:unknown,rawFrame:unknown,inpu
  const parsedChannel=channelSchema.safeParse(rawChannel),parsedFrame=frameSchema.safeParse(rawFrame);
  if(!parsedChannel.success||!parsedFrame.success)return no('unexpected_channel_or_result_shape');
  const c=parsedChannel.data,f=parsedFrame.data,m=c.config.model,cat=f.model_extra.label_catalog;
+ const multi=Array.isArray((c.config.analysis_pipeline as any)?.nodes)&&((c.config.analysis_pipeline as any).nodes.length>0||((c.config.analysis_pipeline as any).root_id??'primary')!=='primary');
+ if(multi&&JSON.stringify((f.model_extra.analysis_pipeline as any)?.configuration)!==JSON.stringify(c.config.analysis_pipeline))return no('pipeline_configuration_changed');
  if(c.state!=='running')return no('channel_not_running:'+c.state);
- if(c.id!==f.channel_id||f.stream_url!==c.config.stream.url||f.model.name!==m.name||cat.adapter!==m.adapter)return no('result_from_other_configuration');
+ if(c.id!==f.channel_id||f.stream_url!==c.config.stream.url||f.model.name!==m.name||cat.adapter!==(multi?'analysis_pipeline':m.adapter))return no('result_from_other_configuration');
  const age=now-f.timestamp*1000,maxAge=Math.min(600000,Math.max(60000,2000/(c.config.inference_fps||30)));
  if(age< -5000||age>maxAge)return no('latest_result_stale:'+Math.round(age/1000)+'s');
  let url:URL;try{url=new URL(c.config.stream.url)}catch{return no('stream_url_invalid')}
@@ -30,14 +32,22 @@ export function buildAlarmSourceCatalog(rawChannel:unknown,rawFrame:unknown,inpu
  const labels=cat.labels;
  if(new Set(labels.map(l=>l.label_id)).size!==labels.length||labels.some((l,i)=>l.class_id!==i))return no('label_catalog_inconsistent');
  const prompted=['yoloe_bpu','locateanything_bpu'].includes(m.adapter);
- if(prompted){
+ if(multi){
+   const nodes=(c.config.analysis_pipeline as {nodes:{id:string;model:z.infer<typeof modelSchema>}[]}).nodes;
+   const rawLabels=(rawFrame as any)?.model_extra?.label_catalog?.labels;
+   for(const n of [{id:(c.config.analysis_pipeline as any).root_id??'primary',model:m},...nodes]){
+     const owned=rawLabels.filter((l:any)=>l.source_node===n.id);
+     if(n.model.prompts?.length&&owned.some((l:any)=>!n.model.prompts!.some(p=>(l.label_id===p.label_id||l.label_id.endsWith(':'+p.label_id))&&l.name===p.label_name&&l.description===p.description)))return no('node_labels_differ_from_prompts');
+   }
+ }
+ if(prompted&&!multi){
   if(m.prompts?.length){
    if(m.prompts.length!==labels.length||m.prompts.some((p,i)=>{const l=labels[i]!;return l.label_id!==(p.label_id||`class:${i}`)||l.description!==p.description||l.name!==(m.adapter==='locateanything_bpu'&&!p.label_name?p.description:p.label_name)}))return no('label_catalog_differs_from_prompts');
   }else{
    const descriptions=m.adapter==='locateanything_bpu'?[m.description||'']:(m.class_names?.length?m.class_names:[m.description||'']);
    if(descriptions.length!==labels.length||labels.some((l,i)=>l.description!==descriptions[i]||l.label_id!==(m.label_id?m.label_id+(m.adapter==='yoloe_bpu'&&labels.length>1?`:${i}`:''):`class:${i}`)))return no('label_catalog_differs_from_prompts');
   }
- }else if(m.class_names&&JSON.stringify(m.class_names)!==JSON.stringify(labels.map(l=>l.name)))return no('label_catalog_differs_from_model');
+ }else if(!multi&&m.class_names&&JSON.stringify(m.class_names)!==JSON.stringify(labels.map(l=>l.name)))return no('label_catalog_differs_from_model');
  const version='labels-'+createHash('sha256').update(JSON.stringify([cat.adapter,labels])).digest('hex');
  return {channel_id:c.id,channel_name:typeof c.name==='string'?c.name:c.id,input_stream_id:input.id,input_name:input.name,
   target_model:{name:m.name,adapter:m.adapter,mode:prompted?'open':'fixed'},

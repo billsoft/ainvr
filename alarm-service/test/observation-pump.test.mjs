@@ -159,3 +159,11 @@ test('a blocked channel writes the real cause to the service log once, not on ev
   assert.equal(logged[0].channel_id,'processor');assert.equal(logged[0].step,'consume');assert.equal(logged[0].code,'E_TEST');
  }finally{process.stderr.write=write;await rm(root,{recursive:true,force:true});}
 });
+
+ test('adding a detector preserves only identical primary label bindings',()=>{
+  const merged=structuredClone(sample);merged.model.label_catalog={schema_version:'1.0',adapter:'analysis_pipeline',labels:[...labels,{class_id:1,label_id:'node:face:class:0',name:'face',description:''}]};
+  merged.model.compatible_label_catalogs=[structuredClone(sample.model.label_catalog)];
+  const result=observationEnvelope(merged,[rule]);assert.ok(result.envelope);assert.equal(result.envelope.frame.model.compatible_label_versions[0].version,version);
+  const changed=structuredClone(merged);changed.model.label_catalog.labels[0].description='other target';assert.throws(()=>observationEnvelope(changed,[rule]),/Incompatible label alias/);
+  const absent=structuredClone(merged);delete absent.model.compatible_label_catalogs;assert.equal(observationEnvelope(absent,[rule]).ignored,'source_binding_mismatch');
+ });

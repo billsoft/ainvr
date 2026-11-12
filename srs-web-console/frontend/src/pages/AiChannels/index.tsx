@@ -171,7 +171,7 @@ export default function AiChannelsPage() {
   const modelCategories = useMemo(() => {
     const cats = new Map<string, string>()
     for (const ai of channels) {
-      cats.set(ai.config.model.name, getAiModelDisplayName(ai.config.model))
+      for(const model of [ai.config.model,...(ai.config.analysis_pipeline?.nodes.map(n=>n.model)??[])])cats.set(model.name,getAiModelDisplayName(model))
     }
     return Array.from(cats, ([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'))
   }, [channels])
@@ -200,7 +200,7 @@ export default function AiChannelsPage() {
 
       // 模型筛选
       if (modelFilter !== 'all') {
-        if (ch.config.model.name !== modelFilter) return false
+        if (![ch.config.model,...(ch.config.analysis_pipeline?.nodes.map(n=>n.model)??[])].some(m=>m.name===modelFilter)) return false
       }
 
       // 源通道筛选

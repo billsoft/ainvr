@@ -25,6 +25,7 @@ export interface CounterResult {
  zones:(Omit<CounterUsage,'zone_name'>&{zone_name:string|null;in?:ZoneSeries;out?:ZoneSeries})[]
 }
 export interface Passage {
+ vehicle?:import('./vehicleService').VehicleResult
  event_id:string;occurred_at:string;track_id:string;label_id:string;frame_id:string;stream_session_id:string
  quality?:{observation_gaps?:number;gap_ms?:number}
 }
@@ -36,7 +37,7 @@ export const flowService={
   body:JSON.stringify({counter,expected_version:version}),signal:AbortSignal.timeout(35000)}),
  query:(input:{counter_ids?:string[];from:string;to:string;bucket?:'minute'|'hour'|'day'|null;timezone:string;totals_only?:boolean})=>
   request<{from:string;to:string;items:CounterResult[]}>('/flow/query',{method:'POST',body:JSON.stringify(input),signal:AbortSignal.timeout(60000)}),
- records:(input:{counter_id:string;binding_id:string;output:'in'|'out';from:string;to:string;cursor?:string;limit?:number})=>
+ records:(input:{counter_id:string;binding_id:string;output:'in'|'out';from:string;to:string;cursor?:string;limit?:number;plate?:string;vehicle_state?:string})=>
   request<{items:Passage[];next_cursor:string|null}>('/flow/records',{method:'POST',body:JSON.stringify(input),signal:AbortSignal.timeout(30000)}),
  clear:(counterId:string,input:{binding_ids:string[];from:string;to:string},key:string)=>request<{cleared:true}>(`/flow/counters/${encodeURIComponent(counterId)}/clear`,{method:'POST',headers:{'Idempotency-Key':key},body:JSON.stringify(input),signal:AbortSignal.timeout(60000)}),
  remove:(counterId:string,version:number,key:string)=>request<{deleted:true}>(`/flow/counters/${encodeURIComponent(counterId)}/delete`,{method:'POST',headers:{'Idempotency-Key':key},

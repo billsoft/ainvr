@@ -23,6 +23,9 @@ uniform vec4 rectangle;
 uniform vec4 source_region;
 uniform int crop_region;
 uniform int crop_padding;
+uniform int projective;
+uniform vec3 plate_rows;
+uniform vec3 projective_x, projective_y, projective_w;
 uniform vec3 mean_value, divisor, padding;
 uniform int reverse_channels, perspective;
 uniform int input_nv12;
@@ -102,7 +105,14 @@ vec3 render_rgb(ivec2 p) {
   vec2 xy=vec2(p)+0.5;
   vec2 uv=(xy-rectangle.xy)/rectangle.zw;
   vec3 rgb=padding;
-  if(perspective!=0){
+  if(projective!=0){
+    vec3 q=vec3(uv,1.0);
+    float d=dot(projective_w,q);
+    if(abs(d)>0.000001){
+      uv=vec2(dot(projective_x,q),dot(projective_y,q))/d;
+      if(all(greaterThanEqual(uv,vec2(0)))&&all(lessThanEqual(uv,vec2(1))))rgb=sample_filtered(uv);
+    }
+  }else if(perspective!=0){
     vec2 q=xy/vec2(output_size)*2.0-1.0;
     float t=tan(view_angles.z*0.5);
     vec3 d=normalize(vec3(q.x*t,-q.y*t*float(output_size.y)/float(output_size.x),1.0));
@@ -113,6 +123,10 @@ vec3 render_rgb(ivec2 p) {
     uv=vec2(atan(d.x,d.z)/(2.0*PI)+0.5,0.5-asin(clamp(d.y,-1.0,1.0))/PI);
     rgb=sample_filtered(uv);
   }else if(all(greaterThanEqual(uv,vec2(0)))&&all(lessThan(uv,vec2(1)))){
+    if(plate_rows.z>0.0){
+      bool upper=uv.x<0.5;
+      uv=vec2(upper?uv.x*2.0:uv.x*2.0-1.0,upper?uv.y*plate_rows.x:plate_rows.y+uv.y*(1.0-plate_rows.y));
+    }
     if(crop_region!=0)uv=source_region.xy+uv*source_region.zw;
     if(crop_padding==0||(all(greaterThanEqual(uv,vec2(0)))&&all(lessThan(uv,vec2(1)))))
       rgb=interpolation==2?sample_area(p):sample_filtered(uv);
@@ -196,6 +210,20 @@ GlesPreprocessor::GlesPreprocessor():state_(std::make_unique<State>()) {
 }
 GlesPreprocessor::~GlesPreprocessor()=default;
 void ValidateSourceRegion(const ImageTransform& t) {
+  if(t.plate_split_height&&(t.plate_split_height<12||t.plate_split_height>4096||t.projective_uv||t.source_region||t.erp_perspective||t.letterbox||t.interpolation!=ImageInterpolation::Bilinear))
+    throw std::invalid_argument("Invalid plate row split");
+  if(t.projective_uv){
+    const auto& m=*t.projective_uv;
+    if(t.erp_perspective||t.source_region||t.letterbox||t.interpolation==ImageInterpolation::Area||
+       !std::all_of(m.begin(),m.end(),[](float v){return std::isfinite(v)&&std::abs(v)<10000;}))
+      throw std::invalid_argument("Invalid projective transform or conflicting image operation");
+    // The denominator must not cross a pole anywhere in the unit square.
+    const float d[]{m[8],m[6]+m[8],m[7]+m[8],m[6]+m[7]+m[8]};
+    if(!std::all_of(std::begin(d),std::end(d),[&](float v){return v*d[0]>0&&std::abs(v)>1e-6f;}))
+      throw std::invalid_argument("Projective transform crosses a pole");
+    const double determinant=m[0]*(double(m[4])*m[8]-double(m[5])*m[7])-m[1]*(double(m[3])*m[8]-double(m[5])*m[6])+m[2]*(double(m[3])*m[7]-double(m[4])*m[6]);
+    if(std::abs(determinant)<1e-12)throw std::invalid_argument("Degenerate projective transform");
+  }
   if(!t.source_region)return;
   const auto& r=*t.source_region;
   if(t.erp_perspective||r[2]<=0||r[3]<=0||
@@ -294,6 +322,14 @@ std::vector<float> GlesPreprocessor::RunImpl(const std::vector<uint8_t>& rgba,in
   glUniform2i(uniform("output_size"),t.width,t.height);
   glUniform1i(uniform("crop_region"),t.source_region.has_value());
   glUniform1i(uniform("crop_padding"),t.source_region_padding);
+  glUniform1i(uniform("projective"),t.projective_uv.has_value());
+  if(t.plate_split_height&&t.plate_split_height!=h)throw std::invalid_argument("Plate row height mismatch");
+  glUniform3f(uniform("plate_rows"),float((5*h)/12)/h,float(h/3)/h,t.plate_split_height?1.f:0.f);
+  if(t.projective_uv){const auto& m=*t.projective_uv;
+    glUniform3fv(uniform("projective_x"),1,m.data());
+    glUniform3fv(uniform("projective_y"),1,m.data()+3);
+    glUniform3fv(uniform("projective_w"),1,m.data()+6);
+  }
   if(t.source_region){const auto& r=*t.source_region;
     glUniform4f(uniform("source_region"),r[0]/w,r[1]/h,r[2]/w,r[3]/h);}
   int nw=t.width,nh=t.height;
