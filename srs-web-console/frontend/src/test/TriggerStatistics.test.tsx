@@ -19,10 +19,11 @@ beforeEach(()=>{
      bindings:[{channel_id:'other',label_map_version:'lm',geometry_revision:'g',zone_id:null,zone_version:null,direction:{entry_edges:[],exit_edges:[]}}]},
   ]} as never)
 })
-it('the alarm list filters by level using the four trigger behaviors',async()=>{
+it('the alarm list filters spatial alarms by stage using the four trigger behaviors',async()=>{
   vi.mocked(alarmEventService.list).mockResolvedValue({items:[],next_cursor:null} as never)
   vi.mocked(alarmTriggerService.list).mockResolvedValue({items:[]} as never)
   render(<MemoryRouter><AlarmListPage/></MemoryRouter>)
-  const group=await screen.findByRole('group',{name:'级别'})
-  expect([...group.querySelectorAll('button')].map(b=>b.textContent)).toEqual(['全部级别','出现','接近','碰撞侵入','穿过'])
+  // Stages apply to spatial alarms only; other business kinds have no stage.
+  const group=await screen.findByRole('group',{name:'空间阶段'})
+  expect([...group.querySelectorAll('button')].map(b=>b.textContent)).toEqual(['全部阶段','出现','接近','碰撞侵入','穿过'])
 })

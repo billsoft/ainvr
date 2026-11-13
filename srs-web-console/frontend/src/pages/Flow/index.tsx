@@ -1,3 +1,4 @@
+import {AlarmInputNotice} from '../AlarmCenter/AlarmInputNotice'
 import {Eraser,Plus,Pencil,Pause,Play,Trash2,RefreshCw,MapPin,RotateCcw,CalendarClock} from 'lucide-react'
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react'
 import {Link} from 'react-router-dom'
@@ -128,6 +129,7 @@ export default function FlowPage(){
  }
  const list=counters??[]
  return <main className="alarm-workspace space-y-4 p-4 md:p-6">
+  <AlarmInputNotice/>
   <header className="flex flex-wrap items-center gap-3">
    <div className="min-w-0 flex-1"><h1 className="page-title">流量统计</h1><p className="mt-1 text-sm text-ink-subtle">统计经过计数线的目标数量。计数器在这里定义，在实时监看的布防中选用到热区。</p></div>
    <button type="button" className="btn-primary" onClick={()=>setEditing('new')}><Plus size={16} aria-hidden="true"/>新建计数器</button>

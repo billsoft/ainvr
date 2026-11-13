@@ -7,6 +7,12 @@ import type { AlarmSource } from '@/api/alarmTriggerService'
 const trigger = { labels: [{ label_id: 'helmet:no_helmet', name: 'no_helmet' }],
   usages: [{ assignment_id: 'a', processor_id: 'p', source_id: 's', zone_name: '门口' }] } as TriggerDefinition
 const source = { channel_id: 'p', labels: [{ label_id: 'helmet:no_helmet', name: 'no_helmet' }] } as AlarmSource
+it('目标仍存在但绑定目录或画面过期时不能显示可用',()=>{
+ const t={...trigger,usages:[{...trigger.usages![0]!,label_map_version:'old',geometry_revision:'g'}]}
+ expect(triggerAvailability(t,[{...source,label_map_version:'new',geometry_revision:'g'}])[0]?.state).toBe('changed')
+ expect(triggerAvailability(t,[{...source,label_map_version:'old',geometry_revision:'g2'}])[0]?.state).toBe('changed')
+ expect(triggerAvailability(t,[{...source,label_map_version:'old',geometry_revision:'g'}])[0]?.state).toBe('available')
+})
 
 it('模型删除、重新添加与目录不可达分别显示失效、可用和待核验', () => {
   expect(triggerAvailability(trigger, [source])[0]?.state).toBe('available')

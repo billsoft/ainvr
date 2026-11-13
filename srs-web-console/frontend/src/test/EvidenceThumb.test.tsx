@@ -1,6 +1,7 @@
 import {render,act,waitFor,screen,fireEvent} from '@testing-library/react'
 import {it,expect,vi,beforeEach} from 'vitest'
-import {EvidenceThumb} from '@/pages/AlarmCenter/EvidenceThumb'
+import {EvidenceThumb,reviewThumbnail} from '@/pages/AlarmCenter/EvidenceThumb'
+import type {AlarmEvent} from '@/api/alarmEventService'
 import {request,requestBlob} from '@/api/httpClient'
 vi.mock('@/api/httpClient',()=>({request:vi.fn(),requestBlob:vi.fn()}))
 let observers:{cb:IntersectionObserverCallback;el?:Element}[]=[]
@@ -12,6 +13,29 @@ beforeEach(()=>{
   vi.stubGlobal('URL',{...URL,createObjectURL:()=>'blob:x',revokeObjectURL:()=>{}})
 })
 // One thumbnail per compact list row; offscreen evidence stays unloaded.
+it('never borrows a review image from a different stage',()=>{
+ const alarm={alarm_id:'alarm',review:{state:'supported',frames:[{key:'raw',frame_id:'f1',captured_at:'2026-11-13T09:00:00Z'}],prepared_frames:[{key:'crop',frame_id:'f1'}]}} as AlarmEvent
+ expect(reviewThumbnail(alarm,'2026-11-13T09:00:00Z')).toEqual({alarmId:'alarm',key:'crop'})
+ expect(reviewThumbnail(alarm,'2026-11-13T09:00:01Z')).toBeUndefined()
+})
+it('uses the retained review image when recognition history is disabled',async()=>{
+ vi.mocked(request).mockResolvedValue({jpeg_base64:'dGVzdA=='})
+ const view=render(<EvidenceThumb eventId="event" label="侵入" reviewFrame={{alarmId:'alarm',key:'saved'}}/>)
+ await act(async()=>{observers[0]!.cb([{isIntersecting:true,target:observers[0]!.el!} as IntersectionObserverEntry],{} as IntersectionObserver)})
+ await waitFor(()=>expect(view.container.querySelector('img')).toHaveAttribute('src','data:image/jpeg;base64,dGVzdA=='))
+ expect(request).toHaveBeenCalledWith('/alarms/events/alarm/review-frames/saved',expect.anything())
+ expect(requestBlob).not.toHaveBeenCalled()
+ vi.mocked(request).mockImplementation(()=>new Promise(()=>{}))
+ view.rerender(<EvidenceThumb eventId="event" label="侵入" reviewFrame={{alarmId:'alarm',key:'different'}}/>)
+ expect(view.container.querySelector('img')).toBeNull()
+})
+it('falls back to the retained behavior crop if the review image has expired',async()=>{
+ vi.mocked(request).mockRejectedValueOnce(Error('expired')).mockResolvedValueOnce({state:'available'})
+ const view=render(<EvidenceThumb eventId="event" label="侵入" reviewFrame={{alarmId:'alarm',key:'saved'}}/>)
+ await act(async()=>{observers[0]!.cb([{isIntersecting:true,target:observers[0]!.el!} as IntersectionObserverEntry],{} as IntersectionObserver)})
+ await waitFor(()=>expect(view.container.querySelector('img')).toHaveAttribute('src','blob:x'))
+ expect(requestBlob).toHaveBeenCalledOnce()
+})
 it('loads a stage thumbnail only once it scrolls into view',async()=>{
   const view=render(<EvidenceThumb eventId={'a'.repeat(64)} label="穿过"/>)
   expect(request).not.toHaveBeenCalled()

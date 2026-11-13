@@ -17,5 +17,5 @@ export interface TriggerDefinitionInput {
 export interface TriggerDefinition extends TriggerDefinitionInput {
  version:number
  migration_review?:{required:boolean;reason:string;from?:string}
- usages?:{assignment_id:string;source_id:string;processor_id:string;zone_name:string|null}[]
+ usages?:{assignment_id:string;source_id:string;processor_id:string;zone_name:string|null;label_map_version?:string;geometry_revision?:string}[]
 }

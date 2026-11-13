@@ -2,7 +2,9 @@ import {fireEvent,render,screen} from '@testing-library/react'
 import {expect,it,vi} from 'vitest'
 import {AlarmRow} from '@/pages/AlarmCenter/AlarmRow'
 import type {AlarmEvent} from '@/api/alarmEventService'
-vi.mock('@/pages/AlarmCenter/EvidenceThumb',()=>({EvidenceThumb:({eventId,label,onOpen}:{eventId:string;label:string;onOpen?:()=>void})=><button onClick={onOpen}>{label}截图 {eventId}</button>}))
+// Only the component is replaced: the stage-to-review-frame matching stays the real one.
+vi.mock('@/pages/AlarmCenter/EvidenceThumb',async original=>({...await original<typeof import('@/pages/AlarmCenter/EvidenceThumb')>(),
+ EvidenceThumb:({eventId,label,onOpen,reviewFrame}:{eventId:string;label:string;onOpen?:()=>void;reviewFrame?:{alarmId:string;key:string}})=><button data-review-frame={reviewFrame?`${reviewFrame.alarmId}/${reviewFrame.key}`:''} onClick={onOpen}>{label}截图 {eventId}</button>}))
 vi.mock('@/features/faces/FaceAlarmEvidence',async importOriginal=>({
  ...await importOriginal<typeof import('@/features/faces/FaceAlarmEvidence')>(),
  FaceAlarmPhoto:({recordId,onOpen}:{recordId:string;onOpen:()=>void})=><button onClick={onOpen}>受保护人脸照片 {recordId}</button>,
@@ -54,3 +56,13 @@ it('reviewed rows display an administrator name without exposing the service pri
  expect(screen.getByText('已确认 · 管理员')).toBeInTheDocument();
  expect(screen.queryByText(/console-administrator/)).not.toBeInTheDocument();
 });
+it('passes the review frame captured at the shown stage, and no frame from another moment',()=>{
+ const stage=alarm.stages![0]!
+ const reviewed={...alarm,review:{state:'supported',frames:[{key:'raw',frame_id:'f1',captured_at:stage.at},{key:'later',frame_id:'f2',captured_at:'2026-11-13T00:00:09Z'}],prepared_frames:[{key:'crop',frame_id:'f1'}]}} as AlarmEvent
+ const view=render(<AlarmRow alarm={reviewed} trigger={undefined} channelName="仓库" onHandle={vi.fn()} onOpen={vi.fn()}/>)
+ expect(view.container.querySelector('[data-review-frame]')).toHaveAttribute('data-review-frame','a/crop')
+ view.unmount()
+ const other={...alarm,review:{state:'supported',frames:[{key:'later',frame_id:'f2',captured_at:'2026-11-13T00:00:09Z'}]}} as AlarmEvent
+ const second=render(<AlarmRow alarm={other} trigger={undefined} channelName="仓库" onHandle={vi.fn()} onOpen={vi.fn()}/>)
+ expect(second.container.querySelector('[data-review-frame]')).toHaveAttribute('data-review-frame','')
+})

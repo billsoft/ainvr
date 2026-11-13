@@ -26,6 +26,53 @@ const assignment=(id:string,zoneId:string|null)=>({assignment_id:id,trigger_id:'
   zone_id:zoneId,zone_version:zoneId?1:null,geometry_revision:'g',label_map_version:'lm',entry_edges:[],exit_edges:[]});
 const arming=()=>({source_id:'camera',geometry_revision:'g',zones:[zone('one'),zone('two')],
   assignments:[assignment('a','one'),assignment('b','two')]});
+it.skipIf(!enabled)('PG 计数目录恢复不改变方向、计数身份或重分类历史；无效规则不挡住有效规则',async()=>isolated(async(store,pool)=>{
+ await store.saveDefinition(definition,0,'operator','d',lookup);
+ await store.saveDefinition({...definition,trigger_id:'other',labels:[{label_id:'other',name:'其他'}]},0,'operator','d2',lookup);
+ await store.saveCounter({counter_id:'count',name:'人数',labels:definition.labels,method:'line',outputs:'both',names:{in:'进',out:'出'},occupancy:false,max_gap_ms:1500,state:'enabled'},0,'operator','c',lookup);
+ const b={binding_id:'flow-one',counter_id:'count',input_stream_id:'camera',processor_id:'ai',zone_id:'one',zone_version:1,geometry_revision:'g',label_map_version:'lm',direction:{kind:'line',edge:'a',in_side:'inward'}};
+ await store.saveArming({...arming(),assignments:[...arming().assignments,{...assignment('other','one'),trigger_id:'other'}],counter_bindings:[b]},0,'operator','arm',async()=>({...source,labels:[...source.labels,{label_id:'other',name:'其他'}]}),async()=>'g');
+ const lines=(await pool.query('SELECT * FROM flow_counter_binding_versions')).rows;
+ expect(await store.reconcileCatalogs(async()=>({...source,label_map_version:'new'}))).toEqual({updated:3,blocked:1});
+ expect((await pool.query('SELECT * FROM flow_counter_binding_versions')).rows).toEqual(lines);
+ expect((await store.readArming('camera')).counter_bindings).toEqual([{...b,label_map_version:'new'}]);
+ expect((await store.snapshot()).rules).toEqual(expect.arrayContaining([expect.objectContaining({id:'flow-one',version:2,passage:expect.objectContaining({kind:'line',edges:[0]})}),expect.objectContaining({id:'other',version:1})]));
+}));
+it.skipIf(!enabled)('PG 目录变动安全恢复布防，保留区域和暂停规则，重复同步不写版本',async()=>isolated(async(store,pool)=>{
+ await store.saveDefinition(definition,0,'operator','d',lookup);
+ await store.saveArming(arming(),0,'operator','a',lookup,async()=>'g');
+ const before=await store.readArming('camera');
+ const current=async()=>({...source,label_map_version:'new',observed_at:'2026-10-20T00:00:01Z',labels:[...source.labels,{label_id:'other',name:'其他'}]});
+ expect(await store.reconcileCatalogs(current)).toEqual({updated:2,blocked:0});
+ const rules=(await store.snapshot()).rules as any[];
+ expect(rules.every(r=>r.version===2&&r.source_binding.label_map_version==='new')).toBe(true);
+ expect(await store.readArming('camera')).toMatchObject({revision:2,zones:before.zones});
+ expect(await store.reconcileCatalogs(current)).toEqual({updated:0,blocked:0});
+ expect((await store.readArming('camera')).revision).toBe(2);
+ expect((await pool.query('SELECT actor FROM alarm_arming_versions WHERE revision=2')).rows[0].actor).toBe('catalog-reconciliation');
+ await store.saveDefinition({...definition,state:'paused'},1,'operator','pause',current);
+ expect(await store.reconcileCatalogs(async()=>({...source,label_map_version:'third',labels:[]}))).toEqual({updated:0,blocked:0});
+ expect((await store.snapshot()).rules).toEqual([]);
+}));
+it.skipIf(!enabled)('PG 不同来源、画面或标签含义拒绝自动恢复，离线不会改动存量规则',async()=>isolated(async store=>{
+ await store.saveDefinition(definition,0,'operator','d',lookup);await store.saveArming(arming(),0,'operator','a',lookup,async()=>'g');
+ const before=await store.snapshot();
+ for(const patch of [{geometry_revision:'changed'},{stream_fingerprint:'b'.repeat(64)},{labels:[]},{labels:[{label_id:'person',name:'不是人员'}]}]){
+  expect(await store.reconcileCatalogs(async()=>({...source,label_map_version:'new',...patch}))).toEqual({updated:0,blocked:2});
+  expect(await store.snapshot()).toEqual(before);
+ }
+ expect(await store.reconcileCatalogs(async()=>null)).toEqual({updated:0,blocked:0});
+ expect(await store.snapshot()).toEqual(before);
+}));
+it.skipIf(!enabled)('PG 核验期间的人工修改优先，不用旧快照覆盖新配置',async()=>isolated(async store=>{
+ await store.saveDefinition(definition,0,'operator','d',lookup);await store.saveArming(arming(),0,'operator','a',lookup,async()=>'g');
+ const result=await store.reconcileCatalogs(async()=>{
+  await store.saveDefinition({...definition,state:'paused'},1,'operator','pause',lookup);
+  return {...source,label_map_version:'new'};
+ });
+ expect(result.updated).toBe(0);expect((await store.snapshot()).rules).toEqual([]);
+ expect((await store.readArming('camera')).revision).toBe(1);
+}));
 it.skipIf(!enabled)('PG 画面规格重画原子停用旧选用，保留历史且拒绝旧草稿覆盖',async()=>isolated(async(store,pool)=>{
   await store.saveDefinition(definition,0,'operator','d1',lookup);
   await store.saveArming(arming(),0,'operator','old',lookup,async()=>'g');
@@ -69,8 +116,8 @@ it.skipIf(!enabled)('PG 无通道创建定义，多区域选用，重复保存�
   expect(await store.saveArming(arming(),0,'operator','a1',lookup,async()=>'g')).toEqual(result);
   expect((await store.snapshot()).rules.map((r:any)=>r.id).sort()).toEqual(['a','b']);
   expect((await store.listDefinitions())[0].usages).toEqual([
-    {assignment_id:'a',source_id:'camera',processor_id:'ai',zone_name:'one'},
-    {assignment_id:'b',source_id:'camera',processor_id:'ai',zone_name:'two'},
+    {assignment_id:'a',source_id:'camera',processor_id:'ai',zone_name:'one',label_map_version:'lm',geometry_revision:'g'},
+    {assignment_id:'b',source_id:'camera',processor_id:'ai',zone_name:'two',label_map_version:'lm',geometry_revision:'g'},
   ]);
   expect((await store.readArming('camera'))?.revision).toBe(1);
 }));

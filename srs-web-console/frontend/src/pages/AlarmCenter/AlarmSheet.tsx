@@ -12,7 +12,7 @@ import {behaviorNames,levelLook} from '@/features/alarmTriggers'
 import {alarmBusinessTitle,alarmBusinessKindOf} from '@/features/alarmBusinessKind'
 import {describeAlarm,stageNote,type AlarmContext} from '@/features/alarmSentences'
 import {BehaviorEvidence} from './BehaviorEvidence'
-import {EvidenceThumb} from './EvidenceThumb'
+import {EvidenceThumb,reviewThumbnail} from './EvidenceThumb'
 import {playbackHref,playbackRange} from '@/features/alarmNavigation'
 import {smartSearchHref} from '@/features/searchNavigation'
 
@@ -101,7 +101,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
      {!faceKind&&!!value.stages?.length&&<><h3 className="font-semibold">{spatial?'经过':'业务记录'}</h3>
      <ol className="space-y-2">{(value.stages??[]).map(s=><li key={s.event_id}>
       <button type="button" aria-pressed={s.event_id===stage} onClick={()=>setStage(s.event_id)} className={`flex min-h-14 w-full items-center gap-3 rounded-card border p-2 text-left ${s.event_id===stage?'border-primary bg-primary-50':'border-line'}`}>
-       <span className="w-16 shrink-0">{s.behavior_event_ids?.[0]?<EvidenceThumb compact eventId={s.behavior_event_ids[0]} label={alarmBusinessTitle(value,behaviorNames[s.behavior]??s.behavior)}/>:null}</span>
+       <span className="w-16 shrink-0">{s.behavior_event_ids?.[0]?<EvidenceThumb compact eventId={s.behavior_event_ids[0]} reviewFrame={reviewThumbnail(value,s.at)} label={alarmBusinessTitle(value,behaviorNames[s.behavior]??s.behavior)}/>:null}</span>
        <span className="min-w-0"><b style={{color:(levelLook[s.behavior]??levelLook.appearance!).color}}>{alarmBusinessTitle(value,behaviorNames[s.behavior]??s.behavior)}</b><span className="block text-sm text-ink-subtle">{clock(s.at)} · {spatial?stageNote(s,described!.edgeName):watchlist?'名单候选记录':'业务触发记录'}</span></span>
       </button></li>)}</ol></>}
      {done?<p role="status" className="rounded-card bg-success-50 p-3 text-sm text-success-700">{value.handling.disposition==='false_positive'?'已标记误报':'已确认'} · {reviewerDisplay(value.handling.acknowledged_by)} · {value.handling.acknowledged_at?new Date(value.handling.acknowledged_at).toLocaleString():''}{value.handling.note?` · ${value.handling.note}`:''}</p>:

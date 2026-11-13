@@ -8,7 +8,8 @@ vi.mock('@/api/alarmEventService',()=>({alarmEventService:{get:vi.fn()}}))
 vi.mock('@/api/httpClient',()=>({request:vi.fn().mockResolvedValue({jpeg_base64:'frame'}),requestBlob:vi.fn()}))
 vi.mock('@/pages/AlarmCenter/RuleEvidence',()=>({RuleEvidence:()=>null}))
 vi.mock('@/pages/AlarmCenter/BehaviorEvidence',()=>({BehaviorEvidence:({eventId}:{eventId:string})=><p>业务证据 {eventId}</p>}))
-vi.mock('@/pages/AlarmCenter/EvidenceThumb',()=>({EvidenceThumb:({label}:{label:string})=><span>{label}截图</span>}))
+vi.mock('@/pages/AlarmCenter/EvidenceThumb',async original=>({...await original<typeof import('@/pages/AlarmCenter/EvidenceThumb')>(),
+ EvidenceThumb:({label,reviewFrame}:{label:string;reviewFrame?:{alarmId:string;key:string}})=><span data-review-frame={reviewFrame?`${reviewFrame.alarmId}/${reviewFrame.key}`:''}>{label}截图</span>}))
 const at='2026-11-13T00:00:00Z'
 const frame={key:'f',frame_id:'f',roles:['entry_after'],captured_at:at,source_pts_ns:'1',bbox:{x:10,y:10,w:20,h:20}}
 const alarm:AlarmEvent={alarm_id:'a',event_kind:'fire_smoke',channel_id:'c',behavior:'appearance',occurred_at:at,last_seen_at:at,rule:{id:'r',name:'烟火规则'},severity:'warning',lifecycle:{state:'ended'},handling:{state:'unacknowledged',revision:0},stages:[{event_id:'s',behavior:'appearance',at,direction:null,behavior_event_ids:['e']},{event_id:'s2',behavior:'appearance',at,direction:null,behavior_event_ids:['e2']}],analysis_evidence:{source:{width:100,height:100},review_context:{region:{points:[[0,0],[1,0],[1,1]]},trace:[]}},review:{state:'uncertain',reason:'region_manual_review',frames:[frame]}}

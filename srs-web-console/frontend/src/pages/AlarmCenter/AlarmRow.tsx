@@ -5,7 +5,7 @@ import type {AlarmEvent,AckDisposition} from '@/api/alarmEventService'
 import {behaviorNames,levelLook} from '@/features/alarmTriggers'
 import {alarmBusinessTitle,alarmBusinessKindOf} from '@/features/alarmBusinessKind'
 import {describeAlarm,type AlarmContext} from '@/features/alarmSentences'
-import {EvidenceThumb} from './EvidenceThumb'
+import {EvidenceThumb,reviewThumbnail} from './EvidenceThumb'
 
 interface Props {
  alarm:AlarmEvent;trigger:AlarmContext|undefined;channelName:string
@@ -28,11 +28,12 @@ export function AlarmRow({alarm,trigger,channelName,onHandle,onOpen}:Props){
  const done=alarm.handling.state==='acknowledged'&&alarm.handling.reviewed_by_kind!=='ai',live=alarm.lifecycle.state==='active'
  const stages=alarm.stages??[],latest=[...stages].reverse()
  const shot=latest.find(s=>s.behavior===alarm.behavior&&s.behavior_event_ids?.[0])??latest.find(s=>s.behavior_event_ids?.[0])
+ const reviewFrame=shot?reviewThumbnail(alarm,shot.at):undefined
  const diagnostic=reviewDiagnostic(alarm.review)
  const time=new Date(alarm.occurred_at)
  return <article aria-label={`${channelName} · ${alarmBusinessTitle(alarm,behaviorNames[alarm.behavior]??'告警')}`} className={`alarm-list-row grid grid-cols-[80px_minmax(0,1fr)] items-center gap-x-3 gap-y-2 border-b border-line px-3 py-3 last:border-b-0 [@container(min-width:56rem)]:grid-cols-[96px_minmax(0,1fr)_auto] ${done?'bg-surface-page/50':'bg-surface'}`}>
   <div className="relative w-20 shrink-0 [@container(min-width:56rem)]:w-24">
-   {faceRecordId?<FaceAlarmPhoto compact recordId={faceRecordId} onOpen={()=>onOpen()}/>:kind!=='face_watchlist'&&shot?<EvidenceThumb compact eventId={shot.behavior_event_ids![0]!} label={alarmBusinessTitle(alarm,behaviorNames[shot.behavior]??'告警')} onOpen={()=>onOpen(shot.event_id)}/>:
+   {faceRecordId?<FaceAlarmPhoto compact recordId={faceRecordId} onOpen={()=>onOpen()}/>:kind!=='face_watchlist'&&shot?<EvidenceThumb compact eventId={shot.behavior_event_ids![0]!} reviewFrame={reviewFrame} label={alarmBusinessTitle(alarm,behaviorNames[shot.behavior]??'告警')} onOpen={()=>onOpen(shot.event_id)}/>:
     <button type="button" aria-label="查看告警详情（暂无截图）" onClick={()=>onOpen()} className="flex aspect-[4/3] !min-h-11 w-full flex-col items-center justify-center gap-1 rounded-base bg-surface-page text-ink-faint"><ImageOff size={20} aria-hidden="true"/><span className="text-xs">无截图</span></button>}
    {stages.length>1&&<span title="在详情中查看全部记录" className="pointer-events-none absolute bottom-1 right-1 rounded bg-slate-900/80 px-1.5 py-0.5 text-[10px] text-white">{stages.length} {spatial?'阶段':'记录'}</span>}
   </div>

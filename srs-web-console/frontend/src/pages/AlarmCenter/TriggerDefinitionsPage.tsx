@@ -1,3 +1,4 @@
+import {AlarmInputNotice} from './AlarmInputNotice'
 import {triggerAvailability} from '@/features/triggerAvailability'
 import {triggerDefinitionInput} from '@/features/triggerDefaults'
 import {TriggerActionMenu,TriggerArchiveDialog} from './TriggerLifecycleControls'
@@ -91,6 +92,7 @@ export default function TriggerDefinitionsPage(){
  },[revision])
  const shown=rows.filter(t=>(archived?t.state==='archived':t.state!=='archived')&&(!business||(t.region_state?.event_kind??'spatial')===business)&&(!filter||!t.region_state&&t.behavior===filter))
  return <main className="alarm-workspace space-y-4 p-4 md:p-6">
+  <AlarmInputNotice/>
   <header className="flex flex-wrap items-center gap-3">
    <div className="min-w-0 flex-1"><h1 className="page-title">告警触发</h1>
     <p className="mt-1 text-sm text-ink-subtle">定义告警条件，再到实时监看布防；进出流量由计数器统计。</p></div>
@@ -122,7 +124,7 @@ export default function TriggerDefinitionsPage(){
    {t.review?.enabled&&<p className="text-xs text-primary">AI 审核 · 按系统审核服务配置执行</p>}
    {t.migration_review?.required&&<p role="status" className="rounded-base border border-warning bg-amber-50 p-3 text-sm">待重新确认：{t.migration_review.reason} 原配置与历史已保留，{t.state==='archived'?'请新建触发器并在实时监看重新选用。':'请编辑条件并在实时监看重新选用。'}</p>}
    <section aria-label="选用位置" className="rounded-base bg-surface-page p-3 text-sm">
-    {t.usages?.length?<ul>{triggerAvailability(t,sources).map(u=><li key={u.assignment_id}>{usageNames[u.source_id]??'来源暂不可用'} · {u.zone_name??'整个画面'} · {usageNames[u.processor_id]??'AI 通道暂不可用'}{u.state==='missing'?<span className="ml-2 text-amber-800">目标已不可用，请重新选择目标并布防</span>:u.state==='unsupported'?<span className="ml-2 text-amber-800">此通道暂不支持该告警条件，请检查模型配置</span>:u.state==='unknown'?<span className="ml-2 text-ink-subtle">运行状态待核验</span>:null}</li>)}</ul>:t.usages?<p>尚未绑定区域 · <Link className="text-primary underline" to="/monitor">到实时监看中布防</Link></p>:<p>选用位置待确认</p>}
+    {t.usages?.length?<ul>{triggerAvailability(t,sources).map(u=><li key={u.assignment_id}>{usageNames[u.source_id]??'来源暂不可用'} · {u.zone_name??'整个画面'} · {usageNames[u.processor_id]??'AI 通道暂不可用'}{u.state==='missing'?<span className="ml-2 text-amber-800">目标已不可用，请重新选择目标并布防</span>:u.state==='unsupported'?<span className="ml-2 text-amber-800">此通道暂不支持该告警条件，请检查模型配置</span>:u.state==='changed'?<span className="ml-2 text-amber-800">来源版本已变化，请核对目标和布防</span>:u.state==='unknown'?<span className="ml-2 text-ink-subtle">运行状态待核验</span>:null}</li>)}</ul>:t.usages?<p>尚未绑定区域 · <Link className="text-primary underline" to="/monitor">到实时监看中布防</Link></p>:<p>选用位置待确认</p>}
    </section>
    <footer className="mt-auto flex items-center justify-between gap-3 border-t border-line pt-3"><span className="text-sm">{t.region_state ? todayAlarms===null?'今日新增告警 —（统计暂不可用）':`今日新增告警 ${todayAlarms[t.trigger_id]??0} 条（数据完整度未知）` : today===null?'今日触发 —（记录未确认）':!coverageComplete&&!today[t.trigger_id]?'今日暂无触发记录（覆盖未确认）':`今日触发 ${today[t.trigger_id]??0} 次${coverageComplete?'':'（覆盖未确认）'}`}</span>
     {t.region_state&&todayScope&&<Link title="包含同一触发器的历史版本，与卡片数量使用同一范围" className="inline-flex min-h-11 items-center text-sm text-primary" to={alarmAnalyticsHref({...todayScope,trigger_id:t.trigger_id})}>查看今日告警</Link>}

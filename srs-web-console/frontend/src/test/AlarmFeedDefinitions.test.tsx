@@ -11,7 +11,7 @@ vi.mock('@/api/alarmArmingService',()=>({alarmArmingService:{read:vi.fn().mockRe
  zones:[{zone_id:'z1',channel_id:'cam',geometry_revision:'r:1920x1080',version:1,name:'禁区',state:'active',points:[[.3,.2],[.7,.2],[.7,.8],[.3,.8]],edge_ids:['a','b','c','d']}]}})}}))
 vi.mock('@/api/aiChannelService',()=>({aiChannelService:{list:vi.fn().mockResolvedValue([{id:'ai',name:'大门'}])}}))
 vi.mock('@/api/behaviorStatisticsService',()=>({behaviorStatisticsService:{query:vi.fn().mockRejectedValue(Error('x'))}}))
-vi.mock('@/pages/AlarmCenter/EvidenceThumb',()=>({EvidenceThumb:()=>null}))
+vi.mock('@/pages/AlarmCenter/EvidenceThumb',async original=>({...await original<typeof import('@/pages/AlarmCenter/EvidenceThumb')>(),EvidenceThumb:()=>null}))
 const alarm:AlarmEvent={alarm_id:'a',occurred_at:'2026-10-20T02:02:05Z',last_seen_at:'2026-10-20T02:02:11Z',channel_id:'ai',input_stream_id:'cam',trigger_id:'d1',behavior:'region_enter',
  rule:{id:'assignment-1',name:'门前侵入'},severity:'warning',lifecycle:{state:'ended'},handling:{state:'unacknowledged',revision:0},
  stages:[{event_id:'s',behavior:'region_enter',trigger_id:'d1',zone_id:'z1',at:'2026-10-20T02:02:11Z',direction:{entry_edge:2}}]}

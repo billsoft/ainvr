@@ -11,7 +11,7 @@ vi.mock('@/api/alarmEventService',()=>({alarmEventService:{list:vi.fn(),get:vi.f
 vi.mock('@/api/alarmTriggerService',()=>({alarmTriggerService:{list:vi.fn(),source:vi.fn()}}))
 vi.mock('@/api/aiChannelService',()=>({aiChannelService:{list:vi.fn().mockResolvedValue([{id:'gate',name:'大门'},{id:'east',name:'东围栏'}])}}))
 vi.mock('@/api/behaviorStatisticsService',()=>({behaviorStatisticsService:{query:vi.fn().mockResolvedValue({schema_version:'1.0',from:'a',to:'b',items:[{event_type:'region_traverse',occurrences:4,tracked_targets:4},{event_type:'appearance',occurrences:23,tracked_targets:20}],coverage:{state:'unknown'}})}}))
-vi.mock('@/pages/AlarmCenter/EvidenceThumb',()=>({EvidenceThumb:({eventId,label,onOpen}:{eventId:string;label:string;onOpen?:()=>void})=>onOpen?<button data-testid="thumb" aria-label={`查看${label}截图`} onClick={onOpen}>{label}:{eventId.slice(0,4)}</button>:<span data-testid="thumb">{label}:{eventId.slice(0,4)}</span>}))
+vi.mock('@/pages/AlarmCenter/EvidenceThumb',async original=>({...await original<typeof import('@/pages/AlarmCenter/EvidenceThumb')>(),EvidenceThumb:({eventId,label,onOpen}:{eventId:string;label:string;onOpen?:()=>void})=>onOpen?<button data-testid="thumb" aria-label={`查看${label}截图`} onClick={onOpen}>{label}:{eventId.slice(0,4)}</button>:<span data-testid="thumb">{label}:{eventId.slice(0,4)}</span>}))
 const square:[number,number][]=[[.3,.2],[.7,.2],[.7,.8],[.3,.8]]  // edges 上 右 下 左
 const fact=(n:number)=>String(n).repeat(64)
 const trigger=(id:string,behavior:AlarmTrigger['behavior'],extra:Partial<AlarmTrigger>={}):AlarmTrigger=>({trigger_id:id,name:id==='pass'?'门前禁区':'围栏接近',behavior,labels:[{label_id:'class:0',name:'人员'}],duration_ms:3000,alarm_enabled:true,state:'enabled',schedule:{mode:'always'},version:1,

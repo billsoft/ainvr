@@ -1,5 +1,6 @@
 import {compileBinding,parseCounterDefinition,recountAllowed,validateBindingSet,type BindingVersion,type CounterBinding,type CounterDefinition} from './flowCounters.js';
 import {unwrapErp} from './erpGeometry.js';
+import {catalogRebindAllowed} from '../services/alarmCatalogRebind.js';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import type {Pool,PoolClient} from 'pg';
@@ -91,10 +92,65 @@ function mergeProcessorArming(previous:Arming|undefined,draft:Arming,processorId
 }
 export class AlarmArmingStore {
   constructor(private pool:Pool){}
+  /** Refresh unchanged selected labels after a model catalog change. Network reads
+   * stay outside PG locks; the global revision protects against concurrent edits. */
+  async reconcileCatalogs(lookup:Lookup):Promise<{updated:number;blocked:number}>{
+    const revision=(await this.pool.query('SELECT revision::text FROM alarm_configuration_revision WHERE singleton=TRUE')).rows[0]?.revision;
+    const read=async(table:string,definitions:string,key:string,kind:string)=>(await this.pool.query(`
+      SELECT a.*,d.document AS definition,d.version AS definition_version,'${kind}' AS kind
+      FROM ${table} a JOIN ${definitions} d ON a.${key}=d.${key}
+      WHERE a.active=TRUE AND a.compiled_rule IS NOT NULL AND d.document->>'state'='enabled' LIMIT 2001`)).rows;
+    const rows=[...await read('alarm_trigger_assignments','alarm_trigger_definitions','trigger_id','trigger'),
+      ...await read('flow_counter_bindings','flow_counter_definitions','counter_id','counter')];
+    if(rows.length>2000)throw Error('Too many active bindings to reconcile');
+    const sources=new Map<string,AssignmentSource|null>(),ids=[...new Set(rows.map(r=>r.document.processor_id as string))];
+    // Four bounded readers, not one request per rule and not unbounded fan-out.
+    let cursor=0;
+    await Promise.all(Array.from({length:Math.min(4,ids.length)},async()=>{
+      while(cursor<ids.length){const id=ids[cursor++]!;sources.set(id,await lookup(id).catch(()=>null));}
+    }));
+    const changed=rows.filter(r=>{const s=sources.get(r.document.processor_id);return s&&s.label_map_version!==r.document.label_map_version;});
+    if(!changed.length)return {updated:0,blocked:0};
+    const c=await this.pool.connect();let updated=0,blocked=0;
+    try{
+      await c.query('BEGIN');
+      await c.query("SELECT pg_advisory_xact_lock(hashtextextended('alarm-arming-configuration',0))");
+      if((await c.query('SELECT revision::text FROM alarm_configuration_revision WHERE singleton=TRUE')).rows[0]?.revision!==revision){
+        // An operator saved meanwhile: nothing was judged, so nothing is reported blocked; the next run re-reads.
+        await c.query('ROLLBACK');return {updated:0,blocked:0};
+      }
+      const docs=new Map<string,{document:Arming;revision:number}>();
+      for(const row of changed){
+        const source=sources.get(row.document.processor_id)!;
+        if(!source||!catalogRebindAllowed(row.document,row.definition,row.compiled_rule,source)){blocked++;continue;}
+        let saved=docs.get(row.source_id);
+        if(!saved){saved=(await c.query('SELECT document,revision FROM alarm_arming_sources WHERE source_id=$1',[row.source_id])).rows[0];if(!saved){blocked++;continue;}}
+        const document={...row.document,label_map_version:source.label_map_version};
+        const zone=saved.document.zones.find(z=>z.zone_id===document.zone_id)??null;
+        let rule;
+        try{
+          rule=row.kind==='trigger'?compileAssignment(row.definition,row.definition_version,document,source,zone,row.execution_version+1):
+            compileBinding(row.definition,row.definition_version,document,source,zone,row.execution_version+1);
+        }catch(error){if(error instanceof AlarmConfigError){blocked++;continue;}throw error;}
+        if(!rule){blocked++;continue;}
+        const table=row.kind==='trigger'?'alarm_trigger_assignments':'flow_counter_bindings',key=row.kind==='trigger'?'assignment_id':'binding_id';
+        await c.query(`UPDATE ${table} SET document=$2,compiled_rule=$3,execution_version=execution_version+1,updated_at=now() WHERE ${key}=$1`,[document[key],JSON.stringify(document),JSON.stringify(rule)]);
+        if(row.kind==='trigger')saved.document.assignments=saved.document.assignments.map(a=>a.assignment_id===document.assignment_id?document:a);
+        else saved.document.counter_bindings=(saved.document.counter_bindings??[]).map(b=>b.binding_id===document.binding_id?document:b);
+        docs.set(row.source_id,saved);updated++;
+      }
+      if(updated){
+        for(const saved of docs.values())await this.writeSource(c,saved.document,saved.revision+1,'catalog-reconciliation');
+        await this.bump(c);
+      }
+      await c.query('COMMIT');return {updated,blocked};
+    }catch(error){await c.query('ROLLBACK').catch(()=>undefined);throw error;}finally{c.release();}
+  }
   async listDefinitions(){
     const rows=await this.pool.query(`SELECT d.document,d.version,
       COALESCE((SELECT jsonb_agg(jsonb_build_object(
         'assignment_id',a.assignment_id,'source_id',a.source_id,'processor_id',a.document->>'processor_id',
+        'label_map_version',a.document->>'label_map_version','geometry_revision',a.document->>'geometry_revision',
         'zone_name',(SELECT z->>'name' FROM jsonb_array_elements(s.document->'zones') z
           WHERE z->>'zone_id'=a.document->>'zone_id')
       ) ORDER BY a.assignment_id) FROM alarm_trigger_assignments a

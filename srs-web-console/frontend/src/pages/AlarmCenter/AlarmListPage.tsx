@@ -1,3 +1,4 @@
+import {AlarmInputNotice} from './AlarmInputNotice'
 import {automaticReviewBanner} from '@/features/alarmReview'
 import {alarmBusinessKinds,alarmBusinessKindOf,alarmBusinessName} from '@/features/alarmBusinessKind'
 import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
@@ -242,6 +243,7 @@ export default function AlarmListPage(){
    <p className="hidden border-t border-line p-4 text-sm leading-relaxed text-ink-subtle md:block">同一规则的持续风险合并告警，条件稳定解除后重新布防；穿越按独立通过事件判断。</p>
   </nav>
   <main className="alarm-workspace flex min-w-0 flex-1 flex-col" style={{containerType:'inline-size'}}>
+   <AlarmInputNotice/>
    <PtzProtectionNotice/>
    <div className="space-y-3 px-4 pb-3 pt-4 md:px-6">
     {scope.kind!=='none'&&<div role={scope.kind==='invalid'?'alert':'status'} className="rounded-panel border border-line bg-surface p-3 text-sm">
