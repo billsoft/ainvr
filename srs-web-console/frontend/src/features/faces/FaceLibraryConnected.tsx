@@ -73,7 +73,7 @@ function Editor({ initial, id, channels, activeSpace, onClose, onSaved }: { init
           {stored && initial?.templates[value.id] && <details className="text-xs" onToggle={event => { const open = event.currentTarget.open; setOpenPhotos(old => ({ ...old, [value.id]: open })) }}><summary className="flex min-h-11 cursor-pointer items-center">查看已保存的成员照片</summary>{openPhotos[value.id] && <FaceMemberPhoto libraryId={id} memberId={value.id} revision={version} />}</details>}
           <label className="block text-sm">成员照片 {index + 1}<input ref={element => { fileInputs.current[value.id] = element }} type="file" accept="image/jpeg" disabled={!stored} className="mt-1 block min-h-11 w-full text-xs" onChange={event => { const file = event.target.files?.[0]; setFiles(old => { const next = { ...old }; if (file) next[value.id] = file; else delete next[value.id]; return next }) }} /></label>
           <div className="flex flex-wrap gap-2"><button className="btn-secondary min-h-11" disabled={!stored || !files[value.id] || registrationDirty || conflict} onClick={() => void upload(value.id)}>{stored ? '上传照片' : '请先保存成员配置'}</button>{files[value.id] && <button type="button" className="btn-secondary min-h-11" aria-label={`清除已选照片 ${index + 1}`} onClick={() => clearFile(value.id)}>清除已选照片</button>}<button className="btn-secondary min-h-11" onClick={() => { patch({ members: document.members.filter(item => item.id !== value.id) }); clearFile(value.id) }}>移除此成员</button></div>
-          
+
         </article> })}
       </section>
     </fieldset>
