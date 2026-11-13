@@ -213,3 +213,18 @@ it('accepts only bounded normalized per-frame boxes from persisted evidence', as
     await expect(fixture(invalid).client.readSearch(sessionId, 'operator')).rejects.toMatchObject({ code: 'invalid_response' });
   }
 });
+
+describe('native picture query', () => {
+  it('sends the picture vector, with the description and share only when described', async () => {
+    const { client, request } = fixture(page);
+    const vector = [0.6, 0.8];
+    expect(await client.matchImage(vector, '', undefined, scope, 'pair-v1')).toEqual(page);
+    expect(JSON.parse(String(request.mock.calls[0]![1]!.body))).toEqual({ vector, scope: { channel_ids: [channel], from_ms: at - 1, to_ms: at + 1, limit: 60 } });
+    await client.matchImage(vector, '围巾', 0.3, scope, 'pair-v1');
+    expect(JSON.parse(String(request.mock.calls[1]![1]!.body))).toMatchObject({ query: '围巾', image_weight: 0.3 });
+  });
+  it('maps an invalid picture vector and refuses non-finite values locally', async () => {
+    await expect(fixture({ error: 'query_image_invalid' }, 400).client.matchImage([1], '', undefined, scope, 'pair-v1')).rejects.toMatchObject({ code: 'image_invalid' });
+    await expect(fixture(page).client.matchImage([NaN], '', undefined, scope, 'pair-v1')).rejects.toMatchObject({ code: 'image_invalid' });
+  });
+});

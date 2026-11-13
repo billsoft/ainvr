@@ -2,6 +2,7 @@ import {SearchModelMigrationPlanArtifacts} from './services/searchModelMigration
 import {SearchModelMigrationCoordinator} from './services/searchModelMigrationCoordinator.js';
 import {SearchReencodeRunner} from './services/searchReencodeRunner.js';
 import {SearchReencodeAiClient} from './services/searchReencodeAi.js';
+import { createSearchImageEmbedder } from './services/searchImageEmbedder.js';
 import {setTimeout as migrationDelay} from 'node:timers/promises';
 import { searchIndexRoutes } from './routes/searchIndexRoutes.js';
 import { SearchIndexShards } from './store/searchIndexShards.js';
@@ -642,6 +643,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         if (!token) return null;
         return { baseUrl: (await settingsStore.read()).recorderService?.baseUrl || recorderServiceBaseUrl,
           apiToken: token, timeoutMs: 2000 };
+      }),
+      // Picture search: the AI service encodes the query picture with the current model's evidence encoder.
+      imageEmbedder: createSearchImageEmbedder({
+        packageId: async () => pgStore ? (await readAppliedSearchSettings(pgStore))?.model.package_id ?? null : null,
+        // Package verification hashes the model files: the capability connection allows it the time it needs.
+        profile: packageId => searchCapabilityNative.verifyMigrationModel(packageId),
+        ai: migrationAi,
       }),
     });
     await instance.register(searchRoutes, { principal: alarmPrincipal, channels: searchChannels, worker: searchWorker });

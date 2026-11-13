@@ -34,6 +34,10 @@ export interface SearchPageResult {
   coverage: 'unknown' | 'partial' | 'sampled'; items: SearchResult[]; next_cursor: string | null
 }
 export interface SearchQuery { min_similarity?: number; query: string; scope: SearchScope; verify: boolean; request_id: string }
+/** Picture search: one already cropped JPEG (base64), optionally refined by a description.
+ * `image_weight` (0..1) is how much the picture counts against the description; only with a description. */
+export interface SearchImageQuery { query: string; image: string; image_weight?: number; min_similarity?: number; scope: SearchScope; request_id: string }
+export type SearchQueryKind = 'text' | 'image' | 'image_text'
 const root = (id: string) => `/search/${encodeURIComponent(id)}`
 const item = (id: string, result: string) => `${root(id)}/results/${encodeURIComponent(result)}`
 export const searchImagePath = (id: string, result: string, frame: string) => `${item(id, result)}/images/${encodeURIComponent(frame)}`
@@ -44,6 +48,9 @@ export const searchService = {
   status: (signal?: AbortSignal) => request<SearchStatus>('/search/status', { signal: bounded(signal) }),
   channels: (signal?: AbortSignal) => request<{ items: SearchChannel[] }>('/search/channels', { signal: bounded(signal) }),
   query: (input: SearchQuery, signal?: AbortSignal) => request<SearchPageResult>('/search/text', { method: 'POST', body: JSON.stringify(input), signal: bounded(signal) }),
+  // The picture goes through the vision model once, so allow longer than a description.
+  imageQuery: (input: SearchImageQuery, signal?: AbortSignal) => request<SearchPageResult>('/search/image', { method: 'POST', body: JSON.stringify(input),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000) }),
   page: (id: string, cursor: string | null, signal?: AbortSignal) => request<SearchPageResult>(`${root(id)}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`, { signal: bounded(signal) }),
   detail: (id: string, result: string, signal?: AbortSignal) => request<SearchResult>(item(id, result), { signal: bounded(signal) }),
   cancel: (id: string) => request<{ cancelled: boolean }>(`${root(id)}/cancel`, { method: 'POST', signal: bounded() }),

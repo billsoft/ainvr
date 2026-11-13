@@ -33,6 +33,7 @@ function fixture(options: Partial<PersistentSearchOptions> = {}) {
   const native: PersistentSearchOptions['native'] = {
     status: vi.fn(async () => ({ ready: true, reason: null, model_version: 'pair-v1' })),
     match: vi.fn(async () => ({ model_version: 'pair-v1', partial: false, items: initial })),
+    matchImage: vi.fn(async () => ({ model_version: 'pair-v1', partial: false, items: initial })),
     coverage: vi.fn(async () => [coverage(false), coverage(true)]),
     image: vi.fn(async () => Buffer.from([255, 216, 255, 217])),
     searchImage: vi.fn(async () => Buffer.from([255, 216, 255, 217])),
@@ -481,4 +482,72 @@ it('returns a genuine empty snapshot when every score is below the minimum', asy
   expect(page.items).toEqual([]); expect(page.next_cursor).toBeNull();
   for (const min_similarity of [NaN, Infinity, -1.01, 1.01])
     await expect(f.worker.query({ ...query, min_similarity }, 'operator')).rejects.toBeDefined();
+});
+
+/** A tiny valid frame header: SOI, SOF0 with the given size, EOI. */
+function jpeg(width: number, height: number, salt = 0) {
+  return Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, height >> 8, height & 255, width >> 8, width & 255, 0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, salt, 0xff, 0xd9]);
+}
+const pictureVector = [0.6, 0.8];
+const embedder = () => vi.fn(async (_jpeg: Buffer, _model: string) => pictureVector);
+describe('picture search', () => {
+  it('runs through the same session, stores digests only and never applies the description threshold', async () => {
+    const imageEmbedder = embedder(), f = fixture({ imageEmbedder });
+    const image = jpeg(640, 480);
+    const page = await f.worker.imageQuery({ query: '', image: image.toString('base64'), scope, request_id: requestId }, 'operator');
+    expect(page.items.map(i => i.id)).toEqual(initial.map(i => i.id));
+    expect(f.native.match).not.toHaveBeenCalled();
+    expect(imageEmbedder).toHaveBeenCalledWith(image, 'pair-v1');
+    expect(f.native.matchImage).toHaveBeenCalledWith(pictureVector, '', undefined, scope, 'pair-v1');
+    const stored = f.sessions.get(f.key('operator', requestId))!;
+    expect(stored.query).toMatch(/^image:[a-f0-9]{64}$/);
+    expect(stored.verify).toBe(false);
+    expect(stored.min_similarity).toBeUndefined();
+    expect(JSON.stringify(stored)).not.toContain(image.toString('base64'));
+  });
+  it('ranks with a description and its share, and refuses a retried request with another picture', async () => {
+    const f = fixture({ imageEmbedder: embedder() });
+    const first = { query: '戴围巾的人', image: jpeg(640, 480).toString('base64'), image_weight: 0.7, scope, request_id: requestId };
+    await f.worker.imageQuery(first, 'operator');
+    expect(f.native.matchImage).toHaveBeenCalledWith(pictureVector, '戴围巾的人', 0.7, scope, 'pair-v1');
+    expect(f.sessions.get(f.key('operator', requestId))!.query).toMatch(/^image:[a-f0-9]{64}:text:[a-f0-9]{64}:w:0\.7$/);
+    // Same request again returns the stored result; another picture under the same identity conflicts.
+    await expect(f.worker.imageQuery(first, 'operator')).resolves.toBeDefined();
+    expect(f.native.matchImage).toHaveBeenCalledTimes(1);
+    await expect(f.worker.imageQuery({ ...first, image: jpeg(640, 480, 9).toString('base64') }, 'operator')).rejects.toMatchObject({ code: 'search_conflict' });
+  });
+  it.each([
+    ['not a picture', Buffer.from('not a jpeg at all, just text').toString('base64')],
+    ['odd width', jpeg(641, 480).toString('base64')],
+    ['too small', jpeg(8, 8).toString('base64')],
+  ])('rejects %s before any model work', async (_name, image) => {
+    const imageEmbedder = embedder(), f = fixture({ imageEmbedder });
+    await expect(f.worker.imageQuery({ query: '', image, scope, request_id: requestId }, 'operator')).rejects.toMatchObject({ code: 'search_image_invalid', statusCode: 400 });
+    expect(f.native.beginSearch).not.toHaveBeenCalled();
+    expect(imageEmbedder).not.toHaveBeenCalled();
+  });
+  it('names a model without picture support instead of reporting no results', async () => {
+    const f = fixture({ imageEmbedder: vi.fn(async () => { throw new SearchNativeError('image_unsupported'); }) });
+    await expect(f.worker.imageQuery({ query: '', image: jpeg(64, 64).toString('base64'), scope, request_id: requestId }, 'operator'))
+      .rejects.toMatchObject({ code: 'search_image_unsupported', statusCode: 409 });
+  });
+  it('names a deployment without a picture encoder, and a busy encoder as busy', async () => {
+    await expect(fixture().worker.imageQuery({ query: '', image: jpeg(64, 64).toString('base64'), scope, request_id: requestId }, 'operator'))
+      .rejects.toMatchObject({ code: 'search_image_unsupported' });
+    const busy = fixture({ imageEmbedder: vi.fn(async () => { throw new SearchNativeError('busy'); }) });
+    await expect(busy.worker.imageQuery({ query: '', image: jpeg(64, 64).toString('base64'), scope, request_id: requestId }, 'operator'))
+      .rejects.toMatchObject({ code: 'search_busy', statusCode: 429 });
+  });
+  it('distinguishes exact image weights when a request identity is reused', async () => {
+    const f = fixture({ imageEmbedder: embedder() });
+    const first = { query: '红色背包', image: jpeg(64, 64).toString('base64'), image_weight: 0.51, scope, request_id: requestId };
+    await f.worker.imageQuery(first, 'operator');
+    await expect(f.worker.imageQuery({ ...first, image_weight: 0.54 }, 'operator')).rejects.toMatchObject({ code: 'search_conflict' });
+    await expect(f.worker.imageQuery(first, 'operator')).resolves.toBeDefined();
+    expect(f.native.matchImage).toHaveBeenCalledTimes(1);
+  });
+  it('requires a description before a share is given', async () => {
+    const f = fixture({ imageEmbedder: embedder() });
+    await expect(f.worker.imageQuery({ query: '', image: jpeg(64, 64).toString('base64'), image_weight: 0.6, scope, request_id: requestId }, 'operator')).rejects.toBeDefined();
+  });
 });

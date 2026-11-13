@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { SearchSourceChannel } from '../services/searchSourceCatalog.js';
-import { searchQuerySchema, searchRangeSchema, searchPageSchema, searchDetailSchema, searchCoverageSchema, sameSearchScope,
+import { searchQuerySchema, searchImageQuerySchema, searchRangeSchema, searchPageSchema, searchDetailSchema, searchCoverageSchema, sameSearchScope,
   type SearchScope, type SearchWorker, type SearchPage } from '../services/searchContract.js';
 import { PersistentSearchError } from '../services/persistentSearchWorker.js';
 interface Options {
@@ -82,6 +82,17 @@ export async function searchRoutes(app: FastifyInstance, options: Options) {
     await authorize(input.scope, actor(request));
     if (!(await worker().status()).ready) throw new SearchRouteError('search_not_ready', 503, '搜索模型与索引尚未就绪，当前不能搜索录像');
     const page = await checkedPage(await worker().query(input, actor(request)), actor(request), input.scope);
+    if (page.search_id !== input.request_id) throw Error('worker_request_identity_changed');
+    return page;
+  });
+  // The cropped picture is at most 512 KB; base64 and the scope fit within 1 MB.
+  app.post('/search/image', { bodyLimit: 1024 * 1024 }, async request => {
+    const input = searchImageQuerySchema.parse(request.body);
+    await authorize(input.scope, actor(request));
+    const search = worker();
+    if (!search.imageQuery) throw new SearchRouteError('search_image_unsupported', 409, '当前搜索服务不支持以图搜索');
+    if (!(await search.status()).ready) throw new SearchRouteError('search_not_ready', 503, '搜索模型与索引尚未就绪，当前不能搜索录像');
+    const page = await checkedPage(await search.imageQuery(input, actor(request)), actor(request), input.scope);
     if (page.search_id !== input.request_id) throw Error('worker_request_identity_changed');
     return page;
   });

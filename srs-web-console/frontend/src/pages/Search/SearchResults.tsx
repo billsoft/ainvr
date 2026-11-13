@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Camera, ChevronLeft, ChevronRight, Play, ThumbsDown, ThumbsUp, X } from 'lucide-react'
+import { Camera, ChevronLeft, ChevronRight, ImageUp, Play, ThumbsDown, ThumbsUp, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { SearchEvidenceImage } from './SearchEvidenceImage'
-import { searchImagePath, searchService, type SearchPageResult, type SearchResult } from '@/api/searchService'
+import { searchImagePath, searchService, type SearchFrame, type SearchPageResult, type SearchQueryKind, type SearchResult } from '@/api/searchService'
 import { evidencePlaybackHref } from '@/features/playbackNavigation'
 import { aiReferenceEnabled } from './aiReference'
 
@@ -37,14 +37,21 @@ function Verification({ value, detail = false, stopped = false }: { value: Searc
     </>}
   </div>
 }
-export function SearchSimilarity({ value }: { value?: number }) {
+export function SearchSimilarity({ value, kind = 'text' }: { value?: number; kind?: SearchQueryKind }) {
+  // A picture-and-description ranking combines two orderings; its score is not a similarity and is not shown.
+  if (kind === 'image_text') return <p className="text-xs text-ink-subtle" title="综合参考图片和文字描述的排序，不是概率或已确认匹配。">图文综合排序</p>
   const valid = typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1.00001
-  return <p className="text-xs tabular-nums text-ink-subtle" title="图文向量的余弦相似度，不是概率或已确认匹配；仅用于辅助比较本次候选。">{valid ? `相似度 ${value.toFixed(4)}` : '相似度暂不可用'}</p>
+  const label = kind === 'image' ? '外观相似度' : '相似度'
+  return <p className="text-xs tabular-nums text-ink-subtle" title={kind === 'image' ? '与参考图片的外观相似程度，不是概率，也不代表是同一个人或同一件物品。' : '图文向量的余弦相似度，不是概率或已确认匹配；仅用于辅助比较本次候选。'}>{valid ? `${label} ${value.toFixed(kind === 'image' ? 3 : 4)}` : '相似度暂不可用'}</p>
 }
 const frameLabels = { match: '命中时刻', before: '较早采样', after: '较晚采样', context: '其他关键时刻' }
 function stamp(value: string) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
-export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyReason, onAccessDenied }: {
+export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyReason, onAccessDenied, queryKind = 'text', onUseImage, pictureBusy }: {
   data: SearchPageResult
+  queryKind?: SearchQueryKind
+  /** Puts this evidence picture into the search conditions; the page does not search until asked. */
+  onUseImage?: (item: SearchResult, frame: SearchFrame) => void
+  pictureBusy?: boolean
   onUpdate: (item: SearchResult) => void
   onMore: () => void
   moreLoading: boolean
@@ -110,14 +117,15 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
         {data.coverage !== 'sampled' && <span className="rounded-full bg-amber-50 px-2 py-1 text-xs text-amber-800">{data.coverage === 'partial' ? '部分覆盖' : '覆盖待确认'}</span>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-ink-subtle">{rankedIds ? '按复核状态排序' : '按图文相似度排序'}</span>
+        <span className="text-xs text-ink-subtle">{rankedIds ? '按复核状态排序' : queryKind === 'image' ? '按外观相似度排序' : queryKind === 'image_text' ? '按相关性排序' : '按图文相似度排序'}</span>
         {aiOn && hasReview && <button type="button" className={action} onClick={reorder}>按复核状态重排已加载候选</button>}
       </div>
     </div>
     <details className="text-xs text-ink-subtle">
       <summary className="flex min-h-9 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1"><span>结果说明</span><span role="status" className="rounded-full bg-surface px-2 py-1">{aiOn ? 'AI 参考分析已开启' : 'AI 参考分析已暂停'}</span></summary>
       <div className="max-w-3xl space-y-2 rounded-lg border border-line bg-surface p-3 leading-relaxed">
-        <p>按图文相似度返回最多 60 条候选，不代表均符合描述。分数不是概率；第一名也可能不匹配。{data.min_similarity === undefined ? '本次不限最低相似度。' : `本次最低相似度 ${data.min_similarity.toFixed(3).replace(/0$/, '')}，低于门槛的候选不显示。`}</p>
+        {queryKind === 'text' ? <p>按图文相似度返回最多 60 条候选，不代表均符合描述。分数不是概率；第一名也可能不匹配。{data.min_similarity === undefined ? '本次不限最低相似度。' : `本次最低相似度 ${data.min_similarity.toFixed(3).replace(/0$/, '')}，低于门槛的候选不显示。`}</p>
+          : <p>按与参考图片的外观相近程度{queryKind === 'image_text' ? '并结合文字描述' : ''}返回最多 60 条相似候选，需人工确认。外观相似不代表是同一个人或同一件物品；同款衣物、物品会一起出现。</p>}
         <p>{coverage}</p>
         <p>{aiOn ? '本次搜索仅对前 5 条候选进行 AI 参考分析；其余候选尚未复核。参考分析未标定，不是概率，不会隐藏候选或代替人工判断。' : '让大模型优先处理告警审核；请人工核对候选与录像。'}</p>
         {aiOn && hasReview && <p>复核已更新，候选顺序保持稳定。手动重排仅调整已加载候选；新加载结果追加到末尾。</p>}
@@ -125,7 +133,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
     </details>
     {!data.items.length && <div className="rounded-xl border border-line bg-surface p-6">
       <h3 className="font-medium">{data.next_cursor ? '本批候选证据已过期或不可用' : data.min_similarity === undefined ? '所选范围内暂未找到相关候选' : '所选范围内，没有候选达到当前相似度要求'}</h3>
-      <p className="mt-2 text-sm text-ink-subtle">{data.next_cursor ? '可继续加载后续候选。' : '可降低最低相似度后重新搜索，扩大时间或摄像头范围，或改用更具体的外观描述。'}</p>
+        <p className="mt-2 text-sm text-ink-subtle">{data.next_cursor ? '可继续加载后续候选。' : queryKind === 'text' ? '可降低最低相似度后重新搜索，扩大时间或摄像头范围，或改用更具体的外观描述。' : '可换一张更清晰的图片、框选目标，或扩大时间与摄像头范围后重新搜索。'}</p>
     </div>}
     {error && error.id !== selectedId && <div role="alert" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
       第 {items.findIndex(i => i.id === error.id) + 1} 条候选的反馈未保存：{error.message}
@@ -148,7 +156,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
             <div className="space-y-2 p-3">
               <p className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-ink"><Camera size={14} className="shrink-0 text-ink-faint" /><span className="truncate" title={item.channel_name}>{item.channel_name}</span></p>
               <p className="text-xs tabular-nums text-ink-subtle">{stamp(cover.captured_at)}</p>
-              <div className="flex flex-wrap items-center justify-between gap-1 border-t border-line pt-2"><SearchSimilarity value={item.similarity} /><span className="text-xs text-ink-faint">{item.kind === 'scene' ? '场景候选' : '目标候选'}</span></div>
+              <div className="flex flex-wrap items-center justify-between gap-1 border-t border-line pt-2"><SearchSimilarity value={item.similarity} kind={queryKind} /><span className="text-xs text-ink-faint">{item.kind === 'scene' ? '场景候选' : '目标候选'}</span></div>
               {aiOn && <Verification value={item.verification} stopped={!!readOnlyReason} />}
             </div>
           </button>
@@ -178,9 +186,12 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
         </div>
         {readOnlyReason ? <p className="rounded-base bg-surface-page p-4 text-sm text-ink-subtle">证据暂不可访问，请重新搜索。</p> : <SearchEvidenceImage bbox={selected.kind === 'object' ? frame.bbox : undefined} key={frame.id} path={searchImagePath(data.search_id, selected.id, frame.id)} alt={`${frameLabels[frame.role]} ${stamp(frame.captured_at)}`}
           className="aspect-video w-full overflow-hidden rounded-lg bg-slate-950" />}
-        <div className="flex flex-wrap items-center justify-between gap-1"><p className="text-xs tabular-nums text-ink-subtle">{frameLabels[frame.role]} · {stamp(frame.captured_at)}</p><SearchSimilarity value={selected.similarity} /></div>
+        <div className="flex flex-wrap items-center justify-between gap-1"><p className="text-xs tabular-nums text-ink-subtle">{frameLabels[frame.role]} · {stamp(frame.captured_at)}</p><SearchSimilarity value={selected.similarity} kind={queryKind} /></div>
         {readOnlyReason ? null : replay ? <Link to={replay} target="_blank" rel="noopener noreferrer" className={`${action} w-full border-primary bg-primary text-white hover:bg-primary`}><Play size={17} />播放前后录像</Link>
           : <p role="status" className="rounded-base bg-surface-page p-3 text-sm text-ink-subtle">{selected.recording.state === 'pending' ? '录像状态待确认；仍可查看保存的证据图片。' : '对应录像不可用，仍可查看保存的证据图片。'}</p>}
+        {!readOnlyReason && onUseImage && <button type="button" className={`${action} w-full`} disabled={pictureBusy} onClick={() => onUseImage(selected, frame)}
+          aria-describedby="search-use-image-hint"><ImageUp size={17} aria-hidden="true" />{pictureBusy ? '正在带入图片…' : '用此图查找'}</button>}
+        {!readOnlyReason && onUseImage && <p id="search-use-image-hint" className="-mt-1 text-xs text-ink-subtle">把当前这张图片带入搜索条件{selected.kind === 'object' && frame.bbox ? '，并预先框选检测到的目标' : ''}；可调整选区后再点击“搜索录像”。</p>}
         <div className="flex flex-wrap items-center gap-2 border-b border-line pb-3"><span className="mr-auto text-xs text-ink-subtle">人工反馈</span><button type="button" className={`${action} ${selected.feedback === 'relevant' ? 'border-primary bg-primary-50 text-primary' : ''}`} disabled={!!savingId || !!readOnlyReason} aria-pressed={selected.feedback === 'relevant'} onClick={() => void feedback(true)}><ThumbsUp size={16} />相关</button>
           <button type="button" className={`${action} ${selected.feedback === 'irrelevant' ? 'border-primary bg-primary-50 text-primary' : ''}`} disabled={!!savingId || !!readOnlyReason} aria-pressed={selected.feedback === 'irrelevant'} onClick={() => void feedback(false)}><ThumbsDown size={16} />不相关</button></div>
         {savingId && <p role="status" className="text-xs text-ink-subtle">{savingId === selectedId ? '正在保存反馈…' : '正在保存另一条候选的反馈，请稍候。'}</p>}

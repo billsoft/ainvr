@@ -175,3 +175,26 @@ it('never lets a client request model verification: the large model is reserved 
     expect(worker.query).toHaveBeenCalledWith(expect.objectContaining({ verify: false }), 'operator');
   } finally { await app.close(); }
 });
+
+it('accepts a picture query only with a valid picture and an authorized scope', async () => {
+  const worker = workerFixture();
+  worker.imageQuery = vi.fn(async () => ({ search_id: searchId, scope, model_version: 'test-v1', coverage: 'sampled' as const, items: [], next_cursor: null }));
+  const { app } = await fixture(true, worker);
+  try {
+    const picture = { query: '', image: Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xd9]).toString('base64'), scope, request_id: searchId };
+    expect((await app.inject({ url: '/search/image', method: 'POST', payload: picture })).statusCode).toBe(200);
+    expect(worker.imageQuery).toHaveBeenCalledWith(picture, 'operator');
+    expect((await app.inject({ url: '/search/image', method: 'POST', payload: { ...picture, image: 'not base64!' } })).statusCode).toBe(400);
+    expect((await app.inject({ url: '/search/image', method: 'POST', payload: { ...picture, image_weight: 0.5 } })).statusCode).toBe(400);
+    const outside = await app.inject({ url: '/search/image', method: 'POST', payload: { ...picture, scope: { ...scope, channel_ids: ['99999999-9999-4999-8999-999999999999'] } } });
+    expect(outside.statusCode).toBe(403);
+    expect(worker.imageQuery).toHaveBeenCalledTimes(1);
+  } finally { await app.close(); }
+});
+it('names a search service without picture support', async () => {
+  const { app } = await fixture(true, workerFixture());
+  try {
+    const r = await app.inject({ url: '/search/image', method: 'POST', payload: { query: '', image: 'AAAAAAAAAAAAAAAAAAAA', scope, request_id: searchId } });
+    expect(r.statusCode).toBe(409); expect(r.json().error.code).toBe('search_image_unsupported');
+  } finally { await app.close(); }
+});

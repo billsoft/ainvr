@@ -19,6 +19,37 @@ export const searchQuerySchema = z.object({
   request_id: z.string().uuid(),
 }).strict();
 export type SearchQuery = z.infer<typeof searchQuerySchema>;
+/** Picture search. The browser sends the part of the picture to search for as one JPEG (base64); a
+ * description is optional. `image_weight` is the picture's share of the ranking and needs a description. */
+export const searchImageMaxBytes = 512 * 1024;
+export const searchImageQuerySchema = z.object({
+  query: z.string().trim().max(256).refine(v => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(v), '描述包含无效字符'),
+  image: z.string().min(16).max(Math.ceil(searchImageMaxBytes / 3) * 4).regex(/^[A-Za-z0-9+/]+={0,2}$/, '图片格式无效'),
+  image_weight: z.number().finite().min(0.2).max(0.8).optional(),
+  scope: searchRangeSchema,
+  request_id: z.string().uuid(),
+}).strict().superRefine((value, ctx) => {
+  if (value.image_weight !== undefined && !value.query) ctx.addIssue({ code: 'custom', message: '只有同时填写描述时才能调整图片与文字的侧重' });
+});
+export type SearchImageQuery = z.infer<typeof searchImageQuerySchema>;
+/** Width and height of a baseline or progressive JPEG, read from its frame header; null when it is not one. */
+export function jpegDimensions(bytes: Buffer): { width: number; height: number } | null {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) return null;
+  let offset = 2;
+  while (offset + 9 < bytes.length) {
+    if (bytes[offset] !== 0xff) return null;
+    const marker = bytes[offset + 1]!;
+    if (marker === 0xff) { offset++; continue; }
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { offset += 2; continue; }
+    const length = bytes.readUInt16BE(offset + 2);
+    if (length < 2) return null;
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc)
+      return { height: bytes.readUInt16BE(offset + 5), width: bytes.readUInt16BE(offset + 7) };
+    if (marker === 0xda || marker === 0xd9) return null;
+    offset += 2 + length;
+  }
+  return null;
+}
 export type SearchScope = z.infer<typeof searchRangeSchema>;
 export function sameSearchScope(left: SearchScope, right: SearchScope): boolean {
   return Date.parse(left.from) === Date.parse(right.from) && Date.parse(left.to) === Date.parse(right.to) &&
@@ -89,6 +120,7 @@ export interface SearchWorker {
   status(): Promise<SearchStatus>;
   coverage(scope: SearchScope, actor: string): Promise<SearchCoverage>;
   query(input: SearchQuery, actor: string): Promise<SearchPage>;
+  imageQuery?(input: SearchImageQuery, actor: string): Promise<SearchPage>;
   page(id: string, cursor: string | undefined, actor: string): Promise<SearchPage | null>;
   result(id: string, resultId: string, actor: string): Promise<z.infer<typeof searchDetailSchema> | null>;
   image(id: string, resultId: string, frameId: string, actor: string): Promise<Buffer | null>;

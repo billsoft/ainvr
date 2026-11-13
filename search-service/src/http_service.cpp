@@ -10,6 +10,7 @@
 #include <set>
 #include <chrono>
 #include <charconv>
+#include <cmath>
 
 namespace ainvr::search {
 namespace {
@@ -50,6 +51,23 @@ Json Body(const httplib::Request& request) {
   if (content != "application/json" && content != "application/json; charset=utf-8")
     throw std::invalid_argument("request_content_type");
   return Parse(request.body);
+}
+Json SampleMetadata(const Sample& sample);
+template <class Items>
+Json ProjectedMatches(const Items& items, bool partial, size_t views, const std::string& model) {
+  Json out = Json::array();
+  for (const auto& hit : items) {
+    auto item = SampleMetadata(hit.sample); item["similarity"] = hit.score;
+    if (views > 1) item["matched_view"] = hit.view;
+    item["evidence_refs"]=Json::array();for(const auto& ref:hit.evidence_refs)item["evidence_refs"].push_back({{"sample_id",ref.id},{"fingerprint",ref.fingerprint}});
+    out.push_back(std::move(item));
+  }
+  // The projection cannot certify coverage of unobserved scenes. The BFF
+  // combines this limitation with persisted sampling coverage, never counts a
+  // successful query alone as complete video coverage.
+  Json result = {{"model_version", model}, {"partial", partial}, {"items", out}};
+  if (views > 1) result["view_layout"] = ainvr::search::kSceneViewLayout;
+  return result;
 }
 Scope ReadScope(const Json& value) {
   Keys(value, {"channel_ids", "from_ms", "to_ms", "limit"});
@@ -140,7 +158,8 @@ template<class Function> httplib::Server::Handler Handle(Function fn) {
     catch (const std::invalid_argument&) { Error(response, "invalid_request", 400); }
     catch (const std::exception& error) {
       const std::string code = error.what();
-      if (code == "search_model_pending") Error(response, "model_pending", 503);
+      if (code == "query_image_invalid") Error(response, "query_image_invalid", 400);
+      else if (code == "search_model_pending") Error(response, "model_pending", 503);
       else if (code == "source_ingestion_paused") { response.set_header("Retry-After", "1"); Error(response, "source_ingestion_paused", 503); }
       else if (code == "source_frame_before_resume") Error(response, "source_frame_before_resume", 409);
       else if (code == "search_busy") { response.set_header("Retry-After", "1"); Error(response, "busy", 429); }
@@ -173,10 +192,7 @@ std::string MatchEngine::ReplaceTrackSlot(const Sample& sample, size_t slot, con
                                          const std::string& token) {
   return projection_.ReplaceTrackSlot(sample, slot, expected, token);
 }
-Json MatchEngine::Match(const std::string& text, const Scope& scope) {
-  std::unique_lock<std::mutex> lock(inference_, std::try_to_lock);
-  if (!lock.owns_lock()) throw std::runtime_error("search_busy");
-  if (!encoder_.Healthy()) throw std::runtime_error("search_encoding_failed");
+std::vector<float> MatchEngine::TextVector(const std::string& text) {
   std::vector<float> vector;
   try {
     if (auto cached = text_cache_.Get(text)) vector = std::move(*cached);
@@ -195,20 +211,36 @@ Json MatchEngine::Match(const std::string& text, const Scope& scope) {
     throw std::runtime_error("search_encoding_failed");
   }
   catch (...) { throw std::runtime_error("search_encoding_failed"); }
-  auto matches = projection_.Query(vector, scope); Json items = Json::array();
+  return vector;
+}
+Json MatchEngine::Match(const std::string& text, const Scope& scope) {
+  std::unique_lock<std::mutex> lock(inference_, std::try_to_lock);
+  if (!lock.owns_lock()) throw std::runtime_error("search_busy");
+  if (!encoder_.Healthy()) throw std::runtime_error("search_encoding_failed");
+  auto matches = projection_.Query(TextVector(text), scope);
   RefineRanking(matches.items, RankRefineOptionsFor(dimensions_));
-  for (const auto& hit : matches.items) {
-    auto item = SampleMetadata(hit.sample); item["similarity"] = hit.score;
-    if (views_ > 1) item["matched_view"] = hit.view;
-    item["evidence_refs"]=Json::array();for(const auto& ref:hit.evidence_refs)item["evidence_refs"].push_back({{"sample_id",ref.id},{"fingerprint",ref.fingerprint}});
-    items.push_back(std::move(item));
-  }
-  // The projection cannot certify coverage of unobserved scenes. The BFF
-  // combines this limitation with persisted sampling coverage, never counts a
-  // successful query alone as complete video coverage.
-  Json result = {{"model_version", model_}, {"partial", matches.partial}, {"items", items}};
-  if (views_ > 1) result["view_layout"] = ainvr::search::kSceneViewLayout;
-  return result;
+  return ProjectedMatches(matches.items, matches.partial, views_, model_);
+}
+Json MatchEngine::MatchVector(std::vector<float> picture, const std::string& text, double image_weight, const Scope& scope) {
+  if (!(image_weight >= 0.2 && image_weight <= 0.8)) throw std::invalid_argument("request_image_weight");
+  // A space with several views per scene sample stores the whole picture first; the query is that whole-picture view.
+  if (picture.size() == dimensions_ * views_ && views_ > 1) picture.resize(dimensions_);
+  if (picture.size() != dimensions_) throw std::runtime_error("query_image_invalid");
+  for (float v : picture) if (!std::isfinite(v)) throw std::runtime_error("query_image_invalid");
+  picture = NormalizeVector(picture, dimensions_);
+  std::unique_lock<std::mutex> lock(inference_, std::try_to_lock);
+  if (!lock.owns_lock()) throw std::runtime_error("search_busy");
+  if (!encoder_.Healthy()) throw std::runtime_error("search_encoding_failed");
+  // Picture-to-picture cosines spread far wider than description scores: the description's relative window
+  // would cut almost everything after the best hit, so pictures keep the near-duplicate collapse only.
+  RankRefineOptions picture_options; picture_options.relative_window = 0;
+  auto by_picture = projection_.Query(picture, scope);
+  RefineRanking(by_picture.items, picture_options);
+  if (text.empty()) return ProjectedMatches(by_picture.items, by_picture.partial, views_, model_);
+  auto by_text = projection_.Query(TextVector(text), scope);
+  RefineRanking(by_text.items, RankRefineOptionsFor(dimensions_));
+  return ProjectedMatches(FuseRankings(by_picture.items, by_text.items, image_weight, scope.limit),
+                          by_picture.partial || by_text.partial, views_, model_);
 }
 HttpService::HttpService(HistoryMongo* history, HttpAccess access, MatchEngine* engine)
     : history_(history), access_(std::move(access)), engine_(engine) {
@@ -324,7 +356,27 @@ void HttpService::Register(httplib::Server& server) {
       {"model_version", engine_ ? Json(engine_->ModelVersion()) : Json(nullptr)}});
   }));
   server.Post("/v1/match", Handle([this](const auto& request, auto& response) {
-    auto body = Body(request); Keys(body, {"query", "scope"});
+    auto body = Body(request);
+    if (body.is_object() && body.contains("vector")) {
+      // Picture alone, or picture with a description and the picture's share of the ranking.
+      if (body.contains("query")) Keys(body, {"query", "vector", "image_weight", "scope"}); else Keys(body, {"vector", "scope"});
+      const std::string text = body.contains("query") ? Text(body.at("query"), 1024, true) : std::string();
+      double weight = 0.5;
+      if (body.contains("image_weight")) {
+        if (!body.at("image_weight").is_number()) throw std::invalid_argument("request_image_weight");
+        weight = body.at("image_weight").template get<double>();
+      }
+      const auto& values = body.at("vector");
+      if (!values.is_array() || values.empty() || values.size() > 8192) throw std::runtime_error("query_image_invalid");
+      std::vector<float> picture; picture.reserve(values.size());
+      for (const auto& value : values) { if (!value.is_number()) throw std::runtime_error("query_image_invalid"); picture.push_back(value.template get<float>()); }
+      auto scope = ReadScope(body.at("scope"));
+      if (!engine_) throw std::runtime_error("search_model_pending");
+      if (!engine_->Ready()) throw std::runtime_error("search_index_not_loaded");
+      Send(response, engine_->MatchVector(std::move(picture), text, weight, scope));
+      return;
+    }
+    Keys(body, {"query", "scope"});
     auto text = Text(body.at("query"), 1024, true); auto scope = ReadScope(body.at("scope"));
     if (!engine_) throw std::runtime_error("search_model_pending");
     if (!engine_->Ready()) throw std::runtime_error("search_index_not_loaded");

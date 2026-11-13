@@ -89,7 +89,7 @@ const nativeSessionSchema = z.object({
   next_offset: z.number().int().min(1).max(60).nullable(),
 }).strict();
 export class SearchNativeError extends Error {
-  constructor(readonly code: 'scope_denied' | 'unavailable' | 'model_pending' | 'storage_unavailable' | 'busy' | 'not_found' | 'invalid_response' | 'cancelled' | 'conflict' | 'capacity' | 'query_invalid_utf8' | 'query_too_large' | 'query_too_long' | 'query_unrepresentable') { super(code); }
+  constructor(readonly code: 'image_invalid' | 'image_unsupported' | 'image_unavailable' | 'scope_denied' | 'unavailable' | 'model_pending' | 'storage_unavailable' | 'busy' | 'not_found' | 'invalid_response' | 'cancelled' | 'conflict' | 'capacity' | 'query_invalid_utf8' | 'query_too_large' | 'query_too_long' | 'query_unrepresentable') { super(code); }
 }
 const statusSchema = z.object({
   ready: z.boolean(), reason: z.enum(['disabled', 'config_pending', 'model_pending', 'service_unavailable', 'storage_unavailable']).nullable(),
@@ -133,6 +133,7 @@ export class SearchNativeClient {
       if (error.success && response.status === 400) {
         const code = z.enum(['query_invalid_utf8', 'query_too_large', 'query_too_long', 'query_unrepresentable']).safeParse(error.data.error);
         if (code.success) throw new SearchNativeError(code.data);
+        if (error.data.error === 'query_image_invalid') throw new SearchNativeError('image_invalid');
       }
       if (error.success && response.status === 503 && ['model_pending', 'storage_unavailable'].includes(error.data.error))
         throw new SearchNativeError(error.data.error as 'model_pending' | 'storage_unavailable');
@@ -301,9 +302,18 @@ export class SearchNativeClient {
   }
   async match(query: string, scope: SearchScope, expectedModel: string): Promise<NativeMatch> {
     model.parse(expectedModel); z.string().trim().min(1).max(256).parse(query);
+    return this.matched({ query }, scope, expectedModel);
+  }
+  /** Picture query: the picture's vector in the current space, optionally ranked together with a description. */
+  async matchImage(vector: number[], query: string, imageWeight: number | undefined, scope: SearchScope, expectedModel: string): Promise<NativeMatch> {
+    model.parse(expectedModel); z.string().trim().max(256).parse(query);
+    if (!z.array(z.number().finite()).min(1).max(8192).safeParse(vector).success) throw new SearchNativeError('image_invalid');
+    return this.matched({ vector, ...(query ? { query, image_weight: imageWeight ?? 0.5 } : {}) }, scope, expectedModel);
+  }
+  private async matched(request: Record<string, unknown>, scope: SearchScope, expectedModel: string): Promise<NativeMatch> {
     const input = nativeScope(scope);
     try {
-      const raw = nativeMatchSchema.parse(await this.json('/v1/match', { query, scope: input }));
+      const raw = nativeMatchSchema.parse(await this.json('/v1/match', { ...request, scope: input }));
       if (raw.model_version !== expectedModel) throw new Error();
       const ids = new Set<string>();
       const items = raw.items.map(row => {

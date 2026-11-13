@@ -15,14 +15,28 @@ export const searchReencodeRequestSchema = z.object({
     context.addIssue({ code: 'custom', message: 'reencode_target_identity_mismatch' });
 });
 export type SearchReencodeRequest = z.infer<typeof searchReencodeRequestSchema>;
+/** A model space may store several views per picture (SigLIP2 base: whole picture plus three squares), concatenated
+ * and each normalised on its own. The vector is valid when it splits into 1..8 equal views of unit length
+ * (each at least 64 values when there are several). */
+function unitViews(vector: number[]): boolean {
+  const square = vector.reduce((sum, item) => sum + item * item, 0), views = Math.round(square);
+  if (views < 1 || views > 8 || vector.length % views || Math.abs(square - views) > .001 * views) return false;
+  const size = vector.length / views;
+  // A real view is a full embedding (hundreds of values); short runs of 1s are not views.
+  if (views > 1 && size < 64) return false;
+  for (let view = 0; view < views; view++) {
+    const part = vector.slice(view * size, (view + 1) * size).reduce((sum, item) => sum + item * item, 0);
+    if (Math.abs(part - 1) > .001) return false;
+  }
+  return true;
+}
 export const searchReencodeResultSchema = searchReencodeRequestSchema.innerType().extend({
   input_kind: z.literal('retained-jpeg'),
   preprocessing_version: z.literal('jpeg-jpu-full-bt601-gles-area256-v1'),
   image_width: z.number().int().min(2).max(8192), image_height: z.number().int().min(2).max(8192),
   dimensions: z.number().int().min(1).max(4096), vector: z.array(z.number().finite().min(-1.00001).max(1.00001)).min(1).max(4096),
 }).strict().superRefine((value, context) => {
-  const square = value.vector.reduce((sum, item) => sum + item * item, 0);
-  if (value.dimensions !== value.vector.length || Math.abs(square - 1) > .001 ||
+  if (value.dimensions !== value.vector.length || !unitViews(value.vector) ||
       value.target.model_version !== `search-v1-${value.target.package_sha256}`)
     context.addIssue({ code: 'custom', message: 'reencode_vector_contract_invalid' });
 });

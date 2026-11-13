@@ -111,3 +111,14 @@ test('reencode cancellation propagates the signal without a second request', asy
   }) as typeof fetch, () => now);
   await assert.rejects(client.encode({ request: request(), dimensions: 3, jpeg, signal: controller.signal }), code('cancelled')); assert.equal(calls, 1);
 });
+
+test('reencode accepts a several-view vector whose views are each unit length, and nothing else', async () => {
+  const view = (first: number) => Array.from({ length: 64 }, (_, i) => i === 0 ? first : 0);
+  const two = [...view(1), ...view(1)];
+  const ok = new SearchReencodeAiClient(connection, (async () => json({ ...reply(), dimensions: 128, vector: two })) as typeof fetch, () => now);
+  assert.deepEqual((await ok.encode({ request: request(), dimensions: 128, jpeg })).vector, two);
+  for (const vector of [[1, 1, 0, 0], [...view(1), ...view(0.5)], [...view(2), ...view(0)], [...view(1), ...view(1), 0]]) {
+    const bad = new SearchReencodeAiClient(connection, (async () => json({ ...reply(), dimensions: vector.length, vector })) as typeof fetch, () => now);
+    await assert.rejects(bad.encode({ request: request(), dimensions: vector.length, jpeg }), code('invalid_result'));
+  }
+});

@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import type { SearchSourceChannel } from './searchSourceCatalog.js';
-import { sameSearchScope, searchPageSchema, searchQuerySchema, searchRangeSchema, searchResultSchema,
-  type SearchCoverage, type SearchPage, type SearchQuery, type SearchResult, type SearchScope, type SearchWorker } from './searchContract.js';
-import { SearchNativeError, type NativeCoverageRange, type NativeSearchSession, type SearchNativeClient } from './searchNativeClient.js';
+import { createHash } from 'node:crypto';
+import { jpegDimensions, sameSearchScope, searchImageMaxBytes, searchImageQuerySchema, searchPageSchema, searchQuerySchema, searchRangeSchema, searchResultSchema,
+  type SearchCoverage, type SearchImageQuery, type SearchPage, type SearchQuery, type SearchResult, type SearchScope, type SearchWorker } from './searchContract.js';
+import { SearchNativeError, type NativeCoverageRange, type NativeMatch, type NativeSearchSession, type SearchNativeClient } from './searchNativeClient.js';
+import type { SearchImageEmbedder } from './searchImageEmbedder.js';
 
-type NativePort = Pick<SearchNativeClient, 'status' | 'match' | 'coverage' | 'image' | 'searchImage' | 'beginSearch' | 'publishSearch' | 'readSearch' | 'searchFeedback' | 'cancelSearch'>;
+type NativePort = Pick<SearchNativeClient, 'status' | 'match' | 'matchImage' | 'coverage' | 'image' | 'searchImage' | 'beginSearch' | 'publishSearch' | 'readSearch' | 'searchFeedback' | 'cancelSearch'>;
 type Kind = 'object' | 'scene';
 export interface PersistentSearchOptions {
   native: NativePort;
@@ -24,6 +26,8 @@ export interface PersistentSearchOptions {
   /** Must honor signal for remote I/O. One shared page budget prevents a slow
    * recorder from delaying the first search results. */
   recordingAvailability?: (input: { channelId: string; from: string; to: string; actor: string; signal: AbortSignal }) => Promise<'available' | 'missing' | 'pending'>;
+  /** Query picture to a vector of the current space (the AI service's evidence image encoder). Without it pictures are unsupported. */
+  imageEmbedder?: SearchImageEmbedder;
 }
 export class PersistentSearchError extends Error {
   constructor(readonly code: string, readonly statusCode: number, message: string) { super(message); }
@@ -36,6 +40,9 @@ function translated(error: unknown): never {
       throw new PersistentSearchError(error.code, 400, '搜索描述过长，请保留关键特征后重试');
     if (error.code === 'query_invalid_utf8' || error.code === 'query_unrepresentable')
       throw new PersistentSearchError(error.code, 400, '当前模型无法编码这段描述，请使用普通文字改写后重试');
+    if (error.code === 'image_invalid') throw new PersistentSearchError('search_image_invalid', 400, '这张图片无法用于搜索，请换一张图片或重新框选');
+    if (error.code === 'image_unsupported') throw new PersistentSearchError('search_image_unsupported', 409, '当前搜索模型不支持以图搜索，仍可使用文字描述搜索');
+    if (error.code === 'image_unavailable') throw new PersistentSearchError('search_image_unavailable', 503, '图片识别暂不可用，请稍后重试，或改用文字描述搜索');
     if (error.code === 'busy') throw new PersistentSearchError('search_busy', 429, '搜索服务繁忙，请稍后重试');
     if (error.code === 'capacity') throw new PersistentSearchError('search_capacity', 429, '近期搜索数量已达上限，请稍后重试');
     if (error.code === 'cancelled') throw new PersistentSearchError('search_cancelled', 410, '搜索已取消，请重新搜索');
@@ -138,9 +145,34 @@ export class PersistentSearchWorker implements SearchWorker {
     } catch (error) { return translated(error); }
   }
   async query(raw: SearchQuery, actor: string): Promise<SearchPage> {
+    try {
+      const input = searchQuerySchema.parse(raw);
+      return await this.execute(input, actor, model => this.options.native.match(input.query, input.scope, model));
+    } catch (error) { return translated(error); }
+  }
+  /** Picture search goes through the same admission, persisted session and projection as a description.
+   * The session stores digests of the picture and description, never the picture: the shortlist is persisted,
+   * so pages and feedback never need the picture again, and a retried request with another picture conflicts. */
+  async imageQuery(raw: SearchImageQuery, actor: string): Promise<SearchPage> {
+    try {
+      const input = searchImageQuerySchema.parse(raw);
+      const image = Buffer.from(input.image, 'base64');
+      const size = jpegDimensions(image);
+      if (image.length > searchImageMaxBytes || !size || size.width < 16 || size.height < 16 || size.width % 2 || size.height % 2 || size.width > 4096 || size.height > 4096)
+        throw new SearchNativeError('image_invalid');
+      const digest = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
+      const weight = input.query ? input.image_weight ?? 0.5 : undefined;
+      const identity = `image:${digest(image)}${input.query ? `:text:${digest(input.query)}:w:${String(weight)}` : ''}`;
+      const stored: SearchQuery = { query: identity, scope: input.scope, verify: false, request_id: input.request_id };
+      const embed = this.options.imageEmbedder;
+      if (!embed) throw new SearchNativeError('image_unsupported');
+      return await this.execute(stored, actor, async model => this.options.native.matchImage(await embed(image, model), input.query, weight, input.scope, model));
+    } catch (error) { return translated(error); }
+  }
+  private async execute(input: SearchQuery, actor: string, match: (model: string) => Promise<NativeMatch>): Promise<SearchPage> {
     let checking = false, admitted = false;
     try {
-      const input = searchQuerySchema.parse(raw); actorSchema.parse(actor);
+      actorSchema.parse(actor);
       if (this.checkingQueryActors.has(actor) || this.activeQueryActors.has(actor) || this.checkingQueryActors.size >= 8)
         throw new PersistentSearchError('search_busy', 429, '搜索服务繁忙，请稍后重试');
       this.checkingQueryActors.add(actor); checking = true;
@@ -164,7 +196,7 @@ export class PersistentSearchWorker implements SearchWorker {
       snapshot = await this.options.native.readSearch(input.request_id, actor);
       if (!snapshot || snapshot.version !== version) throw expired();
       if (!snapshot.published) {
-        const hits = await this.options.native.match(input.query, input.scope, status.model_version);
+        const hits = await match(status.model_version);
         const ranges = await this.coverageRanges(input.scope, status.model_version);
         let coverage = ranges === null ? 'unknown' : await this.classify(input.scope, actor, ranges);
         if (hits.partial && coverage === 'sampled') coverage = 'partial';
@@ -179,8 +211,7 @@ export class PersistentSearchWorker implements SearchWorker {
       if (!page.published || page.version !== version || !sameSearchScope(page.scope, input.scope)) throw new Error('invalid_search_publication');
       if (page.verify) this.wakeVerification();
       return await this.project(page, actor);
-    } catch (error) { return translated(error); }
-    finally {
+    } finally {
       if (checking) this.checkingQueryActors.delete(actor);
       if (admitted) this.activeQueryActors.delete(actor);
     }

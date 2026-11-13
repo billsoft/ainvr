@@ -50,6 +50,12 @@ class MatchEngine {
   std::string ReplaceTrackSlot(const Sample& sample, size_t slot, const std::string& expected_fingerprint,
                                const std::string& replacement_token);
   nlohmann::json Match(const std::string& text, const Scope& scope);
+  // Picture query: the picture's vector in this space, computed by the AI service from the same preprocessing as
+  // the sampled evidence (whole-picture view first when the space stores several views). With a description the two
+  // rankings are fused by rank (FuseRankings); `image_weight` is the picture's share.
+  nlohmann::json MatchVector(std::vector<float> picture, const std::string& text, double image_weight, const Scope& scope);
+  size_t Dimensions() const { return dimensions_; }
+  size_t Views() const { return views_; }
   const std::string& ModelVersion() const { return model_; }
   bool Healthy() const { return encoder_.Healthy(); }
   bool Ready() const { return loaded_.load() && Healthy(); }
@@ -61,6 +67,7 @@ class MatchEngine {
   BoundedTextEmbeddingCache text_cache_;
   std::mutex inference_;
   std::atomic<bool> loaded_{false};
+  std::vector<float> TextVector(const std::string& text);   // caller holds inference_
 };
 
 struct ProducerSource {
