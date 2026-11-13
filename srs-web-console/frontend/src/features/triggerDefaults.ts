@@ -7,6 +7,7 @@ export const defaultTriggerReview=()=>({enabled:true,description:DEFAULT_REVIEW_
 export function triggerDefinitionInput(t:TriggerDefinition):TriggerDefinitionInput {
  return structuredClone({trigger_id:t.trigger_id,name:t.name,behavior:t.behavior,labels:t.labels,
   ...(t.target_model?{target_model:t.target_model}:{}),duration_ms:t.duration_ms,
+  ...(t.region_state?{region_state:t.region_state}:{}),...(t.group?{group:t.group}:{}),
   ...(t.approach_width_percent!==undefined?{approach_width_percent:t.approach_width_percent}:{}),
   alarm_enabled:t.alarm_enabled,state:t.state,schedule:t.schedule,...(t.review?{review:t.review}:{})})
 }

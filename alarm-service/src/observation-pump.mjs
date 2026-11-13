@@ -50,6 +50,7 @@ export function observationEnvelope(sample,rules){
   const observations=detectionOnly?sample.detections.map((d,i)=>({
     track_id:`detection:${sample.producer_id}:${sample.offset}:${i}`,identity_kind:'detection',
     label_id:d.label_id,bbox:d.bbox,state:'confirmed',observation:'detected',last_observed_pts_ns:sample.source_pts_ns,
+    ...(d.attributes!==undefined?{attributes:d.attributes}:{}),...(d.source_node!==undefined?{source_node:d.source_node}:{}),
   })):sample.tracks;
   const tracks=observations.map(t=>({...t,...(t.display_kind==='low_confidence'?{event_eligible:false}:{})}));
   const frame=validateFrame({schema_version:'1.0',channel_id:sample.channel_id,input_stream_id:binding.input_stream_id,
@@ -59,6 +60,10 @@ export function observationEnvelope(sample,rules){
     source:{width:sample.width,height:sample.height,coordinate_space:'source_pixels',geometry_revision:binding.geometry_revision},
     model:{id:sample.model.id,label_map_version:labelVersion,...(compatible.length?{compatible_label_versions:compatible}:{})},observation_mode:detectionOnly?'detections':'tracks',tracks,
     ...(sample.gap===true?{gap:true}:{}),
+    ...(sample.observation_status!==undefined?{observation_status:sample.observation_status}:{}),
+    ...(sample.source_pts_valid!==undefined?{source_pts_valid:sample.source_pts_valid}:{}),
+    ...(sample.attribute_delivery!==undefined?{attribute_delivery:sample.attribute_delivery}:{}),
+    ...(sample.region_observations!==undefined?{region_observations:sample.region_observations}:{}),
     ...(sample.evidence_delivery?{evidence_delivery:sample.evidence_delivery}:{})});
   if(frame.tracks.some(t=>!labels.some(l=>l.label_id===t.label_id)))throw Error('Unknown track label');
   return {envelope:{schema_version:'1.0',producer_id:sample.producer_id,offset:sample.offset,frame}};

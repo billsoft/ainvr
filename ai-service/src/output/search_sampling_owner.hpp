@@ -22,6 +22,8 @@ struct SearchSamplingReceipt {
   enum class Result { Committed, Rejected, Unknown };
   Result result = Result::Unknown;
   std::string fingerprint, receipt_key;
+  // Diagnostic only. Only an explicit store response may claim FailRejected.
+  SearchCoverageLedger::GapCause rejection_cause = SearchCoverageLedger::GapCause::FailSubmitRejected;
 };
 class SearchSamplingOperation {
  public:

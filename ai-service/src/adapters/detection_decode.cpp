@@ -35,6 +35,64 @@ std::pair<int64_t,int64_t> Matrix(const DenseTensor& t){
 DetectionDecodeStats GetDetectionDecodeStats() {
   return {clamped_probabilities.load(),clamped_distances.load(),rejected_geometry.load()};
 }
+std::vector<ai_service::Detection> DecodeYolo26Pose(const DenseTensor& t,
+    const p::ScaleInfo& s,const std::string& source_model_sha256,const DetectionOptions& o) {
+  Validate(s,o);
+  if(source_model_sha256.size()!=64 || !std::all_of(source_model_sha256.begin(),source_model_sha256.end(),
+      [](char ch){return (ch>='0'&&ch<='9')||(ch>='a'&&ch<='f');}))
+    throw std::invalid_argument("Pose17 requires its validated source model SHA256");
+  if(t.shape!=std::vector<int64_t>{1,300,57} || s.target_w!=640 || s.target_h!=640)
+    throw std::invalid_argument("Pose17 requires [1,300,57] and a 640 letterbox");
+  Matrix(t); // Exact length and finite checks include even suppressed rows.
+  const auto expected=p::compute_scale(s.orig_w,s.orig_h,640,640);
+  if(std::abs(s.scale-expected.scale)>1e-9 || s.pad_left!=expected.pad_left ||
+      s.pad_top!=expected.pad_top || s.new_w!=expected.new_w || s.new_h!=expected.new_h)
+    throw std::invalid_argument("Pose17 scale must describe centered letterbox preprocessing");
+  std::vector<ai_service::Detection> result;
+  for(int row=0;row<300;++row) {
+    const auto* v=t.values.data()+row*57;
+    const double probability=Probability(v[4]);
+    if(v[5]!=0)throw std::invalid_argument("Pose17 only supports the person class");
+    std::array<double,17> visibility;
+    for(int k=0;k<17;++k)visibility[k]=Probability(v[6+k*3+2]);
+    if(probability<o.confidence)continue;
+    if(v[2]<=v[0]||v[3]<=v[1]){++rejected_geometry;continue;}
+    ai_service::Detection d;d.class_id=0;d.class_name="person";d.confidence=probability;
+    d.bbox=p::xyxy2xywh(p::scale_boxes({p::Box{v[0],v[1],v[2],v[3]}},s))[0];
+    if(d.bbox[2]<=0||d.bbox[3]<=0){++rejected_geometry;continue;}
+    auto points=nlohmann::json::array();
+    // Keep all 17 source coordinates, but never attest anatomy in padding or
+    // outside the image. Do not clamp a high-confidence joint onto an edge.
+    for(int k=0;k<17;++k) {
+      const double x=(v[6+k*3]-s.pad_left)/s.scale;
+      const double y=(v[6+k*3+1]-s.pad_top)/s.scale;
+      const bool in_image=v[6+k*3]>=s.pad_left&&v[6+k*3]<=s.pad_left+s.new_w&&
+          v[6+k*3+1]>=s.pad_top&&v[6+k*3+1]<=s.pad_top+s.new_h&&
+          x>=0&&x<=s.orig_w&&y>=0&&y<=s.orig_h;
+      const double score=in_image?visibility[k]:0;
+      points.push_back({{"x",std::round(x*100)/100},{"y",std::round(y*100)/100},
+          {"score",score},{"visible",score>=0.5?1:0}});
+    }
+    d.model_extra["attributes"]["pose"]={{"schema_version","1.0"},
+      {"type","keypoints"},{"status","observed"},{"layout","coco17"},
+      {"coordinate_space","original_image"},
+      {"image_size",{s.orig_w,s.orig_h}},{"visibility_threshold",0.5},
+      {"source_model_sha256",source_model_sha256},{"points",std::move(points)}};
+    if(d.model_extra.at("attributes").dump().size()>2048) {
+      for(auto& point:d.model_extra["attributes"]["pose"]["points"]) {
+        point["x"]=std::round(point.at("x").get<double>());
+        point["y"]=std::round(point.at("y").get<double>());
+      }
+      if(d.model_extra.at("attributes").dump().size()>2048)
+        throw std::invalid_argument("Pose17 attributes exceed the bounded wire budget");
+    }
+    result.push_back(std::move(d));
+  }
+  // The compiled head is already end-to-end. Do not apply a second NMS.
+  std::stable_sort(result.begin(),result.end(),[](const auto& a,const auto& b){return a.confidence>b.confidence;});
+  if(result.size()>size_t(o.maximum))result.resize(o.maximum);
+  return result;
+}
 std::vector<ai_service::Detection> DecodeScrfd(const std::vector<DenseTensor>& outputs,const p::ScaleInfo& s,const DetectionOptions& o){
   Validate(s,o);if(outputs.size()!=9||s.target_w%32||s.target_h%32)throw std::invalid_argument("SCRFD requires nine outputs and input dimensions divisible by 32");
   // Compiler output ordering may differ. Bind only unambiguous [anchors,columns]

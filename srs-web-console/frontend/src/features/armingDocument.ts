@@ -41,6 +41,22 @@ export function readArmingSnapshot(sourceId:string,geometryRevision:string,docum
 /** API saves the complete source document, never the draft's changed-row delta.
  * An unchanged assignment retains its label contract. Selecting a new processor
  * requires an explicitly observed catalog version, not an inferred latest one. */
+/** Label catalogue versions for selections the operator did not reopen. Adding a model
+ * to a channel issues a new catalogue; a selection whose targets all still exist in it
+ * keeps working and follows the new version. Anything else keeps its stored version, so
+ * the server still refuses it and the operator re-confirms that one selection. */
+export function currentLabelVersions(snapshot:ArmingSnapshot,
+ sources:{channel_id:string;input_stream_id:string;geometry_revision:string;label_map_version:string;labels:{label_id:string}[]}[],
+ triggerLabels:(triggerId:string)=>string[]|undefined,counterLabels:(counterId:string)=>string[]|undefined):Record<string,string>{
+ const current=(processorId:string,ids:string[]|undefined)=>{
+  const source=sources.find(s=>s.channel_id===processorId&&s.input_stream_id===snapshot.sourceId&&s.geometry_revision===snapshot.geometryRevision)
+  return source&&ids?.length&&ids.every(id=>source.labels.some(l=>l.label_id===id))?source.label_map_version:undefined
+ }
+ const versions:Record<string,string>={}
+ for(const a of snapshot.assignments){const v=current(a.processorId,triggerLabels(a.triggerId));if(v)versions[a.id]=v}
+ for(const b of snapshot.counterBindings??[]){const v=current(b.processorId,counterLabels(b.counterId));if(v)versions[b.id]=v}
+ return versions
+}
 export function buildArmingRequest(snapshot:ArmingSnapshot,base:ArmingDocument|null,labelVersions:Record<string,string>={},resetGeometry=false):ArmingSaveRequest{
  if(base&&(base.source_id!==snapshot.sourceId||(!resetGeometry&&base.geometry_revision!==snapshot.geometryRevision)||base.revision!==snapshot.revision))throw Error('布防版本已变化，请重新读取')
  if(resetGeometry&&(!base||base.geometry_revision===snapshot.geometryRevision||snapshot.counterBindings.some(b=>base.counter_bindings?.some(old=>old.binding_id===b.id))||

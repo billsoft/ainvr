@@ -25,6 +25,12 @@ inline nlohmann::json RuntimeLabelCatalog(const config::ModelConfig& cfg,
         {"description",yoloe?loaded_names[i]:std::string()}});
     }
   }
-  return {{"schema_version","1.0"},{"adapter",cfg.adapter},{"labels",labels}};
+  nlohmann::json catalog={{"schema_version","1.0"},{"adapter",cfg.adapter},{"labels",labels}};
+  // Person remains one detection label. Keypoints are an attached observation,
+  // never 17 labels or a second face-landmark channel.
+  if(cfg.adapter=="yolo26_pose_bpu")catalog["attributes"]={{"pose",{
+      {"schema_version","1.0"},{"type","keypoints"},{"layout","coco17"},
+      {"count",17},{"coordinate_space","original_image"},{"point_fields",{"x","y","score"}}}}};
+  return catalog;
 }
 }

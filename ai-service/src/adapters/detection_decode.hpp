@@ -10,6 +10,12 @@ struct DetectionDecodeStats {
 };
 // Process totals; malformed shapes, non-finite values and invalid classes remain fatal.
 DetectionDecodeStats GetDetectionDecodeStats();
+// Exact [1,300,57]: person boxes followed by COCO17 (x,y,visibility score).
+// Versioned attributes.pose uses original-image coordinates; landmarks stays
+// absent. This is a frame observation, not a fall/action classification.
+std::vector<ai_service::Detection> DecodeYolo26Pose(const DenseTensor& output,
+    const ai_service::pipeline::ScaleInfo& scale,const std::string& source_model_sha256,
+    const DetectionOptions& options={});
 std::vector<ai_service::Detection> DecodeScrfd(const std::vector<DenseTensor>& outputs,
     const ai_service::pipeline::ScaleInfo& scale,const DetectionOptions& options={});
 // Explicit contract: each row is [x1,y1,x2,y2,confidence,class_id], already NMSed.

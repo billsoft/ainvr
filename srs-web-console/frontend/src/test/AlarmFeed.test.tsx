@@ -107,7 +107,7 @@ it('the detail sheet shows the stages, jumps to the recording and confirms with 
 })
 it('the side panel shows today by level',async()=>{
   await open()
-  const panel=screen.getByRole('complementary',{name:'今日概况'})
+  const panel=screen.getByRole('complementary',{name:'今日空间行为概况'})
   await waitFor(()=>expect(panel).toHaveTextContent('穿过4'))
   expect(panel).toHaveTextContent('出现23')
 })

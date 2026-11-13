@@ -247,6 +247,17 @@ class ReviewFrameCache {
   // Explicit removal from channels disables capture; a lease timeout cannot.
   for(auto& c:policy_.value("channels",Json::array()))if(c==channel)return true;return false;
  }
+ // Region absence and recovery are proved by the scene, including an empty
+ // scene. Keep the existing target-only budget on channels without region rules.
+ bool NeedsFrame(const std::string& channel,const FrameResult& result){
+  if(HasReviewVisualTarget(result))return true;
+  if(root_.empty())return false;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if(!policy_.is_object())return false;
+  const auto channels=policy_.find("region_channels");
+  if(channels==policy_.end()||!channels->is_array())return false;
+  return std::any_of(channels->begin(),channels->end(),[&](const Json& c){return c.is_string()&&c==channel;});
+ }
  // Receipt becomes true only after BOTH files and their directory are durable.
  // Unsaturated admission does not wait for rendering/storage; the observation
  // writer owns the wait. A full queue rejects explicitly, never overcommits RAM.

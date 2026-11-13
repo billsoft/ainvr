@@ -50,13 +50,13 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
  });
  app.setErrorHandler((e,_req,reply)=>reply.code(e instanceof AlarmConfigError?e.statusCode:503).send({error:{code:e instanceof AlarmConfigError?e.code:'flow_unavailable',message:e instanceof AlarmConfigError?e.message:'流量服务暂不可用，请稍后重试'}}));
  const store=()=>options.store!;
- async function analyse(series:unknown[],extra:Record<string,unknown>):Promise<SeriesResult[]>{
+ async function analyse(series:unknown[],extra:Record<string,unknown>,actor:string):Promise<SeriesResult[]>{
   if(!series.length)return [];
   const config=await options.connection();if(!config)throw new AlarmConfigError('flow_unavailable','分析服务尚未配置',503);
   const out:SeriesResult[]=[];
   for(let i=0;i<series.length;i+=100){
    const response=await fetch(endpoint(config,'/v1/flow/query'),{method:'POST',redirect:'error',signal:AbortSignal.timeout(config.timeoutMs),
-    headers:{authorization:`Bearer ${config.apiToken}`,'content-type':'application/json'},body:JSON.stringify({series:series.slice(i,i+100),...extra})});
+    headers:{authorization:`Bearer ${config.apiToken}`,'content-type':'application/json','x-ainvr-actor':actor},body:JSON.stringify({series:series.slice(i,i+100),...extra})});
    const body=await limitedJson(response) as {items?:SeriesResult[];error?:{code?:string;message?:string}};
    if(!response.ok){if(response.status===422)throw new AlarmConfigError(body.error?.code??'invalid_query',body.error?.message??'查询条件无效');throw new AlarmConfigError('flow_unavailable','分析服务查询失败，未取得统计结果',502);}
    out.push(...(body.items??[]));
@@ -109,7 +109,7 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
    if(!config)throw new AlarmConfigError('flow_unavailable','计数器已停止计数，历史记录暂未清除，请稍后重试删除',503);
    for(let attempt=0;attempt<3;attempt++){
     const response=await fetch(endpoint(config,'/v1/flow/purge'),{method:'POST',redirect:'error',signal:AbortSignal.timeout(config.timeoutMs),
-     headers:{authorization:`Bearer ${config.apiToken}`,'content-type':'application/json'},body:JSON.stringify({counter_id:id,rule_ids:binding_ids})});
+     headers:{authorization:`Bearer ${config.apiToken}`,'content-type':'application/json','x-ainvr-actor':actors.get(req)!},body:JSON.stringify({counter_id:id,rule_ids:binding_ids})});
     if(response.ok)break;
     const body=await response.json().catch(()=>null) as {error?:{code?:string}}|null;
     if(response.status===503&&body?.error?.code==='consumer_busy'&&attempt<2){
@@ -145,7 +145,7 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
   const series=counters.flatMap(({counter,bindings,definitions})=>bindings.flatMap(row=>outputsOf(counter).flatMap(o=>seriesOf(counter,row,definitions,o,window))));
   if(body.totals_only!==undefined&&typeof body.totals_only!=='boolean')bad('查询参数无效');
   const [rawResults,arming]=await Promise.all([
-   analyse(series,{bucket:body.bucket??null,timezone:body.timezone??'UTC',totals_only:body.totals_only===true}),
+   analyse(series,{bucket:body.bucket??null,timezone:body.timezone??'UTC',totals_only:body.totals_only===true},actors.get(req)!),
    body.totals_only===true||!series.length||typeof store().armingHistory!=='function'?Promise.resolve([]):
     store().armingHistory([...new Set(counters.flatMap(c=>c.bindings.map(b=>b.source_id)))],window),
   ]);
@@ -177,7 +177,7 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
   if(!outputsOf(counter).includes(body.output as Output))bad('此计数器只统计一个方向');
   const config=await options.connection();if(!config)throw new AlarmConfigError('flow_unavailable','分析服务尚未配置',503);
   const response=await fetch(endpoint(config,'/v1/flow/query'),{method:'POST',redirect:'error',signal:AbortSignal.timeout(config.timeoutMs),
-   headers:{authorization:`Bearer ${config.apiToken}`,'content-type':'application/json'},
+   headers:{authorization:`Bearer ${config.apiToken}`,'content-type':'application/json','x-ainvr-actor':actors.get(req)!},
    body:JSON.stringify({series:(()=>{const list=seriesOf(counter,row,definitions,body.output as Output,window).map(({grace:_,...s})=>s);return list.length?list:bad('这段时间此热区没有计数')})(),detail:true,...(body.plate!==undefined?{plate:body.plate}:{}),...(body.vehicle_state!==undefined?{vehicle_state:body.vehicle_state}:{}),...(body.cursor?{cursor:body.cursor}:{}),limit:body.limit??30})});
   const result=await limitedJson(response) as {items?:unknown[];next_cursor?:string|null;error?:{code?:string;message?:string}};
   if(!response.ok)throw new AlarmConfigError(response.status===422?result.error?.code??'invalid_query':'flow_unavailable',response.status===422?result.error?.message??'查询条件无效':'分析服务查询失败',response.status===422?422:502);
@@ -191,7 +191,7 @@ export async function flowRoutes(app:FastifyInstance,options:Options){
   const counters=(await readCounters()).map(c=>({...c,bindings:c.bindings.filter(r=>r.active&&r.source_id===q.source_id)})).filter(c=>c.bindings.length);
   const window={from:new Date(from).toISOString(),to:new Date(to).toISOString()};
   const series=counters.flatMap(({counter,bindings,definitions})=>bindings.flatMap(row=>outputsOf(counter).flatMap(o=>seriesOf(counter,row,definitions,o,window))));
-  const all=await analyse(series,{totals_only:true}),results=new Map(counters.flatMap(({bindings})=>bindings.flatMap(row=>(['in','out'] as Output[]).map(o=>[`${row.binding_id}:${o}`,zoneTotals(all,row.binding_id,o)?.occurrences??0]))));
+  const all=await analyse(series,{totals_only:true},actors.get(req)!),results=new Map(counters.flatMap(({bindings})=>bindings.flatMap(row=>(['in','out'] as Output[]).map(o=>[`${row.binding_id}:${o}`,zoneTotals(all,row.binding_id,o)?.occurrences??0]))));
   return {items:counters.flatMap(({counter,bindings})=>bindings.map(row=>({binding_id:row.binding_id,counter_id:counter.counter_id,name:counter.name,names:counter.names,
    outputs:counter.outputs,occupancy:counter.occupancy,counting:row.counting,zone_id:row.document.zone_id,direction:row.document.direction,diagnostic:zoneTotals(all,row.binding_id,'in')?.diagnostic??null,
    in:results.get(`${row.binding_id}:in`)??0,...(counter.outputs==='both'?{out:results.get(`${row.binding_id}:out`)??0}:{})})))};

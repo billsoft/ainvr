@@ -1310,8 +1310,9 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
     } catch (...) { /* Sampling refusal must not interrupt existing business. */ }
   }
   std::shared_future<bool> evidence_receipt;nlohmann::json evidence_identity;bool observation_published=false;
-  if(output::HasReviewVisualTarget(result))result.model_extra["evidence_delivery"]={{"schema_version",2},{"state","failed"}};
-  if (LicenseAllowed() && output::HasReviewVisualTarget(result) && output::SharedReviewFrameCache().Enabled(channel_id_) && result.model_extra.contains("analytics")) {
+  const bool needs_review_frame=output::SharedReviewFrameCache().NeedsFrame(channel_id_,result);
+  if(needs_review_frame)result.model_extra["evidence_delivery"]={{"schema_version",2},{"state","failed"}};
+  if (LicenseAllowed() && needs_review_frame && output::SharedReviewFrameCache().Enabled(channel_id_) && result.model_extra.contains("analytics")) {
     ScopedTimingObservation timer([this, timing_identity](double ms) {
       RecordTiming(TimingStage::ReviewFrameOffer, ms, timing_identity);
     });

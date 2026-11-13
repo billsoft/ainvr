@@ -6,6 +6,7 @@ import { DEFAULT_SEARCH_SETTINGS, prepareSearchSettings } from '../store/searchC
 import { readAppliedSearchConnection, readEffectiveSearchConfiguration, resolveSearchIndexDirectory } from '../services/searchConnection.js';
 import { buildSearchSourceCatalog, type SearchSourceCatalog } from '../services/searchSourceCatalog.js';
 import { searchRuntimeRoutes } from '../routes/searchRuntimeRoutes.js';
+import { createSearchModelViewsReader } from '../services/searchModelCapabilities.js';
 
 const input = 'fe671d50-8714-482e-9083-b92692b4dfaa', output = 'd9d39f59-0f10-43ec-89f1-b8af97676d84';
 function fixture() {
@@ -28,6 +29,101 @@ function fixture() {
   channels: [{ id: output, name: 'AI output' }], identities: ['stable'] }));
   return { dependencies: { store: store as never, volumes, sourceCatalog }, config, store, versions, volumes, sourceCatalog };
 }
+describe('sampling follows actual pinned package capability', () => {
+  const single = { package_id: 'siglip-so400m-i18n-full-int8', model_version: `search-v1-${'a'.repeat(64)}`, package_sha256: 'a'.repeat(64) };
+  const multi = { package_id: 'siglip2-base-full-int8', model_version: `search-v1-${'b'.repeat(64)}`, package_sha256: 'b'.repeat(64) };
+  it.each([[single, 1, true], [multi, 4, false]] as const)('projects %j without changing saved settings or source identities', async (pin, views, object) => {
+    const f = fixture();
+    const saved = structuredClone(f.config), catalog = await f.sourceCatalog();
+    const effective = await readEffectiveSearchConfiguration({ ...f.dependencies,
+      modelAuthority: async () => ({ active_model_pin: pin, approved_model_transition: null }), modelViews: async () => views });
+    expect(effective.sources[0]).toEqual({ ...catalog.sources[0], object, scene: true });
+    expect(effective.settings.sampling).toEqual(saved.sampling);
+    expect(f.config).toEqual(saved);
+    expect(await f.sourceCatalog()).toEqual(catalog);
+  });
+  it.each([[single, multi], [multi, single]] as const)('uses the old active model until the pin actually switches: %j -> %j', async (active, desired) => {
+    const f = fixture(); f.config.model.package_id = desired.package_id;
+    let pin = active;
+    const modelViews = vi.fn(async (model: typeof single) => model.package_id === multi.package_id ? 4 : 1);
+    const dependencies = { ...f.dependencies, modelViews,
+      modelAuthority: async () => ({ active_model_pin: pin, approved_model_transition: null }) };
+    const before = await readEffectiveSearchConfiguration(dependencies);
+    expect(modelViews).toHaveBeenLastCalledWith(active);
+    expect(before.sources[0]).toMatchObject({ object: active === single, scene: true });
+    pin = desired;
+    const after = await readEffectiveSearchConfiguration(dependencies);
+    expect(modelViews).toHaveBeenLastCalledWith(desired);
+    expect(after.sources[0]).toMatchObject({ object: desired === single, scene: true });
+    expect(after.revision).not.toBe(before.revision);
+  });
+  it('keeps channel eligibility and saved opt-outs authoritative for single-view models', async () => {
+    const f = fixture();
+    const dependencies = { ...f.dependencies, modelViews: async () => 1,
+      modelAuthority: async () => ({ active_model_pin: single, approved_model_transition: null }) };
+    f.config.sampling.object = false;
+    expect((await readEffectiveSearchConfiguration(dependencies)).sources[0]).toMatchObject({ object: false, scene: true });
+    f.config.sampling.object = true; f.config.sampling.scene = false;
+    expect((await readEffectiveSearchConfiguration(dependencies)).sources[0]).toMatchObject({ object: true, scene: false });
+    const catalog = await f.sourceCatalog(); catalog.sources[0].object = false;
+    f.sourceCatalog.mockResolvedValue(catalog);
+    expect((await readEffectiveSearchConfiguration(dependencies)).sources[0]).toMatchObject({ object: false, scene: false });
+  });
+  it('does not invent scene permission for a historical object-only multi-view configuration', async () => {
+    const f = fixture(); f.config.sampling.scene = false;
+    const result = await readEffectiveSearchConfiguration({ ...f.dependencies, modelViews: async () => 4,
+      modelAuthority: async () => ({ active_model_pin: multi, approved_model_transition: null }) });
+    expect(result.sources[0]).toMatchObject({ object: false, scene: false });
+    expect(result.settings.sampling).toMatchObject({ object: true, scene: false });
+    expect(f.config.sampling).toMatchObject({ object: true, scene: false });
+  });
+  it('fails closed only for objects when the pin or its capability is unavailable', async () => {
+    const f = fixture(); const modelViews = vi.fn(async () => null);
+    let pin: typeof single | null = null;
+    const dependencies = { ...f.dependencies, modelViews,
+      modelAuthority: async () => ({ active_model_pin: pin, approved_model_transition: null }) };
+    expect((await readEffectiveSearchConfiguration(dependencies)).sources[0]).toMatchObject({ object: false, scene: true });
+    expect(modelViews).not.toHaveBeenCalled();
+    pin = single;
+    expect((await readEffectiveSearchConfiguration(dependencies)).sources[0]).toMatchObject({ object: false, scene: true });
+    modelViews.mockRejectedValue(new Error('offline'));
+    expect((await readEffectiveSearchConfiguration(dependencies)).sources[0]).toMatchObject({ object: false, scene: true });
+  });
+  it.each([[single, 1, true], [multi, 4, false]] as const)('passes the capability-gated sources to producer grants: %j', async (pin, views, object) => {
+    const f = fixture(); f.config.enabled = true; f.config.model.package_id = pin.package_id;
+    const dependencies = { ...f.dependencies, modelViews: async () => views,
+      modelAuthority: async () => ({ active_model_pin: pin, approved_model_transition: null }) };
+    const effective = await readEffectiveSearchConfiguration(dependencies);
+    const runtime = { read: async () => ({ desired_version: 2, revision: effective.revision, status: 'applied' as const, error_code: null }), acknowledge: async () => true };
+    const app = Fastify(); await app.register(searchRuntimeRoutes, { dependencies, runtime,
+      internalPrincipal: async () => false, producerPrincipal: async () => true, principal: async () => null, managementConnection: async () => null });
+    try {
+      const response = await app.inject('/internal/search/producer-config');
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ enabled: true, sampling: { object: true, scene: true }, sources: [{ object, scene: true }] });
+    } finally { await app.close(); }
+  });
+  it('bounds slow verification while keeping scenes, then reuses the completed pin verification', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      let complete!: (value: unknown) => void;
+      const verify = vi.fn(() => new Promise<unknown>(resolve => { complete = resolve; }));
+      const dependencies = { ...f.dependencies, modelViews: createSearchModelViewsReader(verify),
+        modelAuthority: async () => ({ active_model_pin: single, approved_model_transition: null }) };
+      const pending = readEffectiveSearchConfiguration(dependencies);
+      await vi.advanceTimersByTimeAsync(2001);
+      const before = await pending;
+      expect(before.sources[0]).toMatchObject({ object: false, scene: true });
+      complete({ ...single, dimensions: 1152, views: 1, input_spec_version: 'single',
+        files_verified: true, production_approval_declared: false, pruned: false, runtime_ready: false });
+      const after = await readEffectiveSearchConfiguration(dependencies);
+      expect(after.sources[0]).toMatchObject({ object: true, scene: true });
+      expect(after.revision).not.toBe(before.revision);
+      expect(verify).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+});
 it('production producer grants wait for an actual pin and carry its exact expected model pair',async()=>{
   const f=fixture();f.config.enabled=true;
   const model={package_id:f.config.model.package_id!,model_version:`search-v1-${'a'.repeat(64)}`,package_sha256:'a'.repeat(64)};

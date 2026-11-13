@@ -1,0 +1,35 @@
+import Fastify from 'fastify';
+import { afterEach, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { facesRoutes } from '../routes/facesRoutes.js';
+import { facesIngestRoutes } from '../routes/facesIngestRoutes.js';
+import { FacesError } from '../services/facesContract.js';
+import type { FacesService } from '../services/facesService.js';
+import type { FacesRuntime } from '../services/facesRuntime.js';
+const apps: ReturnType<typeof Fastify>[] = [];
+afterEach(async () => { for (const app of apps.splice(0)) await app.close(); });
+it('public faces deny passwordless management and protect structured unavailability', async () => {
+  const status = vi.fn(async () => { throw new FacesError('faces_native_unavailable', 'Extractor unavailable', 503); });
+  let principal: string | null = null;
+  const app = Fastify(); apps.push(app);
+  await app.register(facesRoutes, { principal: async () => principal, service: { status } as unknown as FacesService });
+  expect((await app.inject('/faces/status')).statusCode).toBe(401);
+  principal = 'console-local'; expect((await app.inject('/faces/status')).statusCode).toBe(403);
+  expect(status).not.toHaveBeenCalled();
+  principal = 'console-administrator'; const response = await app.inject('/faces/status');
+  expect(response.statusCode).toBe(503); expect(response.json()).toEqual({ error: { code: 'faces_native_unavailable', message: 'Extractor unavailable' } });
+  expect(response.headers['cache-control']).toContain('no-store');
+});
+it('capture requires service identity and current source grant; accepts existing session:index frame IDs', async () => {
+  let authenticated = false, authorized = false;
+  const capture = vi.fn(async () => ({ record: { id: randomUUID() }, watchlist_candidates: [] }));
+  const app = Fastify(); apps.push(app);
+  await app.register(facesIngestRoutes, { runtime: { capture } as unknown as FacesRuntime, internalPrincipal: async () => authenticated, authorizeCapture: async () => authorized ? { retentionDays: 7 } : null });
+  const payload = { request_id: randomUUID(), model: 'mbf', jpeg_base64: '/9j/2Q==', channel_id: randomUUID(), processor_id: 'processor', session_id: 'session', track_id: 'track', frame_id: 'session:42', source_pts_ns: '12345', source_frame_index: '42', captured_at: new Date().toISOString(), recording_channel_id: null };
+  const invoke = () => app.inject({ method: 'POST', url: '/internal/faces/captures', payload });
+  expect((await invoke()).statusCode).toBe(403); authenticated = true;
+  expect((await invoke()).statusCode).toBe(403); expect(capture).not.toHaveBeenCalled(); authorized = true;
+  expect((await invoke()).statusCode).toBe(200); expect(capture).toHaveBeenCalledWith(payload, 7);
+  const rejected = await app.inject({ method: 'POST', url: '/internal/faces/captures', payload: { ...payload, vector: [1] } });
+  expect(rejected.statusCode).toBe(422);
+});

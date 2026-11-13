@@ -1,5 +1,6 @@
 import type {AlarmEvent,AlarmLocation} from '@/api/alarmEventService'
 import type {AlarmAnalyticsQuery} from '@/api/alarmAnalyticsService'
+import {isAlarmBusinessKind,alarmBusinessKindOf} from '@/features/alarmBusinessKind'
 
 export type AlarmListScope=
  | {kind:'none'}
@@ -15,7 +16,7 @@ export function parseAlarmListScope(search:string):AlarmListScope {
   try{
    const raw=params.get('analytics_scope')!;if(raw.length>8192)return {kind:'invalid'}
    const q:AlarmAnalyticsQuery=JSON.parse(raw)
-   if(!q||typeof q!=='object'||Array.isArray(q)||Object.keys(q).some(k=>!['from','to','timezone','bucket','locations','trigger_id','primary_type','audit','weekday','hour','association'].includes(k)))return {kind:'invalid'}
+   if(!q||typeof q!=='object'||Array.isArray(q)||Object.keys(q).some(k=>!['from','to','timezone','bucket','locations','trigger_id','primary_type','event_kind','audit','weekday','hour','association'].includes(k)))return {kind:'invalid'}
    const start=Date.parse(q.from),end=Date.parse(q.to)
    if(typeof q.from!=='string'||typeof q.to!=='string'||!Number.isFinite(start)||!Number.isFinite(end)||end<=start||end-start>31*86400000)return {kind:'invalid'}
    if(typeof q.timezone!=='string'||q.timezone.length>80||!['hour','day'].includes(q.bucket))return {kind:'invalid'}
@@ -23,6 +24,7 @@ export function parseAlarmListScope(search:string):AlarmListScope {
    if(q.locations!==undefined&&(!Array.isArray(q.locations)||!q.locations.length||q.locations.length>100||JSON.stringify(q.locations).length>4096||q.locations.some(x=>!x||typeof x!=='object'||Array.isArray(x)||Object.keys(x).some(k=>!['channel_id','zone_id'].includes(k))||!validId(x.channel_id)||!validId(x.zone_id))))return {kind:'invalid'}
    if(q.trigger_id!==undefined&&!validId(q.trigger_id))return {kind:'invalid'}
    if(q.primary_type!==undefined&&!validId(q.primary_type))return {kind:'invalid'}
+   if(q.event_kind!==undefined&&!isAlarmBusinessKind(q.event_kind))return {kind:'invalid'}
    if(q.audit!==undefined&&!['pending','human_confirmed','human_false_positive','ai_reviewed','unknown'].includes(q.audit))return {kind:'invalid'}
    if(q.weekday!==undefined&&(!Number.isInteger(q.weekday)||q.weekday<0||q.weekday>6))return {kind:'invalid'}
    if(q.hour!==undefined&&(!Number.isInteger(q.hour)||q.hour<0||q.hour>23))return {kind:'invalid'}
@@ -51,6 +53,7 @@ export function alarmInScope(alarm:AlarmEvent,scope:Extract<AlarmListScope,{kind
   const q=scope.analytics,h=alarm.handling
   const audit=h?.state==='unacknowledged'&&h.disposition!=='false_positive'?'pending':h?.state==='acknowledged'&&h.reviewed_by_kind==='ai'?'ai_reviewed':h?.state==='acknowledged'&&h.reviewed_by_kind==='human'&&h.disposition==='handled'?'human_confirmed':h?.state==='acknowledged'&&h.reviewed_by_kind==='human'&&h.disposition==='false_positive'?'human_false_positive':'unknown'
   if(q.audit&&q.audit!==audit||q.primary_type&&q.primary_type!==alarm.behavior)return false
+  if(q.event_kind&&q.event_kind!==alarmBusinessKindOf(alarm))return false
   const refs=[{zone_id:rule.snapshot?.zone_id,trigger_id:alarm.trigger_id??alarm.rule.id},...(alarm.stages??[])]
   if(q.association==='unassociated'&&refs.some(x=>validId(x.zone_id)))return false
   if((q.locations||q.trigger_id)&&!refs.some(x=>(!q.trigger_id||x.trigger_id===q.trigger_id)&&(!q.locations||q.locations.some(p=>p.channel_id===alarm.channel_id&&p.zone_id===x.zone_id))))return false

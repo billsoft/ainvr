@@ -27,7 +27,7 @@ int main(int argc,char** argv){try{
  Check(argc==3,"root and scenario required");const std::filesystem::path root=argv[1];const std::string mode=argv[2];
  Check(root.string().rfind("/mnt/ainvr-ssd/ainvr-tests/review-cache-",0)==0,"isolated test root required");
  std::filesystem::create_directories(root);setenv("AINVR_REVIEW_FRAME_ROOT",root.c_str(),1);
- std::ofstream(root/"enabled.json")<<Json{{"expires_at",std::time(nullptr)+120},{"channels",Json::array({"test"})},{"retained_keys",Json::array()}};
+ std::ofstream(root/"enabled.json")<<Json{{"expires_at",std::time(nullptr)+120},{"channels",Json::array({"test"})},{"region_channels",mode=="region"?Json::array({"test"}):Json::array()},{"retained_keys",Json::array()}};
  Gate gate; // Must outlive the cache; release before any assertion can unwind it.
  ReviewFrameCache cache;
  struct ReleaseBeforeJoin{Gate& gate;~ReleaseBeforeJoin(){gate.Release();}}release{gate};
@@ -86,6 +86,26 @@ int main(int argc,char** argv){try{
   Check(!std::filesystem::exists(root/"raw"/(key+".jpg")),"published JPEG before staging metadata");
   Check(std::filesystem::is_directory(blocked),"cleanup removed a path it did not open");std::filesystem::remove(blocked);
   Check(cache.OfferAsync(Metadata(2),[]{return cv::Mat(32,32,CV_8UC4);}).get(),"write failure blocked later receipts");
+ }else if(mode=="region"){
+  ai_service::FrameResult empty;
+  empty.model_extra={{"analytics",{{"status","active"},{"tracks",Json::array()},{"stream_session_id","s"}}}};
+  Check(!HasReviewVisualTarget(empty),"empty scene unexpectedly contains a target");
+  Check(cache.NeedsFrame("test",empty),"armed region must preserve empty scene evidence");
+  Check(!cache.NeedsFrame("unarmed",empty),"unarmed channel must retain target-only policy");
+  const auto receipt=cache.OfferPreparedAsync(Metadata(501),[]{return ReviewEncodedFrame{{255,216,255,217},64,64};});
+  Check(receipt.get(),"empty region scene did not become durable");
+  size_t frames=0;
+  for(const auto& file:std::filesystem::directory_iterator(root/"raw"))if(file.path().extension()==".json"){
+   Json meta;std::ifstream(file.path())>>meta;
+   Check(meta.at("source_frame_index")=="501"&&meta.at("source_pts_ns")=="501","empty scene lost frame identity");++frames;
+  }
+  Check(frames==1,"empty scene evidence metadata missing");
+  const auto replacement=root/"enabled.json.next";
+  std::ofstream(replacement)<<Json{{"expires_at",std::time(nullptr)+120},{"channels",Json::array({"test"})},{"region_channels",Json::array()}};
+  std::filesystem::rename(replacement,root/"enabled.json");
+  const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(4);
+  while(cache.NeedsFrame("test",empty)&&std::chrono::steady_clock::now()<until)std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  Check(!cache.NeedsFrame("test",empty),"removing region rules must stop empty scene capture");
  }else if(mode=="targets"){
   ai_service::FrameResult result;
   Check(!HasReviewVisualTarget(result),"empty frame must not consume a cache slot");

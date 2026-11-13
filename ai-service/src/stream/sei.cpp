@@ -302,7 +302,17 @@ std::vector<uint8_t> build_result_payload(const std::string& channel_id,
   auto video_extra = model_extra;
   for (const auto* key : {"analytics", "label_catalog", "compatible_label_catalogs", "observation_delivery"})
     video_extra.erase(key);
-  if(video_extra.contains("analysis_pipeline"))video_extra["analysis_pipeline"].erase("configuration");
+  if(video_extra.contains("analysis_pipeline")){
+    auto& pipeline=video_extra["analysis_pipeline"];
+    pipeline.erase("configuration");
+    // Ambiguous auxiliary evidence belongs to diagnostics, not tracked overlay.
+    // Sending up to 32 pose payloads here could consume the entire SEI budget
+    // before even one real detection is serialized.
+    if(pipeline.contains("unassociated_observations")){
+      pipeline["unassociated_count"]=pipeline.at("unassociated_observations").size();
+      pipeline.erase("unassociated_observations");
+    }
+  }
   validate_numbers(validate_numbers, video_extra);
   const bool has_points = model_extra.contains("grounding") &&
       model_extra.at("grounding").is_object() &&

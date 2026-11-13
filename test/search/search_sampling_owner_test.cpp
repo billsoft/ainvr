@@ -34,6 +34,9 @@ struct Port: SearchSamplingExecutionPort {
   SearchEmbeddingSpace space{"candidate-package", "embedding-v1", "input-v1"};
   Reply::Result answer = Reply::Result::Committed, reconcile_answer = Reply::Result::Committed;
   bool ready = true, block = false, entered = false, fail_prepare = false, throw_submit = false, throw_receipt = false;
+  bool throw_prepare = false;
+  size_t retained_bytes = 100;
+  SearchCoverageLedger::GapCause rejection_cause = SearchCoverageLedger::GapCause::FailSubmitRejected;
   std::optional<std::string> receipt_override;
   std::function<std::string(std::string)> transform_receipt;
   std::function<void(nlohmann::json&)> mutate_receipt;
@@ -69,7 +72,7 @@ struct Port: SearchSamplingExecutionPort {
       if (port.throw_receipt) throw std::runtime_error("simulated metadata failure");
       return query;
     }
-    size_t RetainedBytes() const noexcept override { return 100; }
+    size_t RetainedBytes() const noexcept override { return port.retained_bytes; }
     std::string ReceiptKey() const override { return "receipt-1"; }
     Reply Submit(const SearchSamplingCurrent& current) override {
       Reply::Result answer;
@@ -77,13 +80,14 @@ struct Port: SearchSamplingExecutionPort {
         port.cv.wait(lock, [&] { return !port.block; }); answer = port.answer; ++port.submits; port.submitted_queries.push_back(query); }
       if (!current()) return {};
       if (port.throw_submit) throw std::runtime_error("simulated lost transport ACK");
-      return {answer, answer == Reply::Result::Committed ? std::string(64, 'a') : "", "receipt-1"};
+      return {answer, answer == Reply::Result::Committed ? std::string(64, 'a') : "", "receipt-1", port.rejection_cause};
     }
   };
   std::shared_ptr<SearchSamplingOperation> Prepare(const FrozenSearchFrame& frame, const SearchEmbeddingSpace& actual,
       const SearchProducerLease&, const SearchSamplingCurrent& current) override {
     if (!current()) return {};
     std::lock_guard<std::mutex> lock(mutex);
+    if (throw_prepare) throw std::runtime_error("synthetic prepare failure");
     if (fail_prepare || !(actual == space)) return {};
     const auto& selected=frame.Selection();const auto& source=frame.Source();
     candidates.push_back(selected);
@@ -165,6 +169,31 @@ struct Fixture {
 int main() {
   try {
     ArchiveExecutor executor(1, 8);
+    // A local preparation failure is never evidence that the store rejected a write.
+    for (int failure=0; failure<8; ++failure) {
+      using Cause=SearchCoverageLedger::GapCause;
+      const Cause expected[]={Cause::FailPrepareEmpty,Cause::FailPrepareException,
+        Cause::FailPrepareCapacity,Cause::FailReceiptException,Cause::FailReceiptInvalid,
+        Cause::FailDescriptorInvalid,Cause::FailSubmitRejected,Cause::FailRejected};
+      Fixture f; int retained=0; auto port=std::make_shared<Port>(); port->coverage_enabled=true;
+      if(failure==0)port->fail_prepare=true;
+      if(failure==1)port->throw_prepare=true;
+      if(failure==2)port->retained_bytes=16*1024*1024;
+      if(failure==3)port->throw_receipt=true;
+      if(failure==4)port->receipt_override="{broken";
+      if(failure==5){port->probes_enabled=true;port->next_descriptor.clear();}
+      if(failure>=6)port->answer=Reply::Result::Rejected;
+      if(failure==7)port->rejection_cause=Cause::FailRejected;
+      SearchSamplingOwner owner(f.Reader(),port,executor);auto source=owner.CreateSource("processor");auto token=source->Token();
+      Check(source->Bind(token,f.capture.fence),"failure_attribution_bind");
+      Check(source->OfferObject(token,f.result,f.capture,*f.raw,f.Retain(retained),"track-7").status==Status::Queued,"failure_attribution_queue");
+      Await([&]{const auto usage=owner.Usage();return usage.pending==0&&usage.retained_jobs==0;});
+      const auto usage=owner.Usage();
+      Check(usage.coverage_gap.events[size_t(expected[failure])]==1,"failure_cause_not_attributed");
+      Check(usage.coverage_gap.events[size_t(Cause::FailRejected)]==size_t(failure==7),"local_failure_mislabeled_store_rejected");
+      Check(port->submits==size_t(failure>=6)&&port->reconciles==0,"diagnostics_changed_write_or_reconcile_semantics");
+      Check(usage.retained_bytes==0,"failure_retained_pixels");
+    }
     for(int fault=0;fault<=5;++fault){
       Fixture f;auto port=std::make_shared<Port>();port->coverage_enabled=true;
       SearchSamplingOwner owner(f.Reader(),port,executor);auto source=owner.CreateSource("processor");const auto token=source->Token();
@@ -322,6 +351,36 @@ int main() {
       }
       {std::lock_guard<std::mutex> lock(port->mutex);port->space.input_spec_version=spec.input_spec_version;}
       Check(source->Bind(token,f.capture.fence),"exact input specification restore failed");
+    }
+    {
+      // Legacy grants enabled objects even for the four-view scene package.
+      // Admission and coverage must follow the resident model, not that grant.
+      Fixture f; int retained=0; auto port=std::make_shared<Port>(); port->coverage_enabled=true;
+      const auto& spec=ainvr::search::FindPackageSpec("siglip2-base-full-int8");
+      port->space.package_id=spec.id; port->space.input_spec_version=spec.input_spec_version;
+      port->next_descriptor={1,0,0,1,1,0,0,1};
+      f.doc["model"]["package_id"]=spec.id; f.doc["revision"]=std::string(64,'d'); f.Renew();
+      SearchSamplingOwner owner(f.Reader(),port,executor); auto source=owner.CreateSource("processor");
+      const auto token=source->Token(); Check(source->Bind(token,f.capture.fence),"scene_only_bind");
+      const double base=double(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count())/1000-50;
+      for(int n=1;n<=21;++n){
+        f.Advance(n); f.capture.captured_wall=base+n;
+        Check(source->OfferObject(token,f.result,f.capture,*f.raw,f.Retain(retained),"track-7",true,.9).status==Status::NotEligible,
+          "multiview_object_reached_hardware_queue");
+        Check(retained==0&&owner.Usage().pending==0,"unsupported_object_retained_pixels");
+        Check(source->EndFrame(token,f.result,f.capture,false,true),"scene_only_end_frame");
+      }
+      Await([&]{owner.ReconcileNext();return owner.Usage().coverage_windows==0;});
+      {std::lock_guard<std::mutex> lock(port->mutex);
+        Check(!port->coverage_ranges.empty(),"scene_coverage_missing");
+        Check(std::all_of(port->coverage_ranges.begin(),port->coverage_ranges.end(),[](const auto& r){return r.scope.scene;}),
+          "unsupported_object_published_false_coverage");
+        Check(port->candidates.empty(),"unsupported_object_prepared");}
+      f.Advance(22); f.capture.captured_wall=base+22;
+      Check(source->OfferScene(token,f.result,f.capture,*f.raw,f.Retain(retained),{true,true,{}}).status==Status::Queued,
+        "scene_disabled_with_unsupported_objects");
+      Await([&]{return owner.Usage().pending==0;});
+      Check(port->submits==1,"supported_scene_not_committed");
     }
     for(const bool good:{true,false}){
       // A whole-frame space stores several view blocks per sample, each unit-norm on its own: the resident descriptor must

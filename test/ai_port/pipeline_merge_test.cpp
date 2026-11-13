@@ -37,3 +37,45 @@ TEST(PipelineTask,ArtifactNameCannotMakeHelmetModelAFaceTask) {
   TaskHintProbe face;face.ApplyTaskTypeHint({"face"},"renamed","model.hbm");
   EXPECT_EQ(face.TaskType(),"face_detection");
 }
+
+static Detection Person(double x=0,double y=0,double w=100,double h=100){Detection d;d.class_id=0;d.bbox={x,y,w,h};return d;}
+TEST(PipelineFusion,PoseSurvivesNonOwnerWithoutDuplicatingPeople){
+  PipelineLabels l;l.Add("primary",Catalog("person"),true);l.Add("pose",Catalog("person"),true);
+  auto person=Person(),pose=Person(1,1);pose.model_extra["attributes"]["pose"]={{"schema_version",1},{"points",nlohmann::json::array({{2,3,.9}})}};
+  auto result=l.Merge({{"primary",{person}},{"pose",{pose}}});
+  ASSERT_EQ(result.detections.size(),1);EXPECT_EQ(result.detections[0].bbox,person.bbox);
+  EXPECT_EQ(result.detections[0].model_extra["source_node"],"primary");
+  EXPECT_EQ(result.detections[0].model_extra["attributes"]["pose"]["source_node"],"pose");
+  EXPECT_TRUE(result.unassociated.empty());
+  l.SetPriority({"pose","primary"});auto reversed=l.Merge({{"primary",{person}},{"pose",{pose}}});
+  ASSERT_EQ(reversed.detections.size(),1);EXPECT_EQ(reversed.detections[0].label_id,result.detections[0].label_id);
+  EXPECT_TRUE(reversed.detections[0].model_extra["attributes"].contains("pose"));
+}
+TEST(PipelineFusion,AmbiguousCrowdDoesNotBorrowAnotherPersonsPose){
+  PipelineLabels l;l.Add("primary",Catalog("person"),true);l.Add("pose",Catalog("person"),true);
+  auto pose=Person(5);pose.model_extra["attributes"]["pose"]={{"schema_version",1}};
+  auto result=l.Merge({{"primary",{Person(),Person(10)}},{"pose",{pose}}});
+  ASSERT_EQ(result.detections.size(),2);EXPECT_FALSE(result.detections[0].model_extra.contains("attributes"));
+  ASSERT_EQ(result.unassociated.size(),1);EXPECT_EQ(result.unassociated[0]["association"],"unknown");
+}
+TEST(PipelineFusion,ReciprocalGateRejectsMergedOrDuplicatedTargets){
+  PipelineLabels l;l.Add("primary",Catalog("person"),true);l.Add("pose",Catalog("person"),true);
+  auto pose=Person();pose.model_extra["attributes"]["pose"]={{"schema_version",1}};
+  auto result=l.Merge({{"primary",{Person()}},{"pose",{pose,pose}}});
+  EXPECT_FALSE(result.detections[0].model_extra.contains("attributes"));EXPECT_EQ(result.unassociated.size(),2);
+}
+TEST(PipelineFusion,MissingOwnerNeverCreatesExtraTrackedPerson){
+  PipelineLabels l;l.Add("primary",Catalog("person"),true);l.Add("pose",Catalog("person"),true);
+  auto pose=Person();pose.model_extra["attributes"]["pose"]={{"schema_version",1}};
+  auto result=l.Merge({{"primary",{}},{"pose",{pose}}});
+  EXPECT_TRUE(result.detections.empty());EXPECT_EQ(result.unassociated.size(),1);
+}
+TEST(PipelineFusion,AttributesAndUnassociatedEvidenceHaveExplicitBudgets){
+  PipelineLabels l;l.Add("primary",Catalog("person"),true);l.Add("pose",Catalog("person"),true);
+  auto pose=Person();pose.model_extra["attributes"]["pose"]={{"payload",std::string(2049,'x')}};
+  auto result=l.Merge({{"primary",{Person()}},{"pose",{pose}}});
+  EXPECT_EQ(result.omitted,1);EXPECT_FALSE(result.detections[0].model_extra.contains("attributes"));
+  pose.model_extra["attributes"]["pose"]={{"schema_version",1}};
+  result=l.Merge({{"primary",{}},{"pose",std::vector<Detection>(40,pose)}});
+  EXPECT_EQ(result.unassociated.size(),32);EXPECT_EQ(result.omitted,8);
+}

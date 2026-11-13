@@ -271,6 +271,9 @@ struct State: std::enable_shared_from_this<State> {
     return ms>=0&&ms<=9007199254740991LL-span?ms+span:0;
   }
   bool CoverageAuthorized(const SearchCoverageRange& range,const config::SearchProducerLease& lease)const {
+    // A multi-view package has scene vectors only. An older grant must not
+    // publish object coverage for work the hardware cannot execute.
+    if(!range.scope.scene && ainvr::search::PackageViews(range.scope.package_id)>1)return false;
     if(stopped||!lease.IsCurrent()||!lease.grant||!space||lease.grant->package_id!=range.scope.package_id||
         space->package_id!=range.scope.package_id||space->model_version!=range.scope.model_version)return false;
     const auto actual=Ready();if(!actual||!(*actual==*space))return false;
@@ -351,6 +354,7 @@ struct State: std::enable_shared_from_this<State> {
     return policy.UpdateTiming(timing);
   }
   bool CurrentLocked(const Job& job, bool reconciliation) const {
+    if(job.candidate.slot && ainvr::search::PackageViews(job.space.package_id)>1)return false;
     auto s = job.source.lock();
     if (stopped || job.cancelled || !s || s->retired || s->generation != job.generation || !s->fence ||
         !space || !(*space == job.space)) return false;
@@ -398,7 +402,7 @@ struct State: std::enable_shared_from_this<State> {
     }
     if (receipt.result == SearchSamplingReceipt::Result::Rejected &&
         receipt.fingerprint.empty() && policy.Resolve(job->candidate.token, Policy::Outcome::Failed)) {
-      coverage.Resolve(job->candidate.token,SearchCoverageLedger::Outcome::Failed,SearchCoverageLedger::GapCause::FailRejected);
+      coverage.Resolve(job->candidate.token,SearchCoverageLedger::Outcome::Failed,receipt.rejection_cause);
       jobs.erase(found); return;
     }
     policy.Resolve(job->candidate.token, Policy::Outcome::Unknown);
@@ -418,7 +422,12 @@ struct State: std::enable_shared_from_this<State> {
     auto self = shared_from_this(); job->running = true;
     auto queued = executor.TrySubmit([self, job, reconcile, reservation = std::move(reservation)] () mutable {
       SearchSamplingReceipt reply;
-      if (!reconcile) reply.result = SearchSamplingReceipt::Result::Rejected;
+      using Cause = SearchCoverageLedger::GapCause;
+      const auto reject = [&](Cause cause) {
+        reply.result = SearchSamplingReceipt::Result::Rejected;
+        reply.rejection_cause = cause;
+      };
+      if (!reconcile) reject(Cause::FailNotCurrent);
       bool write_attempted = false;
       bool no_change=false;
       try {
@@ -430,6 +439,7 @@ struct State: std::enable_shared_from_this<State> {
           }
           else {
             std::shared_ptr<SearchSamplingOperation> operation;
+            bool prepare_threw = false;
             try {
               if(Policy::IsProbe(job->candidate)){
                 if(self->port->SupportsProbes()&&job->baseline&&job->baseline->Fingerprint()==job->candidate.probe_reference_fingerprint){
@@ -441,26 +451,32 @@ struct State: std::enable_shared_from_this<State> {
                 }
               }else operation = self->port->Prepare(*job->frame, job->space, job->lease, current);
             }
-            catch (...) { reply.result = SearchSamplingReceipt::Result::Rejected; }
+            catch (...) { prepare_threw = true; }
             if(no_change){/* A real descriptor comparison, no HTTP operation. */}
-            else if (!operation || operation->RetainedBytes() > size_t(job->lease.grant->limits.image_max_bytes) + 65536)
-              reply.result = SearchSamplingReceipt::Result::Rejected;
+            else if (!operation) reject(prepare_threw ? Cause::FailPrepareException : Cause::FailPrepareEmpty);
+            else if (operation->RetainedBytes() > size_t(job->lease.grant->limits.image_max_bytes) + 65536)
+              reject(Cause::FailPrepareCapacity);
             else {
               std::string key, query;
+              bool receipt_threw = false;
               try { key = operation->ReceiptKey(); query = operation->ReceiptQuery(); }
-              catch (...) { reply.result = SearchSamplingReceipt::Result::Rejected; }
+              catch (...) { receipt_threw = true; }
               auto descriptor=self->port->SupportsProbes()?self->CopyDescriptor(operation->Descriptor(),job->space):nullptr;
-              if (!Safe(key) || !ReceiptQueryValid(query,*job)||(self->port->SupportsProbes()&&!descriptor)) reply.result = SearchSamplingReceipt::Result::Rejected;
+              if (receipt_threw) reject(Cause::FailReceiptException);
+              else if (!Safe(key) || !ReceiptQueryValid(query,*job)) reject(Cause::FailReceiptInvalid);
+              else if (self->port->SupportsProbes()&&!descriptor) reject(Cause::FailDescriptorInvalid);
               else {
                 { std::lock_guard<std::mutex> lock(self->mutex);
                   job->receipt_key = std::move(key); job->receipt_query = std::move(query);job->descriptor=std::move(descriptor); }
                 if (current()) { write_attempted = true; reply = operation->Submit(current); }
+                else reject(Cause::FailNotCurrent);
               }
             }
           }
         }
       } catch (...) {
-        reply.result = reconcile || write_attempted ? SearchSamplingReceipt::Result::Unknown : SearchSamplingReceipt::Result::Rejected;
+        if (reconcile || write_attempted) reply.result = SearchSamplingReceipt::Result::Unknown;
+        else reject(Cause::FailBeforeSubmitException);
         // Fixed outcomes only; never log credentials, exceptions or metadata.
       }
       self->Complete(job, std::move(reply), reconcile,no_change);
@@ -539,7 +555,9 @@ struct State: std::enable_shared_from_this<State> {
     Policy::Proposal proposal{Policy::Status::Invalid};
     std::shared_ptr<const Descriptor> baseline;
     if (track) {
-      if (!mapping->second.object) return {Status::NotEligible};
+      // Enforce the actual resident package, including during BFF upgrades or
+      // model transitions. Reject before retaining pixels or queuing BPU work.
+      if (!mapping->second.object || ainvr::search::PackageViews(ready->package_id)>1) return {Status::NotEligible};
       auto object = Policy::ObjectFromResult(result, *track, usable, quality, change);
       if(object&&port->SupportsProbes()){
         const auto found=source->tracks.find(*track);
@@ -685,9 +703,10 @@ bool SearchSamplingSource::EndFrame(uint64_t token,const FrameResult& result,con
       if(!state->RetainTracks(*source_,result))return false;
       state->source_highest[source_.get()]={result.frame_pts_ns,result.frame_index};
     }
+    const bool object_enabled=mapping->second.object && ainvr::search::PackageViews(ready->package_id)==1;
     const auto expiry=State::CoverageExpiry(frame->captured_ms,*lease->grant);bool accepted=true;
     if(source_->owed_lost){source_->owed_lost=false;
-      if(mapping->second.object)state->coverage.Gap(state->CoverageScope(*source_,false),frame->captured_ms,expiry,SearchCoverageLedger::GapCause::DeferredTrackLost);}
+      if(object_enabled)state->coverage.Gap(state->CoverageScope(*source_,false),frame->captured_ms,expiry,SearchCoverageLedger::GapCause::DeferredTrackLost);}
     const bool temporal=source_->coverage_index>=0&&result.frame_pts_ns>source_->coverage_pts&&
       result.frame_pts_ns-source_->coverage_pts<=1000000000LL&&frame->captured_ms>source_->coverage_ms&&
       frame->captured_ms-source_->coverage_ms<=1000;
@@ -716,7 +735,7 @@ bool SearchSamplingSource::EndFrame(uint64_t token,const FrameResult& result,con
     const auto missed_events=source_->missed_end_events.load();
     const bool hook_gap=source_->missed_end_generation.load()==source_->generation&&
       (missed_events==UINT64_MAX||missed_events!=source_->handled_missed_events);
-    for(bool scene:{false,true})if(scene?mapping->second.scene:mapping->second.object){
+    for(bool scene:{false,true})if(scene?mapping->second.scene:object_enabled){
       const auto scope=state->CoverageScope(*source_,scene);
       const bool eligible=scene?(frame->analytics_status=="active"||frame->analytics_status=="detection_only"):frame->analytics_status=="active";
       if(hook_gap||observation_gap||!eligible||!(scene?scene_complete:object_complete))
@@ -730,7 +749,7 @@ bool SearchSamplingSource::EndFrame(uint64_t token,const FrameResult& result,con
     }
     if(accepted){attempt.accepted=true;source_->handled_missed_events=missed_events;
       source_->coverage_index=result.frame_index;source_->coverage_pts=result.frame_pts_ns;source_->coverage_ms=frame->captured_ms;source_->coverage_observation=capture.observation;
-      source_->coverage_object_complete=!hook_gap&&!observation_gap&&object_complete&&frame->analytics_status=="active";
+      source_->coverage_object_complete=object_enabled&&!hook_gap&&!observation_gap&&object_complete&&frame->analytics_status=="active";
       source_->coverage_scene_complete=!hook_gap&&!observation_gap&&scene_complete&&(frame->analytics_status=="active"||frame->analytics_status=="detection_only");}
     return accepted;
   }catch(...){return false;}

@@ -11,6 +11,12 @@ if(AINVR_S100P)
   target_link_libraries(ainvr_bytetrack PUBLIC Eigen3::Eigen ${OpenCV_LIBS})
   add_library(ainvr_reused_worker src/pipeline/reused_channel_worker.cpp
     src/adapters/bpu_channel_adapter.cpp src/utils/user_facing_error.cpp)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # These large translation units exceed the board's spare RAM at GCC's
+    # default GC cadence. Collect compiler garbage more often; keep Release -O3.
+    set_property(SOURCE src/pipeline/reused_channel_worker.cpp src/api/s100p_control_service.cpp
+      APPEND PROPERTY COMPILE_OPTIONS --param=ggc-min-expand=10 --param=ggc-min-heapsize=32768)
+  endif()
   target_link_libraries(ainvr_reused_worker PUBLIC ainvr_reused_controller ainvr_stream_source ainvr_bpu_images ainvr_bytetrack ainvr_analytics_events ainvr_archive_spool)
   target_link_libraries(ainvr_s100p_control_service PRIVATE ainvr_reused_worker)
   target_sources(ainvr_s100p_control_service PRIVATE src/utils/crash_handler.cpp)

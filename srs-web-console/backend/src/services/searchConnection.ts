@@ -27,6 +27,7 @@ export interface SearchRuntimeDependencies {
   sourceCatalog: () => Promise<SearchSourceCatalog>;
   volumes: () => Promise<unknown>;
   modelAuthority?: () => Promise<SearchModelAuthority>;
+  modelViews?: (model: NonNullable<SearchModelAuthority['active_model_pin']>) => Promise<number | null>;
   ingestionGate?:(current:{revision:string;source_ids:readonly string[];active_model:SearchModelAuthority['active_model_pin'];approved_transition?:SearchModelAuthority['approved_model_transition']})=>Promise<{gate:SearchMigrationIngestionGate|null}>;
 }
 export class SearchConfigurationError extends Error {
@@ -112,10 +113,15 @@ export async function readEffectiveSearchConfiguration(dependencies: SearchRunti
     dependencies.modelAuthority ? dependencyWithin(dependencies.modelAuthority) : Promise.resolve(undefined),
   ]);
   if(dependencies.modelAuthority && !authority)throw new SearchConfigurationError('config_pending');
+  // Desired may already name a migration target. Only the actual pinned space
+  // can authorize object crops; unknown capabilities leave scene sampling alone.
+  const activeModel = authority?.active_model_pin;
+  const objectSupported = !!activeModel && !!dependencies.modelViews &&
+    await dependencyWithin(() => dependencies.modelViews!(activeModel)) === 1;
   const index = resolveSearchIndexDirectory(settings, rawVolumes);
   const sources = (catalog?.sources ?? []).filter(source => settings.sampling.mode === 'all' ||
     settings.sampling.channel_ids.includes(source.channel_id)).map(source => ({ ...source,
-      object: source.object && settings.sampling.object, scene: source.scene && settings.sampling.scene,
+      object: source.object && settings.sampling.object && objectSupported, scene: source.scene && settings.sampling.scene,
   }));
   const dependency = !history.uri || !history.database ? 'history_unavailable' : !index.ready ? 'storage_unavailable' :
     !catalog || (settings.sampling.mode === 'selected' && sources.length !== settings.sampling.channel_ids.length) ? 'source_catalog_unavailable' : null;

@@ -1,9 +1,10 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { HARDWARE_VERIFIED_MODEL_PRESET_KEYS } from '@/features/modelCapabilities'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { ComponentProps } from 'react'
 import { AiChannelWizard } from '@/pages/AiChannels/AiChannelWizard'
-import type { AiChannel, AiStreamOption } from '@/types/aiChannel'
+import { AI_MODEL_PRESETS, type AiChannel, type AiStreamOption } from '@/types/aiChannel'
 import type { ChannelWithStatus } from '@/types/channel'
 
 describe('编辑向导在线状态', () => {
@@ -107,6 +108,7 @@ describe('AiChannelWizard', () => {
     const user=userEvent.setup()
     render(<AiChannelWizard {...baseProps({mode:'edit',initial:makeChannel({analytics:{enabled:true}})})}/> )
     await user.click(screen.getByRole('button',{name:'下一步 →'}))
+    await user.click(screen.getByText('通道运行设置'))
     const fps=screen.getByLabelText('推理帧率或采集间隔')
     fireEvent.change(fps,{target:{value:''}})
     expect(screen.queryByRole('dialog',{name:'关闭目标跟踪'})).not.toBeInTheDocument()
@@ -362,7 +364,7 @@ describe('AiChannelWizard', () => {
     await user.type(screen.getByTestId('wizard-id'), 'processor')
     await user.selectOptions(screen.getByTestId('wizard-stream-select'), 'ch-main')
     await user.click(screen.getByRole('button', {name: '下一步 →'}))
-    expect(screen.getByTestId('wizard-model-select')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '识别模型列表' })).toBeInTheDocument()
   })
 
   describe('H.265 源提示按 ai-service 能力说话（设计 §8.4③）', () => {
@@ -403,9 +405,14 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps()} />)
     await selectSourceAndNext(user)
 
-    const select = await screen.findByTestId('wizard-model-select') as HTMLSelectElement
+    expect(screen.queryByTestId('wizard-model-select')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^配置 / }))
+    const select = screen.getByTestId('wizard-model-select') as HTMLSelectElement
     await user.selectOptions(select, 'yolo26x-face')
     expect(select.value).toBe('yolo26x-face')
+    await user.click(screen.getByRole('button', { name: '应用到通道草稿' }))
+    expect(screen.queryByRole('dialog', { name: /^配置模型/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `配置 ${AI_MODEL_PRESETS['yolo26x-face'].displayName}` })).toBeInTheDocument()
   })
 
   it('回归：第②步推理帧率非法值会拦下"下一步"，不再放任一路到后端才报错', async () => {
@@ -414,12 +421,13 @@ describe('AiChannelWizard', () => {
     await selectSourceAndNext(user)
 
     // 负数用 fireEvent.change 一次性设完整值（jsdom 下 type 逐键不可靠）
-    const fpsInput = await screen.findByDisplayValue('5')
+    await user.click(screen.getByText('通道运行设置'))
+    const fpsInput = screen.getByLabelText('推理帧率或采集间隔')
     fireEvent.change(fpsInput, { target: { value: '-1' } })
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
 
     expect(await screen.findByText(/推理帧率必须在 0-30 之间/)).toBeInTheDocument()
-    expect(screen.queryByTestId('wizard-model-select')).toBeInTheDocument() // 仍停在第②步没跳走
+    expect(screen.getByRole('region', { name: '识别模型列表' })).toBeInTheDocument() // 仍停在第②步没跳走
   })
 
   it('模型参数：yolo26m 预设不展示 IoU 阈值（端到端 NMS 内嵌）', async () => {
@@ -427,21 +435,32 @@ describe('AiChannelWizard', () => {
     render(<AiChannelWizard {...baseProps()} />)
     await selectSourceAndNext(user)
 
+    expect(screen.queryByLabelText(/检测置信度/)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^配置 / }))
     expect(screen.getByText(/置信度阈值/)).toBeInTheDocument()
     expect(screen.queryByText(/IoU 阈值/)).not.toBeInTheDocument()
   })
 
-  it('第②步：固定类别和动态描述分开选择，仅开放已接入模型', async () => {
+  it('第②步：固定类别展示硬件验收状态，动态描述保留原槽位选择', async () => {
     const user = userEvent.setup()
     render(<AiChannelWizard {...baseProps()} />)
     await selectSourceAndNext(user)
-    const types = screen.getByRole('combobox', { name: '模型类型' }) as HTMLSelectElement
-    expect(Array.from(types.options, option => option.value)).toEqual(['closed', 'open'])
+    await user.click(screen.getByRole('button', { name: /^配置 / }))
+    expect(screen.queryByRole('combobox', { name: '模型类型' })).not.toBeInTheDocument()
     const models = screen.getByTestId('wizard-model-select') as HTMLSelectElement
-    expect(Array.from(models.options, option => option.value)).toEqual(['yolo26x', 'yolo26x-face', 'plate-recognition'])
+    expect(Array.from(models.options, option => option.value)).toEqual([
+      'yolo26x', 'detect-coco-yolo26s', 'detect-coco-yolo26m',
+      'yolo26x-face', 'face-det-scrfd-2g5', 'face-det-scrfd-500m',
+      'helmet-face-yolo26s', 'helmet-head-yolo26s', 'fire-smoke-yolo26n', 'human-pose-yolo26s', 'plate-recognition',
+      'yoloe-26x-1', 'yoloe-26x-2', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b',
+    ])
+    expect(Array.from(models.querySelectorAll('optgroup'), group => group.label)).toEqual(['通用目标检测', '人脸检测', '安全帽检测', '烟雾 / 明火检测', '人体姿态（试用）', '车牌检测与识别', '开放词汇'])
+    for (const key of HARDWARE_VERIFIED_MODEL_PRESET_KEYS) {
+      expect(Array.from(models.options).find(option => option.value === key)?.textContent).not.toMatch(/硬件已验证|COCO|BPU|S100/)
+    }
     expect(screen.queryByLabelText('识别描述')).not.toBeInTheDocument()
-    await user.selectOptions(types, 'open')
-    expect(Array.from(models.options).filter(option => !option.disabled).map(option => option.value)).toEqual(['yoloe-26x-1', 'yoloe-26x-2', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b'])
+    await user.selectOptions(models, 'yoloe-26x')
+    expect(Array.from(models.querySelectorAll('optgroup[label="开放词汇"] option'), option => (option as HTMLOptionElement).value)).toEqual(['yoloe-26x-1', 'yoloe-26x-2', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b'])
     expect(Array.from(models.options).find(option => option.value === 'yoloe-26x-32')).toHaveProperty('disabled', false)
     expect(screen.getByLabelText('识别描述 1')).toBeInTheDocument()
     expect(screen.getByLabelText('标签 ID 1')).toBeInTheDocument()
@@ -600,7 +619,7 @@ describe('AiChannelWizard', () => {
     expect(screen.queryByText(/通道不在列表/)).not.toBeInTheDocument()
     // 可以继续往下走（验证源流已被正确接受）
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
-    expect(await screen.findByTestId('wizard-model-select')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '识别模型列表' })).toBeInTheDocument()
   })
 
   it('lockedSource: 离线状态时不阻止向导前进', async () => {
@@ -615,7 +634,7 @@ describe('AiChannelWizard', () => {
 
     // 离线源也能继续（AI 服务自己会重试重连）
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
-    expect(await screen.findByTestId('wizard-model-select')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '识别模型列表' })).toBeInTheDocument()
   })
 
   it('lockedSource: 预填名称和 ID（从源流名派生）', async () => {
@@ -634,7 +653,7 @@ describe('AiChannelWizard', () => {
 
     // 可以直接下一步到第②步
     await user.click(screen.getByRole('button', { name: '下一步 →' }))
-    expect(await screen.findByTestId('wizard-model-select')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '识别模型列表' })).toBeInTheDocument()
   })
 
   it('lockedSource: h265 时按 ai-service 能力显示提示', () => {
@@ -700,7 +719,7 @@ describe('AiChannelWizard', () => {
 describe('单双槽向导容量',()=>{
  it('双槽允许两项并阻止第三项，切换单槽保留内容而不静默删掉',async()=>{
   const user=userEvent.setup();render(<AiChannelWizard {...baseProps()}/>);
-  await selectSourceAndNext(user);await user.selectOptions(screen.getByRole('combobox',{name:'模型类型'}),'open');
+  await selectSourceAndNext(user);await user.click(screen.getByRole('button',{name:/^配置 /}));
   await user.selectOptions(screen.getByTestId('wizard-model-select'),'yoloe-26x-2');
   await user.click(screen.getByRole('button',{name:'＋ 添加标签'}));
   expect(screen.getByLabelText('识别描述 2')).toBeInTheDocument();
@@ -711,10 +730,29 @@ describe('单双槽向导容量',()=>{
  });
 })
 
-it('switching model category never selects a preset already present in another row',async()=>{
- const user=userEvent.setup();render(<AiChannelWizard {...baseProps()}/>);await selectSourceAndNext(user)
- await user.selectOptions(screen.getByLabelText('待添加模型'),'yoloe-26x');await user.click(screen.getByRole('button',{name:'添加模型'}))
- await user.click(screen.getByRole('button',{name:/配置 通用目标检测/}));await user.selectOptions(screen.getByRole('combobox',{name:'模型类型'}),'open')
+it('advanced selection permits another open-vocabulary preset but never repeats the same preset', async () => {
+ const user = userEvent.setup()
+ render(<AiChannelWizard {...baseProps()} />)
+ await selectSourceAndNext(user)
+ await user.selectOptions(screen.getByLabelText('待添加模型'), 'yoloe-26x')
+ await user.click(screen.getByRole('button', { name: '添加模型' }))
+ await user.click(screen.getByRole('button', { name: /配置 通用目标检测/ }))
+ expect(within(screen.getByTestId('wizard-model-select')).queryByRole('group', { name: '开放词汇' })).not.toBeInTheDocument()
+ await user.click(within(screen.getByRole('dialog', { name: /^配置模型/ })).getByRole('button', { name: '取消' }))
+ await user.click(screen.getByText('模型组合与高级添加选项'))
+ await user.click(screen.getByRole('checkbox', { name: '高级：允许同类多模型' }))
+ await user.click(screen.getByRole('button', { name: /配置 通用目标检测/ }))
+ const models = screen.getByTestId('wizard-model-select') as HTMLSelectElement
+ expect(Array.from(models.options, option => option.value)).not.toContain('yoloe-26x')
+ await user.selectOptions(models, 'yoloe-26x-1')
+ await user.type(screen.getByLabelText('识别描述 1'), 'car')
+ await user.clear(screen.getByLabelText('标签 ID 1'))
+ await user.type(screen.getByLabelText('标签 ID 1'), 'car')
+ await user.type(screen.getByLabelText('标签名称 1'), '车辆')
+ await user.click(screen.getByRole('button', { name: '应用到通道草稿' }))
+ await user.click(screen.getByRole('checkbox', { name: '高级：允许同类多模型' }))
+ expect(screen.getAllByRole('button', { name: /移除 开放词汇模型/ })).toHaveLength(2)
+ await user.click(screen.getByRole('button', { name: `配置 ${AI_MODEL_PRESETS['yoloe-26x-1'].displayName}` }))
  expect(screen.getByTestId('wizard-model-select')).toHaveValue('yoloe-26x-1')
 })
 
@@ -724,4 +762,112 @@ it('Escape and close share discard protection; continuing keeps model drafts and
  await user.keyboard('{Escape}');expect(screen.getByRole('dialog',{name:'放弃未保存的修改？'})).toBeInTheDocument();expect(props.onClose).not.toHaveBeenCalled()
  await user.click(screen.getByRole('button',{name:'继续编辑'}));expect(screen.getByRole('button',{name:'移除 车牌检测与识别'})).toBeInTheDocument()
  await user.click(screen.getByRole('button',{name:'关闭'}));await user.click(screen.getByRole('button',{name:'放弃修改'}));expect(props.onClose).toHaveBeenCalledTimes(1);expect(props.onSubmit).not.toHaveBeenCalled()
+})
+
+
+it('model apply and common execution settings stay in the draft until final channel submission', async () => {
+ const user = userEvent.setup()
+ const props = baseProps()
+ render(<AiChannelWizard {...props} />)
+ await selectSourceAndNext(user)
+ const runtime = screen.getByText('通道运行设置').closest('details')!
+ expect(runtime).not.toHaveAttribute('open')
+ expect(screen.queryByTestId('wizard-model-select')).not.toBeInTheDocument()
+ await user.click(screen.getByText('通道运行设置'))
+ fireEvent.change(screen.getByLabelText('推理帧率或采集间隔'), { target: { value: '7' } })
+ await user.selectOptions(screen.getByLabelText('待添加模型'), 'plate-recognition')
+ await user.click(screen.getByRole('button', { name: '添加模型' }))
+ expect(runtime).toContainElement(screen.getByLabelText('模型执行方式'))
+ await user.selectOptions(screen.getByLabelText('模型执行方式'), 'parallel')
+ await user.click(screen.getByRole('button', { name: /配置 通用目标检测/ }))
+ await user.selectOptions(screen.getByTestId('wizard-model-select'), 'detect-coco-yolo26m')
+ fireEvent.change(screen.getByLabelText(/检测置信度/), { target: { value: '.43' } })
+ expect(props.onSubmit).not.toHaveBeenCalled()
+ await user.click(screen.getByRole('button', { name: '应用到通道草稿' }))
+ expect(props.onSubmit).not.toHaveBeenCalled()
+ expect(screen.getByLabelText('推理帧率或采集间隔')).toHaveValue(7)
+ expect(screen.getByLabelText('模型执行方式')).toHaveValue('parallel')
+ await user.click(screen.getByRole('button', { name: '下一步 →' }))
+ await user.click(screen.getByRole('button', { name: '下一步 →' }))
+ await user.selectOptions(screen.getByTestId('wizard-output-select'), 'ch-offline')
+ expect(props.onSubmit).not.toHaveBeenCalled()
+ await user.click(screen.getByTestId('wizard-submit'))
+ expect(props.onSubmit).toHaveBeenCalledTimes(1)
+ expect(vi.mocked(props.onSubmit).mock.calls[0]![0]).toMatchObject({
+  inference_fps: 7, model: { name: 'detect-coco-yolo26m' }, postprocess: { conf_threshold: .43 },
+  analysis_pipeline: { execution: 'parallel', nodes: [{ model: { adapter: 'plate_bpu' } }] },
+ })
+})
+
+it.each(['取消', '关闭', 'Escape'] as const)('parent %s confirms discarding even model parameters already applied to the draft', async action => {
+ const user = userEvent.setup()
+ const props = baseProps({ mode: 'edit', initial: makeChannel() })
+ const { rerender } = render(<AiChannelWizard {...props} />)
+ await user.click(screen.getByRole('button', { name: '下一步 →' }))
+ await user.click(screen.getByRole('button', { name: /^配置 / }))
+ fireEvent.change(screen.getByLabelText(/检测置信度/), { target: { value: '.61' } })
+ await user.click(screen.getByRole('button', { name: '应用到通道草稿' }))
+ if (action === '取消') await user.click(screen.getByRole('button', { name: '← 上一步' }))
+ const close = async () => {
+  if (action === 'Escape') await user.keyboard('{Escape}')
+  else await user.click(screen.getByRole('button', { name: action }))
+ }
+ await close()
+ expect(screen.getByRole('dialog', { name: '放弃未保存的修改？' })).toBeInTheDocument()
+ expect(props.onClose).not.toHaveBeenCalled()
+ await user.click(screen.getByRole('button', { name: '继续编辑' }))
+ if (action === '取消') await user.click(screen.getByRole('button', { name: '下一步 →' }))
+ await user.click(screen.getByRole('button', { name: /^配置 / }))
+ expect(screen.getByLabelText(/检测置信度/)).toHaveValue(.61)
+ await user.click(screen.getByRole('button', { name: '应用到通道草稿' }))
+ if (action === '取消') await user.click(screen.getByRole('button', { name: '← 上一步' }))
+ await close()
+ await user.click(screen.getByRole('button', { name: '放弃修改' }))
+ expect(props.onClose).toHaveBeenCalledTimes(1)
+ expect(props.onSubmit).not.toHaveBeenCalled()
+ rerender(<AiChannelWizard {...props} open={false} />)
+ rerender(<AiChannelWizard {...props} />)
+ await user.click(screen.getByRole('button', { name: '下一步 →' }))
+ await user.click(screen.getByRole('button', { name: /^配置 / }))
+ expect(screen.getByLabelText(/检测置信度/)).toHaveValue(.3)
+})
+
+it('a dirty child Escape does not close the parent or discard other channel draft fields', async () => {
+ const user = userEvent.setup()
+ const props = baseProps()
+ render(<AiChannelWizard {...props} />)
+ await user.type(screen.getByTestId('wizard-name'), '保留此名称')
+ await selectSourceAndNext(user)
+ await user.click(screen.getByRole('button', { name: /^配置 / }))
+ fireEvent.change(screen.getByLabelText(/检测置信度/), { target: { value: '.6' } })
+ await user.keyboard('{Escape}')
+ expect(screen.getAllByRole('dialog', { name: '放弃未保存的修改？' })).toHaveLength(1)
+ expect(screen.getByText(/仅放弃这个模型尚未应用的参数/)).toBeInTheDocument()
+ await user.click(screen.getByRole('button', { name: '放弃修改' }))
+ expect(screen.queryByRole('dialog', { name: /^配置模型/ })).not.toBeInTheDocument()
+ expect(props.onClose).not.toHaveBeenCalled()
+ expect(props.onSubmit).not.toHaveBeenCalled()
+ await user.click(screen.getByRole('button', { name: '← 上一步' }))
+ expect(screen.getByTestId('wizard-name')).toHaveValue('保留此名称')
+})
+
+it('a slow-model apply awaiting tracking confirmation does not announce success; cancellation preserves the channel', async () => {
+ const user = userEvent.setup()
+ const props = baseProps({ mode: 'edit', initial: makeChannel({ inference_fps: 7, analytics: { enabled: true } }) })
+ render(<AiChannelWizard {...props} />)
+ await user.click(screen.getByRole('button', { name: '下一步 →' }))
+ await user.click(screen.getByRole('button', { name: /^配置 / }))
+ await user.selectOptions(screen.getByTestId('wizard-model-select'), 'locateanything-3b')
+ await user.type(screen.getByLabelText('识别描述 1'), 'car')
+ await user.type(screen.getByLabelText('标签名称 1'), '车辆')
+ await user.click(screen.getByRole('button', { name: '应用到通道草稿' }))
+ expect(screen.getByRole('dialog', { name: '关闭目标跟踪' })).toBeInTheDocument()
+ expect(screen.queryByText('模型参数已应用到通道草稿，保存通道后生效')).not.toBeInTheDocument()
+ expect(screen.getByText('请确认通道跟踪设置变更')).toBeInTheDocument()
+ await user.click(screen.getByRole('button', { name: '取消变更' }))
+ await user.click(screen.getByText('通道运行设置'))
+ expect(screen.getByLabelText('推理帧率或采集间隔')).toHaveValue(7)
+ await user.click(screen.getByRole('button', { name: /^配置 / }))
+ expect(screen.getByTestId('wizard-model-select')).toHaveValue('yolo26m')
+ expect(props.onSubmit).not.toHaveBeenCalled()
 })

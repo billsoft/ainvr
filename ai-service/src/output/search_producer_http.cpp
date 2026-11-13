@@ -139,11 +139,11 @@ class Operation final:public SearchSamplingOperation{
  Receipt Submit(const SearchSamplingCurrent& current)override{
   const auto key=ReceiptKey();
   if(started_.exchange(true)){CountSubmit(1);return Unknown(key);}
-  if(!Alive(lease_,current)||!ValidLease(lease_)){CountSubmit(2);return {Receipt::Result::Rejected,"",key};}
+  if(!Alive(lease_,current)||!ValidLease(lease_)){CountSubmit(2);return {Receipt::Result::Rejected,"",key,SearchCoverageLedger::GapCause::FailLeaseExpired};}
   try{
    const auto response=transport_->Post(lease_,object_?"/v1/samples/slot":"/v1/samples",metadata_,&sample_->jpeg,current);
-   if(!response.attempted){CountSubmit(3);return {Receipt::Result::Rejected,"",key};}
-   if(PrewriteRejected(response)){CountSubmit(4);return {Receipt::Result::Rejected,"",key};}
+   if(!response.attempted){CountSubmit(3);return {Receipt::Result::Rejected,"",key,SearchCoverageLedger::GapCause::FailTransportNotAttempted};}
+   if(PrewriteRejected(response)){CountSubmit(4);return {Receipt::Result::Rejected,"",key,SearchCoverageLedger::GapCause::FailRejected};}
    if(response.status!=200){CountSubmit(response.status==0?5:response.status>=500?6:7);return Unknown(key);}
    if(!Alive(lease_,current)){CountSubmit(8);return Unknown(key);}
    const auto ack=Parse(response.body,kResponseMax);Keys(ack,{"id","stored","fingerprint"});

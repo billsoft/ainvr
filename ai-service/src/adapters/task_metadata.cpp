@@ -15,6 +15,7 @@ class TaskMetadata final : public BaseModelAdapter {
   // Preserve the reference adapter's intrinsic task/crop/output properties
   // before model loading too. Renaming an artifact cannot change its task.
   std::string TaskType() const override {
+    if(adapter_=="yolo26_pose_bpu")return "pose_estimation";
     return (adapter_=="yoloface_bpu"||adapter_=="scrfd_bpu")
       ?"face_detection":BaseModelAdapter::TaskType();
   }
@@ -25,7 +26,7 @@ class TaskMetadata final : public BaseModelAdapter {
 };
 }
 std::vector<std::string> AvailableAdapters() {
-  return {"yolo26_bpu", "yoloface_bpu", "scrfd_bpu", "yoloe_bpu", "plate_bpu", "locateanything_bpu"};
+  return {"yolo26_bpu", "yoloface_bpu", "scrfd_bpu", "yoloe_bpu", "plate_bpu", "locateanything_bpu", "yolo26_pose_bpu"};
 }
 std::unique_ptr<BaseModelAdapter> CreateAdapter(const config::ModelConfig& cfg) {
   return std::make_unique<TaskMetadata>(cfg);

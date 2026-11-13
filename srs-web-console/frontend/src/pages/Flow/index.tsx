@@ -65,8 +65,8 @@ export default function FlowPage(){
    const current=flowService.query({from:range.from.toISOString(),to:range.to.toISOString(),bucket:range.bucket,timezone})
    // The comparison loads on its own; it never holds back the current numbers.
    void flowService.query({from:range.previous.from.toISOString(),to:range.previous.to.toISOString(),bucket:null,timezone}).then(before=>{
-    // No comparison when the counter was not counting anywhere in the previous period: that is not zero traffic.
-    if(id===latest.current)setPrevious(Object.fromEntries(before.items.filter(i=>i.zones.length&&i.in.coverage!=='no_data').map(i=>[i.counter.counter_id,{in:i.in.occurrences,...(i.out?{out:i.out.occurrences}:{})}])))
+    // Compare only complete periods: missing observations are not zero traffic.
+    if(id===latest.current)setPrevious(Object.fromEntries(before.items.filter(i=>i.zones.length&&i.in.coverage==='complete'&&(!i.out||i.out.coverage==='complete')).map(i=>[i.counter.counter_id,{in:i.in.occurrences,...(i.out?{out:i.out.occurrences}:{})}])))
    }).catch(()=>undefined)
    const now=await current
    if(id!==latest.current)return

@@ -10,20 +10,24 @@ import {scheduleError,scheduleSummary} from '@/features/alarmSchedule'
 import {triggerBehaviors,type TriggerLabel} from '@/features/alarmTriggers'
 import {actionText,conditionOf,conditionSentence,defaultWindowMs,groupOf,minimumCount,needsWindow,type TriggerCondition} from '@/features/triggerCondition'
 import type {TriggerDefinition,TriggerDefinitionInput} from '@/features/alarmDefinitions'
+import {RegionTargetPicker,RegionConditionFields} from '@/features/capabilityPreview/RegionTriggerFields'
+import {regionConditionError,regionSourceError,regionSummary} from '@/features/capabilityPreview/regionTrigger'
 
 interface Props {
  sources?:AlarmSource[];initialStep?:number;usageNames?:Record<string,string>;
  id:string;initial?:TriggerDefinition;labels:TriggerLabel[]
+ prefill?:Partial<TriggerDefinitionInput>
  onSave:(input:TriggerDefinitionInput)=>Promise<void>;onCancel:()=>void
 }
 const field='form-input'
 const steps=['基本信息','检测目标','判定条件','布防与审核']
-export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initialStep=0,usageNames={},sources=[]}:Props){
+export function TriggerDefinitionWizard({id,initial,prefill,labels,onSave,onCancel,initialStep=0,usageNames={},sources=[]}:Props){
  const [value,setValue]=useState<TriggerDefinitionInput>(()=>initial?{
   target_model:initial.target_model,trigger_id:initial.trigger_id,name:initial.name,behavior:initial.behavior,labels:structuredClone(initial.labels),
   ...(initial.group?{group:{...initial.group}}:{}),duration_ms:initial.duration_ms,...(initial.approach_width_percent!==undefined?{approach_width_percent:initial.approach_width_percent}:{}),
+  ...(initial.region_state?{region_state:{...initial.region_state}}:{}),
   review:initial.review?structuredClone(initial.review):undefined,alarm_enabled:initial.alarm_enabled,state:initial.state,schedule:structuredClone(initial.schedule),
- }:{target_model:targetModel('yolo26x'),trigger_id:id,name:'',behavior:'appearance',labels:[],duration_ms:3000,review:defaultTriggerReview(),alarm_enabled:true,state:'enabled',schedule:{mode:'always'}})
+ }:{target_model:targetModel('yolo26x'),trigger_id:id,name:'',behavior:'appearance',labels:[],duration_ms:3000,review:defaultTriggerReview(),alarm_enabled:true,state:'enabled',schedule:{mode:'always'},...prefill})
  const [seconds,setSeconds]=useState(String((initial?.duration_ms??3000)/1000))
  const [percent,setPercent]=useState(String(initial?.approach_width_percent??''))
  const [step,setStep]=useState(initialStep),[error,setError]=useState(''),[saving,setSaving]=useState(false)
@@ -57,6 +61,7 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
  const editCondition=(change:Partial<TriggerCondition>)=>{if('window_ms' in change)windowEdited.current=true;recompute({...condition,...change})}
  const labelCount=useRef(value.labels.length),behaviorRef=useRef(value.behavior)
  useEffect(()=>{
+  if(value.region_state)return
   // Labels or behaviour changed: keep the chosen condition valid for the new selection.
   if(labelCount.current===value.labels.length&&behaviorRef.current===value.behavior)return
   const window=windowEdited.current?condition.window_ms:defaultWindowMs(value.behavior)
@@ -67,7 +72,8 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
  const windowShown=needsWindow(condition,value.labels.length)
  const validation=(n:number)=>{
   if(n===0&&(!value.name.trim()||value.name.trim().length>128))return '请填写名称，最多128个字符'
-  if(n===1)return targetError(value)
+  if(n===1)return value.region_state?regionSourceError(value,sources):targetError(value)
+  if(n===2&&value.region_state)return regionConditionError(value.region_state)
   const group=value.group
   if(n===2&&group&&(!Number.isInteger(group.minimum)||group.minimum<1||group.minimum>16||(group.minimum===1&&(group.labels==='any'||value.labels.length<2))||(group.labels==='all'&&value.labels.length>16)||group.window_ms<0||group.window_ms>60000))return '请检查组合数量和时间；全部类别最多 16 类'
   if(n===2&&value.behavior==='appearance'&&(!seconds.trim()||!Number.isFinite(Number(seconds))||Number(seconds)<0||Number(seconds)>3600))return '持续时间须为0至3600秒'
@@ -83,7 +89,7 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
   busy.current=true;setSaving(true);setError('')
   try{
    const {approach_width_percent:_,group,...base}=value
-   await onSave({...base,...(group?{group}:{}),name:value.name.trim(),duration_ms:value.behavior==='appearance'?Math.round(Number(seconds)*1000):0,
+   await onSave({...base,...(group?{group}:{}),name:value.name.trim(),duration_ms:value.region_state?0:value.behavior==='appearance'?Math.round(Number(seconds)*1000):0,
     ...(value.behavior==='region_approach'?{approach_width_percent:Number(percent)}:{})})
   }catch(e){
    const status=(e as {status?:number}).status
@@ -116,15 +122,16 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
     <fieldset disabled={locked} className="space-y-4">
     {step===0&&<>
      <label className="block text-sm font-medium text-ink">触发器名称<input className={`${field} mt-1.5`} placeholder="例如：门前人员出现" maxLength={128} value={value.name} onChange={e=>patch({name:e.target.value})}/></label>
-     <div role="group" aria-label="检测行为" className="grid gap-3 sm:grid-cols-2">{triggerBehaviors.map(b=><button key={b.id} type="button" aria-pressed={value.behavior===b.id}
+     {value.region_state?<p className="rounded-base bg-primary-50 p-3 text-sm">{regionSummary(value.region_state)}。</p>:<div role="group" aria-label="检测行为" className="grid gap-3 sm:grid-cols-2">{triggerBehaviors.map(b=><button key={b.id} type="button" aria-pressed={value.behavior===b.id}
       onClick={()=>patch({behavior:b.id})} className={`relative rounded-panel border p-4 text-left transition-colors ${value.behavior===b.id?'border-primary bg-primary-50 ring-1 ring-primary':'border-line bg-surface hover:bg-surface-hover'}`}>
       <strong className="block text-sm font-semibold text-ink">{b.name}</strong><span className="mt-1 block text-xs leading-5 text-ink-subtle">{b.help}</span>
       {value.behavior===b.id&&<span aria-hidden="true" className="absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-xs text-white">✓</span>}
-     </button>)}</div>
+     </button>)}</div>}
      <p className="text-sm text-ink-subtle">先定义检测什么，再到实时监看中选用到整个画面或热区。</p>
     </>}
-    {step===1&&<TriggerTargetPicker value={value} legacyLabels={labels} sources={sources} onChange={patch}/>}
+    {step===1&&(value.region_state?<RegionTargetPicker value={value} sources={sources} onChange={patch}/>:<TriggerTargetPicker value={value} legacyLabels={labels} sources={sources} onChange={patch}/>)}
     {step===2&&<>
+     {value.region_state?<RegionConditionFields value={value.region_state} onChange={region_state=>patch({region_state})}/>:<>
      {value.alarm_enabled&&<section aria-label="触发条件" className="space-y-3 rounded-panel border border-line p-4">
       <div className="grid gap-3 sm:grid-cols-3">
        {value.labels.length>1&&<label className="block text-sm font-medium">类别关系<select className={`${field} mt-1.5`} value={condition.relation} onChange={e=>editCondition({relation:e.target.value as 'any'|'all'})}><option value="any">任一类别（或）</option><option value="all">全部类别同时（与）</option></select></label>}
@@ -145,10 +152,12 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
      </>:<p className="text-sm text-ink-subtle">{value.behavior==='region_enter'?'检测框与热区相交或接触即满足；首次就在区内也会触发，无需进入前画面。':'目标须从热区外进入，再从不同边离开。画面帧率低、区内没有拍到时，按同一目标前后两帧位置的连线是否穿过热区判断；目标中途丢失时不触发。'}</p>}
      <p className="rounded-base bg-surface-page p-3 text-xs text-ink-subtle">{['region_enter','region_approach'].includes(value.behavior)?'位置按检测框与布防区的关系判断，不要求进入过程。': '位置按识别框底边中点判断。'}{value.behavior==='appearance'?'可选用到整个画面或指定热区。':value.behavior==='region_traverse'?'具体热区及允许方向，在布防中设置。':'具体热区在布防中设置。'}</p>
     </>}
+    </>}
     {step===3&&<>
      <details open={value.schedule.mode!=='always'} className="rounded-panel border border-line"><summary className="cursor-pointer p-3 text-sm font-medium">布防时段 · {scheduleSummary(value.schedule)}</summary><div className="border-t border-line p-3"><ScheduleEditor value={value.schedule} onChange={schedule=>patch({schedule})}/></div></details>
      {!value.alarm_enabled&&<p role="status" className="rounded-base border border-warning bg-amber-50 p-3 text-sm">这是旧版行为记录配置，保存后仍不生成告警。需要告警时请新建告警触发器；原有配置和历史保留。</p>}
-     {value.alarm_enabled&&<section aria-label="AI 审核设置" className="space-y-3 rounded-panel border border-line p-3">
+     {value.region_state&&<p className="rounded-base bg-amber-50 p-3 text-sm text-amber-900">这类告警由人工审核确认。保存后请到实时监看的布防中绑定热区。</p>}
+     {value.alarm_enabled&&!value.region_state&&<section aria-label="AI 审核设置" className="space-y-3 rounded-panel border border-line p-3">
       <h4 className="text-sm font-medium">{value.review?.enabled?'AI 辅助审核':'人工审核'}</h4>
       <p className="text-xs leading-5 text-ink-subtle">{value.review?.enabled?'告警先入库，后台优先审核最新的未审核告警。系统自动提供目标类别、告警行为和关键帧说明，通常无需填写提示词。':'此触发器保留人工审核设置，可在高级设置中启用 AI 审核。'}</p>
       <p className="text-xs leading-5 text-ink-subtle">规则引擎判定持续时间、方向和越界，AI 核对关键帧中的指定目标。证据不足、判断不一致或服务不可用时保留未审核；人工决定优先。执行由系统配置中的审核开关和验证条件控制。</p>
@@ -163,10 +172,10 @@ export function TriggerDefinitionWizard({id,initial,labels,onSave,onCancel,initi
        </>}
       </div></details>
      </section>}
-     <p className="rounded-base bg-surface-page p-3 text-sm text-ink">将会：{conditionSentence(value,actionText(value.behavior,{seconds,percent}))}时，{value.alarm_enabled?'生成告警':'保留旧版行为记录'}；{scheduleSummary(value.schedule)}。</p>
-     <p className="text-xs text-ink-subtle">{!initial?'新建后默认启用；关联到 AI 输出画面或热区并保存布防后才开始告警。':value.state==='enabled'?'当前已启用。启用和暂停可在触发器列表的“更多操作”中管理。':`当前${value.state==='draft'?'为草稿':value.state==='archived'?'已归档':'已暂停'}；保存修改不会自动启用。可在列表的“更多操作”中启用。`}</p>
+     <p className="rounded-base bg-surface-page p-3 text-sm text-ink">{value.region_state?`将会：${regionSummary(value.region_state)}`:`将会：${conditionSentence(value,actionText(value.behavior,{seconds,percent}))}时，${value.alarm_enabled?'生成告警':'保留旧版行为记录'}`}；{scheduleSummary(value.schedule)}。</p>
+     <p className="text-xs text-ink-subtle">{value.region_state&&value.state==='draft'?'先保存为草稿，不会立即告警；在实时监看的布防中绑定热区后，回到列表点“更多操作 → 启用”。':!initial?'新建后默认启用；关联到 AI 输出画面或热区并保存布防后才开始告警。':value.state==='enabled'?'当前已启用。启用和暂停可在触发器列表的“更多操作”中管理。':`当前${value.state==='draft'?'为草稿':value.state==='archived'?'已归档':'已暂停'}；保存修改不会自动启用。可在列表的“更多操作”中启用。`}</p>
      {initial?.usages?.length?<section aria-label="修改影响范围" className="rounded-base border border-warning bg-amber-50 p-3 text-sm"><h4 className="font-medium">保存将更新 {initial.usages.length} 处选用</h4>
-      <ul>{initial.usages.map(u=><li key={u.assignment_id}>{usageNames[u.source_id]??'来源暂不可用'} · {u.zone_name??'整个画面'} · {usageNames[u.processor_id]??'处理器暂不可用'}</li>)}</ul><p className="mt-2 text-sm">历史记录保留当时版本；本次修改应用后重新累计判定证据。</p></section>
+      <ul>{initial.usages.map(u=><li key={u.assignment_id}>{usageNames[u.source_id]??'来源暂不可用'} · {u.zone_name??'整个画面'} · {usageNames[u.processor_id]??'AI 通道暂不可用'}</li>)}</ul><p className="mt-2 text-sm">历史记录保留当时版本；本次修改应用后重新累计判定证据。</p></section>
       :null}
     </>}
     </fieldset>

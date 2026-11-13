@@ -481,6 +481,8 @@ void ProjectionIndexOrder(const std::string& uri, const std::string& database, m
   Command(client, database, {{"dropDatabase", 1}});
 }
 
+#include "history_scan_cases.hpp"
+
 int main() {
   if (!std::getenv("AINVR_SEARCH_TEST_MONGO")) { std::cout << "SKIP: isolated Mongo fixture not requested\n"; return 77; }
   const std::string uri = "mongodb://127.0.0.1:25440/?serverSelectionTimeoutMS=2000";
@@ -489,9 +491,11 @@ int main() {
   std::unique_ptr<mongoc_client_t, decltype(&mongoc_client_destroy)> client(mongoc_client_new(uri.c_str()), mongoc_client_destroy);
   std::vector<std::string> databases = {database, database + "_quota", database + "_capped", database + "_slots", database + "_slots_unique", database + "-long", database + "_scenes", database + "_maintenance", database + "_maintenance_ttl", database + "_maintenance_slots", database + "_maintenance_pages", database + "_index_changes"};
   const auto cleanup = [&] { for (const auto& name : databases) Command(client.get(), name, {{"dropDatabase", 1}}); };
+  databases.push_back(database+"_scan_plans");
   try {
     auto history = std::make_unique<HistoryMongo>(uri, database); history->Initialize();
     const auto at = Now() - 1000; const auto first = Make(9, at);
+    ScanPlans(uri,database+"_scan_plans",at,client.get());
     IndexChanges(uri, database + "_index_changes", at, client.get());
     UsageCovered(uri, database + "_usage", at, client.get());
     ProjectionIndexOrder(uri, database + "_projection_order", client.get());

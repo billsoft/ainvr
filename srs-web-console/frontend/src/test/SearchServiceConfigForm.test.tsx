@@ -30,6 +30,19 @@ beforeEach(() => {
   vi.mocked(searchService.status).mockResolvedValue({ ready: false, reason: 'disabled', model_version: null })
 })
 describe('智能搜索配置', () => {
+  it('explains active-model sampling limits while preserving historical object-only preferences on save', async () => {
+    const { save } = open(stored({ enabled: false, model: { package_id: 'siglip2-base-full-int8' },
+      sampling: { object: true, scene: false, object_interval_ms: 2000 } }))
+    await screen.findByText('智能搜索未启用')
+    expect(screen.getByText(/多视图搜索模型仅支持场景采集/)).toBeInTheDocument()
+    expect(screen.getByText(/模型迁移期间以实际生效模型能力为准，所选模型不代表已生效/)).toBeInTheDocument()
+    expect(screen.getByText(/模型能力尚未确认时暂不新增目标采集/)).toBeInTheDocument()
+    expect(screen.queryByText(/采用系统默认的目标与场景采样策略/)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByRole('spinbutton', { name: '搜索保留时间（天）' }), { target: { value: '15' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存并应用' }))
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0]![0][0].config.sampling).toMatchObject({ object: true, scene: false, object_interval_ms: 2000 })
+  })
   it('routes a different active model through migration instead of ordinary save',async()=>{
     const hash='a'.repeat(64),other='b'.repeat(64)
     vi.mocked(searchModelMigrationService.context).mockResolvedValue({source:{package_id:'old-model',model_version:`search-v1-${hash}`,package_sha256:hash},execution_available:true,reason:null})

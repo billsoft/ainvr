@@ -126,6 +126,7 @@ target_link_libraries(ainvr_reused_controller PUBLIC ainvr_reused_snapshot_store
 target_sources(ainvr_reused_controller PRIVATE src/pipeline/managed_worker.cpp
   src/adapters/task_metadata.cpp)
 add_executable(ainvr_s100p_control_service src/api/s100p_control_service.cpp)
+target_compile_options(ainvr_s100p_control_service PRIVATE -idirafter /usr/hobot/include)
 target_link_libraries(ainvr_s100p_control_service PRIVATE ainvr_reused_controller)
 set_target_properties(ainvr_s100p_control_service PROPERTIES BUILD_RPATH /usr/hobot/lib)
 if(BUILD_TESTING)

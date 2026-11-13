@@ -10,7 +10,7 @@ const zh:Record<string,string>={
  'potted plant':'盆栽',bed:'床','dining table':'餐桌',toilet:'马桶',tv:'电视',laptop:'笔记本电脑',mouse:'鼠标',remote:'遥控器',
  keyboard:'键盘','cell phone':'手机',microwave:'微波炉',oven:'烤箱',toaster:'烤面包机',sink:'水槽',refrigerator:'冰箱',book:'书',
  clock:'时钟',vase:'花瓶',scissors:'剪刀','teddy bear':'玩偶','hair drier':'吹风机',toothbrush:'牙刷',
- face:'人脸',fire:'火焰',smoke:'烟雾',helmet:'安全帽',
+ face:'人脸',fire:'火焰',smoke:'烟雾',helmet:'安全帽',no_helmet:'未戴安全帽',head:'头部',
 }
 /** Commonly monitored targets, shown first in the trigger wizard. */
 export const commonTargets=['person','car','truck','bus','bicycle','motorcycle','fire','smoke','face']

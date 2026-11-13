@@ -69,7 +69,7 @@ class PipelineAdapter final:public BpuChannelAdapter {
  private:
  const Node& Root()const{return *std::find_if(nodes_.begin(),nodes_.end(),[&](const Node& n){return n.id==root_id_;});}
  std::vector<Detection> Decode(const std::vector<std::vector<float>>& values,double confidence,double iou,int maximum,bool tracking){
-  std::vector<Detection> result;size_t offset=0;
+  std::vector<std::pair<std::string,std::vector<Detection>>> decoded_nodes;size_t offset=0;
   std::vector<int> visible;for(const auto& n:nodes_)visible.push_back(n.post.max_detections);
   const auto candidates=PipelineCandidateLimits(visible);size_t node_index=0;
   for(auto& n:nodes_){if(offset+n.outputs>values.size())throw std::runtime_error("Incomplete pipeline tensor outputs");std::vector<std::vector<float>> own(values.begin()+offset,values.begin()+offset+n.outputs);offset+=n.outputs;
@@ -78,10 +78,15 @@ class PipelineAdapter final:public BpuChannelAdapter {
    const auto overlap=n.id==root_id_?iou:n.post.iou_threshold;const auto limit=tracking?std::min(maximum,candidates.at(node_index)):(n.id==root_id_?maximum:n.post.max_detections);++node_index;
    auto decoded=n.adapter->IsMultiOutput()?n.adapter->PostprocessMulti(own,scale,threshold,overlap,limit):n.adapter->Postprocess(own.at(0),scale,threshold,overlap,limit);
    for(auto& d:decoded){d.model_extra["task_type"]=n.adapter->TaskType();d.model_extra["model_name"]=n.config.name;}
-   auto mapped=labels_.Map(n.id,std::move(decoded));for(auto& d:mapped)result.push_back(std::move(d));
+   decoded_nodes.emplace_back(n.id,std::move(decoded));
   }
-  if(result.size()>1000)throw std::runtime_error("Merged detection count exceeds tracking capacity");
-  if(offset!=values.size())throw std::runtime_error("Unexpected pipeline tensor outputs");return result;
+  if(offset!=values.size())throw std::runtime_error("Unexpected pipeline tensor outputs");
+  auto fusion=labels_.Merge(std::move(decoded_nodes));
+  if(fusion.detections.size()>1000)throw std::runtime_error("Merged detection count exceeds tracking capacity");
+  metadata_["analysis_pipeline"]["merge_policy"]="priority_boxes_mutual_spatial_attributes_v1";
+  metadata_["analysis_pipeline"]["unassociated_observations"]=std::move(fusion.unassociated);
+  metadata_["analysis_pipeline"]["unassociated_omitted"]=fusion.omitted;
+  return std::move(fusion.detections);
  }
 };
 }

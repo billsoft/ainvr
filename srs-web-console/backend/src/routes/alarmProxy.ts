@@ -35,7 +35,9 @@ export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxy
         if (!config) return reply.code(503).send({error: {code: 'alarm_not_configured', message: '告警服务尚未配置'}});
         const target = endpoint(config, path(req));
         for (const [k, v] of Object.entries(query)) target.searchParams.set(k, v as string);
-        const headers: Record<string, string> = {authorization: `Bearer ${config.apiToken}`, accept: 'application/json'};
+        // The authenticated BFF principal is the only face-permission claim.
+        // Set it on reads too; never copy actor/role/access headers from clients.
+        const headers: Record<string, string> = {authorization: `Bearer ${config.apiToken}`, accept: 'application/json', 'x-ainvr-actor': actor};
         if (req.method === 'POST') {
           headers['content-type'] = 'application/json';
           headers['x-ainvr-actor'] = actor;
@@ -45,6 +47,10 @@ export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxy
           body: req.method === 'POST' ? JSON.stringify(req.body ?? {}) : undefined,
           signal: AbortSignal.timeout(config.timeoutMs)});
         const body = await limitedJson(upstream);
+        // A known data-permission denial is not a broken service credential.
+        const permissionError = body as {error?: {code?: unknown}} | null;
+        if (upstream.status === 403 && permissionError?.error?.code === 'faces_management_required')
+          return reply.code(403).send(body);
         // Upstream authentication errors are service configuration failures, not a console logout.
         if (upstream.status === 401 || upstream.status === 403) throw new Error('Service authentication failed');
         return reply.code(upstream.status).send(body);
@@ -59,7 +65,7 @@ export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxy
   app.get('/alarms/behavior-statistics', forward(() => '/v1/behavior-statistics', ['from','to','channel_id','zone_id','label_id','event_type','bucket','timezone','rule_id','trigger_id','group_by']));
   app.get('/alarms/behavior-events', forward(() => '/v1/behavior-events', ['from','to','channel_id','zone_id','label_id','event_type','limit','cursor','rule_id','trigger_id']));
   app.get('/alarms/behavior-events/:id', forward(req => `/v1/behavior-events/${encodeURIComponent((req.params as {id:string}).id)}`));
-  app.get('/alarms/events', forward(() => '/v1/events', ['status', 'channel_id', 'review', 'disposition', 'limit', 'cursor', 'from', 'to', 'zone_id', 'behavior', 'locations', 'analytics']));
+  app.get('/alarms/events', forward(() => '/v1/events', ['status', 'channel_id', 'review', 'disposition', 'limit', 'cursor', 'from', 'to', 'zone_id', 'behavior', 'event_kind', 'locations', 'analytics']));
   app.get('/alarms/events/summary', forward(() => '/v1/events/summary'));
   app.post('/alarms/events/statistics', forward(() => '/v1/events/statistics'));
   app.post('/alarms/events/analytics', {bodyLimit:16384}, forward(() => '/v1/events/analytics'));
@@ -70,7 +76,9 @@ export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxy
   app.post('/alarms/events/:id/acknowledgements', forward(idPath('/acknowledgements'), [], true));
   app.post('/alarms/bulk-acknowledgements', forward(() => '/v1/bulk-acknowledgements', [], true));
   app.post('/alarms/purge',async(req,reply)=>{
-    if(!await options.principal(req))return reply.code(401).send({error:{code:'unauthorized',message:'需要登录'}});
+    const principal=await options.principal(req);
+    if(!principal)return reply.code(401).send({error:{code:'unauthorized',message:'需要登录'}});
+    if(principal!=='console-administrator')return reply.code(403).send({error:{code:'faces_management_required',message:'清空全部告警需要已登录的控制台管理会话'}});
     const body=req.body as {password?:unknown;scope?:unknown}|null;
     if(!body||Object.keys(body).some(k=>!['password','scope'].includes(k))||body.scope!=='all'||typeof body.password!=='string'||!body.password.length||body.password.length>100)
       return reply.code(400).send({error:{code:'invalid_request',message:'请输入系统密码，并确认清空所有告警'}});

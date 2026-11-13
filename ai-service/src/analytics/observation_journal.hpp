@@ -2,6 +2,7 @@
 #pragma once
 #include "../output/archive_executor.hpp"
 #include "../output/result.hpp"
+#include "region_observation_capabilities.hpp"
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <sys/file.h>
@@ -100,6 +101,8 @@ class ObservationJournal {
       {"model",{{"id",result.model_name},{"label_catalog",result.model_extra.at("label_catalog")}}},
       {"tracks",analytics.at("tracks")}};
     if(result.model_extra.contains("compatible_label_catalogs"))value["model"]["compatible_label_catalogs"]=result.model_extra.at("compatible_label_catalogs");
+    const auto capabilities=RegionObservationCapabilities(result);
+    if(!capabilities.empty())value["region_observations"]=capabilities;
     // Attributes belong to this exact observed target, never copied to lost/predicted tracks.
     for(auto& t:value["tracks"])if(t.value("observation",std::string())=="detected"){
       for(const auto& d:result.detections)if(!d.track_id.empty()&&t.at("track_id")==d.track_id){
@@ -117,12 +120,34 @@ class ObservationJournal {
     if(detection_only) {
       value["detections"]=nlohmann::json::array();
       // Only exported detections: hidden low-confidence candidates cannot alarm.
-      for(const auto& d:result.detections) value["detections"].push_back({
+      for(const auto& d:result.detections) {
+        nlohmann::json detection={
         {"label_id",d.label_id.empty()?"class:"+std::to_string(d.class_id):d.label_id},
-        {"bbox",{{"x",d.bbox[0]},{"y",d.bbox[1]},{"w",d.bbox[2]},{"h",d.bbox[3]}}}});
+        {"bbox",{{"x",d.bbox[0]},{"y",d.bbox[1]},{"w",d.bbox[2]},{"h",d.bbox[3]}}}};
+        if(d.model_extra.contains("attributes"))detection["attributes"]=d.model_extra.at("attributes");
+        if(d.model_extra.contains("source_node"))detection["source_node"]=d.model_extra.at("source_node");
+        value["detections"].push_back(std::move(detection));
+      }
     }
     // The placeholder offset has the maximum width, so this size is an upper bound.
-    const size_t bound=value.dump().size();if(bound>1024*1024)throw std::runtime_error("Observation record capacity exceeded");
+    size_t bound=value.dump().size();
+    if(bound>1024*1024){
+      // Optional dense attributes must not break existing counting/trajectory
+      // delivery. Omit them as an explicitly unknown capability, not as a
+      // negative pose observation, while retaining every original target box.
+      size_t omitted=0;
+      for(const auto* field:{"tracks","detections"})if(value.contains(field))
+        for(auto& row:value[field])omitted+=row.erase("attributes");
+      if(omitted){
+        value["attribute_delivery"]={{"state","omitted"},{"reason","observation_capacity"},{"targets",omitted}};
+        if(value.contains("region_observations")&&value["region_observations"].contains("suspected_down")){
+          value["region_observations"]["suspected_down"]["state"]="unknown";
+          value["region_observations"]["suspected_down"]["reason"]="attribute_capacity";
+        }
+        bound=value.dump().size();
+      }
+    }
+    if(bound>1024*1024)throw std::runtime_error("Observation record capacity exceeded");
     // Only this locked producer can add files; the consumer can only delete.
     // Cached usage is therefore a conservative upper bound (records still queued are
     // included). Recount only when near capacity, with bounded retries.

@@ -10,12 +10,13 @@ interface Options {
 }
 export async function llmProxyRoutes(app:FastifyInstance,options:Options){
   app.get('/alarms/events/:id/review-frames/:key',async(req,reply)=>{
-    if(!await options.principal(req))return reply.code(401).send({error:{code:'unauthorized'}});
+    const principal=await options.principal(req);
+    if(!principal)return reply.code(401).send({error:{code:'unauthorized'}});
     const {id,key}=req.params as {id:string;key:string};
     if(!/^[a-zA-Z0-9_:.-]{1,256}$/.test(id)||!/^[a-f0-9]{64}$/.test(key))return reply.code(422).send({error:{code:'invalid_evidence'}});
     try{
       const c=await options.alarmConnection?.();if(!c)throw Error();
-      const response=await fetch(new URL(`/v1/alarms/${encodeURIComponent(id)}/review-frames/${key}`,c.baseUrl),{headers:{authorization:`Bearer ${c.apiToken}`},redirect:'error',signal:AbortSignal.timeout(10000)});
+      const response=await fetch(new URL(`/v1/alarms/${encodeURIComponent(id)}/review-frames/${key}`,c.baseUrl),{headers:{authorization:`Bearer ${c.apiToken}`,'x-ainvr-actor':principal},redirect:'error',signal:AbortSignal.timeout(10000)});
       if(!response.ok||!response.body)throw Error();
       const reader=response.body.getReader(),parts:Uint8Array[]=[];let size=0;
       try{while(true){const x=await reader.read();if(x.done)break;size+=x.value.length;if(size>8*1024*1024)throw Error();parts.push(x.value)}}finally{await reader.cancel().catch(()=>{})}

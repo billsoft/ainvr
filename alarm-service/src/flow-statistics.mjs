@@ -1,8 +1,17 @@
 // Copyright AINVR. Count recorded passages of counting bindings; never infer crossings.
 // A series is one output (e.g. "in") of one binding: rule id + targets + direction filter.
 import {digest,fail,identity} from './domain.mjs';
+import {canAccessFaces,ordinaryAlarmFilter} from './alarm-access.mjs';
 const object=v=>v&&typeof v==='object'&&!Array.isArray(v);
 const MAX_RANGE_MS=31*86400000;
+// Legacy operations have no explicit scope. Only a proven administrator may
+// hide protected late arrivals; old/unknown actors retain ordinary access.
+function clearAccess(operation){
+  if(operation.access_scope===undefined)return canAccessFaces(operation.actor)?'all':'ordinary';
+  if(!['ordinary','all'].includes(operation.access_scope))fail('invalid_clear_history','Unknown clear permission scope',503);
+  return operation.access_scope;
+}
+const clearPredicate=operation=>({...(operation.counter_id?{counter_id:operation.counter_id}:{}),occurred_at:{$gte:operation.from,$lt:operation.to},...(clearAccess(operation)==='ordinary'?ordinaryAlarmFilter():{})});
 function angle(input,field){
   if(!object(input)||Object.keys(input).some(k=>!['from','to'].includes(k))||![input.from,input.to].every(n=>Number.isFinite(n)&&n>=0&&n<=360))fail('invalid_direction',field);
   const from=input.from%360,to=input.to%360;
@@ -109,13 +118,15 @@ export class FlowStatistics {
     identity(request.counter_id,'counter_id');identity(actor,'actor');identity(key,'operation');request.rule_ids.forEach(id=>identity(id,'rule_id'));
     const from=Date.parse(request.from),to=Date.parse(request.to);
     if(typeof request.from!=='string'||typeof request.to!=='string'||!Number.isFinite(from)||!Number.isFinite(to)||to<=from||to-from>MAX_RANGE_MS||to>Date.now()+2000)fail('invalid_time_range','Choose a past range up to 31 days');
-    const scope={counter_id:request.counter_id,rule_ids:[...request.rule_ids].sort(),from:new Date(from).toISOString(),to:new Date(to).toISOString()};
+    const scope={counter_id:request.counter_id,rule_ids:[...request.rule_ids].sort(),from:new Date(from).toISOString(),to:new Date(to).toISOString(),access_scope:this.faceAccess===false?'ordinary':'all'};
     const fingerprint=digest([actor,scope]);
     try{await this.clears.updateOne({_id:key},{$setOnInsert:{...scope,actor,fingerprint,created_at:new Date().toISOString()}},{upsert:true});}catch(e){if(e.code!==11000)throw e;}
     const saved=await this.clears.findOne({_id:key});
-    if(saved.fingerprint!==fingerprint)fail('operation_conflict','Operation scope changed',409);
+    const {access_scope,...legacyScope}=scope;
+    const expectedFingerprint=saved.access_scope===undefined?digest([actor,legacyScope]):fingerprint;
+    if(saved.fingerprint!==expectedFingerprint||clearAccess(saved)!==access_scope)fail('operation_conflict','Operation scope changed',409);
     if(saved.completed)return {cleared:true,from:scope.from,to:scope.to};
-    await this.facts.deleteMany({counter_id:scope.counter_id,rule_id:{$in:scope.rule_ids},occurred_at:{$gte:scope.from,$lt:scope.to}});
+    await this.facts.deleteMany({...clearPredicate(scope),rule_id:{$in:scope.rule_ids}});
     await this.clears.updateOne({_id:key},{$set:{completed:true}});
     return {cleared:true,from:scope.from,to:scope.to};
   }
@@ -131,9 +142,9 @@ export class FlowStatistics {
     const series=request.series.map(parseSeries);
     if(new Set(series.map(s=>s.key)).size!==series.length)fail('invalid_query','Series keys must be unique');
     // One bounded ledger read covers totals, trends and records, including late arrivals.
-    const removed=await this.clears.find({rule_ids:{$in:series.map(s=>s.rule_id)},from:{$lt:series.reduce((a,s)=>a>s.to?a:s.to,'')},to:{$gt:series.reduce((a,s)=>a<s.from?a:s.from,series[0].from)}},{projection:{rule_ids:1,from:1,to:1},maxTimeMS:5000}).limit(10001).toArray();
+    const removed=await this.clears.find({rule_ids:{$in:series.map(s=>s.rule_id)},from:{$lt:series.reduce((a,s)=>a>s.to?a:s.to,'')},to:{$gt:series.reduce((a,s)=>a<s.from?a:s.from,series[0].from)}},{projection:{counter_id:1,rule_ids:1,from:1,to:1,access_scope:1,actor:1},maxTimeMS:5000}).limit(10001).toArray();
     if(removed.length>10000)fail('clear_history_capacity','Reduce query range');
-    const visibleQuery=s=>{const excluded=removed.filter(r=>r.rule_ids.includes(s.rule_id)).map(r=>({occurred_at:{$gte:r.from,$lt:r.to}}));return {...seriesQuery(s),...(excluded.length?{$nor:excluded}:{})};};
+    const visibleQuery=s=>{const excluded=removed.filter(r=>r.rule_ids.includes(s.rule_id)).map(clearPredicate);return {...seriesQuery(s),...(excluded.length?{$nor:excluded}:{})};};
     if(request.detail){
       // The history pieces of one zone and direction are read as one list.
       const query=series.length===1?visibleQuery(series[0]):{$or:series.map(visibleQuery)},limit=request.limit??50;

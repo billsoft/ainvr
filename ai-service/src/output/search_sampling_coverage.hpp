@@ -31,7 +31,11 @@ class SearchCoverageLedger {
   enum class GapCause : size_t { Unspecified, HookMissedEnd, ObsInvalidTicket, ObsEpochChange,
     ObsOrdinalJump, ObsTicketPresenceChange, ObsTemporalBreak, Ineligible, Incomplete, PlanUncovered,
     FailedWrite, FailOfferInvalid, FailBudget, FailQueue, FailTrackGone, FailRetiredUnknown, FailRejected,
-    DeferredTrackLost, CrossWindowPending, LastFrameNoEnd, Seal, Count };
+    DeferredTrackLost, CrossWindowPending, LastFrameNoEnd, Seal,
+    FailNotCurrent, FailPrepareEmpty, FailPrepareException, FailPrepareCapacity,
+    FailReceiptException, FailReceiptInvalid, FailDescriptorInvalid,
+    FailBeforeSubmitException, FailLeaseExpired, FailTransportNotAttempted,
+    FailSubmitRejected, Count };
   static constexpr size_t kGapCauses=size_t(GapCause::Count);
   static constexpr const char* GapCauseName(GapCause c) {
     switch(c){
@@ -52,6 +56,17 @@ class SearchCoverageLedger {
       case GapCause::FailTrackGone:return "pending_cancelled_track_gone";
       case GapCause::FailRetiredUnknown:return "pending_retired_unknown_receipt";
       case GapCause::FailRejected:return "write_rejected_by_store";
+      case GapCause::FailNotCurrent:return "prepare_not_current";
+      case GapCause::FailPrepareEmpty:return "prepare_no_operation";
+      case GapCause::FailPrepareException:return "prepare_exception";
+      case GapCause::FailPrepareCapacity:return "prepare_retained_capacity";
+      case GapCause::FailReceiptException:return "prepare_receipt_exception";
+      case GapCause::FailReceiptInvalid:return "prepare_receipt_invalid";
+      case GapCause::FailDescriptorInvalid:return "prepare_descriptor_invalid";
+      case GapCause::FailBeforeSubmitException:return "before_submit_exception";
+      case GapCause::FailLeaseExpired:return "submit_lease_or_frame_not_current";
+      case GapCause::FailTransportNotAttempted:return "submit_transport_not_attempted";
+      case GapCause::FailSubmitRejected:return "submit_rejected_unspecified";
       case GapCause::CrossWindowPending:return "older_window_unresolved_write";
       case GapCause::LastFrameNoEnd:return "last_frame_without_end";
       case GapCause::Seal:return "sealed_by_reset_or_stop";

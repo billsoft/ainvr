@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest'
-import {readArmingSnapshot,buildArmingRequest,resetArmingForGeometry} from '@/features/armingDocument'
+import {readArmingSnapshot,buildArmingRequest,resetArmingForGeometry,currentLabelVersions} from '@/features/armingDocument'
 import type {ArmingDocument} from '@/features/armingDocument'
 const zone={zone_id:'z',channel_id:'cam',name:'门',geometry_revision:'g',version:3,state:'active' as const,points:[[.1,.1],[.8,.1],[.8,.8]] as [number,number][],edge_ids:['e1','e2','e3']}
 const assignment={assignment_id:'a',trigger_id:'t',input_stream_id:'cam',processor_id:'ai',zone_id:'z',zone_version:3,geometry_revision:'g',label_map_version:'labels',entry_edges:['e1'],exit_edges:[]}
@@ -51,4 +51,15 @@ it('removing zone also requires removal of its assignment and keeps complete req
 it('assignment cannot reuse a previous label contract after changing processor',()=>{
  const draft=readArmingSnapshot('cam','g',document);draft.assignments[0]!.processorId='other'
  expect(()=>buildArmingRequest(draft,document)).toThrow('标签')
+})
+
+it('untouched selections follow the current label catalogue while their targets still exist',()=>{
+ const snapshot=readArmingSnapshot('cam','g',document)
+ const sources=[{channel_id:'ai',input_stream_id:'cam',geometry_revision:'g',label_map_version:'labels-2',labels:[{label_id:'person'},{label_id:'smoke'}]}]
+ expect(currentLabelVersions(snapshot,sources,()=>['person'],()=>undefined)).toEqual({a:'labels-2'})
+ expect(buildArmingRequest(snapshot,document,currentLabelVersions(snapshot,sources,()=>['person'],()=>undefined))).toMatchObject({assignments:[{label_map_version:'labels-2'}]})
+ // A removed target, an unknown trigger or another view keeps the stored version so the server still asks for confirmation.
+ expect(currentLabelVersions(snapshot,sources,()=>['helmet'],()=>undefined)).toEqual({})
+ expect(currentLabelVersions(snapshot,sources,()=>undefined,()=>undefined)).toEqual({})
+ expect(currentLabelVersions(snapshot,[{...sources[0]!,geometry_revision:'other'}],()=>['person'],()=>undefined)).toEqual({})
 })

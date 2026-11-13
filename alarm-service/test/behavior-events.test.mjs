@@ -5,8 +5,10 @@ import {randomUUID} from 'node:crypto';
 import {AlarmRepository} from '../src/repository.mjs';
 import {ObservationConsumer} from '../src/ingestion.mjs';
 const enabled=process.env.AINVR_ALARM_TEST_MONGO==='1';
+const uri=process.env.AINVR_ALARM_TEST_MONGO_URI??'mongodb://127.0.0.1:27028';
+if(enabled){const target=new URL(uri);if(target.hostname!=='127.0.0.1'||!['27028','27932'].includes(target.port))throw Error('Behavior tests require an isolated loopback Mongo port');}
 test('behavior counts survive partial materialization, replay and alarm acknowledgement; statistics-only rules work',{skip:!enabled},async()=>{
-  const client=new MongoClient('mongodb://127.0.0.1:27028',{serverSelectionTimeoutMS:3000});await client.connect();
+  const client=new MongoClient(uri,{serverSelectionTimeoutMS:3000});await client.connect();
   const db=client.db('ainvr_alarm_test_'+randomUUID().replaceAll('-',''));
   try{
     const repo=new AlarmRepository(db);await repo.initialize();

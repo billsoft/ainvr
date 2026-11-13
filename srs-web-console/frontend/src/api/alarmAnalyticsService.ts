@@ -1,4 +1,5 @@
 import { request } from './httpClient'
+import { alarmBusinessName, isAlarmBusinessKind } from '@/features/alarmBusinessKind'
 
 export interface AlarmAnalyticsLocation { channel_id: string; zone_id: string }
 export type AlarmAnalyticsAudit = 'pending' | 'human_confirmed' | 'human_false_positive' | 'ai_reviewed' | 'unknown'
@@ -10,6 +11,7 @@ export interface AlarmAnalyticsQuery {
   locations?: AlarmAnalyticsLocation[]
   trigger_id?: string
   primary_type?: string
+  event_kind?: string
   audit?: AlarmAnalyticsAudit
   weekday?: number
   hour?: number
@@ -29,6 +31,8 @@ export interface AlarmAnalyticsResult {
   zones: AlarmAnalyticsZone[]
   triggers: AlarmAnalyticsTrigger[]
   types: { id: string; total: number }[]
+  /** Absent on older servers; never infer business counts from spatial stages. */
+  business_kinds?: { id: string; total: number }[]
   week: number[][]
   quality: {
     human_reviewed: number
@@ -41,9 +45,12 @@ export interface AlarmAnalyticsResult {
     zones: (AlarmAnalyticsLocation & { name: string })[]
     triggers: { trigger_id: string; name: string }[]
     types: string[]
+    event_kinds?: string[]
   }
   consistency: 'non_transactional'
   coverage: 'unknown'
+  /** Echoed by capable servers; an old server must not silently ignore a filter. */
+  event_kind?: string
   issues: string[]
 }
 
@@ -66,11 +73,17 @@ export function validateAlarmAnalyticsResult(value: unknown, query: AlarmAnalyti
   const time = (v: unknown): v is string => typeof v === 'string' && Number.isFinite(Date.parse(v))
   const counts = (row: { total: number; pending: number; human_reviewed: number; human_false_positive: number }) => [row.total, row.pending, row.human_reviewed, row.human_false_positive].every(number)
   try {
+    if (query.event_kind !== undefined && d?.event_kind !== query.event_kind) throw Error()
+    if (d?.catalog?.event_kinds !== undefined && (!list(d.catalog.event_kinds, 32) || !d.catalog.event_kinds.every(text))) throw Error()
     if (!d || d.schema_version !== '1.0' || d.consistency !== 'non_transactional' || d.coverage !== 'unknown' || !time(d.from) || !time(d.to) || !time(d.as_of) || Date.parse(d.from) !== Date.parse(query.from) || Date.parse(d.to) !== Date.parse(query.to) || d.timezone !== query.timezone || d.bucket !== query.bucket) throw Error()
     if (![d.total, d.pending, d.human_confirmed, d.human_false_positive, d.ai_reviewed, d.unknown_review, d.association.unassociated].every(number)) throw Error()
     if (!list(d.trend, 1500) || !d.trend.every(r => time(r.from) && time(r.to) && Date.parse(r.to) > Date.parse(r.from) && Date.parse(r.from) >= Date.parse(d.from) && Date.parse(r.to) <= Date.parse(d.to) && number(r.total))) throw Error()
     if (!list(d.zones) || !d.zones.every(r => text(r.channel_id) && text(r.zone_id) && typeof r.name === 'string' && counts(r)) || !list(d.triggers) || !d.triggers.every(r => text(r.trigger_id) && typeof r.name === 'string' && counts(r) && list(r.rule_versions) && r.rule_versions.every(number))) throw Error()
     if (!list(d.types, 100) || !d.types.every(r => text(r.id) && number(r.total)) || !list(d.week, 7) || d.week.length !== 7 || !d.week.every(row => Array.isArray(row) && row.length === 24 && row.every(number))) throw Error()
+    if (d.business_kinds !== undefined && (!list(d.business_kinds, 32) ||
+      !d.business_kinds.every(r => isAlarmBusinessKind(r.id) && number(r.total) && (!query.event_kind || r.id === query.event_kind)) ||
+      new Set(d.business_kinds.map(r => r.id)).size !== d.business_kinds.length ||
+      d.business_kinds.reduce((sum, r) => sum + r.total, 0) !== d.total)) throw Error()
     const q = d.quality, wait = q.wait
     if (![q.human_reviewed, wait.samples, wait.unknown, ...Object.values(q.pending_age)].every(number) || ![q.pending_age.lt10m, q.pending_age.lt1h, q.pending_age.gte1h].every(number) || ![wait.median_ms, wait.p90_ms].every(n => n === null || typeof n === 'number' && Number.isFinite(n) && n >= 0) || !(q.false_positive_ratio === null || typeof q.false_positive_ratio === 'number' && Number.isFinite(q.false_positive_ratio) && q.false_positive_ratio >= 0 && q.false_positive_ratio <= 1)) throw Error()
     if (!list(d.catalog.zones) || !d.catalog.zones.every(r => text(r.channel_id) && text(r.zone_id) && typeof r.name === 'string') || !list(d.catalog.triggers) || !d.catalog.triggers.every(r => text(r.trigger_id) && typeof r.name === 'string') || !list(d.catalog.types, 100) || !d.catalog.types.every(text) || !list(d.issues, 100) || !d.issues.every(r => typeof r === 'string')) throw Error()
@@ -93,7 +106,9 @@ export function alarmAnalyticsCsv(result: AlarmAnalyticsResult, query: AlarmAnal
     ['查询条件', JSON.stringify(query)],
     ['查询截止', result.as_of, '当前状态可变化，非事务一致快照', '采集覆盖未知'],
     ['指标', '数量'], ['新增告警', result.total], ['其中待审核', result.pending], ['人工确认', result.human_confirmed], ['人工判为误报', result.human_false_positive], ['AI 已审核', result.ai_reviewed], ['审核主体/结论未知', result.unknown_review], ['未关联热区', result.association.unassociated],
-    ['当前最高阶段', '告警数'], ...result.types.map(row => [row.id, row.total]),
+    ...(result.business_kinds === undefined ? [['业务类别分布', '当前服务未提供，未推算类别数量']] :
+      [['业务类别', '名称', '告警数'], ...result.business_kinds.map(row => [row.id, alarmBusinessName(row.id), row.total])]),
+    ...(query.event_kind === 'spatial' ? [['空间行为最高阶段', '告警数'], ...result.types.map(row => [row.id, row.total])] : []),
     ['趋势起点', '趋势终点（不含）', '告警数'], ...result.trend.map(row => [row.from, row.to, row.total]),
     ['通道', '热区', '名称', '涉及告警', '其中待审核', '人工已审核', '人工判为误报'], ...result.zones.map(row => [row.channel_id, row.zone_id, row.name, row.total, row.pending, row.human_reviewed, row.human_false_positive]),
     ['触发器', '名称', '涉及告警', '其中待审核', '人工已审核', '人工判为误报', '执行规则版本'], ...result.triggers.map(row => [row.trigger_id, row.name, row.total, row.pending, row.human_reviewed, row.human_false_positive, row.rule_versions.join(' / ')]),

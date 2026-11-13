@@ -1,0 +1,17 @@
+[Unit]
+Description=AINVR swap safety margin (compressed RAM, then SSD file)
+After=local-fs.target systemd-modules-load.service
+# SSD is optional: the script checks the mount, without forcing a mount/job.
+Before=ainvr-infra.service ainvr-ai.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+UMask=0077
+ExecStart=/usr/local/sbin/ainvr-swap.sh start
+# No ExecStop: stopping/restarting this unit must not drain live swap into RAM.
+# Swap teardown remains with the OS shutdown sequence or explicit maintenance.
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

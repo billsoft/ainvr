@@ -1,10 +1,12 @@
 // Behavior facts are independent of alarm handling and future notification policy.
 import {digest,identity,fail,ENGINE_SEMANTICS} from './domain.mjs';
 export function behaviorEvent(candidate) {
-  const track=candidate.analysis_evidence.track;
+  const region=candidate.identity_kind==='region'&&candidate.analysis_evidence.region_state;
+  const track=region?null:candidate.analysis_evidence.track;
   return {schema_version:'1.0',event_id:digest(['behavior',candidate.dedup_key]),engine_semantics:candidate.analysis_evidence.engine_semantics??ENGINE_SEMANTICS,
     event_type:candidate.behavior,channel_id:candidate.channel_id,input_stream_id:candidate.input_stream_id,
-    stream_session_id:candidate.stream_session_id,track_id:track.track_id,label_id:track.label_id,
+    stream_session_id:candidate.stream_session_id,track_id:region?null:track.track_id,label_id:region?null:track.label_id,
+    ...(region?{identity_kind:'region',region_identity:region.scope_id,incident_scope:'region',event_kind:candidate.event_kind}:candidate.event_kind?{event_kind:candidate.event_kind}:{}),
     trigger_id:candidate.trigger_id??candidate.rule.snapshot.trigger_id??candidate.rule.id,
     zone_id:candidate.rule.snapshot.zone_id??null,zone_version:candidate.rule.snapshot.zone_version??null,
     rule_id:candidate.rule.id,rule_version:candidate.rule.version,
@@ -14,7 +16,7 @@ export function behaviorEvent(candidate) {
     source_pts_ns:candidate.source_pts_ns,frame_id:candidate.frame_id,direction:candidate.direction,
     source_frame_index:candidate.analysis_evidence.source_frame_index??null,
     evidence_refs:structuredClone(candidate.evidence.refs),
-    quality:{basis:candidate.analysis_evidence.traversal?.observation_gaps?'observed_endpoints':'observed_track',trajectory_complete:candidate.analysis_evidence.traversal?.trajectory_complete??null,observation_gaps:candidate.analysis_evidence.traversal?.observation_gaps??0,gap_ms:candidate.analysis_evidence.traversal?.gap_ms??0,passage_method:candidate.analysis_evidence.traversal?.method??null},
+    quality:{basis:region?'observed_region':candidate.analysis_evidence.traversal?.observation_gaps?'observed_endpoints':'observed_track',trajectory_complete:candidate.analysis_evidence.traversal?.trajectory_complete??null,observation_gaps:candidate.analysis_evidence.traversal?.observation_gaps??0,gap_ms:candidate.analysis_evidence.traversal?.gap_ms??0,passage_method:candidate.analysis_evidence.traversal?.method??null},
     analysis_evidence:structuredClone(candidate.analysis_evidence)};
 }
 function factFilter({from,to,channel_id,zone_id,label_id,event_type,rule_id,trigger_id}) {
@@ -67,6 +69,8 @@ export class BehaviorEvents {
   }
   async statistics({from,to,channel_id,zone_id,label_id,event_type,rule_id,trigger_id,bucket,timezone='UTC',group_by}){
     const {query,start,end}=factFilter({from,to,channel_id,zone_id,label_id,event_type,rule_id,trigger_id});
+    // Legacy occurrence/target statistics describe tracked behavior, not region episodes.
+    query.incident_scope={$ne:'region'};query.identity_kind={$ne:'region'};query['analysis_evidence.region_state']={$exists:false};
     const units={minute:60000,hour:3600000,day:86400000};
     if(bucket!==undefined && (typeof bucket!=='string' || !Object.hasOwn(units,bucket) || Math.ceil(end/units[bucket])-Math.floor(start/units[bucket])>1500))
       fail('invalid_bucket','Choose minute, hour or day with at most 1500 UTC buckets');
@@ -79,12 +83,12 @@ export class BehaviorEvents {
     // Deduplicate identities including video session; this is not unique physical people.
     const totals=[
       {$group:{_id:{...group,type:'$event_type',channel:'$channel_id',session:'$stream_session_id',track:'$track_id'},occurrences:{$sum:1}}},
-      {$group:{_id:{type:'$_id.type',...(group_by?{group:'$_id.group'}:{})},occurrences:{$sum:'$occurrences'},tracked_targets:{$sum:1}}},
+      {$group:{_id:{type:'$_id.type',...(group_by?{group:'$_id.group'}:{})},occurrences:{$sum:'$occurrences'},tracked_targets:{$sum:{$cond:[{$ne:['$_id.track',null]},1,0]}}}},
       {$sort:{_id:1}},
     ];
     const series=bucket===undefined?[]:[
       {$group:{_id:{start:{$dateTrunc:{date:{$toDate:'$occurred_at'},unit:bucket,timezone}},...group,type:'$event_type',channel:'$channel_id',session:'$stream_session_id',track:'$track_id'},occurrences:{$sum:1}}},
-      {$group:{_id:{start:'$_id.start',type:'$_id.type',...(group_by?{group:'$_id.group'}:{})},occurrences:{$sum:'$occurrences'},tracked_targets:{$sum:1}}},
+      {$group:{_id:{start:'$_id.start',type:'$_id.type',...(group_by?{group:'$_id.group'}:{})},occurrences:{$sum:'$occurrences'},tracked_targets:{$sum:{$cond:[{$ne:['$_id.track',null]},1,0]}}}},
       {$set:{end:{$dateAdd:{startDate:'$_id.start',unit:bucket,amount:1,timezone}}}},
       {$sort:{'_id.start':1,'_id.type':1}},
     ];

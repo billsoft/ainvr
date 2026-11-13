@@ -21,6 +21,31 @@ function range(v,min,max,field) { if(!Number.isFinite(v)||v<min||v>max) fail('in
 // Trigger rules: one behavior per trigger, one rule per bound channel. Directions are
 // zone edge indexes (empty = any); approach is measured in source pixels.
 export const TRIGGER_BEHAVIORS=['appearance','region_approach','region_enter','region_traverse'];
+export const REGION_STATE_SEMANTICS='region-state-v1';
+function validateRegionRule(r){
+  if(r.region_state===undefined)return;
+  const s=r.region_state,keys=['operator','threshold','duration_ms','recovery_ms','event_kind','max_gap_ms'];
+  if(!s||typeof s!=='object'||Array.isArray(s)||Object.keys(s).some(k=>!keys.includes(k))||
+    !['count_below','count_at_least','presence'].includes(s.operator)||
+    !Number.isSafeInteger(s.threshold)||s.threshold<1||s.threshold>4096||
+    !Number.isSafeInteger(s.duration_ms)||s.duration_ms<100||s.duration_ms>3600000||
+    !Number.isSafeInteger(s.recovery_ms)||s.recovery_ms<100||s.recovery_ms>3600000)
+    fail('invalid_region_state','Invalid bounded region condition');
+  s.max_gap_ms??=1500;
+  if(!Number.isSafeInteger(s.max_gap_ms)||s.max_gap_ms<100||s.max_gap_ms>5000)
+    fail('invalid_region_state','max_gap_ms must be 100..5000');
+  const countKind=s.event_kind==='region_count'||(s.event_kind==='region_absence'&&s.operator==='count_below'&&s.threshold===1);
+  if(s.operator==='presence'?(s.threshold!==1||!['fire_smoke','helmet_violation','suspected_down'].includes(s.event_kind)):!countKind)
+    fail('invalid_region_state','Event kind must match the region condition');
+  if(r.behavior!=='appearance'||!r.alarm_enabled||r.counter_id!==undefined||r.group!==undefined||
+    r.passage!==undefined||r.spatial_semantics!==undefined||r.duration_ms!==0||r.entry_edges.length||r.exit_edges.length)
+    fail('invalid_region_state','Region conditions cannot change counters or combine target/direction conditions');
+  if(r.review?.enabled===true)fail('invalid_review','Region conditions require manual review; automatic review is not supported');
+  if(r.event_kind!==undefined&&r.event_kind!==s.event_kind)fail('invalid_region_state','Conflicting event_kind');
+  r.event_kind=s.event_kind;
+  if(r.zone_id==null)fail('invalid_geometry','Region conditions require an explicitly bound zone');
+  identity(r.zone_id,'zone_id');if(!Number.isSafeInteger(r.zone_version)||r.zone_version<1)fail('invalid_version','zone_version');
+}
 export function validateRule(input) {
   const r=structuredClone(input);
   if(r.view_not_before!==undefined&&(typeof r.view_not_before!=='string'||!Number.isFinite(Date.parse(r.view_not_before))))fail('invalid_view_not_before','view_not_before');
@@ -80,9 +105,10 @@ export function validateRule(input) {
   if(r.hysteresis_px!==undefined)range(r.hysteresis_px,0.5,64,'hysteresis_px');
   range(r.hysteresis,0.0001,0.2,'hysteresis'); range(r.rearm_ms,1,3600000,'rearm_ms');
   r.entry_edges ??= []; r.exit_edges ??= [];
+  validateRegionRule(r);
   if(r.behavior==='appearance'){
     if(r.entry_edges.length||r.exit_edges.length) fail('invalid_direction','Appearance has no direction');
-    if(r.assignment_id!==undefined&&r.zone_id!=null){
+    if((r.assignment_id!==undefined||r.region_state!==undefined)&&r.zone_id!=null){
       try {validatePoints(r.points,false,r.erp_wrap===true);}catch(e){fail('invalid_geometry',e.message);}
     }else{
       // Legacy rules retain their original whole-frame meaning until migrated.
@@ -136,6 +162,33 @@ export function validateFrame(input) {
   identity(f.source.geometry_revision,'geometry_revision'); identity(f.model?.label_map_version,'label_map_version');
   if(f.model.compatible_label_versions!==undefined){const rows=f.model.compatible_label_versions;if(!Array.isArray(rows)||rows.length>4)fail('invalid_model','compatible_label_versions');for(const row of rows){identity(row.version,'compatible_label_version');if(!Array.isArray(row.label_ids)||!row.label_ids.length||row.label_ids.length>128)fail('invalid_model','compatible_label_ids');for(const id of row.label_ids)identity(id,'label_id');}}
   if(f.observation_mode!==undefined&&!['tracks','detections'].includes(f.observation_mode))fail('invalid_observation','mode');
+  if(f.observation_status!==undefined&&!['valid','unknown'].includes(f.observation_status))fail('invalid_observation','observation_status');
+  if(f.source_pts_valid!==undefined&&typeof f.source_pts_valid!=='boolean')fail('invalid_observation','source_pts_valid');
+  if(f.attribute_delivery!==undefined){
+    const delivery=f.attribute_delivery;
+    if(!delivery||typeof delivery!=='object'||Array.isArray(delivery)||delivery.state!=='omitted'||delivery.reason!=='observation_capacity'||
+      !Number.isSafeInteger(delivery.targets)||delivery.targets<1||delivery.targets>4096||Object.keys(delivery).some(k=>!['state','reason','targets'].includes(k)))
+      fail('invalid_observation','attribute_delivery');
+  }
+  if(f.region_observations!==undefined){
+    if(!f.region_observations||typeof f.region_observations!=='object'||Array.isArray(f.region_observations)||Object.keys(f.region_observations).length>16)fail('invalid_observation','region_observations');
+    for(const [kind,o] of Object.entries(f.region_observations)){
+      identity(kind,'event_kind');
+      if(!o||typeof o!=='object'||Array.isArray(o)||!['valid','unknown'].includes(o.state))fail('invalid_observation','region_observation.state');
+      if(o.reason!==undefined&&(typeof o.reason!=='string'||!o.reason.length||Buffer.byteLength(o.reason,'utf8')>128||/[\x00-\x1f\x7f]/.test(o.reason)))fail('invalid_observation','region_observation.reason');
+      if(o.state==='valid'){
+        integerText(o.source_pts_ns,'region_observation.source_pts_ns');
+        if(!Array.isArray(o.label_ids)||!o.label_ids.length||o.label_ids.length>128)fail('invalid_observation','region_observation.label_ids');
+        o.label_ids.forEach(id=>identity(id,'label_id'));
+      }
+    }
+  }
+  // Capacity shedding is never a negative pose observation, even if an older
+  // producer omits or accidentally leaves its per-capability attestation valid.
+  if(f.attribute_delivery?.state==='omitted'){
+    f.region_observations??={};
+    f.region_observations.suspected_down={...f.region_observations.suspected_down,state:'unknown',reason:'attribute_capacity'};
+  }
   if(!Array.isArray(f.tracks)||f.tracks.length>4096) fail('invalid_tracks','tracks');
   const ids=new Set();
   for(const t of f.tracks) {
@@ -150,6 +203,13 @@ export function validateFrame(input) {
     const b=t.bbox;
     if(!b||['x','y','w','h'].some(k=>!Number.isFinite(b[k]))||b.x<0||b.y<0||b.w<=0||b.h<=0||b.x+b.w>f.source.width+0.001||b.y+b.h>f.source.height+0.001) fail('invalid_bbox','bbox');
     if(t.event_eligible!==undefined&&typeof t.event_eligible!=='boolean')fail('invalid_observation','event_eligible');
+    if(t.source_node!==undefined)identity(t.source_node,'source_node');
+    if(t.attributes!==undefined){
+      let encoded;
+      try{encoded=JSON.stringify(t.attributes);}catch{fail('invalid_attributes','Attributes must be bounded JSON');}
+      if(!t.attributes||typeof t.attributes!=='object'||Array.isArray(t.attributes)||Buffer.byteLength(encoded??'','utf8')>2048)
+        fail('invalid_attributes','Attributes must be an object of at most 2048 UTF-8 JSON bytes');
+    }
     if(t.confidence!=null) range(t.confidence,0,1,'confidence');
   }
   return f;

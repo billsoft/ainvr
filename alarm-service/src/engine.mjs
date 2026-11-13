@@ -11,6 +11,7 @@ import {boundaryDistancePx,boundaryStable,inside,stateSpatial} from './geometry.
 import {makeAlarm,validateFrame,validateRule,fail,digest} from './domain.mjs';
 import {traversalStep,regionDirection,crossesBoundary} from './traversal.mjs';
 import {createScheduleEvaluator} from './schedule.mjs';
+import {evaluateRegionStates} from './region-state.mjs';
 
 const ruleCache=new Map(),geometryCache=new WeakMap(),labelsCache=new WeakMap();
 function preparedRule(raw){
@@ -48,6 +49,10 @@ const canonicalDirection=(r,d)=>r.erp_wrap&&d?.boundary_point?{...d,boundary_poi
 
 export function evaluate(checkpoint,input,rules) {
   const f=validateFrame(input),out=[],issues=[],ended=[],captureIntents=[];
+  const regionRules=rules.map(preparedRule).filter(r=>r.region_state);
+  // Region contracts have their own scoped state; never run them through a
+  // per-target latch, group condition, counter, or legacy spatial episode.
+  rules=rules.filter(r=>r.region_state===undefined);
   const detectionOnly=f.observation_mode==='detections';
   const cp=structuredClone(checkpoint??{session:null,seq:null,pts:null});
   cp.states??={};cp.episodes??={};cp.first_seen??={};
@@ -395,5 +400,6 @@ export function evaluate(checkpoint,input,rules) {
   cp.passage_diagnostics=cp.passage_diagnostics.slice(-64);
   const coverage=coverageStep(cp,f,eligible.values(),sessionChanged||seqGap||ptsReset||timeGap||f.gap===true||(interval!==null&&cp.intervals?.length===1&&interval>1500));
   const incidents=conditionIncidents(cp,f,rules.filter(r=>r.channel_id===f.channel_id).map(preparedRule),periods,out.concat(grouped),{discontinuity:sessionChanged||ptsReset||timeGap||seqGap||f.gap===true||issues.includes('view_changed')});
-  return {checkpoint:cp,events:incidents.events,active_episodes:incidents.active,ended_episodes:ended.concat(incidents.ended),issues,coverage,capture_intents:captureIntents};
+  const regions=evaluateRegionStates(cp,f,regionRules,{discontinuity:sessionChanged||ptsReset||timeGap||seqGap||f.gap===true});
+  return {checkpoint:cp,events:incidents.events.concat(regions.events),active_episodes:incidents.active.concat(regions.active),ended_episodes:ended.concat(incidents.ended,regions.ended),issues:issues.concat(regions.issues),coverage,capture_intents:captureIntents.concat(regions.captureIntents).slice(0,128)};
 }

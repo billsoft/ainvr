@@ -1,8 +1,17 @@
 import type {AlarmEvent} from '@/api/alarmEventService'
+/** Keep persisted actor identifiers in the audit record, not the normal status line. */
+export function reviewerDisplay(actor?: string) {
+ if (!actor) return '审核员'
+ if (actor === 'console-administrator') return '管理员'
+ if (actor === 'console-local') return '本机操作员'
+ if (actor.startsWith('console-') || actor.startsWith('alarm-')) return '审核员'
+ return actor
+}
 export function reviewLabel(alarm:AlarmEvent){
  return alarm.handling.state==='acknowledged'?(alarm.handling.reviewed_by_kind==='ai'?'已 AI 审核':'已人工审核'):'未审核'
 }
 const preparationReasons:Record<string,string>={
+ region_manual_review:'区域候选事件，请结合布防区与起止画面人工审核',
  source_evidence_failed:'触发已发生，但原始证据保存失败；请检查存储与采集服务，需人工核查',
  focused_person_confirmed:'指定目标的人员证据满足确认条件',
  focused_context_confirmed:'两种视图的人员证据一致，确认告警',
@@ -30,7 +39,7 @@ const preparationReasons:Record<string,string>={
  evidence_identity_mismatch:'原始证据身份不匹配，停止自动审核，请人工核对',
 }
 export function preparationLabel(review:AlarmEvent['review']){
- return review&&['queued','failed','uncertain'].includes(review.state??'')?preparationReasons[review.reason??'']??'':''
+ return review&&(['queued','failed','uncertain'].includes(review.state??'')||review.reason==='region_manual_review')?preparationReasons[review.reason??'']??'':''
 }
 export function reviewReason(reason?:string){return preparationReasons[reason??'']??({group_scene_uncertain:'全景数量或类别核对未达到确认门槛',group_identity_uncertain:'缺少能在同一画面区分足够多目标的证据',group_candidates_incomplete:'候选清单超出留存上限，无法排除其余目标',group_window_incomplete:'穿越时间窗的观测不完整，无法自动排除其他候选',label_not_authorized:'该类别尚未授权组合自动结案，分数仅作参考',group_review_pending:'等待逐目标及共同画面审核',group_visual_unavailable:'未能取得成员的精确原帧或模型结果',group_evidence_inconclusive:'候选、类别、共同画面或审核授权不足，保留人工审核',group_manual_review:'组合告警需逐个核对目标和行为，由人工决定结论',evidence_integrity_mismatch:'原始证据完整性校验失败，停止自动审核，请检查存储',manual_review_required:'未达到自动确认条件，保留人工审核',evidence_pending:'等待告警原始截图保存，将自动重试',unvalidated_profile:'当前模型输入方式待验证，保持未审核',input_too_long:'审核文本超过模型容量，请缩短说明；交由人工审核',invalid_request:'审核请求不符合接口要求，交由人工审核',insufficient_target_pixels:'目标原始像素不足，交由人工审核',ambiguous_result:'证据无法支持明确结论，仍为未审核',rule_evidence_conflict:'规则与原始观测存在矛盾，请核对证据',missing_context:'关键帧缺失或已过保留期，交由人工审核',incomplete_trajectory:'轨迹不完整，交由人工审核',missing_trajectory:'缺少轨迹证据',missing_keyframe:'缺少完整的行为关键帧，交由人工审核',missing_entry:'缺少进入过程证据',missing_exit:'缺少离开过程证据',geometry_unconfirmed:'几何条件未能复核',panorama_review_unavailable:'全景空间审核暂未验证，交由人工审核',missing_label:'缺少当时的标签映射',model_changed:'审核期间模型版本变化',missing_evidence:'缺少原帧证据截图，请检查截图归档',review_context_too_large:'审核上下文超过模型容量，交由人工审核',unsupported_image:'截图规格暂不支持，保持待人工处理',review_unavailable:'模型或调用连接暂不可用',invalid_model_result:'模型返回结果无效',retry_exhausted:'重试次数已用尽',human_handled:'人工已处理，AI 已跳过'} as Record<string,string>)[reason??'']??''}
 

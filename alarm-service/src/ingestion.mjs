@@ -7,6 +7,7 @@ import {evaluate} from './engine.mjs';
 import {behaviorEvent} from './behavior-events.mjs';
 import {dwellStep,materializeDwell} from './dwell-visits.mjs';
 import {beginRegionHeat,materializeRegionHeat,suspendRegionHeat} from './region-heat.mjs';
+import {compactRegionEvidence} from './region-state.mjs';
 
 // Include every sealed proof frame, especially the trigger/exit frame. Candidate
 // intents alone only retain the start of a behavior and can miss its conclusion.
@@ -18,7 +19,7 @@ export function evidenceCaptureIntents(pending) {
     const group=event.analysis_evidence?.group;
     const samples=group?group.members.flatMap(m=>[m.start,...m.transition,m.sample,m.identity_sample].filter(Boolean)):event.analysis_evidence?.review_context?.samples??[];
     for(const sample of samples){
-      if(!sample.event_eligible||sample.observation!=='detected')continue;
+      if(!sample.event_eligible||(sample.observation!=='detected'&&!(event.incident_scope==='region'&&sample.observation==='region'&&sample.identity_kind==='region')))continue;
       const intent={channel_id:event.channel_id,stream_session_id:event.stream_session_id,source:event.analysis_evidence.source,sample};
       intents.set(digest([intent.channel_id,intent.stream_session_id,sample.frame_id]),intent);
     }
@@ -85,6 +86,13 @@ export class ObservationConsumer {
       // Ordinary frames need one exact measurement. Re-measure only after a
       // degradation mutates pending; never estimate away the hard safety cap.
       let pendingBytes=Buffer.byteLength(JSON.stringify(pending));
+      // Region windows and event proofs repeat pose/member diagnostics per
+      // rule. Reclaim those first, preserving real frame/count/time evidence,
+      // active episodes and unrelated alarm/statistics state.
+      if(pendingBytes>7*1024*1024&&compactRegionEvidence(pending)){
+        pending.issues.push('region_evidence_capacity');
+        pendingBytes=Buffer.byteLength(JSON.stringify(pending));
+      }
       if(pendingBytes>7*1024*1024&&(pending.heat_facts.length||pending.checkpoint.region_heat)){
         pending.checkpoint.region_heat=suspendRegionHeat(pending.checkpoint.region_heat,frame,'heat_capacity',pending.heat_facts);
         pending.heat_facts=[];pending.issues.push('heat_capacity');
@@ -113,7 +121,7 @@ export class ObservationConsumer {
       if(pendingBytes>7*1024*1024){
         pending.capture_intents=[];
         for(const state of Object.values(pending.checkpoint.states??{})){delete state.review_compact;state.review_unavailable=true;}
-        for(const event of pending.events)if(event.analysis_evidence?.review_context){event.analysis_evidence.review_context={schema_version:'2.0',truncated:true,samples:[],trace:[],reason:'evidence_capacity'};}
+        for(const event of pending.events)if(event.incident_scope!=='region'&&event.analysis_evidence?.review_context){event.analysis_evidence.review_context={schema_version:'2.0',truncated:true,samples:[],trace:[],reason:'evidence_capacity'};}
         pending.issues=[...pending.issues,'optional_evidence_capacity'];
         pendingBytes=Buffer.byteLength(JSON.stringify(pending));
       }
@@ -191,7 +199,7 @@ export class ObservationConsumer {
       if(event.rule.snapshot.alarm_enabled!==false&&!await this.repository.isCleared?.(event)){
         await this.repository.insert({...event,behavior_event_ids:[behaviorId]});
         // Queue after the immutable fact/merged alarm; replay reuses the fact ID.
-        await this.repository.evidenceVault?.enqueue(behaviorId,event);
+        if(event.incident_scope!=='region')await this.repository.evidenceVault?.enqueue(behaviorId,event);
       }
       await this.hook('event_inserted');
     }

@@ -1,8 +1,11 @@
 // Copyright AINVR. Model semantics must accompany a compiled HBM; no CPU fallback.
 #include "bpu_channel_adapter.hpp"
 #include "runtime_label_catalog.hpp"
+#include "pose_contract.hpp"
+#include "bpu_contract_ports.hpp"
 #include "platform/bpu_image_input.hpp"
 #include <unistd.h>
+#include <algorithm>
 #include <openssl/evp.h>
 #include <filesystem>
 #include <fstream>
@@ -119,6 +122,9 @@ void ValidateOutputSignatures(const config::ModelConfig& cfg,const nlohmann::jso
     }else if(yoloe){
       if(cfg.input_size!=std::vector<int>{640,640}||matrix!=std::pair<int64_t,int64_t>{4+prompt_slots,8400}||name!="boxes_scores")
         throw std::runtime_error("YOLOE BPU 输出必须匹配 640 输入、对应词槽的原始检测头");
+    }else if(cfg.adapter==kPoseAdapter){
+      if(output.at("shape")!=nlohmann::json::array({1,300,57})||name!="output0")
+        throw std::runtime_error("Pose17 BPU output must be output0 [1,300,57]");
     }else if(matrix.second!=6){
       throw std::runtime_error("YOLO BPU 输出必须为 [N,6] 或 [1,N,6] 的端到端矩阵");
     }
@@ -136,22 +142,27 @@ nlohmann::json BpuChannelAdapter::ValidateModel(const config::ModelConfig& cfg){
   if(cfg.provider!="bpu"||std::filesystem::path(cfg.path).extension()!=".hbm")
     throw std::runtime_error("生产识别要求 BPU 的 .hbm 模型；不使用 CPU 或 Jetson 模型");
   const bool yoloe=cfg.adapter=="yoloe_bpu";
-  if(cfg.adapter!="yolo26_bpu"&&cfg.adapter!="yoloface_bpu"&&cfg.adapter!="scrfd_bpu"&&!yoloe)
+  if(cfg.adapter!="yolo26_bpu"&&cfg.adapter!="yoloface_bpu"&&cfg.adapter!="scrfd_bpu"&&cfg.adapter!=kPoseAdapter&&!yoloe)
     throw std::runtime_error("该模型的 S100P BPU 任务适配尚未完成");
   if(!std::filesystem::is_regular_file(cfg.path))throw std::runtime_error("尚未安装编译后的 BPU 模型");
   const auto metadata=cfg.path+".ainvr.json";
   if(!std::filesystem::is_regular_file(metadata)||std::filesystem::file_size(metadata)>1024*1024)
     throw std::runtime_error("缺少有效的 BPU 模型编译契约 (.hbm.ainvr.json)");
   std::ifstream file(metadata);auto m=nlohmann::json::parse(file);
+  if(cfg.adapter==kPoseAdapter)m=NormalizePoseContract(cfg,m);
+  else m=NormalizeDetectorPortMaps(cfg,m);
   if(m.at("schema_version")!=1||m.at("target")!="rdk_s100p"||m.at("adapter")!=cfg.adapter)
     throw std::runtime_error("BPU 模型契约与设备或任务不一致");
+  if(cfg.adapter==kPoseAdapter&&(!m.at("hbm_bytes").is_number_unsigned()||
+      m.at("hbm_bytes").get<uint64_t>()!=std::filesystem::file_size(cfg.path)))
+    throw std::runtime_error("Pose HBM byte size differs from its contract");
   if(m.at("hbm_sha256")!=Digest(cfg.path))throw std::runtime_error("BPU 模型与编译契约校验不一致");
   if(m.at("input_size").get<std::vector<int>>()!=cfg.input_size)
     throw std::runtime_error("BPU 模型输入尺寸与通道配置不一致");
   const auto input=m.at("input_contract").get<std::string>();
   if(yoloe?input!="float_nchw_dynamic_prompts":(input!="float_nchw"&&input!="nv12_full_range_bt601_embedded"))throw std::runtime_error("不支持的 BPU 图像输入契约");
   const auto output=m.at("output_contract").get<std::string>();
-  if(output!=(yoloe?"raw_xywh_class_probabilities":(cfg.adapter=="scrfd_bpu"?"scrfd_9_heads":"end2end_xyxy_score_class")))
+  if(output!=(yoloe?"raw_xywh_class_probabilities":(cfg.adapter==kPoseAdapter?kPoseOutputContract:cfg.adapter=="scrfd_bpu"?"scrfd_9_heads":"end2end_xyxy_score_class")))
     throw std::runtime_error("BPU 模型输出布局与任务不一致");
   if(yoloe)ValidateDynamicText(cfg,m);
   else {
@@ -193,11 +204,29 @@ void BpuChannelAdapter::Load(const std::string& path,const std::string& provider
     if(prompt.at("name")!="prompt_embeddings"||prompt.at("shape")!=nlohmann::json::array({1,manifest_.at("dynamic_text").at("prompt_slots").get<int>(),512})||prompt.at("dtype_id")!=HB_DNN_TENSOR_TYPE_F32||prompt.at("quantization")!=NONE)
       throw std::runtime_error("YOLOE prompt SDK signature mismatch");
   }
+  if(config_.adapter==kPoseAdapter) {
+    const auto& inputs=description_.at("inputs");
+    if(inputs.size()!=1||inputs.at(0).at("name")!="images"||
+        inputs.at(0).at("dtype_id")!=HB_DNN_TENSOR_TYPE_F32||inputs.at(0).at("quantization")!=NONE)
+      throw std::runtime_error("Pose input SDK signature must be unquantized F32 images");
+    for(const auto& port:description_.at("outputs"))
+      if(port.at("dtype_id")!=HB_DNN_TENSOR_TYPE_F32||port.at("quantization")!=NONE)
+        throw std::runtime_error("Pose output SDK signature must be unquantized F32");
+  }
   const auto& expected=manifest_.at("outputs");const auto& actual=description_.at("outputs");
   if(expected.size()!=actual.size())throw std::runtime_error("HBM output count differs from compilation contract");
-  for(size_t i=0;i<actual.size();++i)
-    if(expected[i].at("name")!=actual[i].at("name")||expected[i].at("shape")!=actual[i].at("shape"))
-      throw std::runtime_error("HBM output signature differs from compilation contract");
+  for(size_t i=0;i<actual.size();++i)ValidateDeclaredSdkPort(expected[i],actual[i]);
+  if(manifest_.contains("inputs")) {
+    const auto& declared=manifest_.at("inputs");const auto& inputs=description_.at("inputs");
+    if(!declared.is_array()||declared.size()!=inputs.size())
+      throw std::runtime_error("HBM input count differs from compilation contract");
+    // Dynamic image/prompt ports may be reordered; bind by their declared names.
+    for(const auto& port:declared) {
+      auto it=std::find_if(inputs.begin(),inputs.end(),[&](const auto& p){return p.at("name")==port.at("name");});
+      if(it==inputs.end())throw std::runtime_error("HBM input name differs from compilation contract");
+      ValidateDeclaredSdkPort(port,*it);
+    }
+  }
 }
 std::pair<int,int> BpuChannelAdapter::InputSize() const{return {config_.input_size.at(0),config_.input_size.at(1)};}
 pipeline::PreprocessConfig BpuChannelAdapter::DefaultPreprocess() const{
@@ -219,6 +248,8 @@ nlohmann::json BpuChannelAdapter::ResultMetadata() const{
       config_.adapter=="scrfd_bpu"?std::vector<std::string>{"face"}:
       manifest_.at("class_names").get<std::vector<std::string>>();
   result["label_catalog"]=RuntimeLabelCatalog(config_,names);
+  for(const char* key:{"accuracy_verified","production_approved"})
+    if(manifest_.contains(key))result[key]=manifest_.at(key);
   return result;
 }
 ainvr::BpuImageResult BpuChannelAdapter::RunFrame(const ainvr::Nv12Frame& frame,const pipeline::PreprocessConfig& p,bool bt709,bool full_range){
@@ -226,6 +257,7 @@ ainvr::BpuImageResult BpuChannelAdapter::RunFrame(const ainvr::Nv12Frame& frame,
 }
 std::future<ainvr::BpuImageResult> BpuChannelAdapter::RunFrameAsync(const ainvr::Nv12Frame& frame,const pipeline::PreprocessConfig& p,bool bt709,bool full_range){
   if(!runner_)throw std::logic_error("BPU model has not been loaded");
+  if(config_.adapter==kPoseAdapter)ValidatePosePreprocess(p);
   if(p.interpolation!="bilinear"&&p.interpolation!="nearest"&&p.interpolation!="bicubic"&&p.interpolation!="area"&&p.interpolation!="lanczos4")throw std::runtime_error("未知模型预处理插值方式");
   if(!p.letterbox)throw std::runtime_error("该任务当前要求 letterbox 预处理以保持原坐标还原契约");
   ainvr::ImageTransform t;auto [h,w]=InputSize();t.height=h;t.width=w;t.letterbox=p.letterbox;

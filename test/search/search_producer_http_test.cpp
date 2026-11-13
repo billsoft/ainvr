@@ -129,7 +129,8 @@ int main(){try{
   Fixture f;auto transport=std::make_shared<Fake>();SearchProducerHttp http(transport);
   auto operation=http.Prepare(f.sample,f.source,f.space,f.Lease(),f.candidate);
   transport->answer={false,0,""};
-  Check(operation->Submit(yes).result==Receipt::Result::Rejected,"proven_prewrite_failure_not_rejected");
+  const auto rejected=operation->Submit(yes);
+  Check(rejected.result==Receipt::Result::Rejected&&rejected.rejection_cause==SearchCoverageLedger::GapCause::FailTransportNotAttempted,"proven_prewrite_failure_not_rejected");
   Check(operation->Submit(yes).result==Receipt::Result::Unknown&&transport->calls==1,"proven_rejection_resubmitted");
   const auto query=operation->ReceiptQuery(),key=operation->ReceiptKey();
   for(int invalid=0;invalid<5;++invalid){
@@ -155,7 +156,8 @@ int main(){try{
    {true,507,Json{{"error","storage_capacity"}}.dump(),true}}){
   Fixture f(scene);auto transport=std::make_shared<Fake>();transport->answer=response;SearchProducerHttp http(transport);
   auto operation=http.Prepare(f.sample,f.source,f.space,f.Lease(),f.candidate);
-  Check(operation->Submit(yes).result==Receipt::Result::Rejected,"verified_prewrite_response_not_rejected");
+  const auto rejected=operation->Submit(yes);
+  Check(rejected.result==Receipt::Result::Rejected&&rejected.rejection_cause==SearchCoverageLedger::GapCause::FailRejected,"verified_prewrite_response_not_rejected");
   f.authority->Invalidate();
   Check(operation->Submit(yes).result==Receipt::Result::Unknown&&transport->calls==1,"rejected_operation_retried_after_revocation");
  }
@@ -201,7 +203,8 @@ int main(){try{
  {
   Fixture f;auto transport=std::make_shared<Fake>();SearchProducerHttp http(transport);
   auto operation=http.Prepare(f.sample,f.source,f.space,f.Lease(),f.candidate);f.now+=std::chrono::seconds(31);
-  Check(operation->Submit(yes).result==Receipt::Result::Rejected&&transport->calls==0,"first_expired_operation_wrote");
+  const auto rejected=operation->Submit(yes);
+  Check(rejected.result==Receipt::Result::Rejected&&rejected.rejection_cause==SearchCoverageLedger::GapCause::FailLeaseExpired&&transport->calls==0,"first_expired_operation_wrote");
   Check(operation->Submit(yes).result==Receipt::Result::Unknown&&transport->calls==0,"expired_operation_was_not_one_shot");
  }
  for(int invalid=0;invalid<8;++invalid){

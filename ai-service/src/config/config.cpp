@@ -1,6 +1,7 @@
 // Copyright AINVR. Adapted for the S100P service.
 #include "config.hpp"
 #include "../adapters/pipeline_limits.hpp"
+#include "../adapters/pose_contract.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -119,7 +120,7 @@ ModelConfig ParseModel(const json& node) {
   m.name = GetS(node, "name", m.name);
   m.adapter = GetS(node, "adapter", m.adapter);
   static const std::set<std::string> kKnownAdapters = {
-      "yolo26_end2end", "yolo26_traditional", "yolo26_bpu", "yoloface_bpu", "scrfd_bpu", "locateanything_bpu", "plate_bpu", "yoloe_bpu"};
+      "yolo26_end2end", "yolo26_traditional", "yolo26_pose_bpu", "yolo26_bpu", "yoloface_bpu", "scrfd_bpu", "locateanything_bpu", "plate_bpu", "yoloe_bpu"};
   if (!kKnownAdapters.count(m.adapter)) {
     Fail("model.adapter 未知取值: " + m.adapter);
   }
@@ -145,6 +146,7 @@ ModelConfig ParseModel(const json& node) {
   }
   ValidateAdapterProviderCombo(m.adapter, m.provider);
   if(m.adapter=="plate_bpu"&&m.input_size!=std::vector<int>{640,640})Fail("车牌模型要求 640×640 输入；识别器内部使用 168×48");
+  if(m.adapter=="yolo26_pose_bpu"&&m.input_size!=std::vector<int>{640,640})Fail("姿态模型要求 640×640 输入");
   const auto suffix=std::filesystem::path(m.path).extension().string();
   if((m.provider=="bpu"&&suffix!=".hbm")||(m.provider=="cpu"&&suffix!=".onnx"))
     Fail("model.path 必须匹配 provider：bpu 使用 .hbm，cpu 使用 .onnx；重命名文件不能转换模型");
@@ -201,6 +203,8 @@ ModelConfig ParseModel(const json& node) {
   if (m.adapter == "yoloe_bpu" &&
       (m.provider != "bpu" || m.input_size != std::vector<int>{640, 640} || m.path.empty()))
     Fail("开放词汇高速模型要求 640×640 BPU 输入契约，模型仍须通过编译及加载验证");
+  if(m.adapter==adapters::kPoseAdapter && m.class_names && *m.class_names!=std::vector<std::string>{"person"})
+    Fail("姿态模型只接受 person 类别");
   return m;
 }
 
@@ -432,6 +436,8 @@ ChannelConfig ChannelConfigFromJson(const json& node) {
   if (c.model.adapter == "locateanything_bpu" && (c.inference_fps <= 0 || c.inference_fps > 1.0))
     Fail("开放词汇模型采集间隔须为 1-3600 秒，不支持跟随源流");
   c.preprocess = ParsePreprocess(node.value("preprocess", json()));
+  if(c.model.adapter==adapters::kPoseAdapter)
+    adapters::ValidatePosePreprocess(pipeline::ResolvePreprocess(c.preprocess,{}));
   c.postprocess = ParsePostprocess(node.value("postprocess", json()));
   if (c.postprocess.max_detections < 1 || c.postprocess.max_detections > 1000 ||
       (c.model.adapter == "yoloe_bpu" && c.postprocess.max_detections > 300))
@@ -463,6 +469,8 @@ ChannelConfig ChannelConfigFromJson(const json& node) {
       extra.model=ParseModel(n.value("model",json()));
       if(extra.model.provider!="bpu"||extra.model.adapter=="locateanything_bpu")Fail("Analysis nodes require bounded BPU detectors");
       extra.preprocess=ParsePreprocess(n.value("preprocess",json()));extra.postprocess=ParsePostprocess(n.value("postprocess",json()));
+      if(extra.model.adapter==adapters::kPoseAdapter)
+        adapters::ValidatePosePreprocess(pipeline::ResolvePreprocess(extra.preprocess,{}));
       if(extra.postprocess.max_detections<1||extra.postprocess.max_detections>(extra.model.adapter=="yoloe_bpu"?300:1000))Fail("Analysis node detection limit exceeds adapter capacity");
       c.analysis_nodes.push_back(std::move(extra));
     }

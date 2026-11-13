@@ -22,7 +22,7 @@ export function AssignmentPicker(props:Props){
  const [ids,setIds]=useState<string[]>([]),[error,setError]=useState('')
  const [handles,setHandles]=useState<Record<string,{current:WorkspaceDraft|null}>>({})
  const values=useRef(new Map<string,{assignment:DraftAssignment;labelVersion:string}>())
- const available=props.definitions.filter(d=>d.state!=='archived'&&!d.migration_review?.required&&(props.zone||d.behavior==='appearance'))
+ const available=props.definitions.filter(d=>d.state!=='archived'&&!d.migration_review?.required&&(props.zone||(d.behavior==='appearance'&&!d.region_state)))
  const visible=available.filter(t=>ids.includes(t.trigger_id)||((!behavior||t.behavior===behavior)&&t.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())))
  const flush=()=>{
   if(!ids.length)return true

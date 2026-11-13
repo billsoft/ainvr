@@ -39,7 +39,7 @@ export function CounterStatistics({counter:c,result:r,previous,comparison,bucket
  const pages=Math.max(1,Math.ceil(filtered.length/pageSize)),currentPage=Math.min(page,pages-1)
  const visible=filtered.slice(currentPage*pageSize,(currentPage+1)*pageSize)
  const title=selected?`${zoneName(selected)}趋势`:'全部热区趋势'
- const coverage=[r.in.coverage,r.out?.coverage].includes('partial')?'partial':r.in.coverage
+ const coverage=outputs.every(o=>r[o]?.coverage==='complete')?'complete':outputs.every(o=>r[o]?.coverage==='no_data')?'no_data':'partial'
  return <div className="space-y-2">
   <section aria-label="整体合计" className="space-y-2">
    <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold text-ink">整体合计</h3><span className="text-xs text-ink-subtle">本期 {r.zones.length} 个统计位置{r.zones.some(z=>!z.active)?' · 含已移除位置的历史记录':''}</span></div>
@@ -47,10 +47,11 @@ export function CounterStatistics({counter:c,result:r,previous,comparison,bucket
     {outputs.map(o=><button key={o} type="button" aria-label={`${c.names[o]}合计 ${r[o]?.occurrences??'暂无数据'}，查看通行记录`} onClick={()=>onRecords(o)} className="min-h-11 rounded-panel border border-line p-3 text-left transition-colors hover:border-primary hover:bg-primary-50">
      <span className="flex items-center gap-1.5 text-xs text-ink-subtle"><span className="h-2 w-2 rounded-full" style={{background:colors[o]}}/>{c.names[o]}合计</span>
      <strong className="mt-0.5 block text-2xl tabular-nums text-ink">{r[o]?.occurrences??'—'}</strong>
-     {previous?.[o]!==undefined&&<span className="block text-xs text-ink-faint">{comparisonText(r[o]!.occurrences,previous?.[o],comparison)}</span>}
+     {coverage==='complete'&&previous?.[o]!==undefined&&<span className="block text-xs text-ink-faint">{comparisonText(r[o]!.occurrences,previous?.[o],comparison)}</span>}
     </button>)}
     {net&&<div className="rounded-panel border border-line bg-surface-page p-3"><span className="text-xs text-ink-subtle">本期净流入</span><strong className="mt-0.5 block text-2xl tabular-nums text-ink">{r.out?signed(r.in.occurrences-r.out.occurrences):'—'}</strong><span className="mt-1 block text-xs text-ink-faint">{c.names.in}减{c.names.out}，非实际在场人数</span></div>}
    </div>
+   {(coverage!=='complete'||!previous)&&<p className="text-xs text-ink-subtle">对比数据不足：仅在本期与对比期采集覆盖完整时显示变化率。</p>}
    {coverage!=='complete'&&<p className="text-xs text-amber-800">{coverage==='no_data'?'本期没有收到画面分析数据，零记录不代表零通行。':'本期部分时段缺少画面分析数据，统计可能不完整。'}</p>}
   </section>
   <section aria-label="各热区分项" className="space-y-2">

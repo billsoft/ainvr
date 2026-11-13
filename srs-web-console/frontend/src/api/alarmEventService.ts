@@ -1,3 +1,4 @@
+import type {FaceAlarmFact} from '@/features/faces/FaceAlarmEvidence'
 export type TargetClassScores={person:number;non_person:number;uncertain:number}
 export type FocusPolicy={minimum_frame_score:number;strong_frame_score:number;non_person_above:number}
 import {request} from './httpClient'
@@ -5,24 +6,33 @@ import {aiChannelService} from './aiChannelService'
 import {channelService} from './channelService'
 import {resolveAlarmOutput} from '@/features/alarmNavigation'
 interface GroupSample {frame_id:string;captured_at:string;track_id:string;label_id:string;bbox?:{x:number;y:number;w:number;h:number}}
+/** Bounded list projection, not a full FaceAlarmFact. Invalid fields are omitted.
+ * Names are at most 256 characters; record_id is a UUID; scores are finite [-1, 1].
+ */
+export interface FaceAlarmSummary {
+ record_id?:string;library_name?:string;member_name?:string;similarity?:number;threshold?:number
+}
 export interface RuleEvidence {
  version:string;blocking:boolean;scope_note:string
  rule:{behavior:string;behavior_name:string;labels:{id:string;name:string}[];label_mode:string;region_required:boolean;anchor:string;duration_ms:number;group?:{minimum:number;window_ms:number;labels:string}|null}|null
  checks:{id:string;title:string;status:'pass'|'conflict'|'unknown'|'not_applicable';expected:string;actual:string;frames:string[];basis:string}[]
- observations:{frame_id:string;captured_at:string;track_id:string;roles:string[];inside:boolean|null;distance_px:number|null;point:[number,number]}[]
+ observations:{frame_id:string;captured_at:string;track_id:string;roles:string[];inside:boolean|null;distance_px:number|null;point:[number,number]|null;region_count?:number}[]
 }
 export interface AlarmEvent {
+ face_summary?:FaceAlarmSummary
+ /** Face photo references are record IDs for the protected endpoint, never URLs. */
+ evidence?:{state?:string;refs?:{kind:string;record_id?:string;photo_ref?:string;frame_id?:string}[]}
  review_evidence?:RuleEvidence
  group_summary?:{count:number;mode:string;window_ms:number};version?:number;playback_stream_id?:string;
- alarm_id:string;occurred_at:string;last_seen_at:string;channel_id:string;behavior:string;input_stream_id?:string;trigger_id?:string;activity_started_at?:string
- analysis_evidence?:{vehicle?:{text:string;reason:string;passage_event_id:string;support?:number};group?:{candidate_count?:number;mode:'simultaneous'|'completed_in_window';window_ms:number;minimum:number;labels:'all'|'any';members:{event_id:string;name?:string;sample:GroupSample;identity_sample?:GroupSample;transition?:GroupSample[];start?:GroupSample}[]};started_at?:string;source:{width:number;height:number};review_context?:{schema_version?:string;anchor?:string;approach_px?:number|null;region:{points:[number,number][]}|null;trace:{frame_id?:string;bbox:{x:number;y:number;w:number;h:number};event_eligible:boolean;observation:string;source_pts_ns:string}[]}}
- rule:{id:string;name:string;snapshot?:{points?:[number,number][]}};severity:string;lifecycle:{state:string;end_reason?:string}
+ alarm_id:string;event_kind?:string;occurred_at:string;last_seen_at:string;channel_id:string;behavior:string;input_stream_id?:string;trigger_id?:string;activity_started_at?:string
+ analysis_evidence?:{face?:FaceAlarmFact;vehicle?:{text:string;reason:string;passage_event_id:string;support?:number};group?:{candidate_count?:number;mode:'simultaneous'|'completed_in_window';window_ms:number;minimum:number;labels:'all'|'any';members:{event_id:string;name?:string;sample:GroupSample;identity_sample?:GroupSample;transition?:GroupSample[];start?:GroupSample}[]};started_at?:string;source:{width:number;height:number};review_context?:{schema_version?:string;anchor?:string;approach_px?:number|null;region:{points:[number,number][]}|null;trace:{frame_id?:string;bbox:{x:number;y:number;w:number;h:number};event_eligible:boolean;observation:string;source_pts_ns:string}[]}}
+ rule:{id:string;name:string;snapshot?:{points?:[number,number][];zone_name?:string}};severity:string;lifecycle:{state:string;end_reason?:string}
  handling:{reviewed_by_kind?:'human'|'ai';state:string;revision:number;acknowledged_by?:string;acknowledged_at?:string;note?:string;disposition?:string}
  stages?:{event_id:string;behavior:string;at:string;direction:unknown;behavior_event_ids?:string[];trigger_id?:string;zone_id?:string|null}[]
  review?:{spatial?:{state:string;reason?:string;automatic_decision:false;frame_id?:string;key?:string;prompt?:string;scores?:{supported:number;contradicted:number;uncertain:number}};spatial_frames?:{key:string;frame_id:string;layout:string;width:number;height:number}[];frame_class_scores?:TargetClassScores[];focus_policy?:FocusPolicy;input_profile?:'target-crop-v1'|'target-focus-v2';group_verdict?:string;group_scene?:{frame_id:string;score:number};group_scores?:{event_id:string;score?:number;label:string;outcome?:string;reason?:string}[];decision_path?:'primary_confirmation'|'expanded_confirmation'|'explicit_non_target';decision_basis?:'operator_authorized_group_review'|'validated_model'|'operator_authorized_primary_review'|'operator_authorized_dual_review'|'operator_authorized_confirm_only'|'reference_only';authorization?:{mode?:'confirm_only'|'confirm_or_reject';secondary?:{confirm_above:number;reject_below:number}};secondary?:{frame_class_scores?:TargetClassScores[];focus_policy?:FocusPolicy;system_prompt?:string;non_target_evidence?:{frame_scores:number[];prompt:string;frame_ids:string[];model?:{package_id:string;package_sha256:string}};version:'expanded-target-v1';state:'completed'|'unavailable'|'not_run';paired_support?:{minimum_frame_score:number;strong_frame_score:number};outcome:'confirmed'|'false_positive'|'uncertain';reason?:string;frame_scores:number[];frames:{frame_id:string;key:string;score:number}[];prompt:string;model?:{package_id:string;package_sha256:string};completed_at:string;confirm_above:number;reject_below:number};auto_confirmation?:{version:1;outcome:'confirmed'|'frame_below_threshold'|'no_strong_frame'|'not_authorized';minimum_frame_score:number|null;strong_frame_score:number|null;frame_scores:number[];failed_frame_indices:number[]};evidence_mode?:'all_keyframes'|'verified_behavior_available_visuals';missing_frame_ids?:string[];recovery?:{state:string;reason?:string;attempt?:number};submitted_prompts?:{system_prompt?:string;frame_id:string;label:string;description:string;caller_template:string;scope:string}[];reference?:{state:string;reason?:string;score?:number;completed_at?:string;attempt?:number;scope?:string;model?:{package_id:string;package_sha256:string}};context_frames?:{key:string;frame_id:string;layout:string;width:number;height:number}[];secondary_frames?:{key:string;frame_id:string;layout:string;width:number;height:number}[];prepared_frames?:{key:string;frame_id:string;layout:string;width:number;height:number}[];frames?:{key:string;roles?:string[];frame_id?:string;captured_at:string;source_pts_ns:string;source_kind?:'full_frame'|'retained_target';width?:number;height?:number;crop_event_id?:string;bbox:{x:number;y:number;w:number;h:number}}[];reviewed_frame_ids?:string[];frame_scores?:number[];geometry_verified?:boolean;state:string;reason?:string;score?:number;completed_at?:string;attempt?:number;policy?:{description?:string;approve_above?:number;reject_below?:number};model?:{package_id:string;package_sha256:string}}
  logs?:{operation_id:string;action:string;actor:string;at:string;note?:string}[]
 }
-export interface AlarmFilters {disposition?:string;review?:string;channel_id?:string;zone_id?:string;behavior?:string;from?:string;to?:string;locations?:AlarmLocation[];analytics?:string}
+export interface AlarmFilters {disposition?:string;review?:string;channel_id?:string;zone_id?:string;behavior?:string;event_kind?:string;from?:string;to?:string;locations?:AlarmLocation[];analytics?:string}
 export interface AlarmLocation {channel_id:string;zone_id:string}
 export interface AlarmStatistics {total:number;as_of:string;handling:Record<string,number>;review:Record<string,number>;association:{unassociated:number}}
 export interface AckItem {alarm_id:string;expected_handling_revision:number}
@@ -39,6 +49,7 @@ export const alarmEventService={
  },
  get:async(id:string):Promise<AlarmEvent>=>{
   const row=await request<AlarmEvent>(`/alarms/events/${encodeURIComponent(id)}`,{signal:AbortSignal.timeout(15000)})
+  if(row.event_kind==='face_watchlist')return row
   try{
    const [ai,channels]=await Promise.all([aiChannelService.get(row.channel_id),channelService.list()])
    return {...row,playback_stream_id:resolveAlarmOutput(row,ai,channels)}

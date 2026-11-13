@@ -1,4 +1,5 @@
 import {VehicleHistory} from '@/features/vehicles/VehicleHistory'
+import { FaceQueryConnected } from '@/features/faces/FaceQueryConnected'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { CalendarClock, Code2, Settings, Sparkles, Sun, Trash2 } from 'lucide-react'
@@ -114,8 +115,16 @@ function percentOf(count: number | undefined, max: number | undefined): number {
  */
 export default function RecognitionHistoryPage() {
   const [params,setParams]=useSearchParams(),{channelId}=useParams()
-  const vehicles=params.get('view')==='vehicles'
-  return <div className="flex h-full min-h-0 flex-col gap-3"><nav aria-label="识别历史类型" className="flex shrink-0 gap-5 border-b border-line">{[['snapshots','检测截图'],['vehicles','车辆通行']].map(([key,title])=><button key={key} className={`border-b-2 px-2 py-2 text-sm ${vehicles===(key==='vehicles')?'border-primary text-primary':'border-transparent text-ink-subtle'}`} onClick={()=>setParams(old=>{const p=new URLSearchParams(old);if(key==='vehicles')p.set('view',key);else p.delete('view');return p})}>{title}</button>)}</nav>{vehicles?<VehicleHistory channelId={channelId}/>:<SnapshotHistoryPage/>}</div>
+  const view = ['vehicles', 'faces'].includes(params.get('view') ?? '') ? params.get('view') : 'snapshots'
+  return <div className="flex h-full min-h-0 flex-col gap-3">
+    <nav aria-label="识别历史类型" className="flex shrink-0 flex-wrap gap-3 border-b border-line">
+      {[['snapshots', '检测截图'], ['vehicles', '车辆通行'], ['faces', '人脸抓拍']].map(([key, title]) => <button key={key}
+        aria-current={view === key ? 'page' : undefined}
+        className={`min-h-11 border-b-2 px-2 py-2 text-sm ${view === key ? 'border-primary text-primary' : 'border-transparent text-ink-subtle'}`}
+        onClick={() => setParams(old => { const next = new URLSearchParams(old); if (key === 'snapshots') next.delete('view'); else next.set('view', key!); return next })}>{title}</button>)}
+    </nav>
+    {view === 'vehicles' ? <VehicleHistory channelId={channelId} /> : view === 'faces' ? <FaceQueryConnected mode="history" channelId={channelId} /> : <SnapshotHistoryPage />}
+  </div>
 }
 function SnapshotHistoryPage() {
   const { channelId } = useParams()

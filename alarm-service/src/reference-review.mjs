@@ -1,3 +1,5 @@
+import {faceReviewExclusion} from './face-review-gate.mjs';
+import {regionReviewExclusion} from './region-review-gate.mjs';
 import {buildReviewEvidence} from './review-evidence.mjs';
 // Legacy reference scores remain advisory. Only evidence-v2 groups enter adjudication.
 import {assessMember,groupDecision,sharedWitness,inconclusiveReason} from './group-review.mjs';
@@ -64,7 +66,7 @@ export class ReferenceReviewWorker {
  }
  async step(){
   const now=this.clock(),token=randomUUID();
-  const row=await this.rows.findOneAndUpdate({'handling.state':'unacknowledged','review.policy.enabled':true,'review.context_state':{$ne:'ready'},$and:[{$or:[{'review.context_state':'incomplete'},{'review.generation':{$exists:false}}]}],$or:[
+  const row=await this.rows.findOneAndUpdate({...regionReviewExclusion,...faceReviewExclusion,'handling.state':'unacknowledged','review.policy.enabled':true,'review.context_state':{$ne:'ready'},$and:[{$or:[{'review.context_state':'incomplete'},{'review.generation':{$exists:false}}]}],$or:[
    {'review.reference':{$exists:false}},
    {'review.reference.state':'running','review.reference.lease_until':{$lte:now}},
    {'review.reference.state':'queued','review.reference.next_attempt_at':{$lte:now}}

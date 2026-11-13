@@ -8,6 +8,33 @@ it('accepts real zero while rejecting mismatched ranges, malformed matrices and 
   expect(validateAlarmAnalyticsResult(valid(), query).total).toBe(0)
   for (const corrupt of [{ ...valid(), from: query.to }, { ...valid(), total: -1 }, { ...valid(), week: [[]] }, { ...valid(), quality: null }, { ...valid(), catalog: { ...valid().catalog, types: [{ id: 'appearance' }] } }]) expect(() => validateAlarmAnalyticsResult(corrupt, query)).toThrow('响应不完整')
 })
+it('validates optional business facets, unique IDs, exact totals and selected business scope', () => {
+  const legacy = valid()
+  expect(validateAlarmAnalyticsResult(legacy, query).business_kinds).toBeUndefined()
+  expect(validateAlarmAnalyticsResult({ ...legacy, business_kinds: [] }, query).business_kinds).toEqual([])
+  const result = { ...legacy, total: 3, business_kinds: [{ id: 'spatial', total: 1 }, { id: 'fire_smoke', total: 2 }] }
+  expect(validateAlarmAnalyticsResult(result, query).business_kinds).toEqual(result.business_kinds)
+  for (const business_kinds of [null, {}, [], [{ id: 'appearance', total: 3 }], [{ id: 'spatial', total: -1 }], [{ id: 'spatial', total: 1.5 }], [{ id: 'spatial', total: 2 }], [{ id: 'spatial', total: 1 }, { id: 'spatial', total: 2 }]]) {
+    expect(() => validateAlarmAnalyticsResult({ ...result, business_kinds }, query)).toThrow('响应不完整')
+  }
+  const selected = { ...query, event_kind: 'fire_smoke' }
+  expect(() => validateAlarmAnalyticsResult({ ...result, event_kind: 'fire_smoke' }, selected)).toThrow('响应不完整')
+  expect(() => validateAlarmAnalyticsResult(legacy, selected)).toThrow('响应不完整')
+  expect(validateAlarmAnalyticsResult({ ...result, event_kind: 'fire_smoke', business_kinds: [{ id: 'fire_smoke', total: 3 }] }, selected).total).toBe(3)
+})
+
+it('exports real business counts and labels missing facets without inferring appearance as spatial', () => {
+  const q = { ...query, event_kind: 'fire_smoke' }
+  const result = { ...valid(), total: 3, types: [{ id: 'appearance', total: 3 }], business_kinds: [{ id: 'fire_smoke', total: 3 }] }
+  const csv = alarmAnalyticsCsv(result, q)
+  expect(csv).toContain('"fire_smoke","烟雾 / 明火","3"')
+  expect(csv).toContain('""event_kind"":""fire_smoke""')
+  expect(csv).not.toContain('"appearance","3"')
+  const legacy = alarmAnalyticsCsv({ ...result, business_kinds: undefined }, query)
+  expect(legacy).toContain('当前服务未提供，未推算类别数量')
+  expect(legacy).not.toContain('"spatial"')
+  expect(alarmAnalyticsCsv(result, { ...query, event_kind: 'spatial' })).toContain('"appearance","3"')
+})
 it('calls only the independent real endpoint with cancellation and preserves errors', async () => {
   const controller = new AbortController(), error = new Error('unavailable')
   vi.mocked(request).mockRejectedValue(error)

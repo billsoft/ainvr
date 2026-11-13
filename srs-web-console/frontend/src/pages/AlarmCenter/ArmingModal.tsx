@@ -23,7 +23,7 @@ import type {AlarmZone} from '@/api/alarmZoneService'
 import {newAlarmOperationId} from '@/api/alarmZoneService'
 import {alarmArmingService} from '@/api/alarmArmingService'
 import {createArmingSaveSession,type ArmingSaveResult} from '@/features/armingSaveSession'
-import {readArmingSnapshot,buildArmingRequest,resetArmingForGeometry,type ArmingDocument} from '@/features/armingDocument'
+import {readArmingSnapshot,buildArmingRequest,resetArmingForGeometry,currentLabelVersions,type ArmingDocument} from '@/features/armingDocument'
 import {edgeIdsAfterEdit,createArmingDraft,type DraftAssignment,type DraftCounterBinding} from '@/features/armingDraft'
 import type {TriggerDefinition} from '@/features/alarmDefinitions'
 import {ZoneEditor,type ZoneDraft} from './ZoneEditor'
@@ -124,7 +124,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
   if(!session.hasPending()&&(snapshot.assignments.some(a=>a.needsDirectionConfirmation)||snapshot.counterBindings.some(b=>b.needsConfirmation))){setError('请先处理标记为需重新确认的方向或计数线。');return}
   setBusy(true);setError('')
   try{
-   const result=session.hasPending()?await session.retry():await session.save(buildArmingRequest(draft.read(),base,{...Object.fromEntries(draft.read().assignments.flatMap(a=>labels.current[labelKey(a)]?[[a.id,labels.current[labelKey(a)]!]]:[])),...bindingLabels.current},resetGeometry))
+   const result=session.hasPending()?await session.retry():await session.save(buildArmingRequest(draft.read(),base,{...currentLabelVersions(draft.read(),sources,id=>definitions.find(d=>d.trigger_id===id)?.labels.map(l=>l.label_id),id=>counters.find(c=>c.counter_id===id)?.labels.map(l=>l.label_id)),...Object.fromEntries(draft.read().assignments.flatMap(a=>labels.current[labelKey(a)]?[[a.id,labels.current[labelKey(a)]!]]:[])),...bindingLabels.current},resetGeometry))
    onSaved(result)
   }catch(e){setError(e instanceof Error?e.message:'保存结果未确认，请保留草稿后重试')}
   finally{setBusy(false)}

@@ -226,3 +226,20 @@ it('方向文字取自画面像素中的箭头，支持八方向且反向成对'
  }
  expect(countingArrowLabel(null,1000,500)).toBe('请先选择计数边')
 })
+
+it('本期覆盖不完整时不显示与完整昨日的增长率',async()=>{
+ const {CounterStatistics}=await import('@/pages/Flow/CounterStatistics')
+ const partial=result(12,3);partial.in.coverage='partial'
+ render(<CounterStatistics counter={counter} result={partial} previous={{in:10,out:2}} comparison="昨日" bucket="hour" slots={[]} zoneName={()=>'门口'} onRecords={vi.fn()}/>)
+ expect(screen.getByText(/对比数据不足/)).toBeInTheDocument()
+ expect(screen.queryByText(/比昨日/)).not.toBeInTheDocument()
+ expect(screen.getByRole('button',{name:'进合计 12，查看通行记录'})).toBeInTheDocument()
+})
+
+it('出向没有采集数据时也禁止显示两向增长率',async()=>{
+ const {CounterStatistics}=await import('@/pages/Flow/CounterStatistics')
+ const partial=result(12,3);partial.out!.coverage='no_data'
+ render(<CounterStatistics counter={counter} result={partial} previous={{in:10,out:2}} comparison="昨日" bucket="hour" slots={[]} zoneName={()=>'门口'} onRecords={vi.fn()}/>)
+ expect(screen.getByText(/对比数据不足/)).toBeInTheDocument()
+ expect(screen.queryByText(/比昨日/)).not.toBeInTheDocument()
+})

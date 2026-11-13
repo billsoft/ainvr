@@ -3,6 +3,10 @@ import {fail} from './domain.mjs';
 
 export const ANALYTICS_LIMITS=Object.freeze({facts:50000,groups:1000,catalog:5000,bytes:1800000,maxTimeMS:5000});
 const audits=['pending','human_confirmed','human_false_positive','ai_reviewed','unknown'];
+export const BUSINESS_KINDS=Object.freeze(['spatial','helmet_violation','fire_smoke','region_count','region_absence','vehicle_dwell','suspected_down','face_watchlist','vehicle_watchlist']);
+// Legacy vehicle watchlist records predate event_kind. Never classify OCR
+// candidates as a watchlist hit merely because they contain vehicle metadata.
+export const businessKindExpression=()=>({$ifNull:['$event_kind',{$cond:[{$eq:['$analysis_evidence.vehicle.reason','watchlist_match']},'vehicle_watchlist','spatial']}]});
 const validId=v=>typeof v==='string'&&v.trim().length>0&&v.length<=256&&!/[\x00-\x1f]/.test(v);
 const id=(v,label)=>{if(!validId(v))fail('invalid_filter',label+'无效，请重新选择筛选项（最多256个字符）');return v};
 const literal=v=>({$literal:v});
@@ -11,7 +15,7 @@ export function normalizeAnalytics(input){
     if(input.length>8192)fail('invalid_filter','统计筛选超过8192个字符，请减少筛选项后重试');
     try{input=JSON.parse(input)}catch{fail('invalid_filter','统计筛选格式无效，请返回统计页重新选择范围')}
   }
-  const keys=['from','to','timezone','bucket','locations','trigger_id','primary_type','audit','weekday','hour','association'];
+  const keys=['from','to','timezone','bucket','locations','trigger_id','primary_type','event_kind','audit','weekday','hour','association'];
   if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!keys.includes(k))||JSON.stringify(input).length>8192)fail('invalid_filter','统计筛选无效或包含不支持的条件，请返回统计页重新选择');
   const timestamp=v=>{
     if(typeof v!=='string')return false;
@@ -36,6 +40,7 @@ export function normalizeAnalytics(input){
     q.locations=[...pairs.entries()].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([,v])=>v);
   }
   for(const k of ['trigger_id','primary_type'])if(input[k]!==undefined)q[k]=id(input[k],k==='trigger_id'?'触发器ID':'告警主类型');
+  if(input.event_kind!==undefined){if(!BUSINESS_KINDS.includes(input.event_kind))fail('invalid_filter','业务类别无效，请重新选择');q.event_kind=input.event_kind;}
   if(input.audit!==undefined){if(!audits.includes(input.audit))fail('invalid_filter','审核分类无效，请重新选择待审核、人工、AI或未知分类');q.audit=input.audit}
   for(const [k,max] of [['weekday',6],['hour',23]])if(input[k]!==undefined){if(!Number.isInteger(input[k])||input[k]<0||input[k]>max)fail('invalid_filter',k==='weekday'?'星期筛选无效，请从规律图重新选择（周一为0，周日为6）':'小时筛选无效，请从规律图重新选择0至23时');q[k]=input[k]}
   if(input.association!==undefined){if(input.association!=='unassociated')fail('invalid_filter','热区关联筛选无效，请重新选择未关联热区或清除该筛选');q.association=input.association}
@@ -65,11 +70,13 @@ export function analyticsFilter(q,as_of){
   const conditions=[];
   if(q.locations||q.trigger_id)conditions.push({$anyElementTrue:{$map:{input:associationExpression(),as:'a',in:selectedAssociationExpression(q)}}});
   if(q.audit)conditions.push({$eq:[auditExpression(),q.audit]});
+  const directKind=q.event_kind&&!['spatial','vehicle_watchlist'].includes(q.event_kind);
+  if(q.event_kind&&!directKind)conditions.push({$eq:[businessKindExpression(),q.event_kind]});
   if(q.association)conditions.push({$not:[{$anyElementTrue:{$map:{input:associationExpression(),as:'a',in:stringExpr('$$a.zone_id')}}}]});
   const date={$convert:{input:'$occurred_at',to:'date',onError:null,onNull:null}};
   if(q.weekday!==undefined)conditions.push({$eq:[{$subtract:[{$isoDayOfWeek:{date,timezone:q.timezone}},1]},q.weekday]});
   if(q.hour!==undefined)conditions.push({$eq:[{$hour:{date,timezone:q.timezone}},q.hour]});
-  return {occurred_at:{$gte:q.from,$lt:q.to},...(as_of?{ingested_at:{$lte:as_of}}:{}),...(q.primary_type?{behavior:q.primary_type}:{}),...(conditions.length?{$expr:{$and:conditions}}:{})};
+  return {occurred_at:{$gte:q.from,$lt:q.to},...(directKind?{event_kind:q.event_kind}:{}),...(as_of?{ingested_at:{$lte:as_of}}:{}),...(q.primary_type?{behavior:q.primary_type}:{}),...(conditions.length?{$expr:{$and:conditions}}:{})};
 }
 const countGroup=id=>({$group:{_id:id,total:{$sum:1},pending:{$sum:{$cond:[{$eq:['$_audit','pending']},1,0]}},human_reviewed:{$sum:{$cond:[{$in:['$_audit',['human_confirmed','human_false_positive']]},1,0]}},human_false_positive:{$sum:{$cond:[{$eq:['$_audit','human_false_positive']},1,0]}}}});
 const boundedSort=(n,sort={total:-1,_id:1})=>[{$sort:sort},{$limit:n+1}];
@@ -98,7 +105,7 @@ export function analyticsPipeline(q,as_of,limits=ANALYTICS_LIMITS,calendar=calen
   ]};
   const p90Rank={$eq:['$rank',{$ceil:{$multiply:['$n',0.9]}}]};
   return [{$match:{occurred_at:{$gte:q.from,$lt:q.to},ingested_at:{$lte:as_of}}},{$sort:{occurred_at:-1,alarm_id:-1}},{$limit:limits.facts+1},
-    {$project:{alarm_id:1,channel_id:1,occurred_at:1,behavior:1,'handling.state':1,'handling.disposition':1,'handling.reviewed_by_kind':1,'handling.acknowledged_at':1,trigger_id:1,'rule.id':1,'rule.version':1,'rule.name':1,'rule.snapshot.zone_id':1,'rule.snapshot.zone_name':1,'stages.zone_id':1,'stages.trigger_id':1}},
+    {$project:{alarm_id:1,channel_id:1,occurred_at:1,behavior:1,event_kind:1,'analysis_evidence.vehicle.reason':1,'handling.state':1,'handling.disposition':1,'handling.reviewed_by_kind':1,'handling.acknowledged_at':1,trigger_id:1,'rule.id':1,'rule.version':1,'rule.name':1,'rule.snapshot.zone_id':1,'rule.snapshot.zone_name':1,'stages.zone_id':1,'stages.trigger_id':1}},
     {$set:{_audit:auditExpression(),_date:dt}},
     {$facet:{
       capacity:[{$count:'total'}],
@@ -109,7 +116,9 @@ export function analyticsPipeline(q,as_of,limits=ANALYTICS_LIMITS,calendar=calen
       triggerVersions:[...selected,{$set:{_refs:{$filter:{input:refs,as:'a',cond:selectedAssociationExpression(q)}}}},{$unwind:'$_refs'},{$match:{$expr:{$and:[stringExpr('$_refs.trigger_id'),{$isNumber:'$_refs.version'}]}}},{$group:{_id:{trigger_id:'$_refs.trigger_id',version:'$_refs.version'}}},{$limit:limits.catalog+1}],
       historicalNames:[{$set:{_refs:refs}},{$unwind:'$_refs'},{$match:{$expr:{$or:[stringExpr('$_refs.zone_name'),stringExpr('$_refs.trigger_name')]}}},{$group:{_id:{channel_id:'$channel_id',zone_id:'$_refs.zone_id',trigger_id:'$_refs.trigger_id'},zone_name:{$first:'$_refs.zone_name'},trigger_name:{$first:'$_refs.trigger_name'}}},{$limit:limits.catalog+1}],
       types:[...selected,{$group:{_id:{$ifNull:['$behavior','unknown']},total:{$sum:1}}},...boundedSort(100)],
+      business_kinds:[...selected,{$group:{_id:businessKindExpression(),total:{$sum:1}}},...boundedSort(32)],
       catalogZones:zoneRows(),catalogTriggers:triggerRows(),catalogTypes:[{$group:{_id:{$ifNull:['$behavior','unknown']}}},...boundedSort(100,{_id:1})],
+      catalogKinds:[{$group:{_id:businessKindExpression()}},{$limit:33}],
       unassociated:[...selected,{$match:{$expr:{$not:[{$anyElementTrue:{$map:{input:refs,as:'a',in:stringExpr('$$a.zone_id')}}}]}}},{$count:'total'}],
       wait:[...selected,{$match:{_audit:{$in:['human_confirmed','human_false_positive']}}},
         {$set:{_wait:{$subtract:[{$convert:{input:'$handling.acknowledged_at',to:'date',onError:null,onNull:null}},'$_date']}}},
@@ -163,10 +172,11 @@ export async function queryAlarmAnalytics(repository,input,{limits=ANALYTICS_LIM
   if((r.capacity?.[0]?.total??0)>limits.facts)capacity('所选日期内告警超过'+limits.facts.toLocaleString('en-US')+'条统计容量');
   for(const k of ['zones','triggers'])if(r[k]?.length>limits.groups)capacity('位置或触发器排名超过'+limits.groups+'项容量');
   for(const k of ['catalogZones','catalogTriggers','historicalNames','triggerVersions'])if(r[k]?.length>limits.catalog)capacity('历史目录或版本关联超过'+limits.catalog+'项容量');
-  if(r.types?.length>100||r.catalogTypes?.length>100||r.trend?.length>1500)capacity('统计类型或时间桶数量超过容量');
+  if(r.types?.length>100||r.catalogTypes?.length>100||r.business_kinds?.length>32||r.trend?.length>1500)capacity('统计类型或时间桶数量超过容量');
   const rules=await repository.listRules(undefined,{limit:5001,maxTimeMS:limits.maxTimeMS});
   if(!Array.isArray(rules)||rules.length>5000)capacity('当前规则目录超过5000项容量');
   const zones=new Map(),triggers=new Map(),types=new Set((r.catalogTypes??[]).map(x=>x._id));
+  const kinds=new Set(['spatial',...(r.catalogKinds??[]).map(x=>x._id).filter(k=>BUSINESS_KINDS.includes(k))]);
   const pairKey=(c,z)=>JSON.stringify([c,z]);
   for(const x of r.catalogZones??[])if(validId(x._id.channel_id)&&validId(x._id.zone_id))zones.set(pairKey(x._id.channel_id,x._id.zone_id),{...x._id,name:x._id.zone_id});
   for(const x of r.catalogTriggers??[])if(validId(x._id))triggers.set(x._id,{trigger_id:x._id,name:x._id});
@@ -183,6 +193,8 @@ export async function queryAlarmAnalytics(repository,input,{limits=ANALYTICS_LIM
     if(validId(id))triggers.set(id,{trigger_id:id,name:validId(rule.name)?rule.name:id});
     if(validId(rule.channel_id)&&validId(rule.zone_id))zones.set(pairKey(rule.channel_id,rule.zone_id),{channel_id:rule.channel_id,zone_id:rule.zone_id,name:validId(rule.zone_name)?rule.zone_name:rule.zone_id});
     if(validId(rule.behavior))types.add(rule.behavior);
+    const kind=rule.region_state?.event_kind??rule.event_kind;
+    if(BUSINESS_KINDS.includes(kind))kinds.add(kind);
   }
   if(zones.size>limits.catalog||triggers.size>limits.catalog||types.size>100)capacity('历史与当前配置合并后的筛选目录超过容量');
   const summary=Object.fromEntries((r.summary??[]).map(x=>[x._id,x.total]));
@@ -191,13 +203,14 @@ export async function queryAlarmAnalytics(repository,input,{limits=ANALYTICS_LIM
   for(const x of r.trend??[]){const t=new Date(x._id).getTime(),bucket=trend.find(b=>t<Date.parse(b.to)&&Math.max(t,Date.parse(q.from))>=Date.parse(b.from));if(!bucket)fail('analytics_bucket','统计时间桶边界不一致，请缩短日期范围后重试',503);bucket.total+=x.total}
   const week=Array.from({length:7},()=>Array(24).fill(0));for(const x of r.week??[])week[x._id.day][x._id.hour]=x.total;
   const publicCounts=x=>({total:x.total,pending:x.pending,human_reviewed:x.human_reviewed,human_false_positive:x.human_false_positive});
-  const result={schema_version:'1.0',...Object.fromEntries(['from','to','timezone','bucket'].map(k=>[k,q[k]])),as_of,
+  const result={schema_version:'1.0',...Object.fromEntries(['from','to','timezone','bucket'].map(k=>[k,q[k]])),...(q.event_kind?{event_kind:q.event_kind}:{}),as_of,
     total:Object.values(summary).reduce((a,b)=>a+b,0),pending:summary.pending??0,human_confirmed:summary.human_confirmed??0,human_false_positive:summary.human_false_positive??0,ai_reviewed:summary.ai_reviewed??0,unknown_review:summary.unknown??0,
     trend,zones:(r.zones??[]).map(x=>({...x._id,name:rankZones.get(pairKey(x._id.channel_id,x._id.zone_id))?.name??x._id.zone_id,...publicCounts(x)})),
     triggers:(r.triggers??[]).map(x=>({trigger_id:x._id,name:rankTriggers.get(x._id)?.name??x._id,...publicCounts(x),rule_versions:[...new Set((r.triggerVersions??[]).filter(v=>v._id.trigger_id===x._id).map(v=>v._id.version).filter(v=>Number.isSafeInteger(v)&&v>=0))].sort((a,b)=>a-b)})),
     types:(r.types??[]).map(x=>({id:x._id,total:x.total})),week,
+    business_kinds:(r.business_kinds??[]).map(x=>({id:x._id,total:x.total})),
     quality:{human_reviewed:human,false_positive_ratio:human?(summary.human_false_positive??0)/human:null,wait:{samples:valid?.n??0,median_ms:valid?(valid.n%2?valid.middle:valid.middle/2):null,p90_ms:valid?.p90??null,unknown:invalid?.n??0},pending_age:{lt10m:0,lt1h:0,gte1h:0,...Object.fromEntries((r.pendingAge??[]).map(x=>[x._id,x.total]))}},
-    association:{unassociated:r.unassociated?.[0]?.total??0},catalog:{zones:[...zones.values()].sort((a,b)=>pairKey(a.channel_id,a.zone_id).localeCompare(pairKey(b.channel_id,b.zone_id))),triggers:[...triggers.values()].sort((a,b)=>a.trigger_id.localeCompare(b.trigger_id)),types:[...types].sort()},
+    association:{unassociated:r.unassociated?.[0]?.total??0},catalog:{zones:[...zones.values()].sort((a,b)=>pairKey(a.channel_id,a.zone_id).localeCompare(pairKey(b.channel_id,b.zone_id))),triggers:[...triggers.values()].sort((a,b)=>a.trigger_id.localeCompare(b.trigger_id)),types:[...types].sort(),event_kinds:[...kinds].sort()},
     consistency:'non_transactional',coverage:'unknown',issues:['截止时间仅限制已入库记录；查询期间审核结论和合并阶段仍可能变化。','缺少完整采集覆盖分母，数量不代表风险发生率。','筛选目录使用当前配置名称；排名使用事件历史名称，缺失时显示稳定 ID。','旧阶段未保留执行规则版本关联，版本仅列出可核实的当前最高阶段快照。']};
   if(Buffer.byteLength(JSON.stringify(result))>limits.bytes)capacity('统计结果超过响应容量');
   return result;

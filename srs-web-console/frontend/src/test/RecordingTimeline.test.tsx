@@ -132,7 +132,7 @@ describe('RecordingTimeline 指针定位与时间气泡', () => {
   })
 
   it('轨道内容只读：录像块/刻度不接收指针事件，文字不可选中', () => {
-    const { container } = render(
+    render(
       <ControlledTimeline
         win={{ from: DAY_START, to: DAY_START + DAY_MS }}
         segments={[seg(600)]}
@@ -147,7 +147,7 @@ describe('RecordingTimeline 指针定位与时间气泡', () => {
     expect(track.className).not.toContain('cursor-ew-resize')
     expect(screen.getByTestId('timeline-playhead')).toBeVisible()
     // 绿块/AI 条/刻度全部 pointer-events-none（事件只能落在轨道本体）
-    const interactive = container.querySelectorAll('.bg-success\\/70, .bg-danger\\/40')
+    const interactive = track.querySelectorAll('.bg-success\\/70, .bg-danger\\/40')
     interactive.forEach((el) => expect(el.className).toContain('pointer-events-none'))
   })
 
@@ -293,5 +293,40 @@ describe('RecordingTimeline —— 时间范围触发器/弹窗/预设（与识�
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(onChangeRange).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('RecordingTimeline 默认定位到可播放录像', () => {
+  const win = { from: DAY_START, to: DAY_START + DAY_MS }
+  const value = () => Number(screen.getByRole('slider', { name: '录像时间轴' }).getAttribute('aria-valuenow'))
+  it('异步加载和刷新时选择范围内最早可播段，不依赖列表顺序，也不自动发起播放', () => {
+    const onSeek = vi.fn()
+    const props = { win, playheadTs: null, onSeek, onChangeRange: vi.fn() }
+    const { rerender } = render(<RecordingTimeline {...props} segments={[]} />)
+    expect(value()).toBe(win.from)
+    rerender(<RecordingTimeline {...props} segments={[seg(900), { ...seg(60), playable: false }, seg(120), seg(-10), seg(1440)]} />)
+    expect(value()).toBe(DAY_START + 120 * 60_000)
+    rerender(<RecordingTimeline {...props} segments={[seg(900), seg(180)]} />)
+    expect(value()).toBe(DAY_START + 180 * 60_000)
+    expect(onSeek).not.toHaveBeenCalled()
+    fireEvent.keyDown(screen.getByRole('slider', { name: '录像时间轴' }), { key: 'ArrowRight' })
+    expect(onSeek).toHaveBeenLastCalledWith(DAY_START + 181 * 60_000)
+  })
+  it('显式定位优先于刷新后的默认起点，包含用户选择的录像空隙', () => {
+    const props = { win, playheadTs: DAY_START + 60_000, onSeek: vi.fn(), onChangeRange: vi.fn() }
+    const { rerender } = render(<RecordingTimeline {...props} segments={[seg(120)]} />)
+    expect(value()).toBe(props.playheadTs)
+    rerender(<RecordingTimeline {...props} segments={[seg(180)]} />)
+    expect(value()).toBe(props.playheadTs)
+  })
+  it('跨范围录像从可见范围起点定位，空范围及不可读录像不伪造可播位置', () => {
+    const props = { win, playheadTs: null, onSeek: vi.fn(), onChangeRange: vi.fn() }
+    const { rerender } = render(<RecordingTimeline {...props} segments={[seg(-1, 120)]} />)
+    expect(value()).toBe(win.from)
+    rerender(<RecordingTimeline {...props} segments={[seg(-2, 120), seg(1440), { ...seg(60), playable: false }]} />)
+    expect(value()).toBe(win.from)
+    rerender(<RecordingTimeline {...props} win={{ from: DAY_START + 120 * 60_000, to: win.to }} segments={[seg(180)]} />)
+    expect(value()).toBe(DAY_START + 180 * 60_000)
   })
 })

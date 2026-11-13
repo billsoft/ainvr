@@ -1,12 +1,13 @@
 import {buildReviewEvidence} from './review-evidence.mjs';
 import {reviewAuthorization} from './review-authorization.mjs';
+import {isFaceProtected} from './alarm-access.mjs';
 // Copyright AINVR. Mongo single-document atomic operations (no replica-set assumption).
 import {reviewFor} from './review-worker.mjs';
 import {randomUUID} from 'node:crypto';
 import {FlowStatistics} from './flow-statistics.mjs';
 import {DwellQuery} from './dwell-query.mjs';
 import {RegionHeatQuery} from './region-heat-query.mjs';
-import {normalizeAnalytics,analyticsFilter,queryAlarmAnalytics} from './alarm-analytics.mjs';
+import {normalizeAnalytics,analyticsFilter,queryAlarmAnalytics,businessKindExpression,BUSINESS_KINDS} from './alarm-analytics.mjs';
 import {BehaviorEvents} from './behavior-events.mjs';
 import {RuleSnapshots} from './rule-snapshots.mjs';
 import {stageRank} from './episodes.mjs';
@@ -36,6 +37,16 @@ const locationPairs=value=>{
   return [...pairs.entries()].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([,pair])=>pair);
 };
 const locationFilter=pairs=>({$or:pairs.map(({channel_id,zone_id})=>({channel_id,...zoneFilter(zone_id)}))});
+// List-only allowlist. Never expose a stored summary or the full face candidate.
+const faceSummaryFields=['record_id','library_name','member_name','similarity','threshold'];
+export function boundedFaceSummary(value){
+  if(!value||typeof value!=='object'||Array.isArray(value))return undefined;
+  const summary={};
+  if(typeof value.record_id==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value.record_id))summary.record_id=value.record_id;
+  for(const key of ['library_name','member_name'])if(typeof value[key]==='string'&&value[key].trim().length&&value[key].length<=256&&!/[\x00-\x1f\x7f]/.test(value[key]))summary[key]=value[key];
+  for(const key of ['similarity','threshold'])if(Number.isFinite(value[key])&&value[key]>=-1&&value[key]<=1)summary[key]=value[key];
+  return Object.keys(summary).length?summary:undefined;
+}
 export class AlarmRepository {
   constructor(db,{clock=()=>new Date().toISOString()}={}) {
     this.behaviors=new BehaviorEvents(db);
@@ -57,6 +68,7 @@ export class AlarmRepository {
     await this.events.createIndex({'lifecycle.state':1,'rule.id':1,'rule.version':1});
     await this.events.createIndex({occurred_at:-1,alarm_id:-1});
     await this.events.createIndex({channel_id:1,occurred_at:-1,alarm_id:-1});
+    await this.events.createIndex({event_kind:1,occurred_at:-1,alarm_id:-1});
     await this.rules.createIndex({id:1},{unique:true});
     await this.checkpoints.createIndex({channel_id:1},{unique:true});
     await this.captureJobs.createIndex({state:1,next_at:1,created_at:1});
@@ -85,12 +97,12 @@ export class AlarmRepository {
     }
     return {cleared:true,cutoff:op.cutoff,deleted_count:op.matched_count};
   }
-  async insert(event) {
+  async insert(event,{durable=false}={}) {
     if(await this.isCleared(event))return false;
     if(event.episode_id)return this.mergeEpisode(event);
     const document={...structuredClone(event),review:reviewFor(event),ingested_at:this.clock(),operations:[],logs:[{
       operation_id:`created:${event.alarm_id}`,alarm_id:event.alarm_id,action:'created',actor:'alarm-service',at:this.clock()}]};
-    const result=await this.events.updateOne({alarm_id:event.alarm_id},{$setOnInsert:document},{upsert:true});
+    const result=await this.events.updateOne({alarm_id:event.alarm_id},{$setOnInsert:document},{upsert:true,...(durable?{writeConcern:{w:1,j:true},maxTimeMS:5000}:{})});
     return result.upsertedCount===1;
   }
   // An activity spans several triggers: it ends only when none of its rules remain.
@@ -210,7 +222,7 @@ export class AlarmRepository {
     return {total:row?.total?.[0]?.count??0,as_of,handling:counts(row?.handling),review:counts(row?.review),association:{unassociated:row?.unassociated?.[0]?.count??0}};
   }
   async analytics(input){return queryAlarmAnalytics(this,input)}
-  async list({status='pending',channel_id,review,disposition,from,to,zone_id,behavior,locations,analytics,limit=50,cursor}={}) {
+  async list({status='pending',channel_id,review,disposition,from,to,zone_id,behavior,event_kind,locations,analytics,limit=50,cursor}={}) {
     if(!['pending','all','acknowledged','human','ai'].includes(status))fail('invalid_filter','status');
     if(!Number.isInteger(limit)||limit<1||limit>200)fail('invalid_limit','limit');
     if(disposition&&!['handled','false_positive'].includes(disposition))fail('invalid_filter','disposition');
@@ -218,13 +230,16 @@ export class AlarmRepository {
     if(review&&!['skipped','queued','running','supported','not_supported','uncertain','failed'].includes(review))fail('invalid_filter','review');
     if(zone_id!==undefined)identity(zone_id,'zone_id');
     if(behavior!==undefined&&!Object.hasOwn(stageRank,behavior))fail('invalid_filter','behavior');
+    if(event_kind!==undefined&&!BUSINESS_KINDS.includes(event_kind))fail('invalid_filter','event_kind');
     const start=from===undefined?null:Date.parse(from),end=to===undefined?null:Date.parse(to);
     if((from!==undefined&&(!Number.isFinite(start)||typeof from!=='string'))||(to!==undefined&&(!Number.isFinite(end)||typeof to!=='string'))||(start!==null&&end!==null&&end<=start))fail('invalid_time_range','Invalid alarm time range');
     if(locations!==undefined&&(channel_id!==undefined||zone_id!==undefined))fail('invalid_filter','locations cannot be combined with channel_id or zone_id');
     const pairs=locations===undefined?null:locationPairs(locations);
     const analyticsScope=analytics===undefined?null:normalizeAnalytics(analytics);
     const filters=[status,disposition??null,channel_id??null,review??null,from??null,to??null,zone_id??null,behavior??null];
+    if(this.faceAccess===false)filters.push({access:'ordinary'});
     if(pairs)filters.push(pairs);
+    if(event_kind)filters.push({event_kind});
     if(analyticsScope)filters.push({analytics:analyticsScope});
     const signature=digest(filters);
     let page={as_of:this.clock()};
@@ -238,6 +253,10 @@ export class AlarmRepository {
     // An activity can span several zones: match the top rule or any stage.
     query.$and=[...(pairs?[locationFilter(pairs)]:[]),...(zone_id?[zoneFilter(zone_id)]:[]),...(behavior?[{$or:[{behavior},{'stages.behavior':behavior}]}]:[])];
     if(!query.$and.length)delete query.$and;
+    if(event_kind){
+      if(['spatial','vehicle_watchlist'].includes(event_kind))query.$expr={$eq:[businessKindExpression(),event_kind]};
+      else query.event_kind=event_kind;
+    }
     if(from!==undefined||to!==undefined)query.occurred_at={...(start!==null?{$gte:new Date(start).toISOString()}:{}),...(end!==null?{$lt:new Date(end).toISOString()}:{})};
     if(status==='pending')Object.assign(query,pendingFilter());
     if(status==='acknowledged')query['handling.state']='acknowledged';
@@ -250,20 +269,20 @@ export class AlarmRepository {
     if(review)query['review.state']=review;
     if(page.alarm_id)query.$or=[{occurred_at:{$lt:page.occurred_at}},{occurred_at:page.occurred_at,alarm_id:{$lt:page.alarm_id}}];
     // Additional list controls intersect the analytical scope; they can never replace it.
-    const rows=analyticsScope?await this.events.aggregate([
-      {$match:{$and:[query,analyticsFilter(analyticsScope,page.as_of)]}},
+    const rows=await this.events.aggregate([
+      {$match:analyticsScope?{$and:[query,analyticsFilter(analyticsScope,page.as_of)]}:query},
       {$sort:{occurred_at:-1,alarm_id:-1}},{$limit:limit+1},
-      {$set:{rule:{$mergeObjects:['$rule',{snapshot:{zone_id:{$ifNull:['$rule.snapshot.zone_id',null]}}}]}}},
+      {$set:{event_kind:businessKindExpression(),face_summary:this.faceAccess===false?'$$REMOVE':Object.fromEntries(faceSummaryFields.map(k=>[k,'$analysis_evidence.face.'+k])),rule:{$mergeObjects:['$rule',{snapshot:{zone_id:{$ifNull:['$rule.snapshot.zone_id',null]}}}]}}},
       {$project:{_id:0,operations:0,logs:0,analysis_evidence:0,model_snapshot:0,'review.checkpoint':0,'review.token':0,'review.reference.token':0,'review.group_scores':0,'review.rule_evidence':0,'review.spatial.prompt':0,'review.spatial_frames':0}}
-    ],{maxTimeMS:5000,allowDiskUse:false}).toArray():await this.events.find(query,{projection:{_id:0,operations:0,logs:0,'rule.snapshot':0,analysis_evidence:0,model_snapshot:0,'review.checkpoint':0,'review.token':0,'review.reference.token':0,'review.group_scores':0,'review.rule_evidence':0,'review.spatial.prompt':0,'review.spatial_frames':0}})
-      .sort({occurred_at:-1,alarm_id:-1}).limit(limit+1).toArray();
+    ],{maxTimeMS:5000,allowDiskUse:false}).toArray();
+    for(const row of rows){const summary=this.faceAccess===false?undefined:boundedFaceSummary(row.face_summary);delete row.face_summary;if(summary)row.face_summary=summary;}
     const more=rows.length>limit;const items=rows.slice(0,limit),last=items.at(-1);
     return {items,next_cursor:more?Buffer.from(JSON.stringify({signature,as_of:page.as_of,occurred_at:last.occurred_at,alarm_id:last.alarm_id})).toString('base64url'):null,as_of:page.as_of};
   }
   async listRules(channel_id,{limit=1000,maxTimeMS}={}) {
-    const displayFields=['id','trigger_id','channel_id','zone_id','zone_name','name','behavior','alarm_enabled'];
+    const displayFields=['id','trigger_id','channel_id','zone_id','zone_name','name','behavior','alarm_enabled','event_kind','region_state.event_kind'];
     const snapshot=maxTimeMS?await this.ruleSnapshots.collection.findOne({_id:'active'},{maxTimeMS,projection:Object.fromEntries(displayFields.map(k=>['rules.'+k,1]))}):await this.ruleSnapshots.current();
-    if(snapshot)return snapshot.rules.filter(rule=>!channel_id||rule.channel_id===channel_id);
+    if(snapshot)return snapshot.rules.filter(rule=>(this.faceAccess!==false||!isFaceProtected(rule))&&(!channel_id||rule.channel_id===channel_id));
     return (await this.rules.find(channel_id?{channel_id}:{},maxTimeMS?{maxTimeMS,projection:Object.fromEntries(displayFields.map(k=>[k,1]))}:{}).limit(limit).toArray()).map(withoutInternal);
   }
   async saveRule(input,expected,actor) {

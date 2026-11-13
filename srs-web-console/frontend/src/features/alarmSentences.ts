@@ -1,6 +1,7 @@
 import type {AlarmEvent} from '@/api/alarmEventService'
 import {behaviorNames,edgeNames,sourceSize,type TriggerLabel} from './alarmTriggers'
 import {labelDisplay} from './labelNames'
+import {alarmBusinessKindOf,alarmBusinessName} from './alarmBusinessKind'
 
 /** What a sentence needs: the trigger's targets and duration, and the zone the alarm happened in. */
 export interface AlarmContext {
@@ -17,7 +18,8 @@ const edgeOf=(direction:unknown,key:'entry_edge'|'exit_edge'|'nearest_edge')=>{
 export function describeAlarm(alarm:AlarmEvent,trigger:AlarmContext|undefined){
  const stages:Stage[]=alarm.stages??[]
  const binding=trigger?.bindings?.find(b=>b.channel_id===alarm.channel_id)??trigger?.bindings?.[0]
- const zone=binding?.zone_snapshot?.name??null
+ const kind=alarmBusinessKindOf(alarm)
+ const zone=alarm.rule.snapshot?.zone_name??binding?.zone_snapshot?.name??null
  const size=binding?sourceSize(binding.geometry_revision):null
  const names=binding?.zone_snapshot?.points?edgeNames(binding.zone_snapshot.points,size?.width,size?.height):[]
  const edge=(i:number|null)=>i===null?'未确定的边':names[i]??`边 ${i+1}`
@@ -28,6 +30,7 @@ export function describeAlarm(alarm:AlarmEvent,trigger:AlarmContext|undefined){
  let sentence:string
  const group=alarm.group_summary??(alarm.analysis_evidence?.group?{...alarm.analysis_evidence.group,count:alarm.analysis_evidence.group.members.length}:undefined)
  if(alarm.analysis_evidence?.vehicle?.reason==='watchlist_match')sentence=`车辆 ${alarm.analysis_evidence.vehicle.text} 通行，匹配关注名单。`
+ else if(kind!=='spatial')sentence=`${zone?`「${zone}」`:'布防区域'}触发「${alarmBusinessName(kind)}」，请结合发生时的规则与图像审核。`
  else if(group)sentence=group.mode==='completed_in_window'?`${group.window_ms/1000} 秒内有 ${group.count} 个不同目标完成穿越。`:`有 ${group.count} 个不同目标同时满足「${behaviorNames[alarm.behavior]??alarm.behavior}」条件。`
  else if(!trigger)sentence=`目标${behaviorNames[alarm.behavior]??'触发'}${alarm.behavior==='appearance'?'':'热区'}。`
  else if(alarm.behavior==='appearance')sentence=`${target}在画面中连续出现 ${trigger.duration_ms/1000} 秒。`
@@ -39,7 +42,7 @@ export function describeAlarm(alarm:AlarmEvent,trigger:AlarmContext|undefined){
   const entered=at('region_enter'),left=top?.at,seconds=entered&&left?Math.round((Date.parse(left)-Date.parse(entered))/1000):null
   sentence=`${target}从${edge(edgeOf(top?.direction,'entry_edge'))}进入「${zone??'热区'}」，${seconds===null?'随后':`${seconds} 秒后`}从${edge(edgeOf(top?.direction,'exit_edge'))}离开。`
  } else sentence=`${target}${behaviorNames[alarm.behavior]??'触发'}。`
- return {sentence,zone:zone??(alarm.behavior==='appearance'?'整个画面':null),target:name,edgeName:edge}
+ return {sentence,zone:zone??(kind!=='spatial'?'布防区域':alarm.behavior==='appearance'?'整个画面':null),target:kind!=='spatial'?'区域观测':name,edgeName:edge}
 }
 /** Stage label with its zone edge, for the detail sheet. */
 export function stageNote(stage:Stage,edge:(i:number|null)=>string){

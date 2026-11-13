@@ -120,7 +120,7 @@ class BpuCoexistReservation {
   BpuCoexistReservation(std::string directory, std::string service, uint64_t declared_bytes, IonPolicy policy,
                         IonProbe probe = IonProbe{})
       : directory_(std::move(directory)), service_(std::move(service)), bytes_(declared_bytes) {
-    if (service_ != "llm-service" && service_ != "search-service") throw std::runtime_error("invalid_reservation_service");
+    if (service_ != "llm-service" && service_ != "search-service" && service_ != "ai-service") throw std::runtime_error("invalid_reservation_service");
     if (!declared_bytes || !policy.pool_bytes || declared_bytes > policy.pool_bytes || policy.min_free < (64ULL << 20))
       throw std::runtime_error("ion_budget_exceeded");
     // 1. lifetime SHARED lock: excludes protocol-2 (exclusive) holders, coexists with other protocol-3 holders.

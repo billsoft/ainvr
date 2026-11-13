@@ -5,16 +5,15 @@ import { AnalyticsNotificationSettings } from './AnalyticsNotificationSettings'
 import { AnalyticsReviewSettings } from './AnalyticsReviewSettings'
 import { AnalyticsRuleEditor } from './AnalyticsRuleEditor'
 import { ANALYTICS_PHASE } from '@/features/analyticsPhase'
-import { PromptLabelEditor } from './PromptLabelEditor'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, RefreshCw, X } from 'lucide-react'
 import {
-  DEFAULT_WIZARD_VALUE, aiServiceRtmpBase, applyModelPreset, findOutputConflict, fromChannel,
-  generateChannelId, needsIouThreshold, promptRows, usesPromptSlots,
+  DEFAULT_WIZARD_VALUE, aiServiceRtmpBase, findOutputConflict, fromChannel,
+  generateChannelId,
   toCreatePatch, toUpdatePatch, validateStep1, validateStep2, validateStep3, validateVisibleAnalytics, validatePublishRequiresRtmp,
   type AiWizardFormValue, type FieldErrors,
 } from '@/features/aiChannelForm'
-import { AI_MODEL_PRESETS, DEFAULT_AI_MODEL_PRESET, SELECTABLE_AI_MODEL_PRESET_KEYS, isOpenVocabularyPreset, isYoloePreset, promptSlotLimit, type AiChannel, type AiChannelCreatePatch, type AiChannelUpdatePatch, type AiStreamOption } from '@/types/aiChannel'
+import { type AiChannel, type AiChannelCreatePatch, type AiChannelUpdatePatch, type AiStreamOption } from '@/types/aiChannel'
 import type { ChannelWithStatus } from '@/types/channel'
 import { parseStreamPath, streamKey } from '@/utils/channelMatching'
 import type { AiServiceCapabilities } from '@/hooks/useAiServiceCapabilities'
@@ -59,7 +58,7 @@ function H265SourceNote({ caps }: { caps: AiServiceCapabilities | null | undefin
   if (caps?.h265) {
     return (
       <p className="mt-1.5 rounded-base border border-line bg-surface-page px-2 py-1 text-xs text-ink-subtle" data-testid="wizard-h265-note">
-        H.265 源 · AI 输出同为 H.265（FLV codec12，可在第③步高级项更改）
+        H.265 源 · AI 输出同为 H.265（FLV codec12，可在第④步高级项更改）
       </p>
     )
   }
@@ -244,13 +243,16 @@ export function AiChannelWizard({
   if (!open) return null
   const trackingReason = trackingUnavailableReason(value.modelPreset, value.inferenceFps)
   function changeDraft(next: AiWizardFormValue) {
+    setErrors({})
+    setSubmitError(null)
     const capabilityChanged = next.modelPreset !== value.modelPreset || next.inferenceFps !== value.inferenceFps
     const validRate = Number.isFinite(next.inferenceFps) && next.inferenceFps >= 0
     if (value.analytics?.enabled && ((capabilityChanged && validRate && trackingUnavailableReason(next.modelPreset, next.inferenceFps)) || next.analytics?.enabled === false)) {
       setPendingTrackingChange({ ...next, analytics: { ...next.analytics, enabled: false } })
-      return
+      return false
     }
     setValue(next)
+    return true
   }
 
   const set = <K extends keyof AiWizardFormValue>(key: K, v: AiWizardFormValue[K]) => {
@@ -273,16 +275,6 @@ export function AiChannelWizard({
 
   function selectOutputChannel(ch: ChannelWithStatus) {
     set('publishTargetUrl', srsUrl(ch))
-  }
-
-  function selectModel(key: keyof typeof AI_MODEL_PRESETS) {
-    const used=new Set(value.analysisPipeline?.nodes.map(n=>n.model.name)??[])
-    if(used.has(AI_MODEL_PRESETS[key].model.name)){
-      const alternative=SELECTABLE_AI_MODEL_PRESET_KEYS.find(k=>isOpenVocabularyPreset(k)===isOpenVocabularyPreset(key)&&!used.has(AI_MODEL_PRESETS[k].model.name)&&!(k==='locateanything-3b'&&used.size))
-      if(!alternative){setErrors({analysisPipeline:'此类型的模型已在列表中，请先调整其他模型'});return}
-      key=alternative
-    }
-    changeDraft(applyModelPreset(value, key))
   }
 
   function handleNext() {
@@ -311,7 +303,8 @@ export function AiChannelWizard({
   }
 
   async function handleSubmit() {
-    const e = validateStep3(value)
+    const e = { ...validateStep2(value), ...validateStep3(value) }
+    if (e.analysisPipeline || e.prompts || e.inferenceFps || e.description || e.labelId || e.labelName) setStep(1)
     if (e.analytics) setStep(2)
     if(e.confThreshold||e.iouThreshold||e.maxDetections)setStep(1)
     setErrors(e)
@@ -347,11 +340,11 @@ export function AiChannelWizard({
   return (
     <div
       ref={dialogRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-2 sm:p-4"
       role="dialog" aria-modal="true"
       aria-label={mode === 'create' ? '新建 AI 通道' : '编辑 AI 通道'}
     >
-      <div className="flex max-h-[90vh] w-full max-w-[880px] flex-col rounded-panel bg-surface shadow-modal">
+      <div className="flex max-h-[96dvh] w-full max-w-[1040px] sm:max-h-[92dvh] flex-col rounded-panel bg-surface shadow-modal">
         <div className="border-b border-line px-6 pb-4 pt-5">
           <div className="flex items-center justify-between">
             <h3 className="text-base font-semibold text-ink">
@@ -378,7 +371,7 @@ export function AiChannelWizard({
           <p className="mt-3 text-xs text-ink-subtle">AI 处理器：输入 流媒体通道 → 模型推理 → 输出 流媒体通道。通道统一在接入管理中配置。</p>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
           {step === 0 && (
             <div className="flex flex-col gap-4">
               <div>
@@ -482,81 +475,13 @@ export function AiChannelWizard({
 
           {step === 1 && (
             <div className="flex flex-col gap-4">
-              <AnalysisPipelineEditor value={value} onChange={changeDraft} error={errors.analysisPipeline??errors.prompts??errors.confThreshold??errors.iouThreshold??errors.maxDetections} rootError={!!(errors.prompts||errors.description||errors.labelId||errors.labelName||errors.confThreshold||errors.iouThreshold||errors.maxDetections)}
-                rootConfiguration={<div className="space-y-3">              <div>
-                <label className="text-sm font-medium text-ink">识别模型</label>
-                <select aria-label="模型类型" className={`mt-1.5 ${inputCls}`}
-                  value={isOpenVocabularyPreset(value.modelPreset) ? 'open' : 'closed'}
-                  onChange={(e) => selectModel(e.target.value === 'open' ? 'yoloe-26x' : DEFAULT_AI_MODEL_PRESET)}>
-                  <option value="closed">固定类别</option>
-                  <option value="open">开放词汇</option>
-                </select>
-                <p className="mt-1.5 text-xs text-ink-faint">固定类别提供通用目标、人脸和车牌识别；开放词汇可按描述检测目标。模型须完成安装与设备验证才能运行。</p>
-                <select
-                  value={value.modelPreset}
-                  onChange={(e) => selectModel(e.target.value as keyof typeof AI_MODEL_PRESETS)}
-                  className={`mt-1.5 ${inputCls}`}
-                  data-testid="wizard-model-select"
-                >
-                  {!SELECTABLE_AI_MODEL_PRESET_KEYS.includes(value.modelPreset) && (
-                    <option value={value.modelPreset} disabled>{AI_MODEL_PRESETS[value.modelPreset].label}（旧配置）</option>
-                  )}
-                  {SELECTABLE_AI_MODEL_PRESET_KEYS.filter((key) =>
-                    isOpenVocabularyPreset(key) === isOpenVocabularyPreset(value.modelPreset) && !(value.analysisPipeline?.nodes.some(n=>n.model.name===AI_MODEL_PRESETS[key].model.name)) && !(key==='locateanything-3b'&&value.analysisPipeline?.nodes.length)).map((key) => {
-                    const preset = AI_MODEL_PRESETS[key]
-                    return (
-                      <option key={key} value={key}>
-                        {preset.label} · {preset.description}
-                      </option>
-                    )
-                  })}
-                  {isOpenVocabularyPreset(value.modelPreset) && !SELECTABLE_AI_MODEL_PRESET_KEYS.includes('yoloe-26x-32') && <option value="yoloe-26x-32" disabled>开放词汇识别 · 32 槽（编译与验证中）</option>}
-                </select>
-              </div>
-
-              {usesPromptSlots(value.modelPreset) && <PromptLabelEditor rows={promptRows(value)} limit={promptSlotLimit(value.modelPreset)} error={errors.prompts ?? errors.description ?? errors.labelId ?? errors.labelName} onChange={rows => set('prompts', rows)} />}
-              {usesPromptSlots(value.modelPreset) && <p className="text-xs text-ink-faint">{isYoloePreset(value.modelPreset)
-                ? ((['yoloe-26x-1','yoloe-26x-2'].includes(value.modelPreset)) ? `${promptSlotLimit(value.modelPreset)} 槽模型最多配置 ${promptSlotLimit(value.modelPreset)} 个描述；需要更多目标请改用 8 槽或 32 槽。` : '') + '描述决定识别对象，标签用于检索与匹配。修改描述后会重新载入通道，无需重新编译模型；过长描述会提示缩短，实际效果请结合画面核对。'
-                : '描述决定识别对象，标签用于检索与匹配。此模型每帧一次识别全部标签，每多一个标签单帧耗时就会增加（实测中位：1 类约 2 秒、2 类约 4 秒、4 类约 6 秒，画面目标越多越慢），实际采集间隔会随之拉长。画面非常拥挤、标签又多时，一帧最多输出约 40 个目标，超出部分本帧不再列出。描述请用简洁的英文名词（如 person、car、helmet）；中文描述可能被模型改写成英文，这类目标会被忽略并记入运行日志。此模型不提供置信度；此试用版本的 AI 输出画面延后约 95 秒以匹配识别原帧，原始录像不受此延迟影响，每个识别到的目标仍按归档配置保存。'}</p>}
-
-              {value.modelPreset !== 'locateanything-3b' && <div>
-                <label className="text-sm font-medium text-ink">置信度阈值：{value.confThreshold.toFixed(2)}</label>
-                <input
-                  type="range" min={0.01} max={0.95} step={0.01}
-                  value={value.confThreshold}
-                  onChange={(e) => set('confThreshold', Number(e.target.value))}
-                  className="mt-1.5 min-h-11 w-full"
-                />
-                {errors.confThreshold && <p className="mt-1 text-xs text-danger">{errors.confThreshold}</p>}
-              </div>}
-
-              {needsIouThreshold(value.modelPreset) && (
-                <div>
-                  <label className="text-sm font-medium text-ink">IoU 阈值：{value.iouThreshold.toFixed(2)}</label>
-                  <input
-                    type="range" min={0.1} max={0.9} step={0.01}
-                    value={value.iouThreshold}
-                    onChange={(e) => set('iouThreshold', Number(e.target.value))}
-                    className="mt-1.5 min-h-11 w-full"
-                  />
-                  {errors.iouThreshold && <p className="mt-1 text-xs text-danger">{errors.iouThreshold}</p>}
-                </div>
-              )}
-
-
-                <div>
-                  <label className="text-sm font-medium text-ink">最大检测数</label>
-                  <input
-                    type="number" min={1} max={isYoloePreset(value.modelPreset) ? 300 : 1000}
-                    value={value.maxDetections}
-                    onChange={(e) => set('maxDetections', Number(e.target.value))}
-                    className={`mt-1.5 ${inputCls}`}
-                  />
-                  {errors.maxDetections && <p className="mt-1 text-xs text-danger">{errors.maxDetections}</p>}
-                </div>
-</div>}/>
-
-
+              <AnalysisPipelineEditor value={value} onChange={changeDraft}
+                error={errors.analysisPipeline??errors.prompts??errors.confThreshold??errors.iouThreshold??errors.maxDetections} />
+              <details open={errors.inferenceFps ? true : undefined} className="rounded-panel border border-line bg-page px-4">
+                <summary className="flex min-h-11 cursor-pointer flex-wrap items-center justify-between gap-2 py-3 text-sm font-medium text-ink">
+                  <span>通道运行设置</span><span className="text-xs font-normal text-ink-subtle">所有模型共用 · {value.modelPreset === 'locateanything-3b' ? `${Math.round(1 / value.inferenceFps)} 秒/次` : value.inferenceFps === 0 ? '跟随源流' : `${value.inferenceFps} FPS`} · {value.analysisPipeline?.execution === 'parallel' ? '并发执行' : '顺序执行'}</span>
+                </summary>
+                <div className="space-y-4 border-t border-line py-4">
               {value.modelPreset==='locateanything-3b'&&<p className="text-xs text-ink-faint">首次载入需要等待，当前每台设备仅允许一路此慢速开放词汇通道运行。</p>}
 
               <div>
@@ -578,6 +503,15 @@ export function AiChannelWizard({
                 </p>
                 {errors.inferenceFps && <p className="mt-1 text-xs text-danger">{errors.inferenceFps}</p>}
               </div>
+              {Boolean(value.analysisPipeline?.nodes.length) && <label className="block text-sm font-medium text-ink">执行方式
+                <select aria-label="模型执行方式" className={`mt-1.5 ${inputCls}`} value={value.analysisPipeline?.execution ?? 'serial'}
+                  onChange={e => changeDraft({ ...value, analysisPipeline: { ...value.analysisPipeline!, execution: e.target.value as 'serial' | 'parallel' } })}>
+                  <option value="serial">顺序执行</option><option value="parallel">并发执行（最多 2 个）</option>
+                </select>
+                <span className="mt-1 block text-xs font-normal text-ink-subtle">默认顺序执行。并发仍共用设备算力，不保证帧率翻倍。</span>
+              </label>}
+                </div>
+              </details>
             </div>
           )}
 

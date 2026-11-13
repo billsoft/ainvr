@@ -3,10 +3,12 @@ import {MemoryRouter} from 'react-router-dom'
 import {it,expect,vi,beforeEach} from 'vitest'
 import TriggerDefinitionsPage from '@/pages/AlarmCenter/TriggerDefinitionsPage'
 import {alarmDefinitionService,createDefinitionSaveSession} from '@/api/alarmDefinitionService'
+import {alarmAnalyticsService} from '@/api/alarmAnalyticsService'
 import {behaviorStatisticsService} from '@/api/behaviorStatisticsService'
 vi.mock('@/api/alarmDefinitionService',async original=>({...await original<typeof import('@/api/alarmDefinitionService')>(),alarmDefinitionService:{list:vi.fn(),save:vi.fn()}}))
 vi.mock('@/api/aiChannelService',()=>({aiChannelService:{list:vi.fn(async()=>[])}}))
 vi.mock('@/api/behaviorStatisticsService',()=>({behaviorStatisticsService:{query:vi.fn(async()=>{throw Error('offline')})}}))
+vi.mock('@/api/alarmAnalyticsService',async original=>({...await original<typeof import('@/api/alarmAnalyticsService')>(),alarmAnalyticsService:{query:vi.fn(async()=>{throw Error('offline')})}}))
 function edit(card:HTMLElement){fireEvent.click(within(card).getByRole('button',{name:'更多操作'}));fireEvent.click(within(card).getByRole('menuitem',{name:'编辑'}))}
 beforeEach(()=>vi.clearAllMocks())
 const trigger={trigger_id:'t',name:'人员出现',behavior:'appearance' as const,labels:[{label_id:'person',name:'人员'}],duration_ms:3000,
@@ -24,7 +26,7 @@ it('卡片保留列表背景，编辑弹窗可取消，不把统计失败显示�
  vi.mocked(alarmDefinitionService.list).mockResolvedValue({items:[trigger]})
  render(<MemoryRouter><TriggerDefinitionsPage/></MemoryRouter>)
  const card=await screen.findByRole('article',{name:'人员出现'})
- expect(card).toHaveTextContent('尚未选用')
+ expect(card).toHaveTextContent('尚未绑定区域')
  expect(card).toHaveTextContent('记录未确认')
  edit(card)
  expect(screen.getByRole('dialog',{name:'编辑触发器'})).toBeInTheDocument()
@@ -113,4 +115,19 @@ it('pause and enable are direct versioned actions with stable retries after an u
  expect(await screen.findByText('已暂停')).toBeInTheDocument()
  fireEvent.click(within(screen.getByRole('article')).getByRole('button',{name:'更多操作'}))
  expect(screen.getByRole('menuitem',{name:'启用'})).toBeEnabled()
+})
+
+it('区域规则使用新增告警口径，下钻与卡片均包含同一规则历史版本',async()=>{
+ const region={...trigger,trigger_id:'region',name:'区域人数',region_state:{operator:'count_at_least' as const,threshold:3,duration_ms:1000,recovery_ms:2000,event_kind:'region_count' as const}}
+ vi.mocked(alarmDefinitionService.list).mockResolvedValue({items:[trigger,region]})
+ vi.mocked(alarmAnalyticsService.query).mockResolvedValueOnce({triggers:[{trigger_id:'region',total:7}]} as never)
+ render(<MemoryRouter><TriggerDefinitionsPage/></MemoryRouter>)
+ const card=await screen.findByRole('article',{name:'区域人数'})
+ await waitFor(()=>expect(card).toHaveTextContent('今日新增告警 7 条'))
+ const scope=JSON.parse(new URL(within(card).getByRole('link',{name:'查看今日告警'}).getAttribute('href')!,'http://localhost').searchParams.get('analytics_scope')!)
+ expect(scope).toEqual({...vi.mocked(alarmAnalyticsService.query).mock.calls.at(-1)![0],trigger_id:'region'})
+ expect(scope.event_kind).toBeUndefined()
+ fireEvent.change(screen.getByRole('combobox',{name:'触发器业务类别'}),{target:{value:'region_count'}})
+ expect(screen.queryByRole('article',{name:'人员出现'})).not.toBeInTheDocument()
+ expect(screen.queryByRole('button',{name:'穿过'})).not.toBeInTheDocument()
 })

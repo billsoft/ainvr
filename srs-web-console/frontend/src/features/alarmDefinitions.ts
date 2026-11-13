@@ -1,11 +1,16 @@
 import type {AlarmSchedule} from './alarmSchedule'
 import type {TriggerBehavior,TriggerLabel} from './alarmTriggers'
 export interface TriggerTargetModel {name:string;adapter:string;mode:'fixed'|'open'}
+export interface RegionStateCondition {
+ operator:'count_below'|'count_at_least'|'presence';threshold:number;duration_ms:number;recovery_ms:number;
+ event_kind:'region_count'|'region_absence'|'helmet_violation'|'fire_smoke'|'suspected_down';max_gap_ms?:number
+}
 export interface TriggerDefinitionInput {
  target_model?:TriggerTargetModel;
  trigger_id:string;name:string;behavior:TriggerBehavior;labels:TriggerLabel[];
  group?:{labels:'any'|'all';minimum:number;window_ms:number};
  duration_ms:number;approach_width_percent?:number;alarm_enabled:boolean;
+ region_state?:RegionStateCondition;
  review?:{enabled:boolean;description:string;reject_below:number;approve_above:number};
  state:'draft'|'enabled'|'paused'|'archived';schedule:AlarmSchedule
 }

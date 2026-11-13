@@ -21,6 +21,8 @@ export type SearchMigrationModel = z.infer<typeof searchMigrationModelSchema>;
  * Metadata verification does not load HBM or prove runtime/quality readiness. */
 export const searchMigrationModelProfileSchema = searchMigrationModelSchema.extend({
   dimensions: z.number().int().min(1).max(4096),
+  // Older services omit this capability; omission never authorizes object sampling.
+  views: z.number().int().min(1).max(8).optional(),
   input_spec_version: z.string().min(1).max(512).regex(/^[\x20-\x7e]+$/),
   files_verified: z.boolean(), production_approval_declared: z.boolean(),
   pruned: z.boolean(), runtime_ready: z.literal(false),

@@ -1,4 +1,5 @@
 #include "history_mongo.hpp"
+#include "history_scan_plan.hpp"
 #include "display_bbox.hpp"
 #include "migration_coverage.hpp"
 #include "migration_sample.hpp"
@@ -794,6 +795,9 @@ void HistoryMongo::Initialize() {
   projection_index["key"] = nlohmann::ordered_json{{"model", 1}, {"channel", 1}, {"captured_ms", 1}, {"ordinal", 1}};
   projection_index["name"] = "search_projection_v2";
   state_->Command(c, {{"createIndexes", "search_samples"}, {"indexes", nlohmann::ordered_json::array({projection_index})}});
+  // Additive only: existing time-range consumers retain their index. A failed
+  // build fails initialization; scans must never silently retry a costly plan.
+  state_->Command(c, {{"createIndexes", "search_samples"}, {"indexes", HistoryScanIndexes()}});
   const auto existing = state_->Command(c, {{"listIndexes", "search_samples"}, {"cursor", Json::object()}});
   for (const auto& index : existing.at("cursor").at("firstBatch"))
     if (index.value("name", "") == "search_projection")
@@ -1123,7 +1127,8 @@ HistoryBatch HistoryMongo::Scan(const std::string& model, const Scope& scope, in
   size_t visited=0;
   state_->Each(c, "search_samples", {{"model", model}, {"channel", {{"$in", channels}}},
     {"captured_ms", {{"$gte", scope.from_ms}, {"$lt", scope.to_ms}}}, {"ordinal", {{"$gt", after}}}, {"expires_at", {{"$gt", Date(Now())}}}},
-    {{"sort", {{"ordinal", 1}}}, {"limit", limit}, {"projection", {{"jpeg", 0}}}}, [&](const bson_t* doc) {
+    {{"sort", {{"ordinal", 1}}}, {"limit", limit}, {"projection", {{"jpeg", 0}}},
+     {"hint", kHistoryScanChannelIndex}}, [&](const bson_t* doc) {
       ++visited;out.checkpoint = Number(doc, "ordinal");
       const auto channel = Text(doc, "channel"); const auto captured = Number(doc, "captured_ms");
       for (const auto& range : deleted)

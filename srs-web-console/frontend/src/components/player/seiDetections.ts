@@ -1,4 +1,5 @@
 import { overlayHoldMs } from './overlayPresentation'
+import { parsePoseAttribute } from './poseAttributes'
 import type { AiDetection } from '@/types/aiChannel'
 import { parseGroundingOverlay, type GroundingOverlay } from './groundingPoints'
 
@@ -181,6 +182,7 @@ function toDetection(c: CompactDetection): AiDetection | null {
   const attributes: NonNullable<AiDetection['model_extra']>['attributes'] = {}
   if(c.a && typeof c.a==='object' && !Array.isArray(c.a))for(const [key,raw] of Object.entries(c.a).slice(0,16)){
     if(!/^[a-z_]{1,64}$/.test(key)||!raw||typeof raw!=='object')continue
+    if(key==='pose') { const pose=parsePoseAttribute(raw);if(pose)attributes.pose=pose;continue }
     const a=raw as {type?:unknown;value?:unknown;status?:unknown}
     if(a.value===null || typeof a.value==='boolean'||typeof a.value==='number'&&Number.isFinite(a.value)||typeof a.value==='string'&&a.value.length<=128)
       attributes[key]={value:a.value as string|number|boolean|null,...(typeof a.type==='string'?{type:a.type}:{}),...(typeof a.status==='string'?{status:a.status}:{})}

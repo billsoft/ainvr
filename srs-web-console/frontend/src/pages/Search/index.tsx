@@ -9,6 +9,7 @@ import { toDatetimeLocalValue, parseDatetimeLocalValue, formatRangeFull, formatR
 import { newOperationId } from '@/utils/operationId'
 import { searchService, type SearchStatus, type SearchPageResult, type SearchChannel } from '@/api/searchService'
 import { SearchResults } from './SearchResults'
+import { FaceQueryConnected } from '@/features/faces/FaceQueryConnected'
 
 const button = 'min-h-9 [@media(pointer:coarse)]:min-h-11 rounded-base border border-line bg-surface px-3 py-1.5 text-sm text-ink-subtle transition-colors hover:border-primary hover:text-primary disabled:opacity-50'
 const searchRanges: RangePreset[] = [
@@ -24,6 +25,7 @@ function coverageAfter(current: SearchPageResult['coverage'], next: SearchPageRe
   return current === 'unknown' || next === 'unknown' ? 'unknown' : 'sampled'
 }
 export default function SearchPage() {
+  const [mode, setMode] = useState<'text' | 'face'>('text')
   const [entryParams, setEntryParams] = useSearchParams()
   const [inherited] = useState(() => searchEntryScope(entryParams))
   const [inheritedVisible, setInheritedVisible] = useState(!!inherited)
@@ -222,7 +224,7 @@ export default function SearchPage() {
     : '搜索模型与索引尚未就绪。条件可先设置，尚不能搜索录像。')
   const changedSinceSearch = !!data && criteriaKey !== submittedCriteria
   return <section aria-label="智能搜索" className="search-workspace flex h-full min-h-0 flex-col gap-4 md:flex-row">
-    <aside aria-label="搜索通道" className="flex max-h-72 shrink-0 flex-col rounded-panel border border-line bg-surface md:max-h-none md:w-56 xl:w-60">
+    {mode === 'text' && <aside aria-label="搜索通道" className="flex max-h-72 shrink-0 flex-col rounded-panel border border-line bg-surface md:max-h-none md:w-56 xl:w-60">
       <div className="mb-3 border-b border-line p-3"><h1 className="page-title">智能搜索</h1><p className="mt-2 text-xs text-ink-subtle">选择 AI 输出，查找录像证据</p></div>
       <fieldset disabled={loading || !!error} className="flex min-h-0 flex-1 flex-col px-2 pb-3"
         aria-describedby={currentListExceedsLimit || selectionAtLimit ? 'search-source-limit' : undefined}>
@@ -251,8 +253,12 @@ export default function SearchPage() {
           : !visible.length && <p className="text-sm text-ink-subtle">{channels.length ? '没有匹配的摄像头' : '暂无可搜索的 AI 输出通道，请先配置 AI 通道。'}</p>}
       </fieldset>
       <p className="border-t border-line p-3 text-xs leading-relaxed text-ink-faint">支持跨通道多选。修改通道或条件后，点击搜索应用。</p>
-    </aside>
+    </aside>}
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+    <nav aria-label="搜索方式" className="flex shrink-0 gap-1 border-b border-line">
+      {([['text', '文字搜索'], ['face', '以脸查找']] as const).map(([id, title]) => <button key={id} type="button" aria-pressed={mode === id} className={'min-h-11 border-b-2 px-3 text-sm ' + (mode === id ? 'border-primary text-primary' : 'border-transparent text-ink-subtle')} onClick={() => { if (mode !== id) { stop(); setPicker(false); setMode(id) } }}>{title}</button>)}
+    </nav>
+    {mode === 'face' ? <div className="min-h-0 overflow-y-auto"><FaceQueryConnected mode="search" /></div> : <>
     {/* Search conditions never scroll away with the results; a tall expanded panel scrolls on its own. */}
     <div aria-label="搜索条件区" className="max-h-[60vh] shrink-0 space-y-3 overflow-y-auto">
     {(!status?.ready || error) && <section role={error ? 'alert' : 'status'} className="rounded-xl border border-line bg-surface p-5">
@@ -327,6 +333,7 @@ export default function SearchPage() {
       onConfirm={(start, end) => { setRange({ from: start, to: end }); setSelectedPreset(null); setPicker(false) }}
       validateRange={(start, end) => end.getTime() + 1000 - start.getTime() > 31 * 86400000 ? '每次最多查询 31 天' : null} />}
     </div>
+    </>}
     </div>
   </section>
 }

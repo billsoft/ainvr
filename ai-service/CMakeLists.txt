@@ -483,3 +483,5 @@ if(AINVR_S100P AND BUILD_TESTING)
  target_link_libraries(pipeline_config_test PRIVATE ainvr_config GTest::gtest_main)
  add_test(NAME pipeline_config COMMAND pipeline_config_test)
 endif()
+
+include(cmake/pose_capabilities_tests.cmake)

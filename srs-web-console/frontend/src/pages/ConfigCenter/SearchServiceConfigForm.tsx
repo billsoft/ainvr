@@ -111,12 +111,13 @@ export function SearchServiceConfigForm({ document, onSaveBatch,onReload }: {
     </Section>
     {document&&<SearchModelMigrationPanel target={model} targetVersion={selectedModel?.model_version??null} onRequired={setMigrationRequired} onActive={setMigrationActive} onReload={onReload} />}
     <fieldset disabled={busy} className="min-w-0 space-y-4">
-      <Section title="采集范围" hint="使用 AI 输出通道，保留原始摄像头与录像身份。符合画面处理条件时，支持跟踪的通道采集目标，其余通道仍可采集场景。全景采集待验证。">
+      <Section title="采集范围" hint="使用 AI 输出通道，保留原始摄像头与录像身份。目标采集需要通道支持跟踪且实际生效模型支持对象裁剪；多视图搜索模型仅支持场景采集。全景采集待验证。">
+        <p className="text-xs text-ink-subtle">模型迁移期间以实际生效模型能力为准，所选模型不代表已生效。模型能力尚未确认时暂不新增目标采集；已保存的目标与场景设置保留，已有历史不会因此删除。</p>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {([['all', '全部符合条件的通道'], ['selected', '仅指定通道']] as const).map(([value, label]) => <label key={value} className={`flex min-h-11 cursor-pointer items-center gap-2 rounded-base border p-3 text-sm ${mode === value ? 'border-primary bg-primary-50 text-primary-600' : 'border-line'}`}>
             <input type="radio" name="search-sampling-mode" value={value} checked={mode === value} onChange={() => { setMode(value); change() }} />{label}</label>)}
         </div>
-        {mode === 'all' ? <div className="space-y-1"><p className="text-xs text-ink-subtle">新建且符合条件的 AI 输出也会自动纳入，采用系统默认的目标与场景采样策略。</p>
+        {mode === 'all' ? <div className="space-y-1"><p className="text-xs text-ink-subtle">新建且符合条件的 AI 输出也会自动纳入，按已保存的采样设置与实际生效模型能力采集。</p>
           {unsupported.length > 0 && <p className="text-xs text-amber-800">{unsupported.length} 个通道全景采集待验证，暂不新增采集；已有历史仍可查询。</p>}</div> : <>
           <div className="flex flex-wrap items-center gap-2"><input aria-label="查找采集通道" value={filter} onChange={event => setFilter(event.target.value)} placeholder="搜索通道名称…" className={`${inputCls} min-h-11 min-w-0 flex-1`} /><span className="text-xs text-ink-subtle">已选 {selected.length} / 100</span></div>
           <div className="grid max-h-64 grid-cols-1 gap-1 overflow-auto rounded-base border border-line p-2 sm:grid-cols-2">

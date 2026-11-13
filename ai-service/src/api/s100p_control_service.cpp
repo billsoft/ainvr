@@ -21,6 +21,7 @@
 #include "search_reencode_handler.hpp"
 #include "adapters/plate_runtime.hpp"
 #include "adapters/detection_decode.hpp"
+#include "face_identity/integration.hpp"
 #include <httplib.h>
 #include <atomic>
 #include <chrono>
@@ -87,11 +88,12 @@ int main(int argc, char** argv) {
     auto vehicle_runtime=std::make_shared<ainvr::plate::Runtime>(argv[3],[&]{return !stopping&&license.IsLicensed();});
     std::atomic<uint64_t> search_control_failures{0};
     auto dependency_health=std::make_shared<ainvr::ModelDependencyHealth>();
-    auto reconcile_models = [model_root=std::string(argv[3]),dependency_health](const cfg::AppConfig& snapshot) {
+    auto model_residency=ainvr::face::MakeResidency();
+    auto reconcile_models = [model_root=std::string(argv[3]),dependency_health,model_residency](const cfg::AppConfig& snapshot) {
       auto configured = ainvr::CollectConfiguredModels(snapshot, model_root);
       // Drop wrapper references while old BPU residency still owns the models.
       ai_service::output::RetainConfiguredFaceEnhancers(configured.enhancement_paths);
-      ainvr::BpuModel::ConfigureResidency(std::move(configured.demand));
+      model_residency->SetBase(std::move(configured.demand));
       dependency_health->Observe(configured.invalid_dependency_paths);
     };
     store->SetRuntimeObserver(reconcile_models);
@@ -101,6 +103,13 @@ int main(int argc, char** argv) {
       }, [&] { return license.IsLicensed(); },
       std::function<void(const cfg::SnapshotStoreConfig&, const std::string&)>{},
       search_reader, search_owner);
+    // Same configuration overlay, loopback API, BPU singleton and ION ledger.
+    // Optional extraction admission never blocks channel configuration/startup.
+    auto face_identity=std::make_shared<ainvr::face::Integration>(argv[3],
+      [manager]{return manager->CurrentApiKey().value_or("");},
+      [&]{return !stopping&&license.IsLicensed();},model_residency,
+      [store]{return store->LoadRawMerged().value("face_identity",nlohmann::json());},
+      [store](const nlohmann::json& selection){store->SaveOverlay({{"face_identity",selection}});});
     httplib::Server server;
     server.set_pre_routing_handler([](const httplib::Request& q, httplib::Response&) {
       const_cast<httplib::Request&>(q).headers.erase("Accept-Encoding");
@@ -110,6 +119,7 @@ int main(int argc, char** argv) {
     // every ordinary control/configuration request to the previous 1 MiB.
     server.set_payload_max_length(8 * 1024 * 1024);
     server.set_read_timeout(5); server.set_write_timeout(5);
+    face_identity->Register(server);
     ai_service::api::RegisterRoutes(server, manager, [&] {
       auto space = std::filesystem::space(std::filesystem::path(argv[2]).parent_path());
       const auto applied=config_client?config_client->AppliedVersion():std::nullopt;
@@ -196,7 +206,7 @@ int main(int argc, char** argv) {
         {"capabilities",{{"codecs",{"h264","h265"}},
           {"publish_formats",{"codec12","enhanced"}},
           {"model_providers",{"bpu"}},
-          {"model_adapters",{"yolo26_bpu","yoloface_bpu","scrfd_bpu","yoloe_bpu","plate_bpu"}},
+          {"model_adapters",{"yolo26_bpu","yolo26_pose_bpu","yoloface_bpu","scrfd_bpu","yoloe_bpu","plate_bpu","locateanything_bpu"}},
           {"analysis_pipeline",{{"maximum_models",4},{"maximum_parallel",2},{"frame_atomic",true}}},
           {"required_model_provider","bpu"},{"model_manifest_required",true},
           {"snapshot_archive",true},{"sei_publish",true}}}};
@@ -204,6 +214,7 @@ int main(int argc, char** argv) {
       [&]{return license.IsLicensed();},[]{return !stopping;}),
       [vehicle_runtime](const nlohmann::json& input,const std::string& jpeg){return vehicle_runtime->Call(input,jpeg);});
     if(config_client)config_client->Start();
+    face_identity->Start();
     std::signal(SIGTERM, Signal); std::signal(SIGINT, Signal);
     std::atomic<bool> configuration_recovery_restart{false};
     std::atomic<bool> control_drained{true};
@@ -253,10 +264,12 @@ int main(int argc, char** argv) {
     watchdog.Stop();
     if(config_client)config_client->Stop();
     stopping = 1; control.join(); search_owner->Stop(); search_hardware->Stop();
+    face_identity->Stop();
     ai_service::output::RetainConfiguredFaceEnhancers({});
-    ainvr::BpuModel::ConfigureResidency({});
+    model_residency->SetBase({});
     ai_service::output::DrainRetiredFaceEnhancers();
     ainvr::BpuModel::DrainRetiredResidency(); license.Stop();
+    model_residency->Reap();
     // systemd Restart=on-failure reconstructs workers after graceful drainage.
     return ai_service::api::ControlExitCode(configuration_recovery_restart, listened, control_drained);
   } catch (const std::exception& e) {

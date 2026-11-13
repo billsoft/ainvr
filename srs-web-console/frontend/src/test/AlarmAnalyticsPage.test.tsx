@@ -12,12 +12,78 @@ const scope = { channel_id: 'processor', zone_id: 'zone' }
 function fixture(query?: AlarmAnalyticsQuery): AlarmAnalyticsResult {
   const a = query?.from ?? from, b = query?.to ?? to
   return { schema_version: '1.0', from: a, to: b, as_of: to, timezone: query?.timezone ?? 'Asia/Shanghai', bucket: query?.bucket ?? 'hour', total: 12, pending: 4, human_confirmed: 3, human_false_positive: 1, ai_reviewed: 2, unknown_review: 2,
-    trend: [{ from: a, to: b, total: 12 }], zones: [], triggers: [{ trigger_id: 'trigger', name: '入口规则', total: 12, pending: 4, human_reviewed: 4, human_false_positive: 1, rule_versions: [1, 2] }], types: [{ id: 'region_enter', total: 12 }], week: Array.from({ length: 7 }, (_, day) => Array.from({ length: 24 }, (_, hour) => day === 0 && hour === 9 ? 12 : 0)), quality: { human_reviewed: 4, false_positive_ratio: .25, wait: { samples: 4, median_ms: 90000, p90_ms: 3600000, unknown: 0 }, pending_age: { lt10m: 1, lt1h: 1, gte1h: 2 } }, association: { unassociated: query?.locations ? 0 : 2 }, catalog: { zones: [{ ...scope, name: '入口' }], triggers: [{ trigger_id: 'trigger', name: '入口规则' }], types: ['region_enter'] }, consistency: 'non_transactional', coverage: 'unknown', issues: [] }
+    trend: [{ from: a, to: b, total: 12 }], zones: [], triggers: [{ trigger_id: 'trigger', name: '入口规则', total: 12, pending: 4, human_reviewed: 4, human_false_positive: 1, rule_versions: [1, 2] }], types: [{ id: 'region_enter', total: 12 }], business_kinds: query?.event_kind ? [{ id: query.event_kind, total: 12 }] : [{ id: 'spatial', total: 7 }, { id: 'fire_smoke', total: 5 }], week: Array.from({ length: 7 }, (_, day) => Array.from({ length: 24 }, (_, hour) => day === 0 && hour === 9 ? 12 : 0)), quality: { human_reviewed: 4, false_positive_ratio: .25, wait: { samples: 4, median_ms: 90000, p90_ms: 3600000, unknown: 0 }, pending_age: { lt10m: 1, lt1h: 1, gte1h: 2 } }, association: { unassociated: query?.locations ? 0 : 2 }, catalog: { zones: [{ ...scope, name: '入口' }], triggers: [{ trigger_id: 'trigger', name: '入口规则' }], types: ['region_enter'], event_kinds: ['spatial', 'fire_smoke'] }, consistency: 'non_transactional', coverage: 'unknown', issues: [] }
 }
 function Location() { const location = useLocation(); return <output data-testid="url">{location.search}</output> }
 function mount(extra = '') { return render(<MemoryRouter initialEntries={['/analytics?subject=alarms&range=custom&from=' + from + '&to=' + to + '&compare=0' + extra]}><AlarmAnalyticsPage /><Location /></MemoryRouter>) }
 function linkQuery(element: HTMLElement) { return JSON.parse(new URL(element.getAttribute('href')!, 'http://localhost').searchParams.get('analytics_scope')!) as AlarmAnalyticsQuery }
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(alarmAnalyticsService.query).mockImplementation(async q => fixture(q)) })
+
+it('defaults to business distribution and drills into the same selected scope by event_kind', async () => {
+  mount('&alarm_locations=' + encodeURIComponent(JSON.stringify([scope])) + '&trigger_id=trigger')
+  const panel = await screen.findByRole('region', { name: '业务类别分布' })
+  expect(screen.getByRole('button', { name: '业务分类' })).toHaveAttribute('aria-pressed', 'true')
+  expect(linkQuery(within(panel).getByRole('link', { name: /烟雾 \/ 明火\s*5/ }))).toEqual({
+    ...vi.mocked(alarmAnalyticsService.query).mock.calls[0]![0], event_kind: 'fire_smoke',
+  })
+  expect(screen.queryByRole('button', { name: '空间阶段' })).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('空间行为阶段')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '趋势' }))
+  expect(screen.getByRole('img', { name: '告警时间趋势' })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '业务分类' }))
+  expect(alarmAnalyticsService.query).toHaveBeenCalledTimes(1)
+})
+
+it('preserves and explains historical primary_type URLs until the user changes business scope', async () => {
+  mount('&primary_type=appearance&trigger_id=trigger&counters=keep')
+  const panel = await screen.findByRole('region', { name: '业务类别分布' })
+  expect(screen.getByText(/沿用历史链接阶段筛选/)).toHaveTextContent('出现')
+  expect(vi.mocked(alarmAnalyticsService.query).mock.calls[0]![0].primary_type).toBe('appearance')
+  expect(linkQuery(within(panel).getByRole('link', { name: /烟雾 \/ 明火\s*5/ }))).toMatchObject({ event_kind: 'fire_smoke', primary_type: 'appearance', trigger_id: 'trigger', from, to })
+  fireEvent.change(screen.getByLabelText('告警业务类别'), { target: { value: 'fire_smoke' } })
+  await waitFor(() => expect(alarmAnalyticsService.query).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(alarmAnalyticsService.query).mock.calls.at(-1)![0]).toMatchObject({ event_kind: 'fire_smoke', trigger_id: 'trigger', from, to })
+  expect(vi.mocked(alarmAnalyticsService.query).mock.calls.at(-1)![0].primary_type).toBeUndefined()
+  expect(screen.getByTestId('url')).not.toHaveTextContent('primary_type')
+  expect(screen.getByTestId('url')).toHaveTextContent('counters=keep')
+  expect(screen.queryByLabelText('空间行为阶段')).not.toBeInTheDocument()
+})
+
+it.each(['fire_smoke', ''])('hides spatial stages and clears stale primary_type on switching to %s', async kind => {
+  mount('&event_kind=spatial&primary_type=region_enter')
+  await screen.findByRole('region', { name: '业务类别分布' })
+  expect(screen.getByLabelText('空间行为阶段')).toHaveValue('region_enter')
+  fireEvent.click(screen.getByRole('button', { name: '空间阶段' }))
+  expect(screen.getByRole('region', { name: '空间行为最高阶段' })).toBeInTheDocument()
+  fireEvent.change(screen.getByLabelText('告警业务类别'), { target: { value: kind } })
+  await screen.findByRole('region', { name: '业务类别分布' })
+  expect(screen.queryByRole('button', { name: '空间阶段' })).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('空间行为阶段')).not.toBeInTheDocument()
+  const q = vi.mocked(alarmAnalyticsService.query).mock.calls.at(-1)![0]
+  expect(q.primary_type).toBeUndefined()
+  expect(q.event_kind).toBe(kind || undefined)
+})
+
+it('allows explicit clearing of a historical stage without losing business or location scope', async () => {
+  mount('&event_kind=fire_smoke&primary_type=appearance&alarm_locations=' + encodeURIComponent(JSON.stringify([scope])))
+  await screen.findByRole('region', { name: '业务类别分布' })
+  fireEvent.click(screen.getByRole('button', { name: '清除阶段筛选' }))
+  await waitFor(() => expect(alarmAnalyticsService.query).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(alarmAnalyticsService.query).mock.calls.at(-1)![0]).toMatchObject({ event_kind: 'fire_smoke', locations: [scope] })
+  expect(vi.mocked(alarmAnalyticsService.query).mock.calls.at(-1)![0].primary_type).toBeUndefined()
+})
+
+it('keeps older backend totals usable without inventing a business distribution from stages or catalog', async () => {
+  vi.mocked(alarmAnalyticsService.query).mockImplementation(async q => ({ ...fixture(q), business_kinds: undefined, types: [{ id: 'appearance', total: 12 }] }))
+  mount()
+  const panel = await screen.findByRole('region', { name: '业务类别分布' })
+  expect(panel).toHaveTextContent('业务分类统计暂不可用')
+  expect(within(panel).queryByRole('link')).not.toBeInTheDocument()
+  expect(panel).not.toHaveTextContent('当前范围没有已记录告警')
+  expect(screen.getByRole('link', { name: '范围内新增告警 12条' })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '趋势' }))
+  expect(screen.getByRole('img', { name: '告警时间趋势' })).toBeInTheDocument()
+})
 
 it('queries the true API contract and links all four KPI scopes without mixing AI and human', async () => {
   mount('&alarm_locations=' + encodeURIComponent(JSON.stringify([scope])) + '&trigger_id=trigger&primary_type=region_enter')
@@ -55,6 +121,7 @@ it('switches all four views with URL state and preserves unrelated flow choices 
 it('keeps bucket clipping and trigger IDs in drilldown; picker keeps half-open inclusive-second conversion', async () => {
   mount()
   await screen.findByRole('link', { name: '范围内新增告警 12条' })
+  fireEvent.click(screen.getByRole('button', { name: '趋势' }))
   fireEvent.change(screen.getByLabelText('告警趋势时段'), { target: { value: '0' } })
   expect(linkQuery(screen.getByRole('link', { name: '查看该时段' }))).toMatchObject({ from, to })
   expect(linkQuery(within(screen.getByRole('table', { name: '触发器排名' })).getByRole('link', { name: /入口规则/ }))).toMatchObject({ trigger_id: 'trigger' })
@@ -101,12 +168,12 @@ it('failed refresh clears previously successful results instead of relabeling th
   expect(screen.queryByRole('link', { name: '范围内新增告警 12条' })).not.toBeInTheDocument()
   expect(screen.getByRole('button', { name: '导出 CSV' })).toBeDisabled()
 })
-it('shows real zero and unknown coverage, with independent primary-type drilldowns', async () => {
-  mount()
+it('shows real zero and unknown coverage, with spatial-only stage drilldowns', async () => {
+  mount('&event_kind=spatial')
   await screen.findByRole('link', { name: '范围内新增告警 12条' })
-  fireEvent.click(screen.getByRole('button', { name: '主类型' }))
-  expect(linkQuery(screen.getByRole('link', { name: /进入\s*12/ }))).toMatchObject({ primary_type: 'region_enter', from, to })
-  vi.mocked(alarmAnalyticsService.query).mockImplementation(async q => ({ ...fixture(q), total: 0, pending: 0, human_confirmed: 0, human_false_positive: 0, ai_reviewed: 0, unknown_review: 0, trend: [], types: [], triggers: [], week: Array.from({ length: 7 }, () => Array(24).fill(0)) }))
+  fireEvent.click(screen.getByRole('button', { name: '空间阶段' }))
+  expect(linkQuery(screen.getByRole('link', { name: /进入\s*12/ }))).toMatchObject({ event_kind: 'spatial', primary_type: 'region_enter', from, to })
+  vi.mocked(alarmAnalyticsService.query).mockImplementation(async q => ({ ...fixture(q), total: 0, pending: 0, human_confirmed: 0, human_false_positive: 0, ai_reviewed: 0, unknown_review: 0, trend: [], types: [], business_kinds: [], triggers: [], week: Array.from({ length: 7 }, () => Array(24).fill(0)) }))
   fireEvent.click(screen.getByLabelText('刷新告警统计'))
   expect(await screen.findByText(/当前范围已记录 0 条告警/)).toHaveTextContent('不能据此判断没有异常')
 })
@@ -121,6 +188,7 @@ it('clearing inherited flow locations queries all alarm positions but preserves 
 it('resets the selected trend bucket when the actual time range changes', async () => {
   mount()
   await screen.findByRole('link', { name: '范围内新增告警 12条' })
+  fireEvent.click(screen.getByRole('button', { name: '趋势' }))
   fireEvent.change(screen.getByLabelText('告警趋势时段'), { target: { value: '0' } })
   expect(screen.getByRole('link', { name: '查看该时段' })).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '昨天' }))
@@ -140,6 +208,8 @@ it('measures the chart viewport and keeps tick fonts stable across narrow and wi
   })
   try {
     const view = mount()
+    await screen.findByRole('link', { name: '范围内新增告警 12条' })
+    fireEvent.click(screen.getByRole('button', { name: '趋势' }))
     const chart = await screen.findByRole('img', { name: '告警时间趋势' })
     act(() => resize(360, 146))
     expect(chart).toHaveAttribute('viewBox', '0 0 360 146')

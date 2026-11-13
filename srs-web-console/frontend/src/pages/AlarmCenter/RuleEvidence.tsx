@@ -6,6 +6,7 @@ export function RuleEvidence({alarm}:{alarm:AlarmEvent}){
  const evidence=alarm.review_evidence
  if(!evidence)return <p className="text-xs text-ink-subtle">此记录尚未提供逐条件核对，请结合历史规则和录像审核。</p>
  const rule=evidence.rule
+ const regionObservation=evidence.observations.some(o=>o.region_count!==undefined)
  return <section aria-label="规则与触发依据" className="overflow-hidden rounded-base border border-line">
   <div className="space-y-1 bg-surface-page px-3 py-3">
    <h3 className="text-sm font-semibold">规则与触发依据</h3>
@@ -25,7 +26,7 @@ export function RuleEvidence({alarm}:{alarm:AlarmEvent}){
   <details className="border-t border-line px-3 text-xs">
    <summary className="min-h-11 cursor-pointer py-3">原始观测与口径（{evidence.observations.length}）</summary>
    <p className="mb-2 text-ink-subtle">{evidence.scope_note}</p>
-   <div className="max-h-60 overflow-auto pb-3"><table className="w-full text-left"><thead><tr><th className="py-2">时刻／角色</th><th>区域关系</th><th>边界距离</th></tr></thead><tbody>{evidence.observations.map((o,i)=><tr key={`${o.frame_id}:${i}`} className="border-t border-line"><td className="py-2">{new Date(o.captured_at).toLocaleTimeString()}<span className="block text-ink-subtle">{o.roles.join(' / ')||'成员观测'}</span></td><td>{o.inside===null?'不适用':o.inside?'区域内':'区域外'}</td><td>{o.distance_px==null?'—':`${o.distance_px.toFixed(1)} px`}</td></tr>)}</tbody></table></div>
+   <div className="max-h-60 overflow-auto pb-3"><table className="w-full text-left"><thead><tr><th className="py-2">时刻／角色</th><th>{regionObservation?'区域观测数量':'区域关系'}</th><th>{regionObservation?'观测类型':'边界距离'}</th></tr></thead><tbody>{evidence.observations.map((o,i)=><tr key={`${o.frame_id}:${i}`} className="border-t border-line"><td className="py-2">{new Date(o.captured_at).toLocaleTimeString()}<span className="block text-ink-subtle">{o.roles.join(' / ')||'成员观测'}</span></td><td>{o.region_count!==undefined?`${o.region_count} 个`:o.inside===null?'不适用':o.inside?'区域内':'区域外'}</td><td>{o.region_count!==undefined?'有效区域采样':o.distance_px==null?'—':`${o.distance_px.toFixed(1)} px`}</td></tr>)}</tbody></table></div>
   </details>
  </section>
 }

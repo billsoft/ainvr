@@ -10,10 +10,10 @@ const processorSchema = z.object({
   id: z.string().min(1).max(128),
   config: z.object({
     enabled: z.boolean().optional(), inference_fps: z.number().nonnegative().optional(),
-    analytics: z.object({ enabled: z.boolean() }).optional(),
+    analytics: z.object({ enabled: z.boolean(), retention_days: z.number().int().min(1).max(365).optional() }).optional(),
     model: z.object({ adapter: z.string().max(128) }).optional(),
-    analysis_pipeline: z.object({execution:z.enum(['serial','parallel']),nodes:z.array(z.object({id:z.string(),model:z.object({adapter:z.string()})})).max(3)}).optional(),
-    snapshot: z.object({ projection_mode: z.enum(['none', 'erp_equirect']).optional() }).optional(),
+    analysis_pipeline: z.object({root_id:z.string().max(128).optional(),execution:z.enum(['serial','parallel']),nodes:z.array(z.object({id:z.string(),model:z.object({adapter:z.string()})})).max(4)}).optional(),
+    snapshot: z.object({ enabled: z.boolean().optional(), projection_mode: z.enum(['none', 'erp_equirect']).optional() }).optional(),
     stream: z.object({ url: z.string().max(2048) }),
     publish: z.object({ enabled: z.boolean(), effective_target_url: z.string().max(2048).optional(),
       target_url: z.string().max(2048).nullable().optional() }),

@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import {timingSafeEqual} from 'node:crypto';
 import {DomainError,identity,fail} from './domain.mjs';
 import {evaluate} from './engine.mjs';
+import {alarmRepositoryFor,requireFaceAccess,isFaceProtected} from './alarm-access.mjs';
 
 const tokenEquals=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 export function createApp({repository,apiToken,producerToken,consumer,readiness=async()=>true}) {
@@ -30,9 +31,13 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
     if(result.durable!==true)throw new DomainError('input_not_durable','Observation not persisted',503);
     return reply.code(200).send(result);
   });
+  // These claims are consumed only after the onRequest service-token check.
+  // Token-only legacy callers are restricted to ordinary records.
+  const principal=req=>req.headers['x-ainvr-actor'];
+  const scoped=req=>alarmRepositoryFor(repository,principal(req));
   const actor=req=>identity(req.headers['x-ainvr-actor'],'Authenticated actor is required');
   app.get('/v1/alarms/:id/review-frames/:key',async(req,reply)=>{
-    try{const data=await repository.reviewContext?.retained(req.params.id,req.params.key);if(!data)return reply.code(404).send({error:{code:'missing_context'}});return reply.type('image/jpeg').header('Cache-Control','private, no-store').send(data);}
+    try{await scoped(req).get(req.params.id);const data=await repository.reviewContext?.retained(req.params.id,req.params.key);if(!data)return reply.code(404).send({error:{code:'missing_context'}});return reply.type('image/jpeg').header('Cache-Control','private, no-store').send(data);}
     catch{return reply.code(404).send({error:{code:'missing_context'}});}
   });
   app.get('/livez',async()=>({status:'alive',service:'alarm-service'}));
@@ -43,14 +48,17 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
     schedules:['always','weekly'],limits:{bulk_items:200}}));
   app.post('/v1/vehicles/configure',async req=>repository.vehicles.configure(req.body));
   app.get('/v1/vehicles/status',async()=>repository.vehicles.status());
-  app.get('/v1/vehicles/:id',async req=>repository.vehicles.details(identity(req.params.id,'event_id')));
-  app.get('/v1/vehicles/:id/images/:key',async(req,reply)=>reply.type('image/jpeg').header('Cache-Control','private, no-store').send(await repository.vehicles.image(identity(req.params.id,'event_id'),identity(req.params.key,'image_key'))));
-  app.post('/v1/vehicles/:id/retry',async req=>repository.vehicles.retry(identity(req.params.id,'event_id'),actor(req)));
-  app.put('/v1/vehicles/:id/correction',async req=>repository.vehicles.correct(identity(req.params.id,'event_id'),req.body,actor(req)));
-  app.post('/v1/flow/query' ,async req=>repository.flow.query(req.body));
+  const vehicleAccess=async req=>{
+    const view=scoped(req);await view.behaviors.get(identity(req.params.id,'event_id'));return view.vehicles;
+  };
+  app.get('/v1/vehicles/:id',async req=>(await vehicleAccess(req)).details(req.params.id));
+  app.get('/v1/vehicles/:id/images/:key',async(req,reply)=>reply.type('image/jpeg').header('Cache-Control','private, no-store').send(await (await vehicleAccess(req)).image(req.params.id,identity(req.params.key,'image_key'))));
+  app.post('/v1/vehicles/:id/retry',async req=>(await vehicleAccess(req)).retry(req.params.id,actor(req)));
+  app.put('/v1/vehicles/:id/correction',async req=>(await vehicleAccess(req)).correct(req.params.id,req.body,actor(req)));
+  app.post('/v1/flow/query' ,async req=>scoped(req).flow.query(req.body));
   app.post('/v1/flow/dwell',async req=>repository.dwell.query(req.body));
   app.post('/v1/flow/heat',async req=>repository.heat.query(req.body));
-  app.post('/v1/flow/clear',async req=>repository.flow.clear(req.body,actor(req),identity(req.headers['idempotency-key'],'Idempotency-Key')));
+  app.post('/v1/flow/clear',async req=>scoped(req).flow.clear(req.body,actor(req),identity(req.headers['idempotency-key'],'Idempotency-Key')));
   app.post('/v1/flow/purge',async req=>{
     identity(req.body?.counter_id,'counter_id');
     if(!Array.isArray(req.body?.rule_ids)||!req.body.rule_ids.length||req.body.rule_ids.length>1000)fail('invalid_purge','Binding IDs required');
@@ -69,67 +77,73 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
         if(pending)fail('consumer_busy','Finish pending observations before deleting records',503);
       });
       // Admissions resume; publication remains fenced until deletion finishes.
-      return repository.flow.purge(req.body);
+      return scoped(req).flow.purge(req.body);
     });
   });
   app.get('/v1/behavior-statistics',async req=>{
     const allowed=new Set(['from','to','channel_id','zone_id','label_id','event_type','bucket','timezone','rule_id','trigger_id','group_by']);
     if(Object.keys(req.query).some(key=>!allowed.has(key)))fail('invalid_query','Unsupported statistics filter');
-    return repository.behaviors.statistics(req.query);
+    return scoped(req).behaviors.statistics(req.query);
   });
   app.get('/v1/behavior-events',async req=>{
     const allowed=new Set(['from','to','channel_id','zone_id','label_id','event_type','limit','cursor','rule_id','trigger_id']);
     if(Object.keys(req.query).some(key=>!allowed.has(key)))fail('invalid_query','Unsupported behavior filter');
-    return repository.behaviors.list({...req.query,limit:req.query.limit===undefined?50:Number(req.query.limit)});
+    return scoped(req).behaviors.list({...req.query,limit:req.query.limit===undefined?50:Number(req.query.limit)});
   });
-  app.get('/v1/behavior-events/:id',async req=>repository.behaviors.get(req.params.id));
+  app.get('/v1/behavior-events/:id',async req=>scoped(req).behaviors.get(req.params.id));
   app.get('/v1/behavior-events/:id/evidence',async req=>{
     if(Object.keys(req.query).length)fail('invalid_query','Unsupported evidence query');
-    await repository.behaviors.get(req.params.id);
+    const fact=await scoped(req).behaviors.get(req.params.id);
+    if(isRegionFact(fact))return {schema_version:'1.0',...await regionEvidenceMetadata(repository.reviewContext,fact)};
     return {schema_version:'1.0',...(repository.evidenceVault?await repository.evidenceVault.metadata(req.params.id):{state:'not_configured'})};
   });
   app.get('/v1/behavior-events/:id/evidence/image',async(req,reply)=>{
-    if(Object.keys(req.query).some(k=>k!=='variant'))fail('invalid_query','Unsupported evidence query');
-    await repository.behaviors.get(req.params.id);
+    if(Object.keys(req.query).some(k=>!['variant','frame'].includes(k)))fail('invalid_query','Unsupported evidence query');
+    const fact=await scoped(req).behaviors.get(req.params.id);
+    if(isRegionFact(fact))return reply.header('Cache-Control','private, no-store').type('image/jpeg').send(await regionEvidenceImage(repository.reviewContext,fact,req.query.variant??'processed',req.query.frame));
+    if(req.query.frame!==undefined)fail('invalid_query','Frame selection requires region evidence');
     if(!repository.evidenceVault)fail('evidence_unavailable','Evidence retention not configured',404);
     const data=await repository.evidenceVault.image(req.params.id,req.query.variant??'processed');
     return reply.header('Cache-Control','private, no-store').type('image/jpeg').send(data);
   });
   app.get('/v1/events',async req=>{
-    const allowed=new Set(['status','channel_id','review','disposition','from','to','zone_id','behavior','locations','analytics','limit','cursor']);
+    const allowed=new Set(['status','channel_id','review','disposition','from','to','zone_id','behavior','event_kind','locations','analytics','limit','cursor']);
     if(Object.keys(req.query).some(k=>!allowed.has(k)))fail('invalid_query','Unsupported alarm filter');
-    return repository.list({...req.query,limit:req.query.limit===undefined?50:Number(req.query.limit)});
+    return scoped(req).list({...req.query,limit:req.query.limit===undefined?50:Number(req.query.limit)});
   });
-  app.get('/v1/events/summary',async()=>repository.pendingSummary());
-  app.post('/v1/events/statistics',async req=>repository.statistics(req.body));
-  app.post('/v1/events/analytics',{bodyLimit:16384},async req=>repository.analytics(req.body));
+  app.get('/v1/events/summary',async req=>scoped(req).pendingSummary());
+  app.post('/v1/events/statistics',async req=>scoped(req).statistics(req.body));
+  app.post('/v1/events/analytics',{bodyLimit:16384},async req=>scoped(req).analytics(req.body));
   app.post('/v1/events/purge',async req=>{
+    requireFaceAccess(principal(req));
     if(!req.body||Object.keys(req.body).length!==1||req.body.scope!=='all')fail('invalid_request','Explicit all scope required');
     const who=actor(req),key=identity(req.headers['idempotency-key'],'Idempotency-Key');
     return observationBarrier(repository).configure(()=>observationBarrier(repository).drain(()=>repository.clearAll(who,key)));
   });
-  app.get('/v1/events/:id',async req=>repository.get(req.params.id));
-  app.get('/v1/events/:id/logs',async req=>({items:(await repository.get(req.params.id)).logs}));
-  app.post('/v1/events/:id/acknowledgements',async req=>repository.confirm(req.params.id,req.body,actor(req),identity(req.headers['idempotency-key'],'Idempotency-Key')));
+  app.get('/v1/events/:id',async req=>scoped(req).get(req.params.id));
+  app.get('/v1/events/:id/logs',async req=>({items:(await scoped(req).get(req.params.id)).logs}));
+  app.post('/v1/events/:id/acknowledgements',async req=>scoped(req).confirm(req.params.id,req.body,actor(req),identity(req.headers['idempotency-key'],'Idempotency-Key')));
   app.post('/v1/bulk-acknowledgements',async req=>{
     const who=actor(req),key=identity(req.headers['idempotency-key'],'Idempotency-Key'),body=req.body;
     if(!body||!Array.isArray(body.items)||!body.items.length||body.items.length>200)fail('invalid_batch','Select 1..200 alarms');
     const ids=new Set();for(const item of body.items){identity(item.alarm_id,'alarm_id');if(ids.has(item.alarm_id))fail('duplicate_item','Duplicate alarm');ids.add(item.alarm_id);}
     const items=[];
-    for(const item of body.items){try{items.push({alarm_id:item.alarm_id,...await repository.confirm(item.alarm_id,{expected_handling_revision:item.expected_handling_revision,note:body.note??'',...(body.disposition!==undefined?{disposition:body.disposition}:{})},who,key)});}
+    for(const item of body.items){try{items.push({alarm_id:item.alarm_id,...await scoped(req).confirm(item.alarm_id,{expected_handling_revision:item.expected_handling_revision,note:body.note??'',...(body.disposition!==undefined?{disposition:body.disposition}:{})},who,key)});}
       catch(e){items.push({alarm_id:item.alarm_id,outcome:e instanceof DomainError?e.code:'failed',retryable:!(e instanceof DomainError)||e.status===503});}}
     return {items};
   });
-  app.get('/v1/rules',async req=>({items:await repository.listRules(req.query.channel_id)}));
+  app.get('/v1/rules',async req=>({items:await scoped(req).listRules(req.query.channel_id)}));
   app.get('/v1/configuration/rules',async()=>repository.ruleSnapshots.status());
   app.post('/v1/configuration/rules',async req=>observationBarrier(repository).configure(()=>repository.ruleSnapshots.apply(req.body,actor(req))));
   app.post('/v1/rules',async(req,reply)=>reply.code(405).header('Allow','GET').send({error:{code:'configuration_authority',message:'Save monitors in the configuration service; direct rule writes are disabled'}}));
   app.post('/v1/dry-runs',async req=>{
     actor(req);const body=req.body;
     if(!body||!Array.isArray(body.frames)||body.frames.length<1||body.frames.length>200||!Array.isArray(body.rules)||body.rules.length>32)fail('invalid_dry_run','Bounded frames and rules required');
+    if(body.rules.some(isFaceProtected))requireFaceAccess(principal(req));
     let checkpoint=null;const events=[],issues=[];
     for(const f of body.frames){const result=evaluate(checkpoint,f,body.rules);checkpoint=result.checkpoint;events.push(...result.events);issues.push(...result.issues);}
     return {dry_run:true,events,issues}; // Intentionally no repository writes.
   });
   return app;
 }
+import {isRegionFact,regionEvidenceMetadata,regionEvidenceImage} from './region-evidence.mjs';

@@ -30,9 +30,9 @@ export function AssignmentEditor({sourceId,geometryRevision,zone,definitions,sou
  const [distance,setDistance]=useState(initial?.approachWidthPercent?.toString()??'')
  const [error,setError]=useState('')
  const [directionConfirmed,setDirectionConfirmed]=useState(!initial?.needsDirectionConfirmation)
- const available=definitions.filter(d=>d.state!=='archived'&&(!d.migration_review?.required||d.trigger_id===initial?.triggerId)&&(zone||d.behavior==='appearance'))
+ const available=definitions.filter(d=>d.state!=='archived'&&(!d.migration_review?.required||d.trigger_id===initial?.triggerId)&&(zone||(d.behavior==='appearance'&&!d.region_state)))
  const trigger=available.find(d=>d.trigger_id===triggerId)
- const compatible=sources.filter(s=>s.input_stream_id===sourceId&&s.geometry_revision===geometryRevision&&trigger&&(s.tracking_available||(s.detection_available&&!trigger.group&&trigger.alarm_enabled&&['appearance','region_approach','region_enter'].includes(trigger.behavior)&&trigger.duration_ms===0&&!zone?.erpWrap))&&triggerTargetsMatch(trigger,s))
+ const compatible=sources.filter(s=>s.input_stream_id===sourceId&&s.geometry_revision===geometryRevision&&trigger&&(s.tracking_available||(s.detection_available&&!trigger.group&&trigger.alarm_enabled&&['appearance','region_approach','region_enter'].includes(trigger.behavior)&&trigger.duration_ms===0&&!zone?.erpWrap))&&triggerTargetsMatch(trigger,s)&&(!trigger.region_state||(trigger.region_state.operator==='presence'?s.region_capabilities?.some(c=>c.ready&&c.event_kind===trigger.region_state!.event_kind&&trigger.labels.every(l=>c.label_ids.includes(l.label_id))):s.tracking_available)))
  const effective=compatible.find(s=>s.channel_id===processorId)??(!processorId&&compatible.length===1?compatible[0]:undefined)
  const size=sourceSize(geometryRevision),names=zone?edgeNames(zone.erpWrap?unwrapErp(zone.points):zone.points,size?.width,size?.height):[]
  const directional=trigger?.behavior==='region_traverse'

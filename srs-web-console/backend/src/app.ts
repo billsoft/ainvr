@@ -8,11 +8,14 @@ import { SearchIndexShards } from './store/searchIndexShards.js';
 import { SearchJobs } from './store/searchJobs.js';
 import { searchRoutes } from './routes/searchRoutes.js';
 import { searchRuntimeRoutes } from './routes/searchRuntimeRoutes.js';
+import { createSearchModelViewsReader } from './services/searchModelCapabilities.js';
 import { SearchConfigAdapter } from './store/searchConfigAdapter.js';
 import { SearchRuntimeStore } from './store/searchRuntimeStore.js';
 import { readAppliedSearchConnection, readAppliedSearchSettings, readAppliedSearchConfiguration, type SearchRuntimeDependencies } from './services/searchConnection.js';
 import { buildSearchSourceCatalog, readSearchAiProcessors } from './services/searchSourceCatalog.js';
 import { SearchNativeClient, type NativeMigrationCapabilities } from './services/searchNativeClient.js';
+import { facesSourceLabels } from './services/facesArchiveProducer.js';
+import { registerFaces, facesHistoryConnection } from './services/facesRegistration.js';
 import { SearchModelMigrationArtifacts } from './services/searchModelMigrationArtifacts.js';
 import { prepareSearchModelMigrationActivation,type SearchModelMigrationContext } from './services/searchModelMigrationActivation.js';
 import { PersistentSearchWorker } from './services/persistentSearchWorker.js';
@@ -250,6 +253,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         ['/api/channels', '/api/ai/channels'].includes(pathname)) return;
     if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/vehicle-watchlist\/\d+$/.test(pathname))return;
     if(boundService==='alarm-service'&&req.method==='POST'&&['/api/internal/alarm-review','/api/internal/alarm-recording-evidence','/api/internal/vehicle-recognize'].includes(pathname))return;
+    if(boundService==='alarm-service'&&req.method==='POST'&&pathname==='/api/internal/faces/captures')return;
+    if(boundService==='alarm-service'&&req.method==='GET'&&pathname==='/api/internal/faces/capture-sources')return;
+    if(boundService==='alarm-service'&&req.method==='GET'&&pathname==='/api/internal/faces/watchlist-outbox')return;
+    if(boundService==='alarm-service'&&req.method==='POST'&&pathname==='/api/internal/faces/watchlist-outbox/ack')return;
+    if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/faces\/records\/[a-f0-9-]{36}\/photo$/.test(pathname))return;
     if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/alarm-evidence\/[a-f0-9]{64}(?:\/image)?$/.test(pathname))return;
     if (boundService === 'search-service' &&
       ((req.method === 'GET' && pathname === '/api/internal/search/runtime-config') ||
@@ -512,6 +520,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const searchDependencies: SearchRuntimeDependencies | null = pgStore ? {
       store: pgStore, sourceCatalog: searchCatalog,
       modelAuthority:()=>searchRuntime!.modelAuthority(),
+      modelViews:createSearchModelViewsReader(packageId=>searchCapabilityNative.verifyMigrationModel(packageId)),
       ingestionGate:current=>searchJobs!.ingestionGate(current),
       volumes: async () => {
         const helper = osHelperConfigFromEnv();
@@ -532,6 +541,12 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       return token&&['127.0.0.1','localhost','host.docker.internal'].includes(searchHost)
         ? {baseUrl:`http://${searchHost}:8400`,apiToken:token,timeoutMs:3000}:null;
     };
+    // Package verification can outlive the bounded runtime-config read. Its
+    // coalesced result is reused on the next read without rehashing every poll.
+    const searchCapabilityNative = new SearchNativeClient(async()=>{
+      const connection = await searchManagementConnection();
+      return connection ? {...connection,timeoutMs:30000} : null;
+    });
     await instance.register(searchRuntimeRoutes, {
       dependencies: searchDependencies, runtime: searchRuntime, principal: alarmPrincipal,
       internalPrincipal: async req => resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'search-service',
@@ -629,6 +644,45 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       }),
     });
     await instance.register(searchRoutes, { principal: alarmPrincipal, channels: searchChannels, worker: searchWorker });
+    const faceCaptureSources = async () => {
+      const before = await pgStore?.getServiceState('ai-service');
+      if (!before?.appliedVersion) throw Error('faces_applied_source_unavailable');
+      const processors = await readSearchAiProcessors(await settingsStore.read(), pgStore, aiServiceBaseUrl);
+      const after = await pgStore?.getServiceState('ai-service');
+      if (before.appliedVersion !== after?.appliedVersion) throw Error('faces_applied_source_changed');
+      const catalog = buildSearchSourceCatalog((await channelStore.read()).channels, processors);
+      return catalog.sources.flatMap(source => {
+        const processor = processors.find(item => item.id === source.processor_id);
+        if (!processor || processor.config.enabled === false || processor.config.snapshot?.enabled !== true) return [];
+        const face_labels = facesSourceLabels(processor.config);
+        if (!face_labels.length) return [];
+        return [{ processor_id: source.processor_id, channel_id: source.channel_id, recording_channel_id: source.recording_channel_id,
+          face_labels, source_revision: crypto.createHash('sha256').update(JSON.stringify([processor.config, catalog.identities.find(identity => Array.isArray(identity) && identity[0] === source.channel_id)])).digest('hex'),
+          retention_days: Math.min(90, processor.config.analytics?.retention_days ?? 30), capture_supported: source.scene && source.object,
+          reason: !source.scene ? 'projection_unsupported' : !source.object ? 'tracked_original_crop_unavailable' : null }];
+      });
+    };
+    await registerFaces(instance, {
+      pool: pgStore?.pool ?? null, principal: alarmPrincipal, channels: searchChannels,
+      mongoConnection: () => facesHistoryConnection(pgStore),
+      extractorConnection: async () => {
+        const settings = await settingsStore.read(), apiToken = await resolveAiApiKey(settings, pgStore);
+        return apiToken ? { baseUrl: settings.aiService.baseUrl || aiServiceBaseUrl, apiToken, timeoutMs: 30000 } : null;
+      },
+      volumes: async () => {
+        const helper = osHelperConfigFromEnv();
+        if (!helper) throw new Error('storage_unavailable');
+        return storageRequest(helper, '/storage/volumes');
+      },
+      internalPrincipal: async req => resolveServiceByToken(serviceTokens, req.headers['x-service-token']) === 'alarm-service',
+      captureSources: faceCaptureSources, captureAuthorized: () => !licenseGate.decide().block,
+      authorizeCapture: async capture => {
+        const source = (await faceCaptureSources()).find(item => item.processor_id === capture.processor_id && item.channel_id === capture.channel_id);
+        if (!source?.capture_supported || source.recording_channel_id !== capture.recording_channel_id) return null;
+        // Reuse the channel's explicit retention, bounded by the face evidence policy.
+        return { retentionDays: source.retention_days };
+      },
+    });
     const floorPlanImages = new FloorPlanImages(async generation => {
       const helper = osHelperConfigFromEnv();
       if (!helper) return null;

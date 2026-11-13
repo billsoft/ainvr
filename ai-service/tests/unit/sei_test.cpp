@@ -284,6 +284,20 @@ TEST(SeiGrounding, EmptyPointInferenceIsExplicitAndInvalidMetadataIsRejected) {
 }
 
 
+TEST(SeiPayload, AmbiguousAuxiliaryPosesDoNotEvictObservedBoxes) {
+  Detection person;person.class_name="person";person.confidence=.9;person.bbox={1,2,30,40};person.track_id="s:1";
+  auto metadata=nlohmann::json{{"analysis_pipeline",{{"complete",true},{"unassociated_observations",nlohmann::json::array()}}}};
+  for(int i=0;i<32;++i)metadata["analysis_pipeline"]["unassociated_observations"].push_back({{"attributes",{{"pose",std::string(1000,'x')}}}});
+  const auto original=metadata;
+  const auto payload=sei::build_result_payload("ch",123,0,{person},1024,metadata);
+  const auto wire=nlohmann::json::parse(payload);
+  ASSERT_EQ(wire.at("det").size(),1);
+  EXPECT_EQ(wire.at("model_extra").at("analysis_pipeline").at("unassociated_count"),32);
+  EXPECT_FALSE(wire.at("model_extra").at("analysis_pipeline").contains("unassociated_observations"));
+  EXPECT_LE(payload.size()+sei::SEI_UUID.size(),1024);
+  EXPECT_EQ(metadata,original);
+}
+
 TEST(SeiPayload, InternalCatalogueAndDeliveryNeverConsumeVideoBudget) {
   Detection real; real.class_name = "person"; real.confidence = .9;
   real.bbox = {1, 2, 30, 40}; real.track_id = "session:1";

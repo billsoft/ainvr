@@ -24,7 +24,7 @@ it('forwards the complete analytics scope to server pagination and clears it exp
  const analytics={from,to,timezone:'Asia/Shanghai',bucket:'hour',trigger_id:'door',audit:'pending',weekday:3,hour:20}
  render(<MemoryRouter initialEntries={['/alarms?'+new URLSearchParams({status:'all',analytics_scope:JSON.stringify(analytics)})]}><AlarmListPage/></MemoryRouter>)
  await waitFor(()=>expect(alarmEventService.list).toHaveBeenCalledWith('all',undefined,{analytics:JSON.stringify(analytics)}))
- expect(screen.getByText(/保留统计页的触发器/)).toHaveTextContent('全部位置')
+ expect(screen.getByText(/沿用统计条件/)).toHaveTextContent('全部位置')
  fireEvent.click(screen.getByRole('button',{name:'已人工审核'}))
  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('human',undefined,{analytics:JSON.stringify(analytics)}))
  fireEvent.click(screen.getByRole('button',{name:'清除统计范围'}))

@@ -1,5 +1,6 @@
 import type { AiDetection } from '@/types/aiChannel'
 import { computeContainLayout, projectDetectionBox, projectLandmark } from './overlayGeometry'
+import { parsePoseAttribute, POSE_CONNECTIONS } from './poseAttributes'
 
 const BOX_COLOR = '#22c55e'
 const LANDMARK_COLOR = '#ef4444'
@@ -32,6 +33,24 @@ export function drawDetections(
     ctx.fillRect(box.x, labelY - 13, metrics.width + 6, 15)
     ctx.fillStyle = LABEL_TEXT_COLOR
     ctx.fillText(label, box.x + 3, labelY)
+    // Draw only observed pose on its original image geometry, never extrapolate
+    // stale joints with a predicted/lost bounding box.
+    const pose = !d.predicted && !d.lowConfidence ? parsePoseAttribute(d.model_extra?.attributes?.pose) : null
+    if (pose && pose.image_size[0] === frameW && pose.image_size[1] === frameH) {
+      const visible = pose.points.map(p => p.score >= pose.visibility_threshold
+        && p.x >= 0 && p.x <= frameW && p.y >= 0 && p.y <= frameH
+        ? projectLandmark(p, layout, frameW, frameH) : null)
+      ctx.strokeStyle = '#38bdf8'
+      ctx.fillStyle = '#e0f2fe'
+      for (const [a, b] of POSE_CONNECTIONS) {
+        const start = visible[a], end = visible[b]
+        if (!start || !end) continue
+        ctx.beginPath(); ctx.moveTo(start.x, start.y); ctx.lineTo(end.x, end.y); ctx.stroke()
+      }
+      for (const p of visible) if (p) {
+        ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fill()
+      }
+    }
     if (d.landmarks) {
       ctx.fillStyle = LANDMARK_COLOR
       for (const lm of d.landmarks) {

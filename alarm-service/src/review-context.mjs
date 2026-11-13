@@ -89,10 +89,14 @@ export class ReviewContext {
   if(Date.now()-this.lastPolicy<1000)return;this.lastPolicy=Date.now();
   const snapshot=await this.repository.ruleSnapshots.current();
   const vehicle_channels=this.repository.vehicles?.channels()??[];
-  const channels=[...new Set([...vehicle_channels,...(snapshot?.rules??[]).filter(r=>r.state==='enabled'&&r.alarm_enabled!==false).map(r=>r.channel_id)])];
+  const alarmRules=(snapshot?.rules??[]).filter(r=>r.state==='enabled'&&r.alarm_enabled!==false);
+  const channels=[...new Set([...vehicle_channels,...alarmRules.map(r=>r.channel_id)])];
+  // Empty scenes are authoritative evidence of region absence/recovery. This
+  // demand uses the same bounded durable-frame path, not a second image stream.
+  const region_channels=[...new Set(alarmRules.filter(r=>r.region_state).map(r=>r.channel_id))];
   const jobs=this.repository.captureJobs?await this.repository.captureJobs.find({state:'queued',created_at:{$gt:Date.now()-30000}}).sort({created_at:1}).limit(128).toArray():[];
   const retained_keys=jobs.map(job=>contextKey(job,job.sample));
-  const path=join(this.root,'enabled.json');await writeFile(path+'.tmp',JSON.stringify({channels,vehicle_channels,retained_keys,expires_at:Math.floor(Date.now()/1000)+20}),{mode:0o600});await rename(path+'.tmp',path);
+  const path=join(this.root,'enabled.json');await writeFile(path+'.tmp',JSON.stringify({channels,vehicle_channels,region_channels,retained_keys,expires_at:Math.floor(Date.now()/1000)+20}),{mode:0o600});await rename(path+'.tmp',path);
  }
  async maintain(){
   if(Date.now()-this.lastMaintenance<60000)return;this.lastMaintenance=Date.now();

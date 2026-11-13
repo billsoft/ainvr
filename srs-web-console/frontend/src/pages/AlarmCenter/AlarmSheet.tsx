@@ -1,13 +1,15 @@
+import {FaceAlarmEvidence,faceAlarmSummary} from '@/features/faces/FaceAlarmEvidence'
 import {VehicleEvidence} from '@/features/vehicles/VehicleEvidence'
 import {RuleEvidence} from './RuleEvidence';
 import {GroupEvidence} from './GroupEvidence'
 import {ReviewFrames} from './ReviewFrames'
-import {reviewDiagnostic,reviewLabel,reviewReason,referenceLabel,recoveryLabel,reviewStatusClass} from '@/features/alarmReview'
+import {reviewerDisplay,reviewDiagnostic,reviewLabel,reviewReason,referenceLabel,recoveryLabel,reviewStatusClass} from '@/features/alarmReview'
 import {useEffect,useRef,useState} from 'react'
 import {Link} from 'react-router-dom'
 import {Play,X,Search} from 'lucide-react'
 import {alarmEventService,type AlarmEvent,type AckDisposition,type AckItem} from '@/api/alarmEventService'
 import {behaviorNames,levelLook} from '@/features/alarmTriggers'
+import {alarmBusinessTitle,alarmBusinessKindOf} from '@/features/alarmBusinessKind'
 import {describeAlarm,stageNote,type AlarmContext} from '@/features/alarmSentences'
 import {BehaviorEvidence} from './BehaviorEvidence'
 import {EvidenceThumb} from './EvidenceThumb'
@@ -30,11 +32,14 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
  useEffect(()=>{let active=true;void alarmEventService.get(id).then(v=>{if(active){setSnapshot({id,value:v});setStage(v.stages?.find(s=>s.event_id===initialStageId)?.event_id??v.stages?.at(-1)?.event_id??null)}}).catch(()=>{if(active)setFailedLoad({id,retry})});return()=>{active=false}},[id,retry,initialStageId])
  useEffect(()=>{const previous=document.activeElement as HTMLElement|null,overflow=document.body.style.overflow;document.body.style.overflow='hidden';closeRef.current?.focus();return()=>{document.body.style.overflow=overflow;if(previous?.isConnected)previous.focus();else document.querySelector<HTMLElement>('[aria-label="处理状态"] button')?.focus()}},[])
  const value=snapshot?.id===id?snapshot.value:null
+ const kind=alarmBusinessKindOf(value),spatial=kind==='spatial',faceKind=kind==='face_watchlist',watchlist=faceKind||kind==='vehicle_watchlist'
+ const face=value?.event_kind==='face_watchlist'?value.analysis_evidence?.face:undefined
  const diagnostic=reviewDiagnostic(value?.review)
  const error=failedLoad?.id===id&&failedLoad.retry===retry
  const described=value?describeAlarm(value,trigger):null,look=levelLook[value?.behavior??'']??levelLook.appearance!
+ const description=face?faceAlarmSummary(face):faceKind?'人脸名单候选，请核对当时抓拍与名单记录；身份需人工确认。':described?.sentence
  const selected=value?.stages?.find(s=>s.event_id===stage)
- const showReviewFrames=!value?.analysis_evidence?.group&&!!value?.review?.frames?.length&&(!selected||selected.event_id===value?.stages?.at(-1)?.event_id)
+ const showReviewFrames=!faceKind&&!value?.analysis_evidence?.group&&!!value?.review?.frames?.length&&(!selected||selected.event_id===value?.stages?.at(-1)?.event_id)
  const act=async(disposition:AckDisposition)=>{
   if(!value||busy)return
   setBusy(true);setFailed(false)
@@ -53,16 +58,16 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
   }} className={`flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-panel bg-surface text-ink shadow-modal ${intent?'max-w-lg':value?.review?.frames?.length?'max-w-6xl':'max-w-4xl'}`}>
    <header className="flex items-center gap-3 border-b border-line px-6 py-3">
     <div className="min-w-0 flex-1">
-     <div className="flex flex-wrap items-center gap-2"><span className="rounded-full border px-2.5 py-0.5 text-xs font-semibold" style={{background:look.soft,color:look.ink,borderColor:look.color}}>{behaviorNames[value?.behavior??'']??'告警'}</span>
-      <h2 className="text-base font-semibold text-ink">{intent?intent==='handled'?'确认 · ':'标记误报 · ':''}{channelName}{described?.zone?` · ${described.zone}`:''}</h2></div>
-     {value&&<p className="mt-1 text-sm text-ink-subtle">首次触发 {new Date(value.occurred_at).toLocaleString('zh-CN',{hour12:false})} · 最近阶段 {clock(value.last_seen_at)} · 触发器「{value.rule.name}」 · 目标：{described?.target}</p>}
+     <div className="flex flex-wrap items-center gap-2"><span className="rounded-full border px-2.5 py-0.5 text-xs font-semibold" style={{background:look.soft,color:look.ink,borderColor:look.color}}>{value?alarmBusinessTitle(value,behaviorNames[value.behavior]??'告警'):'告警'}</span>
+      <h2 className="break-words text-base font-semibold text-ink">{intent?intent==='handled'?'确认 · ':'标记误报 · ':''}{channelName}{!watchlist&&described?.zone?` · ${described.zone}`:''}</h2></div>
+     {value&&<p className="mt-1 text-sm text-ink-subtle">{faceKind?'抓拍时间':'首次触发'} {new Date(value.occurred_at).toLocaleString('zh-CN',{hour12:false})}{face?` · 名单「${face.library_name||value.rule.name}」 v${face.library_version}`:<> · {spatial?'最近阶段':'最近记录'} {clock(value.last_seen_at)} · {watchlist?'名单':'触发器'}「{value.rule.name}」{spatial&&<> · 目标：{described?.target}</>}</>}</p>}
     </div>
     <button ref={closeRef} type="button" aria-label="关闭" disabled={busy} onClick={close} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-faint hover:bg-surface-page hover:text-ink"><X size={20} aria-hidden="true"/></button>
    </header>
    {pendingAttempt&&<p role="status" className="px-5 py-2 text-sm text-warning-700">上次处理结果尚未确认；将重试原备注和原处理方式，请勿重复新建操作。</p>}
    {error?<p role="alert" className="p-6">读取失败。<button className="btn-secondary" onClick={()=>setRetry(n=>n+1)}>重试</button></p>:!value?<p role="status" className="p-6">正在读取…</p>:
    intent?<div className="min-h-0 space-y-4 overflow-y-auto p-5">
-    <p className="text-sm text-ink">{described?.sentence}</p>
+    <p className="text-sm text-ink">{description}</p>
     {done?<p role="status" className="text-sm text-success-700">此告警已经处理，请关闭后核对列表。</p>:<>
      <label className="block text-sm font-medium">处理备注<textarea className="mt-1 block min-h-24 w-full rounded-base border border-line p-2.5 text-base" maxLength={500} value={pendingAttempt?.note??note} disabled={busy||!!pendingAttempt||!!retryDisposition} placeholder="选填" onChange={e=>setNote(e.target.value)}/></label>
      {failed&&<p role="alert" className="text-sm text-danger-700">处理结果未确认，请重试原操作或刷新核对。</p>}
@@ -70,33 +75,36 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
     </>}
    </div>:<div className="grid min-h-0 flex-1 overflow-y-auto md:grid-cols-[minmax(0,1fr)_18rem]">
     <div className="min-w-0 space-y-4 p-4 sm:p-5">
-     <div className="rounded-base bg-surface-page px-3 py-2"><h3 className="text-xs text-ink-subtle">触发原因</h3><p className="text-sm leading-6 text-ink">{described?.sentence}</p></div>
-     {(!selected||selected.event_id===value.stages?.at(-1)?.event_id)&&<RuleEvidence alarm={value}/>}
+     <div className="rounded-base bg-surface-page px-3 py-2"><h3 className="text-xs text-ink-subtle">触发原因</h3><p className="text-sm leading-6 text-ink">{description}</p></div>
+     {face&&<FaceAlarmEvidence face={face}/>}
+     {faceKind&&!face&&<p className="rounded-base bg-surface-page p-3 text-sm text-ink-subtle">此名单候选的抓拍与比对证据暂不可用，请人工核查；不以当前名单照片替代当时证据。</p>}
+     {!faceKind&&(!selected||selected.event_id===value.stages?.at(-1)?.event_id)&&<RuleEvidence alarm={value}/>}
      {value.analysis_evidence?.vehicle?.reason==='watchlist_match'&&<VehicleEvidence id={value.analysis_evidence.vehicle.passage_event_id} onClose={close} onChanged={()=>setRetry(n=>n+1)}/>}
      {value.analysis_evidence?.group&&<GroupEvidence alarm={value}/>}
      {showReviewFrames&&<ReviewFrames key={`${id}:${stage}`} alarm={value}/>}
-     {!value.analysis_evidence?.group&&(showReviewFrames?<details className="text-sm"><summary className="cursor-pointer py-3">查看此阶段目标裁剪</summary>{selected?.behavior_event_ids?.[0]&&<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>}</details>:selected?.behavior_event_ids?.[0]?<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>:<p className="rounded-card bg-surface-page p-4 text-sm text-ink-subtle">此阶段没有截图。</p>)}
-     {playbackRange(value)&&smartSearchHref(value.playback_stream_id,playbackRange(value)!.from,playbackRange(value)!.to)&&<Link className="btn-secondary !min-h-11" to={smartSearchHref(value.playback_stream_id,playbackRange(value)!.from,playbackRange(value)!.to)!}><Search size={16} aria-hidden="true"/>搜索同一摄像头与时间</Link>}
-     {playbackHref(value)?<div className="space-y-1"><Link to={playbackHref(value)!} target="_blank" rel="noopener noreferrer" className="btn-primary !min-h-11"><Play size={16} aria-hidden="true"/>查看录像（{clock(new Date(playbackRange(value)!.from).toISOString())}–{clock(new Date(playbackRange(value)!.to).toISOString())}）</Link><p className="text-xs text-ink-subtle">打开本告警所属 AI 输出录像，从行为开始前 2 秒播放，保留当前告警列表。</p></div>:<p className="text-sm text-ink-subtle">无法确定本告警对应的 AI 输出通道或有效时间，请检查 AI 输出关联；不会跳转到输入通道。</p>}
+     {!faceKind&&!value.analysis_evidence?.group&&(showReviewFrames?<details className="text-sm"><summary className="min-h-11 cursor-pointer py-3">{spatial?'查看此阶段目标裁剪':'查看此记录证据图像'}</summary>{selected?.behavior_event_ids?.[0]&&<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>}</details>:selected?.behavior_event_ids?.[0]?<BehaviorEvidence key={selected.behavior_event_ids[0]} eventId={selected.behavior_event_ids[0]}/>:<p className="rounded-card bg-surface-page p-4 text-sm text-ink-subtle">{spatial?'此阶段没有截图。':'此记录没有可用证据图像。'}</p>)}
+     {!faceKind&&playbackRange(value)&&smartSearchHref(value.playback_stream_id,playbackRange(value)!.from,playbackRange(value)!.to)&&<Link className="btn-secondary !min-h-11" to={smartSearchHref(value.playback_stream_id,playbackRange(value)!.from,playbackRange(value)!.to)!}><Search size={16} aria-hidden="true"/>搜索同一摄像头与时间</Link>}
+     {!faceKind&&(playbackHref(value)?<div className="space-y-1"><Link to={playbackHref(value)!} target="_blank" rel="noopener noreferrer" className="btn-primary !min-h-11"><Play size={16} aria-hidden="true"/>查看录像（{clock(new Date(playbackRange(value)!.from).toISOString())}–{clock(new Date(playbackRange(value)!.to).toISOString())}）</Link><p className="text-xs text-ink-subtle">打开本告警所属 AI 输出录像，从{spatial?'行为':'事件'}开始前 2 秒播放，保留当前告警列表。</p></div>:<p className="text-sm text-ink-subtle">无法确定本告警对应的 AI 输出通道或有效时间，请检查 AI 输出关联；不会跳转到输入通道。</p>)}
     </div>
     <aside className="flex min-w-0 flex-col gap-3 border-line bg-surface-page/50 p-4 sm:p-5 md:border-l">
-     <section aria-label="AI 审核结果" className="space-y-1 rounded-base border border-line p-3 text-sm">
+     {!spatial&&<section aria-label="人工复核" className="rounded-base border border-line p-3 text-sm">{watchlist?'名单候选需要人工核对抓拍与当时的名单；相似度不是身份概率。':'业务候选需要结合布防区、规则与起止图像人工审核；不以出现、接近、侵入或穿越阶段解释。'}</section>}
+     <section aria-label={spatial?'AI 审核结果':'审核记录'} className="space-y-1 rounded-base border border-line p-3 text-sm">
       <h3 className={`inline-flex rounded border px-2 py-0.5 font-medium ${reviewStatusClass(value)}`}>{reviewLabel(value)}{value.handling.state==='acknowledged'?` · ${value.handling.disposition==='false_positive'?'误报':'确认'}`:''}</h3>
       {recoveryLabel(value.review)&&<p className="mt-1 text-xs text-ink-subtle">{recoveryLabel(value.review)}</p>}
-      {diagnostic?<div className="space-y-1 border-t border-line pt-2"><p>{diagnostic.summary}</p><details className="text-xs text-ink-subtle"><summary className="min-h-11 cursor-pointer py-3">查看审核诊断与模型分数</summary><ul className="space-y-2 break-words">{diagnostic.details.map((text,i)=><li key={i}>{text}</li>)}</ul>{value.review?.policy?.description&&<p className="mt-2">规则说明：{value.review.policy.description}</p>}</details><p className="text-xs text-ink-subtle">人工确认与标记误报可独立操作。</p></div>:!value.analysis_evidence?.group&&value.review?.reference&&<div className="space-y-1 border-t border-line pt-2"><p>{referenceLabel(value.review.reference)}</p><p className="text-xs text-ink-subtle">{value.review.geometry_verified?'行为几何条件已核验；参考图片仅核对目标类别，请结合录像人工审核。':'参考分析仅核对保留截图的目标类别；行为证据请结合关键帧与录像核对。'}</p></div>}
+      {diagnostic?<div className="space-y-1 border-t border-line pt-2"><p>{diagnostic.summary}</p><details className="text-xs text-ink-subtle"><summary className="min-h-11 cursor-pointer py-3">查看审核诊断与模型分数</summary><ul className="space-y-2 break-words">{diagnostic.details.map((text,i)=><li key={i}>{text}</li>)}</ul>{value.review?.policy?.description&&<p className="mt-2">规则说明：{value.review.policy.description}</p>}</details><p className="text-xs text-ink-subtle">人工确认与标记误报可独立操作。</p></div>:!value.analysis_evidence?.group&&value.review?.reference&&<div className="space-y-1 border-t border-line pt-2"><p>{referenceLabel(value.review.reference)}</p><p className="text-xs text-ink-subtle">{!spatial?'参考分析不等同于业务或身份确认，请结合当时规则、图像与名单证据人工核对。':value.review.geometry_verified?'行为几何条件已核验；参考图片仅核对目标类别，请结合录像人工审核。':'参考分析仅核对保留截图的目标类别；行为证据请结合关键帧与录像核对。'}</p></div>}
       {!diagnostic&&value.review?.score!==undefined&&!value.review.reference&&<p>目标类别匹配分数 {value.review.score.toFixed(3)}（不是概率）</p>}
       {!diagnostic&&value.review?.policy?.description&&<p className="text-ink-subtle">{value.review.policy.description}</p>}
       {(value.review?.completed_at||value.review?.reference?.completed_at||value.review?.model||value.review?.reference?.model)&&<p className="text-xs text-ink-subtle">{(value.review.completed_at||value.review.reference?.completed_at)?new Date((value.review.completed_at||value.review.reference?.completed_at)!).toLocaleString():''} · {value.review.model?.package_id??value.review.reference?.model?.package_id}</p>}
       {!diagnostic&&value.review?.reason&&<p className="text-xs text-warning-700">{reviewReason(value.review.reason)}</p>}
       {value.handling.reviewed_by_kind==='ai'&&<p>此条已由 AI 审核。下方人工操作可纠正结果。</p>}
      </section>
-     <h3 className="font-semibold">经过</h3>
+     {!faceKind&&!!value.stages?.length&&<><h3 className="font-semibold">{spatial?'经过':'业务记录'}</h3>
      <ol className="space-y-2">{(value.stages??[]).map(s=><li key={s.event_id}>
       <button type="button" aria-pressed={s.event_id===stage} onClick={()=>setStage(s.event_id)} className={`flex min-h-14 w-full items-center gap-3 rounded-card border p-2 text-left ${s.event_id===stage?'border-primary bg-primary-50':'border-line'}`}>
-       <span className="w-16 shrink-0">{s.behavior_event_ids?.[0]?<EvidenceThumb compact eventId={s.behavior_event_ids[0]} label={behaviorNames[s.behavior]??s.behavior}/>:null}</span>
-       <span className="min-w-0"><b style={{color:(levelLook[s.behavior]??levelLook.appearance!).color}}>{behaviorNames[s.behavior]??s.behavior}</b><span className="block text-sm text-ink-subtle">{clock(s.at)} · {stageNote(s,described!.edgeName)}</span></span>
-      </button></li>)}</ol>
-     {done?<p role="status" className="rounded-card bg-success-50 p-3 text-sm text-success-700">{value.handling.disposition==='false_positive'?'已标记误报':'已确认'} · {value.handling.acknowledged_by} · {value.handling.acknowledged_at?new Date(value.handling.acknowledged_at).toLocaleString():''}{value.handling.note?` · ${value.handling.note}`:''}</p>:
+       <span className="w-16 shrink-0">{s.behavior_event_ids?.[0]?<EvidenceThumb compact eventId={s.behavior_event_ids[0]} label={alarmBusinessTitle(value,behaviorNames[s.behavior]??s.behavior)}/>:null}</span>
+       <span className="min-w-0"><b style={{color:(levelLook[s.behavior]??levelLook.appearance!).color}}>{alarmBusinessTitle(value,behaviorNames[s.behavior]??s.behavior)}</b><span className="block text-sm text-ink-subtle">{clock(s.at)} · {spatial?stageNote(s,described!.edgeName):watchlist?'名单候选记录':'业务触发记录'}</span></span>
+      </button></li>)}</ol></>}
+     {done?<p role="status" className="rounded-card bg-success-50 p-3 text-sm text-success-700">{value.handling.disposition==='false_positive'?'已标记误报':'已确认'} · {reviewerDisplay(value.handling.acknowledged_by)} · {value.handling.acknowledged_at?new Date(value.handling.acknowledged_at).toLocaleString():''}{value.handling.note?` · ${value.handling.note}`:''}</p>:
      <div className="space-y-2 border-t border-line pt-3">
       <label className="block text-sm font-medium">处理备注<textarea className="mt-1 block min-h-20 w-full rounded-card border border-line p-2.5" maxLength={500} value={pendingAttempt?.note??note} disabled={busy||!!pendingAttempt||!!retryDisposition} onChange={e=>setNote(e.target.value)}/></label>
       {failed&&<p role="alert" className="text-sm text-danger-700">处理结果未确认，请重试或刷新核对。</p>}

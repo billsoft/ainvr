@@ -1,3 +1,5 @@
+import {faceReviewExclusion,isFaceReview} from './face-review-gate.mjs';
+import {isRegionReview,regionReviewExclusion} from './region-review-gate.mjs';
 import {stateConfirmation} from './review-state.mjs';
 import {spatialShadow} from './review-spatial.mjs';
 import {buildReviewEvidence,reviewTaskContext} from './review-evidence.mjs';
@@ -14,6 +16,8 @@ import {isStorageBusy} from './review-storage.mjs';
 import {ReviewCheckpoint} from './review-checkpoint.mjs';
 export {isStorageBusy} from './review-storage.mjs';
 export function reviewFor(event){
+ if(isFaceReview(event))return {state:'skipped',attempt:0,reason:'face_watchlist_manual_review',policy:{enabled:false}};
+ if(isRegionReview(event))return {state:'skipped',attempt:0,reason:'region_manual_review',policy:{enabled:false},...(event.analysis_evidence?.delivery?.state==='complete'?{frames:structuredClone(event.analysis_evidence.delivery.frames)}:{})};
  if(event.analysis_evidence?.vehicle?.reason==='watchlist_match')return {state:'skipped',attempt:0,reason:'vehicle_watchlist_manual_review',frames:event.analysis_evidence.delivery?.frames??[]};
  if(event.analysis_evidence?.delivery?.state==='failed')return {state:'failed',attempt:0,reason:'source_evidence_failed',context_state:'failed'};
  const retained=event.analysis_evidence?.delivery?.state==='complete'?{frames:event.analysis_evidence.delivery.frames}:{};
@@ -48,7 +52,7 @@ export class ReviewWorker{
   const authorization=await this.authorization();
   const authorizationId=authorization?.id??null;
   const promptVersion=authorization?.focus?FOCUS_PROMPT_VERSION:REVIEW_PROMPT_VERSION;
-  const row=await this.rows.findOneAndUpdate({'handling.state':'unacknowledged','handling.disposition':{$ne:'false_positive'},
+  const row=await this.rows.findOneAndUpdate({...regionReviewExclusion,...faceReviewExclusion,'handling.state':'unacknowledged','handling.disposition':{$ne:'false_positive'},
    'review.policy.enabled':true,'review.generation':{$exists:true},'review.context_state':'ready',...(!validated||authorization?.focus?{$expr:{$or:[{$ne:[{$ifNull:['$review.reference.generation',null]},'$review.generation']},{$ne:[{$ifNull:['$review.reference.prompt_version',null]},promptVersion]},{$ne:[{$ifNull:['$review.reference.authorization_id',null]},authorizationId]},{$ne:[{$ifNull:['$review.reference.decision_version',null]},REVIEW_DECISION_VERSION]}]}}:{}),$or:[{'review.state':'waiting_validation'},{'review.state':'queued','review.next_attempt_at':{$lte:now}}, {'review.state':'running','review.lease_until':{$lte:now}}]},
    {$set:{'review.state':'running','review.token':token,'review.lease_until':now+(this.policy.timeout_s*12+30)*1000},$inc:{'review.attempt':1}},
    {sort:{occurred_at:-1,alarm_id:-1},returnDocument:'after'});

@@ -1,3 +1,4 @@
+import { modelCapabilitySaveBlock } from './modelCapabilities'
 import { trackingUnavailableReason } from './trackingPolicy'
 import { notificationError } from './analyticsNotification'
 import { ruleError } from './analyticsRules'
@@ -196,6 +197,8 @@ export function validateStep2(v: AiWizardFormValue): FieldErrors {
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(v.labelId ?? '')) errors.labelId = '标签 ID 须为 1-64 位字母、数字、下划线或短横线'
     if (!v.labelName?.trim() || v.labelName.length > 64) errors.labelName = '请输入 1-64 字的标签名称'
   }
+  const blocked = modelCapabilitySaveBlock(wizardModelList(v).map(node => node.model))
+  if (blocked) errors.analysisPipeline = blocked
   return errors
 }
 
@@ -327,7 +330,8 @@ export function updateWizardModelList(v: AiWizardFormValue,nodes:AiAnalysisNode[
   const previousId=v.analysisPipeline?.root_id??'primary'
   const root=nodes.find(n=>n.id===previousId)??nodes[0]!
   let next={...v,confThreshold:root.postprocess.conf_threshold,iouThreshold:root.postprocess.iou_threshold,maxDetections:root.postprocess.max_detections}
-  if(root.id!==previousId){
+  const previousProfile = wizardModelProfile(v)
+  if(root.id!==previousId || JSON.stringify(root.model)!==JSON.stringify(previousProfile.model) || JSON.stringify(root.preprocess)!==JSON.stringify(previousProfile.preprocess)){
     const preset=Object.keys(AI_MODEL_PRESETS).find(k=>AI_MODEL_PRESETS[k as AiModelPresetKey].model.name===root.model.name) as AiModelPresetKey|undefined
     if(!preset)throw new Error('此历史模型需要先明确选择对应模型')
     next={...v,modelPreset:preset,modelPresetTouched:true,modelProfile:{model:structuredClone(root.model),preprocess:structuredClone(root.preprocess)},prompts:root.model.prompts??undefined,description:root.model.description,labelId:root.model.label_id,labelName:root.model.label_name,confThreshold:root.postprocess.conf_threshold,iouThreshold:root.postprocess.iou_threshold,maxDetections:root.postprocess.max_detections}
@@ -336,7 +340,13 @@ export function updateWizardModelList(v: AiWizardFormValue,nodes:AiAnalysisNode[
 }
 
 /** 组装创建 patch */
+function assertModelCapabilitiesSaveable(v: AiWizardFormValue) {
+  const blocked = modelCapabilitySaveBlock(wizardModelList(v).map(node => node.model))
+  if (blocked) throw new Error(blocked)
+}
+
 export function toCreatePatch(v: AiWizardFormValue): AiChannelCreatePatch {
+  assertModelCapabilitiesSaveable(v)
   const { model, preprocess } = wizardModelProfile(v)
   return {
     ...(v.analysisPipeline ? { analysis_pipeline: structuredClone(v.analysisPipeline) } : {}),
@@ -380,6 +390,7 @@ export function toUpdatePatch(
   v: AiWizardFormValue,
   original: AiChannel | null,
 ): AiChannelUpdatePatch {
+  assertModelCapabilitiesSaveable(v)
   const includeModelFields =
     v.originalAdapter === null || v.modelPresetTouched
 
@@ -547,6 +558,7 @@ export function fromChannel(ch: AiChannel): AiWizardFormValue {
     streamProtocol: ch.config.stream.protocol,
     h265: isH265(ch.stats?.video_codec),
     modelPreset: preset,
+    modelProfile: { model: structuredClone(ch.config.model), preprocess: structuredClone(ch.config.preprocess) },
     originalAdapter: adapter,
     modelPresetTouched: false,
     inferenceFps: ch.config.inference_fps,

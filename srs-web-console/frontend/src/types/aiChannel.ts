@@ -26,7 +26,7 @@ export interface AiStreamConfig {
   reconnect: AiReconnectConfig
 }
 
-export type AiModelAdapter = 'plate_bpu' | 'yolo26_bpu' | 'yoloface_bpu' | 'scrfd_bpu' | 'locateanything_bpu' | 'yoloe_bpu'
+export type AiModelAdapter = 'plate_bpu' | 'yolo26_bpu' | 'yolo26_pose_bpu' | 'yoloface_bpu' | 'scrfd_bpu' | 'locateanything_bpu' | 'yoloe_bpu'
   | 'yolo26_end2end' | 'yolo26_traditional' | 'yolo26_trt' | 'yoloface_trt' | 'scrfd_trt' | 'locateanything_trt' | 'yoloe_pt'
 
 export interface AiPromptLabel {
@@ -340,9 +340,38 @@ export interface AiChannelCreatePatch {
  * （不含 id，见 httpAiChannelService.ts 的白名单兜底） */
 export type AiChannelUpdatePatch = Partial<Omit<AiChannelCreatePatch, 'id'>>
 
+/** Versioned COCO17 observation. Runtime readers must validate exactly 17 points,
+ * finite coordinates, scores in [0,1], positive image sizes and a 64-hex hash.
+ * Out-of-frame points are retained; drawing must check image bounds separately.
+ * Points stay in original-image pixels; this is not a fall/action conclusion.
+ */
+export interface AiPoseAttribute {
+  schema_version: '1.0'
+  type: 'keypoints'
+  status: 'observed'
+  layout: 'coco17'
+  coordinate_space: 'original_image'
+  image_size: [number, number]
+  visibility_threshold: number
+  source_model_sha256: string
+  points: { x: number; y: number; score: number; visible?: 0 | 1 }[]
+  /** Type-only exclusion, never serialized; keeps legacy scalar readers safe. */
+  value?: never
+  source_node?: string
+  association?: { method: string; iou: number }
+}
+
+export interface ScalarDetectionAttribute {
+  type?: string
+  value: string | number | boolean | null
+  status?: string
+}
+
+export type DetectionAttributes = Record<string, ScalarDetectionAttribute | AiPoseAttribute>
+
 /** GET /channels/:id/results/latest 里 detections[] 的单项 */
 export interface AiDetection {
-  model_extra?: { model_name?: string; task_type?: string; source_node?: string; attributes?: Record<string, {type?: string; value: string | number | boolean | null; status?: string}> }
+  model_extra?: { model_name?: string; task_type?: string; source_node?: string; attributes?: DetectionAttributes }
   class_id: number
   class_name: string
   confidence: number | null
@@ -585,7 +614,7 @@ export const AI_MODEL_PRESETS = {
     label: '人脸检测',
     // S100P 纯推理与完整视频链路分别实测，不能沿用 Jetson/VIC 的帧率。
     // 编译和验证流程见 docs/S100P-HBM-COMPILATION.md。
-    description: '人脸框检测，仅出框不含关键点；S100P 性能以 BPU 实测为准',
+    description: '只输出人脸位置；精度最高，占用算力最多',
     model: {
       name: 'yolo26x-face',
       adapter: 'yoloface_bpu' as AiModelAdapter,
@@ -605,6 +634,142 @@ export const AI_MODEL_PRESETS = {
       rgb_order: true,
     },
   },
+  // Preview only: declared sidecar compatibility, not runtime acceptance.
+  'detect-coco-yolo26s': {
+    displayName: '通用目标检测 · 轻量档', label: '通用目标检测 · 轻量档', streamSlug: 'detect-coco-yolo26s',
+    description: '人、车辆、动物等 80 类常见目标；速度最快，适合多路同时识别', needsIouThreshold: false,
+    model: {
+      name: 'detect-coco-yolo26s', adapter: 'yolo26_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/detect-coco-yolo26s.hbm',
+      input_size: [640, 640] as [number, number], stride: 32,
+      provider: 'bpu' as const, engine_cache: '',
+      class_names: ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"],
+    },
+    preprocess: {
+      normalize: true, rgb_order: true,
+      mean: [0, 0, 0] as [number, number, number],
+      std: [255, 255, 255] as [number, number, number],
+    },
+  },
+  // Preview only: declared sidecar compatibility, not runtime acceptance.
+  'detect-coco-yolo26m': {
+    displayName: '通用目标检测 · 均衡档', label: '通用目标检测 · 均衡档', streamSlug: 'detect-coco-yolo26m',
+    description: '人、车辆、动物等 80 类常见目标；速度与精度折中', needsIouThreshold: false,
+    model: {
+      name: 'detect-coco-yolo26m', adapter: 'yolo26_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/detect-coco-yolo26m.hbm',
+      input_size: [640, 640] as [number, number], stride: 32,
+      provider: 'bpu' as const, engine_cache: '',
+      class_names: ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"],
+    },
+    preprocess: {
+      normalize: true, rgb_order: true,
+      mean: [0, 0, 0] as [number, number, number],
+      std: [255, 255, 255] as [number, number, number],
+    },
+  },
+  // Preview only: declared sidecar compatibility, not runtime acceptance.
+  'face-det-scrfd-2g5': {
+    displayName: '人脸检测 · 均衡档（含五点）', label: '人脸检测 · 均衡档（含五点）', streamSlug: 'face-det-scrfd-2g5',
+    description: '人脸位置和五官定位点，可用于人脸抓拍与比对', needsIouThreshold: true,
+    model: {
+      name: 'face-det-scrfd-2g5', adapter: 'scrfd_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/face-det-scrfd-2g5.hbm',
+      input_size: [640, 640] as [number, number], stride: 32,
+      provider: 'bpu' as const, engine_cache: '',
+      class_names: ["face"],
+    },
+    preprocess: {
+      normalize: true, rgb_order: true,
+      mean: [127.5, 127.5, 127.5] as [number, number, number],
+      std: [128.0, 128.0, 128.0] as [number, number, number],
+    },
+  },
+  // Preview only: declared sidecar compatibility, not runtime acceptance.
+  'face-det-scrfd-500m': {
+    displayName: '人脸检测 · 轻量档（含五点）', label: '人脸检测 · 轻量档（含五点）', streamSlug: 'face-det-scrfd-500m',
+    description: '人脸位置和五官定位点；速度最快，适合多路人脸抓拍', needsIouThreshold: true,
+    model: {
+      name: 'face-det-scrfd-500m', adapter: 'scrfd_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/face-det-scrfd-500m.hbm',
+      input_size: [640, 640] as [number, number], stride: 32,
+      provider: 'bpu' as const, engine_cache: '',
+      class_names: ["face"],
+    },
+    preprocess: {
+      normalize: true, rgb_order: true,
+      mean: [127.5, 127.5, 127.5] as [number, number, number],
+      std: [128.0, 128.0, 128.0] as [number, number, number],
+    },
+  },
+  // Preview only: declared sidecar compatibility, not runtime acceptance.
+  'helmet-head-yolo26s': {
+    displayName: '安全帽检测 · 头部方案', label: '安全帽检测 · 头部方案', streamSlug: 'helmet-head-yolo26s',
+    description: '识别头部和安全帽，适合远景统计佩戴情况；不能用于“未戴安全帽”告警', needsIouThreshold: false,
+    model: {
+      name: 'helmet-head-yolo26s', adapter: 'yolo26_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/helmet-head-yolo26s.hbm',
+      input_size: [640, 640] as [number, number], stride: 32,
+      provider: 'bpu' as const, engine_cache: '',
+      class_names: ["head", "helmet"],
+    },
+    preprocess: {
+      normalize: true, rgb_order: true,
+      mean: [0, 0, 0] as [number, number, number],
+      std: [255, 255, 255] as [number, number, number],
+    },
+  },
+  // Preview only: declared sidecar compatibility, not runtime acceptance.
+  'helmet-face-yolo26s': {
+    displayName: '安全帽检测 · 人脸方案', label: '安全帽检测 · 人脸方案', streamSlug: 'helmet-face-yolo26s',
+    description: '区分已戴和未戴安全帽，可用于“未戴安全帽”告警；适合能看清面部的画面', needsIouThreshold: false,
+    model: {
+      name: 'helmet-face-yolo26s', adapter: 'yolo26_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/helmet-face-yolo26s.hbm',
+      input_size: [640, 640] as [number, number], stride: 32,
+      provider: 'bpu' as const, engine_cache: '',
+      class_names: ["helmet", "no_helmet"],
+    },
+    preprocess: {
+      normalize: true, rgb_order: true,
+      mean: [0, 0, 0] as [number, number, number],
+      std: [255, 255, 255] as [number, number, number],
+    },
+  },
+  // Preview only: declared sidecar compatibility, not runtime acceptance.
+  'fire-smoke-yolo26n': {
+    displayName: '烟雾 / 明火检测 · 轻量档', label: '烟雾 / 明火检测 · 轻量档', streamSlug: 'fire-smoke-yolo26n',
+    description: '识别烟雾和明火，可用于“烟火”告警', needsIouThreshold: false,
+    model: {
+      name: 'fire-smoke-yolo26n', adapter: 'yolo26_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/fire-smoke-yolo26n.hbm',
+      input_size: [640, 640] as [number, number], stride: 32,
+      provider: 'bpu' as const, engine_cache: '',
+      class_names: ["smoke", "fire"],
+    },
+    preprocess: {
+      normalize: true, rgb_order: true,
+      mean: [0, 0, 0] as [number, number, number],
+      std: [255, 255, 255] as [number, number, number],
+    },
+  },
+  // Trial preview only; actual hardware inference must pass before main enables saves.
+  'human-pose-yolo26s': {
+    displayName: '人体姿态 · 17 点（试用）', label: '人体姿态 · 17 点（试用）', streamSlug: 'human-pose-yolo26s',
+    description: '识别人体和 17 个关节点，可用于“疑似倒地”告警；试用功能', needsIouThreshold: false,
+    model: {
+      name: 'human-pose-yolo26s', adapter: 'yolo26_pose_bpu' as AiModelAdapter,
+      path: 'models/derived/s100p/human-pose-yolo26s.hbm',
+      input_size: [640, 640] as [number, number], stride: 32,
+      provider: 'bpu' as const, engine_cache: '', class_names: ['person'],
+    },
+    preprocess: {
+      letterbox: true, padding_color: [114, 114, 114] as [number, number, number],
+      normalize: true, rgb_order: true,
+      mean: [0, 0, 0] as [number, number, number],
+      std: [255, 255, 255] as [number, number, number],
+    },
+  },
 } as const
 
 export type AiModelPresetKey = keyof typeof AI_MODEL_PRESETS
@@ -614,6 +779,8 @@ export function isOpenVocabularyPreset(preset: AiModelPresetKey): boolean {
 
 export const SELECTABLE_AI_MODEL_PRESET_KEYS: readonly AiModelPresetKey[] = [
   'yolo26x', 'yolo26x-face', 'plate-recognition', 'yoloe-26x-1', 'yoloe-26x-2', 'yoloe-26x', 'yoloe-26x-32', 'locateanything-3b',
+  'detect-coco-yolo26s', 'detect-coco-yolo26m', 'face-det-scrfd-2g5', 'face-det-scrfd-500m',
+  'helmet-head-yolo26s', 'helmet-face-yolo26s', 'fire-smoke-yolo26n', 'human-pose-yolo26s',
 ]
 export const DEFAULT_AI_MODEL_PRESET: AiModelPresetKey = 'yolo26x'
 

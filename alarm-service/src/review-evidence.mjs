@@ -1,11 +1,13 @@
 // Rule snapshots and raw observations are evidence, not instructions to a model.
 import {inside,boundaryDistancePx,boundaryStable,validatePoints,stateSpatial} from './geometry.mjs';
 import {digest} from './domain.mjs';
+import {buildRegionReviewEvidence} from './region-review-evidence.mjs';
 export const EVIDENCE_VERSION='rule-evidence-v1';
 const names={appearance:'出现',region_approach:'接近布防区',region_enter:'侵入布防区',region_traverse:'穿越布防区'};
 const ms=(a,b)=>Number(BigInt(a)-BigInt(b))/1e6;
 const finite=v=>typeof v==='number'&&Number.isFinite(v);
 function build(row){
+ if(row.incident_scope==='region'||row.rule?.snapshot?.region_state)return buildRegionReviewEvidence(row);
  const r=row.rule?.snapshot,c=row.analysis_evidence?.review_context,g=row.analysis_evidence?.group,source=row.analysis_evidence?.source;
  const stateRule=r?.spatial_semantics==='bbox-state-v1';
  const checks=[],observations=[];

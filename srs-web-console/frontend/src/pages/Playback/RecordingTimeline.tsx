@@ -31,7 +31,14 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
   useEffect(() => { setDragTs(null) }, [win.from, win.to])
   const pointerIdRef = useRef<number | null>(null)
 
-  const effectivePlayhead = Math.max(win.from, Math.min(win.to, dragTs ?? playheadTs ?? win.from))
+  // Before the user selects a position, anchor to the first playable instant
+  // inside this window. Catalogue refreshes must never override an explicit seek.
+  const initialPlayhead = useMemo(() => segments.reduce<number | null>((first, segment) => {
+    if (!segment.playable || segment.endTs <= segment.startTs || segment.endTs <= win.from || segment.startTs >= win.to) return first
+    const start = Math.max(win.from, segment.startTs)
+    return first === null ? start : Math.min(first, start)
+  }, null) ?? win.from, [segments, win.from, win.to])
+  const effectivePlayhead = Math.max(win.from, Math.min(win.to, dragTs ?? playheadTs ?? initialPlayhead))
   // 轨道像素宽：时间气泡在边缘处要按像素 clamp，保证不溢出又始终贴着指针
   const [trackWidth, setTrackWidth] = useState(0)
   useLayoutEffect(() => {
@@ -134,7 +141,7 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
           onKeyDown={e => {
             if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return
             e.preventDefault(); e.stopPropagation()
-            const ts = e.key === 'Home' ? win.from : e.key === 'End' ? win.to - 1 : (playheadTs ?? win.from) + (e.key === 'ArrowLeft' ? -1 : 1) * Math.min(60000, spanMs / 100)
+            const ts = e.key === 'Home' ? win.from : e.key === 'End' ? win.to - 1 : effectivePlayhead + (e.key === 'ArrowLeft' ? -1 : 1) * Math.min(60000, spanMs / 100)
             onSeek(Math.max(win.from, Math.min(win.to - 1, ts)))
           }}
           aria-valuemin={win.from}

@@ -1,0 +1,61 @@
+import { it, expect } from 'vitest';
+import { Pool } from 'pg';
+import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { Binary, Long, ObjectId } from 'mongodb';
+import { FacesStore } from '../store/facesStore.js';
+import { FacesMongo } from '../store/facesMongo.js';
+import { FacesNativeClient } from '../services/facesNativeClient.js';
+import { FacesDemand } from '../services/facesDemand.js';
+import { FacesRuntime } from '../services/facesRuntime.js';
+import { FacesService } from '../services/facesService.js';
+import { FacesArchiveProducer, type FacesCaptureSource } from '../services/facesArchiveProducer.js';
+const pgUri = process.env.AINVR_FACES_TEST_PG_URI, mongoUri = process.env.AINVR_FACES_TEST_MONGO_URI, fixture = process.env.AINVR_FACES_NATIVE_FIXTURE;
+it.skipIf(!pgUri || !mongoUri || !fixture)('real native JPEG → isolated PG enrollment → archive producer → Mongo history/watchlist/search', async () => {
+  if (new URL(mongoUri!).hostname !== '127.0.0.1' || new URL(mongoUri!).port !== '27932' || !fixture!.endsWith('/face-native-20261112/offline-config.json')) throw Error('Isolated fixtures required');
+  const config = JSON.parse(await readFile(fixture!, 'utf8'));
+  const native = new FacesNativeClient(async () => ({ baseUrl: 'http://127.0.0.1:44569', apiToken: config.server.api_key, timeoutMs: 30000 }));
+  const schema = `faces_test_${randomUUID().replaceAll('-', '')}`, database = `faces_native_test_${randomUUID().replaceAll('-', '')}`;
+  const admin = new Pool({ connectionString: pgUri, max: 1 });
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  const pool = new Pool({ connectionString: pgUri, max: 1, options: `-c search_path=${schema},pg_catalog` });
+  const mongo = new FacesMongo(async () => ({ uri: mongoUri!, database }));
+  const store = new FacesStore(pool), images = new Map<string, Buffer>();
+  const demand = new FacesDemand(native, () => store.list(), async () => true, async () => false);
+  const runtime = new FacesRuntime(mongo, { publish: async (ref, bytes) => { images.set(ref, bytes); return { ref, generation: 'isolated-native-test-memory-photo-port', bytes: bytes.length, sha256: 'a'.repeat(64) } }, read: async photo => images.get(photo.ref)!, remove: async photo => { images.delete(photo.ref) } }, { status: () => demand.status(), extract: native.extract.bind(native) }, () => store.list());
+  const channel = randomUUID(), member = randomUUID(), library = randomUUID(), actor = 'console-administrator';
+  const service = new FacesService(store, runtime, async () => [{ id: channel, name: 'Isolated test output' }]);
+  try {
+    await pool.query('CREATE TABLE config_audit_logs(actor text,action text,service text,"group" text,config_name text,version_before integer,version_after integer,detail jsonb)');
+    await pool.query(await readFile(new URL('../store/migrations/030_faces.sql', import.meta.url), 'utf8'));
+    const document = { name: 'Native wiring fixture', model: 'mbf', channel_ids: [channel], valid_until: new Date(Date.now() + 3600000).toISOString(), retention_days: 1, access: 'console-management', match_requested: true, match_threshold: 0.9, members: [{ id: member, name: 'Fixture only', note: '', template_id: null as string | null }] };
+    await service.save(library, { expected_version: 0, document }, actor, randomUUID());
+    demand.invalidate(); const status = await runtime.status(); expect(status.ready).toBe(true);
+    const bytes = await readFile(new URL('./celeba-162772.jpg', `file://${fixture}`));
+    const template = await service.enroll(library, member, { request_id: randomUUID(), expected_version: 1, model: 'mbf', jpeg_base64: bytes.toString('base64') }, actor);
+    document.members[0]!.template_id = template.template_id;
+    await service.save(library, { expected_version: 1, document }, actor, randomUUID());
+    const source: FacesCaptureSource = { processor_id: 'native-fixture', channel_id: channel, recording_channel_id: channel, retention_days: 1, capture_supported: true, reason: null, face_labels: ['class:0'], source_revision: 'isolated-source' };
+    const producer = new FacesArchiveProducer(mongo, runtime, async () => [source], () => true);
+    await producer.tick();
+    const at = new Date(), db = await mongo.db();
+    await db.collection('snapshots_native-fixture').insertOne({ _id: new ObjectId(), image_id: randomUUID(), channel_id: 'native-fixture', task_type: 'face_detection', label_id: 'class:0', track_id: 'track1', frame_pts_ns: Long.fromString('9007199254740993'), timestamp: at.getTime() / 1000, bbox: { x: 0, y: 0, w: 178, h: 218 }, model_extra: { observation_source: { schema_version: '1.0', stream_session_id: 'isolated-native', source_pts_ns: '9007199254740993', source_frame_index: '1', frame_width: 178, frame_height: 218 } }, original_image: { format: 'jpg', width: 178, height: 218, data: new Binary(bytes) } });
+    await producer.tick(); await producer.tick();
+    const scope = { channel_ids: [channel], from: new Date(at.getTime() - 60000).toISOString(), to: new Date(at.getTime() + 60000).toISOString() };
+    const history = await service.history({ scope, model: 'mbf', limit: 20 }, actor);
+    expect(history.items).toHaveLength(1); expect(history.items[0]!.match.state).toBe('candidate');
+    const pending = await runtime.watchlistOutbox(); expect(pending.items).toHaveLength(1);
+    expect(pending.items[0]).toMatchObject({ processor_id: 'native-fixture', library_version: 2, member_name: 'Fixture only' });
+    const found = await service.search({ request_id: randomUUID(), scope, model: 'mbf', limit: 20, jpeg_base64: bytes.toString('base64') }, actor);
+    expect(found.items[0]?.similarity).toBeCloseTo(1, 5);
+    expect(JSON.stringify([history, found, pending])).not.toMatch(/embedding|jpeg_base64|"vector"/);
+    await runtime.acknowledgeWatchlist({ record_id: pending.items[0]!.record_id, event_id: pending.items[0]!.event_id });
+    expect((await runtime.watchlistOutbox()).items).toEqual([]);
+    // Same-image cosine proves wiring/repeatability only, not recognition accuracy.
+  } finally {
+    await (await mongo.db()).dropDatabase(); await runtime.close(); await pool.end();
+    await admin.query(`DROP SCHEMA ${schema} CASCADE`); await admin.end();
+    const current = await native.status();
+    if (current.configuration) await native.configure({ enabled: false, detector_model: current.configuration.detector_model, embedding_model: current.configuration.embedding_model, expected_revision: current.configuration.revision });
+  }
+}, 90000);

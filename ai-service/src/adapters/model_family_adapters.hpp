@@ -4,6 +4,7 @@
 #include <memory>
 #include <utility>
 #include "bpu_channel_adapter.hpp"
+#include "pose_contract.hpp"
 #include "plate_channel_adapter.hpp"
 #include "locateanything_bpu_adapter.hpp"
 
@@ -43,6 +44,19 @@ class YoloFaceBpuAdapter final : public EndToEndBpuAdapter {
   explicit YoloFaceBpuAdapter(config::ModelConfig cfg):EndToEndBpuAdapter(std::move(cfg),"yoloface_bpu"){}
   bool SquareSnapshotCrop() const override{return true;}
   std::string TaskType() const override{return "face_detection";}
+};
+class Yolo26PoseBpuAdapter final : public BpuChannelAdapter {
+ public:
+  explicit Yolo26PoseBpuAdapter(config::ModelConfig cfg)
+      :BpuChannelAdapter(RequireModelFamily(std::move(cfg),kPoseAdapter)){}
+  std::string TaskType() const override{return "pose_estimation";}
+  std::vector<Detection> Postprocess(const std::vector<float>& values,
+      const pipeline::ScaleInfo& scale,double confidence,double iou,int maximum) override {
+    const auto& port=ModelDescription().at("outputs").at(0);
+    const ainvr::DenseTensor tensor{port.at("name"),port.at("shape").get<std::vector<int64_t>>(),values};
+    return ainvr::DecodeYolo26Pose(tensor,scale,ModelManifest().at("hbm_sha256").get<std::string>(),
+        {confidence,iou,maximum});
+  }
 };
 class ScrfdBpuAdapter final : public BpuChannelAdapter {
  public:
@@ -112,6 +126,7 @@ inline std::unique_ptr<BpuChannelAdapter> CreateBpuRuntimeAdapter(const config::
   if(cfg.adapter=="yolo26_bpu")return std::make_unique<Yolo26BpuAdapter>(cfg);
   if(cfg.adapter=="yoloface_bpu")return std::make_unique<YoloFaceBpuAdapter>(cfg);
   if(cfg.adapter=="scrfd_bpu")return std::make_unique<ScrfdBpuAdapter>(cfg);
+  if(cfg.adapter==kPoseAdapter)return std::make_unique<Yolo26PoseBpuAdapter>(cfg);
   if(cfg.adapter=="yoloe_bpu"){
     if(cfg.name=="yoloe-26x-32")return std::make_unique<Yoloe32BpuAdapter>(cfg);
     if(cfg.name=="yoloe-26x-2")return std::make_unique<Yoloe2BpuAdapter>(cfg);

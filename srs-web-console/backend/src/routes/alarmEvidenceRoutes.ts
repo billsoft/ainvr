@@ -16,20 +16,46 @@ const availableSchema=z.object({state:z.literal('available'),evidence:z.object({
 const unavailableSchema=z.object({state:z.literal('unavailable'),reason:z.enum(['not_saved_or_expired','ambiguous_frame','archive_unavailable','invalid_archive_record'])});
 export async function alarmEvidenceRoutes(app:FastifyInstance,options:Options){
  const handle=(image:boolean,internal=false)=>async(req:FastifyRequest,reply:FastifyReply)=>{
-  if(internal?!await options.internalPrincipal?.(req):!await options.principal(req))return reply.code(internal?403:401).send({error:{code:'unauthorized',message:'没有证据读取权限'}});
+  const principal=internal?null:await options.principal(req);
+  if(internal?!await options.internalPrincipal?.(req):!principal)return reply.code(internal?403:401).send({error:{code:'unauthorized',message:'没有证据读取权限'}});
   const id=(req.params as {id:string}).id,query=req.query as Record<string,unknown>;
-  if(!/^[a-f0-9]{64}$/.test(id)||Object.keys(query).some(k=>!image||k!=='variant')||query.variant!==undefined&&(typeof query.variant!=='string'||!['processed','original'].includes(query.variant)))return reply.code(422).send({error:{code:'invalid_evidence_query',message:'证据参数无效'}});
+  if(!/^[a-f0-9]{64}$/.test(id)||Object.keys(query).some(k=>!image||!['variant','frame'].includes(k))||query.variant!==undefined&&(typeof query.variant!=='string'||!['processed','original'].includes(query.variant))||query.frame!==undefined&&(typeof query.frame!=='string'||!query.frame.length||query.frame.length>256))return reply.code(422).send({error:{code:'invalid_evidence_query',message:'证据参数无效'}});
   const variant=query.variant??'processed';
   try{
    const connection=await options.connection();if(!connection)return reply.code(503).send({error:{code:'alarm_unavailable',message:'告警服务尚未就绪'}});
-   const response=await fetch(endpoint(connection,`/v1/behavior-events/${id}`),{headers:{authorization:`Bearer ${connection.apiToken}`},redirect:'error',signal:AbortSignal.timeout(connection.timeoutMs)});
+   // External reads retain the validated console grant; internal collectors
+   // retain ordinary-only service access. Client actor headers are never copied.
+   const alarmHeaders:Record<string,string>={authorization:`Bearer ${connection.apiToken}`,...(principal?{'x-ainvr-actor':principal}:{})};
+   const response=await fetch(endpoint(connection,`/v1/behavior-events/${id}`),{headers:alarmHeaders,redirect:'error',signal:AbortSignal.timeout(connection.timeoutMs)});
    if(response.status===404)return reply.code(404).send({error:{code:'not_found',message:'行为记录不存在或已过保留期'}});
    if(!response.ok)throw Error('Alarm evidence identity unavailable');
-   const fact=factSchema.parse(await limitedJson(response));if(fact.event_id!==id)throw Error('Behavior identity mismatch');
+   const rawFact=await limitedJson(response);
+   const regionFact=z.object({event_id:z.literal(id),analysis_evidence:z.object({region_state:z.object({semantics:z.literal('region-state-v1')})})}).safeParse(rawFact);
+   if(regionFact.success){
+    // No invented target or lookup against current video. Region images already
+    // belong to the immutable alarm handoff, independent of recognition history.
+    if(internal)return reply.code(404).send({error:{code:'region_has_no_target_crop'}});
+    const saved=await fetch(endpoint(connection,`/v1/behavior-events/${id}/evidence`),{headers:alarmHeaders,redirect:'error',signal:AbortSignal.timeout(connection.timeoutMs)});
+    if(!saved.ok)throw Error('Region evidence unavailable');
+    const raw=await limitedJson(saved);
+    const missing=z.object({state:z.literal('unavailable'),reason:z.enum(['retention','stored_file_missing','frame_identity_unavailable'])}).safeParse(raw);
+    if(missing.success)return image?reply.code(404).send({error:{code:'evidence_unavailable'}}):reply.send({schema_version:'1.0',...missing.data});
+    const value=regionEvidenceSchema.parse(raw),e=value.evidence;
+    if(query.frame!==undefined&&!e.frames.some(f=>f.frame_id===query.frame))return reply.code(422).send({error:{code:'invalid_frame'}});
+    reply.header('Cache-Control','private, no-store');
+    if(!image)return reply.send({schema_version:'1.0',...value});
+    const target=endpoint(connection,`/v1/behavior-events/${id}/evidence/image`);target.searchParams.set('variant',String(variant));
+    if(query.frame!==undefined)target.searchParams.set('frame',String(query.frame));
+    const jpeg=await fetch(target,{headers:alarmHeaders,redirect:'error',signal:AbortSignal.timeout(15000)});
+    if(jpeg.status===404)return reply.code(404).send({error:{code:'evidence_expired'}});
+    return reply.type('image/jpeg').send(await jpegData(jpeg));
+   }
+   if(query.frame!==undefined)return reply.code(422).send({error:{code:'invalid_frame'}});
+   const fact=factSchema.parse(rawFact);if(fact.event_id!==id)throw Error('Behavior identity mismatch');
    if(!fact.source_frame_index){if(image)return reply.code(404).send({error:{code:'frame_identity_unavailable',message:'此记录没有完整原帧身份'}});return reply.send({schema_version:'1.0',state:'unavailable',reason:'frame_identity_unavailable'});}
    if(['.','..'].includes(fact.channel_id))throw Error('Invalid channel identity');
    if(!internal){
-    const saved=await fetch(endpoint(connection,`/v1/behavior-events/${id}/evidence`),{headers:{authorization:`Bearer ${connection.apiToken}`},redirect:'error',signal:AbortSignal.timeout(connection.timeoutMs)});
+    const saved=await fetch(endpoint(connection,`/v1/behavior-events/${id}/evidence`),{headers:alarmHeaders,redirect:'error',signal:AbortSignal.timeout(connection.timeoutMs)});
     if(saved.ok){
      const raw=await limitedJson(saved),stateName=z.object({state:z.string()}).parse(raw).state;
      if(stateName==='available'){
@@ -39,7 +65,7 @@ export async function alarmEvidenceRoutes(app:FastifyInstance,options:Options){
       if(!image)return reply.send({schema_version:'1.0',state:'available',evidence:retained});
       if(!retained.variants.includes(variant as 'original'|'processed'))return reply.code(404).send({error:{code:'variant_unavailable',message:'未保留所选截图版本'}});
       const target=endpoint(connection,`/v1/behavior-events/${id}/evidence/image`);target.searchParams.set('variant',String(variant));
-      const jpeg=await fetch(target,{headers:{authorization:`Bearer ${connection.apiToken}`},redirect:'error',signal:AbortSignal.timeout(15000)});
+      const jpeg=await fetch(target,{headers:alarmHeaders,redirect:'error',signal:AbortSignal.timeout(15000)});
       if(jpeg.status===404)return reply.code(404).send({error:{code:'evidence_expired',message:'独立保存的截图已不可用'}});
       return reply.type('image/jpeg').send(await jpegData(jpeg));
      }
@@ -79,6 +105,13 @@ export async function alarmEvidenceRoutes(app:FastifyInstance,options:Options){
  app.get('/internal/alarm-evidence/:id',handle(false,true));
  app.get('/internal/alarm-evidence/:id/image',handle(true,true));
 }
+
+const regionEvidenceSchema=z.object({state:z.literal('available'),evidence:z.object({
+ kind:z.literal('region_frame'),variants:z.tuple([z.literal('processed')]),image_width:z.number().int().positive().max(16384),image_height:z.number().int().positive().max(16384),
+ pinned:z.literal(true),retention:z.literal('alarm'),expires_at:z.string().datetime({offset:true}),
+ frames:z.array(z.object({frame_id:text,captured_at:z.string().datetime({offset:true}),count:z.number().int().nonnegative()})).min(2).max(3),
+ region:z.object({points:z.array(z.tuple([z.number().min(0).max(1),z.number().min(0).max(1)])).min(3).max(64),erp_wrap:z.boolean()}).nullable(),
+})});
 
 function assertMatches(evidence:z.infer<typeof availableSchema>['evidence'],fact:z.infer<typeof factSchema>){
  if(evidence.channel_id!==fact.channel_id||evidence.track_id!==fact.track_id||evidence.stream_session_id!==fact.stream_session_id||evidence.source_pts_ns!==fact.source_pts_ns||evidence.source_frame_index!==fact.source_frame_index||evidence.frame_width!==fact.analysis_evidence.source.width||evidence.frame_height!==fact.analysis_evidence.source.height||evidence.label_id&&evidence.label_id!==fact.label_id)throw Error('Evidence does not match original observation');
