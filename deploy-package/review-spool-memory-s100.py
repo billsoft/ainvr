@@ -201,8 +201,14 @@ def install_ai(binary, backup):
 def apply(size, binary):
     owner = pwd.getpwnam('sunrise')
     if is_memory_mount():
+        # Resize in place: no restart. The AI cache re-reads the spool size on every
+        # admission, so its budget follows at once. Shrinking below the space in use
+        # is refused by the kernel and leaves the old size.
+        before = shutil.disk_usage(RAW).total
+        run('mount', '-o', 'remount,size=' + size, str(RAW))
         write_config(size, owner)
-        return {'state': 'already_memory', 'size': size}
+        return {'state': 'resized' if shutil.disk_usage(RAW).total != before else 'already_memory',
+                'size': size, 'bytes': shutil.disk_usage(RAW).total}
     if not binary:
         raise RuntimeError('--install-ai is required: the AI service must budget the spool by its size')
     stamp = time.strftime('%Y%m%d-%H%M%S')

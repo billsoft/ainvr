@@ -5,6 +5,7 @@ import {selectVisualEvidence,missingVisual} from './review-visual-evidence.mjs';
 import {isStorageBusy} from './review-storage.mjs';
 import {recordingFailureReason} from './recording-evidence.mjs';
 import {compactProof} from './compact-evidence.mjs';
+import {SpoolRefusalWatch} from './review-spool-watch.mjs';
 import {readFile,mkdir,writeFile,rename,stat,unlink,readdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {join,resolve} from 'node:path';
@@ -122,6 +123,8 @@ export class ReviewContext {
   }}
  }
  async step(){
+  this.spoolWatch??=new SpoolRefusalWatch({read:()=>readFile(join(this.root,'cache-status.json'),'utf8')});
+  await this.spoolWatch.check();
   await this.publish();await this.processCaptureJobs();
   const now=this.clock();
   const rows=await this.repository.events.find({'handling.state':'unacknowledged','review.state':'queued','review.context_state':{$exists:false},$or:[{'review.context_next_at':{$exists:false}},{'review.context_next_at':{$lte:now}}]}).sort({occurred_at:1}).limit(100).toArray();
