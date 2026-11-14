@@ -125,7 +125,8 @@ int main(int argc, char** argv) {
     assert(journal.Status().at("async_failures") == 0);
     assert(journal.Status().value("write_batches", uint64_t(1000)) <= 3);
     const auto state_offset = std::stoull(ReadJson(channel_dir(r) / "producer.json").at("next_offset").get<std::string>());
-    assert(state_offset == 40);
+    // A reserved ceiling while running (offsets are reserved in blocks); exact after a graceful stop.
+    assert(state_offset >= 40 && state_offset <= 40 + 4096);
     for (uint64_t o = 0; o < 40; ++o) {
       const auto j = ReadJson(channel_dir(r) / Name(o));
       assert(j.at("offset") == std::to_string(o));

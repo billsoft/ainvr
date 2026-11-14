@@ -16,6 +16,7 @@
 #include <limits>
 #include <cmath>
 #include <mutex>
+#include <condition_variable>
 #include <string_view>
 #include <chrono>
 #include <memory>
@@ -48,10 +49,20 @@ class ObservationJournal {
     unsigned char bytes[SHA256_DIGEST_LENGTH];SHA256(reinterpret_cast<const unsigned char*>(value.data()),value.size(),bytes);
     std::ostringstream out;for(auto b:bytes)out<<std::hex<<std::setw(2)<<std::setfill('0')<<int(b);return out.str();
   }
-  ObservationJournal(const std::string& root,const std::string& channel,size_t max_bytes=64*1024*1024,size_t max_records=10000,uintmax_t min_free_bytes=uintmax_t(2)*1024*1024*1024,std::function<void()> before_write={})
-    :path_(std::filesystem::path(root)/Hash(channel)),channel_(channel),max_bytes_(max_bytes),max_records_(max_records),min_free_bytes_(min_free_bytes) {
+  // SSD wear (.190: ~56 syncs/s and ~1.9 MB/s of device writes for ~0.14 MB/s of
+  // records at 15 frames/s): records staged within `group_window` of the oldest queued
+  // one share a commit, and offsets are reserved `offset_reservation` at a time, so
+  // producer.json is rewritten once per block instead of once per batch. A crash
+  // resumes after the reserved block (a visible offset gap, which the consumer already
+  // handles); a graceful stop saves the exact offset.
+  ObservationJournal(const std::string& root,const std::string& channel,size_t max_bytes=64*1024*1024,size_t max_records=10000,uintmax_t min_free_bytes=uintmax_t(2)*1024*1024*1024,std::function<void()> before_write={},
+                     std::chrono::milliseconds group_window=std::chrono::milliseconds(200),uint64_t offset_reservation=4096)
+    :path_(std::filesystem::path(root)/Hash(channel)),channel_(channel),max_bytes_(max_bytes),max_records_(max_records),min_free_bytes_(min_free_bytes),
+     group_window_(group_window),reservation_(offset_reservation) {
     before_write_=std::move(before_write);
     if(!std::filesystem::path(root).is_absolute()||channel.empty()||channel.size()>256)throw std::invalid_argument("Invalid observation journal location");
+    if(group_window_<std::chrono::milliseconds(0)||group_window_>std::chrono::seconds(2)||reservation_<1||reservation_>1000000)
+      throw std::invalid_argument("Invalid observation journal commit policy");
     std::filesystem::create_directories(path_);
     if(std::filesystem::is_symlink(path_)||!std::filesystem::is_directory(path_))throw std::runtime_error("Invalid observation journal directory");
     if(chmod(path_.c_str(),0700))throw std::runtime_error("Observation journal permissions failed");
@@ -66,6 +77,7 @@ class ObservationJournal {
         producer_=saved.at("producer_id").get<std::string>();
         const auto text=saved.at("next_offset").get<std::string>();size_t used=0;next_=std::stoull(text,&used);
         if(used!=text.size()||text!=std::to_string(next_.load())||producer_.size()!=64)throw std::runtime_error("Invalid observation identity");
+        reserved_=next_.load(); // a reserved ceiling after a crash, the exact offset after a graceful stop
       }else{
         // Never invent a new producer identity over orphaned pending records.
         for(const auto& entry:std::filesystem::directory_iterator(path_))if(IsRecord(entry.path()))throw std::runtime_error("Observation identity missing");
@@ -78,7 +90,15 @@ class ObservationJournal {
     writer_=std::make_unique<output::ArchiveExecutor>(1,256);
     }catch(...){close(lock_);lock_=-1;throw;}
   }
-  ~ObservationJournal(){writer_.reset();if(lock_>=0)close(lock_);}
+  ~ObservationJournal(){
+    {std::lock_guard q(queue_mutex_);stopping_=true;}queue_ready_.notify_all(); // drain without waiting out the window
+    writer_.reset();
+    // Every queued record is written or failed: save the exact offset, so an ordinary
+    // restart continues without a gap. Failure keeps the reserved ceiling (safe).
+    try{std::lock_guard io(io_mutex_);if(reserved_!=next_.load()){const auto ceiling=reserved_;reserved_=next_.load();
+      try{SaveState();}catch(...){reserved_=ceiling;}}}catch(...){}
+    if(lock_>=0)close(lock_);
+  }
   ObservationJournal(const ObservationJournal&)=delete;
   ObservationJournal& operator=(const ObservationJournal&)=delete;
   // Validates and accounts synchronously (cheap), then hands the DURABLE write to one
@@ -170,7 +190,8 @@ class ObservationJournal {
     // Hand the record to the writer FIFO in Stage order (still under the producer
     // lock), so records that arrive while the writer is busy form the next batch.
     auto record=std::make_shared<nlohmann::json>(std::move(value));
-    {std::lock_guard q(queue_mutex_);queue_.push_back({record,bound,std::move(evidence)});}
+    {std::lock_guard q(queue_mutex_);queue_.push_back({record,bound,std::move(evidence),std::chrono::steady_clock::now()});
+     if(queue_.size()>=kGroupRecords)queue_ready_.notify_one();}
     guard.unlock();
     // One task per record keeps the executor bound as the backpressure limit: a full
     // queue blocks here, never drops. A task finding its record already committed by
@@ -195,11 +216,18 @@ class ObservationJournal {
   nlohmann::json Status() const {std::lock_guard guard(mutex_);return {{"producer_id",producer_},{"next_offset",std::to_string(next_.load())},{"staged",staged_.load()},{"pending_upper_bound",usage_records_},{"bytes_upper_bound",usage_bytes_},{"full_rejections",full_rejections_},{"queued",inflight_records_.load()},{"async_failures",async_failures_.load()},{"write_batches",write_batches_.load()}};}
  private:
   static bool IsRecord(const std::filesystem::path& path){const auto name=path.filename().string();return name.size()==25&&name.substr(20)==".json"&&name.find_first_not_of("0123456789")>=20;}
-  struct Queued {std::shared_ptr<nlohmann::json> record;size_t bound=0;std::shared_future<bool> evidence;};
+  struct Queued {std::shared_ptr<nlohmann::json> record;size_t bound=0;std::shared_future<bool> evidence;std::chrono::steady_clock::time_point staged{};};
+  static constexpr size_t kGroupRecords=16;
   // Writer-thread only (single FIFO worker).
   void DrainQueue(){
     std::vector<Queued> batch;
-    {std::lock_guard q(queue_mutex_);batch.assign(std::make_move_iterator(queue_.begin()),std::make_move_iterator(queue_.end()));queue_.clear();}
+    {std::unique_lock q(queue_mutex_);
+     if(queue_.empty())return;
+     // Group commit: wait until the oldest queued record is `group_window_` old, the
+     // batch is large enough, or the journal is stopping. Order is unchanged.
+     const auto due=queue_.front().staged+group_window_;
+     queue_ready_.wait_until(q,due,[&]{return stopping_||queue_.size()>=kGroupRecords;});
+     batch.assign(std::make_move_iterator(queue_.begin()),std::make_move_iterator(queue_.end()));queue_.clear();}
     if(batch.empty())return;
     // Receipts are awaited in order: a later frame never overtakes a pending one.
     // Exceptions/broken receipts cannot claim durability.
@@ -237,7 +265,13 @@ class ObservationJournal {
       if(outs.empty()){Fail(failures);return;}
       ++write_batches_;
       next_.store(offset);
-      {const auto t0=std::chrono::steady_clock::now();SaveState(); // Only accepted records reserve offsets durably.
+      // producer.json holds a reserved ceiling, never behind a written record. It is
+      // rewritten only when this batch crosses the block reserved last time.
+      if(offset>reserved_){
+        const auto t0=std::chrono::steady_clock::now();
+        const auto previous=reserved_;
+        reserved_=offset>std::numeric_limits<uint64_t>::max()-reservation_?std::numeric_limits<uint64_t>::max():offset+reservation_;
+        try{SaveState();}catch(...){reserved_=previous;throw;}
         JournalDiag().Note(true,std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count());}
       const auto t0=std::chrono::steady_clock::now();
       for(auto& out:outs){
@@ -307,12 +341,15 @@ class ObservationJournal {
     const auto name=path.filename().string();constexpr std::string_view suffix=".writer-tmp";
     return name.size()>suffix.size()&&name.compare(name.size()-suffix.size(),suffix.size(),suffix)==0;
   }
-  void SaveState(){AtomicWrite(path_/"producer.json",nlohmann::json({{"schema_version","1.0"},{"channel_id",channel_},{"producer_id",producer_},{"next_offset",std::to_string(next_.load())}}).dump());}
+  void SaveState(){AtomicWrite(path_/"producer.json",nlohmann::json({{"schema_version","1.0"},{"channel_id",channel_},{"producer_id",producer_},{"next_offset",std::to_string(reserved_)}}).dump());}
   std::filesystem::path path_;std::string channel_,producer_;size_t max_bytes_,max_records_;uintmax_t min_free_bytes_;
   size_t usage_bytes_=0,usage_records_=0;uint64_t full_rejections_=0;
   std::chrono::steady_clock::time_point usage_checked_;
   std::atomic<uint64_t> next_{0},staged_{0},async_failures_{0},write_batches_{0};
   std::mutex queue_mutex_;std::deque<Queued> queue_; // records handed to the writer, FIFO
+  std::condition_variable queue_ready_;bool stopping_=false; // guarded by queue_mutex_
+  std::chrono::milliseconds group_window_;uint64_t reservation_;
+  uint64_t reserved_=0; // durable ceiling in producer.json (guarded by io_mutex_)
   std::atomic<size_t> inflight_records_{0},inflight_bytes_{0};
   int lock_=-1;mutable std::mutex mutex_,io_mutex_;
   std::function<void()> before_write_; // test seam: gate the writer thread
