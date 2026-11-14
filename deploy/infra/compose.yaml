@@ -81,7 +81,10 @@ services:
     network_mode: host
     container_name: ainvr-mongo
     restart: unless-stopped
-    command: ["mongod", "--auth", "--bind_ip", "127.0.0.1", "--wiredTigerCacheSizeGB", "0.5", "--wiredTigerCollectionBlockCompressor", "zstd"]
+    # journalCommitInterval 500 ms (the maximum): every forced journal flush costs the SSD
+    # a page-sized write. Writes that must survive power loss ask for j:true and are
+    # flushed at once regardless; unjournaled writes may lose their last 0.5 s.
+    command: ["mongod", "--auth", "--bind_ip", "127.0.0.1", "--wiredTigerCacheSizeGB", "0.5", "--wiredTigerCollectionBlockCompressor", "zstd", "--journalCommitInterval", "500"]
     environment:
       MONGO_INITDB_ROOT_USERNAME: ainvr_admin
       MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/mongo_admin_password

@@ -36,22 +36,25 @@ test('Mongo checkpoint replay, active race, restart recovery and dwell-only capa
     const restarted=new ObservationConsumer(repo);assert.equal((await restarted.consume(envelope(3,{x:.9}))).outcome,'already_consumed');
     assert.equal(await db.collection('region_dwell_visits').countDocuments(),1);
     await restarted.consume(envelope(4,{x:.9}));assert.equal(await db.collection('region_dwell_visits').countDocuments(),1);
-    // Crash after preparing the first fresh frame, then recover it repeatedly.
-    const prepareCrash=new ObservationConsumer(repo,{hook:async point=>{if(point==='prepared')throw Error('prepared_crash');}});
+    // Crash just before committing the first fresh frame. It materializes nothing
+    // (no prepared outcome is stored), so the restarted worker evaluates it again.
+    const prepareCrash=new ObservationConsumer(repo,{hook:async point=>{if(point==='before_checkpoint')throw Error('prepared_crash');}});
     await assert.rejects(prepareCrash.consume(envelope(5)),/prepared_crash/);
-    const again=new ObservationConsumer(repo);assert.equal((await again.consume(envelope(5))).outcome,'already_consumed');
+    assert.equal((await repo.checkpoints.findOne({channel_id:'c'})).pending,null);
+    const again=new ObservationConsumer(repo);assert.equal((await again.consume(envelope(5))).outcome,'consumed');
+    assert.equal((await again.consume(envelope(5))).outcome,'already_consumed');
     await new ObservationConsumer(repo).consume(envelope(6));
     assert.equal(await db.collection('region_dwell_visits').countDocuments(),1);
     assert.ok((await repo.checkpoints.findOne({channel_id:'c'})).last_issues.includes('dwell_restart_unmeasured'));
-    // Exit the actual worker process after prepare, without releasing its lease.
+    // Exit the actual worker process just before its commit, without releasing its lease.
     const childCode=`import {MongoClient} from 'mongodb';import {AlarmRepository} from './src/repository.mjs';import {ObservationConsumer} from './src/ingestion.mjs';
       const client=new MongoClient(process.env.AINVR_DWELL_TEST_MONGO_URI);await client.connect();
       const repo=new AlarmRepository(client.db(process.env.DWELL_TEST_DB));repo.listRules=async()=>[JSON.parse(process.env.DWELL_TEST_RULE)];
-      const consumer=new ObservationConsumer(repo,{now:()=>10000,leaseMs:10,hook:async point=>{if(point==='prepared')process.exit(73)}});
+      const consumer=new ObservationConsumer(repo,{now:()=>10000,leaseMs:10,hook:async point=>{if(point==='before_checkpoint')process.exit(73)}});
       await consumer.consume(JSON.parse(process.env.DWELL_TEST_ENVELOPE));process.exit(74);`;
     const child=spawnSync(process.execPath,['--input-type=module','-e',childCode],{env:{...process.env,DWELL_TEST_DB:db.databaseName,DWELL_TEST_RULE:JSON.stringify(rule),DWELL_TEST_ENVELOPE:JSON.stringify(envelope(7))},timeout:10000});
-    assert.equal(child.status,73,'worker must exit after durable prepare');
-    assert.equal((await new ObservationConsumer(repo).consume(envelope(7))).outcome,'already_consumed');
+    assert.equal(child.status,73,'worker must exit before its commit');
+    assert.equal((await new ObservationConsumer(repo).consume(envelope(7))).outcome,'consumed');
     await new ObservationConsumer(repo).consume(envelope(8));
     assert.equal(await db.collection('region_dwell_visits').countDocuments(),1);
     assert.ok((await repo.checkpoints.findOne({channel_id:'c'})).last_issues.includes('dwell_restart_unmeasured'));

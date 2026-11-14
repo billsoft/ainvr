@@ -72,6 +72,11 @@ export class ObservationPump {
   constructor(root,consumer,repository){
     if(!path.isAbsolute(root)||root.length>4096)throw Error('Absolute observation root required');
     this.root=root;this.consumer=consumer;this.repository=repository;this.stopping=false;this.concurrency=8;this.running=null;this.issues=new Map();this.blockedLog=new Map();this.pendingDirectorySyncs=new Set();
+    // Durability window. A consumer with makeDurable() commits without forcing
+    // Mongo's journal; its records stay here (channel directory -> names) until
+    // one barrier covers the window, so a crash replays them. Flushes then no
+    // longer grow with channels x frame rate.
+    this.windowMs=1000;this.maxAwaiting=4096;this.awaiting=new Map();this.awaitingSince=null;
     this.status={state:'waiting',pending:0,consumed:0,ignored:0,failed:0,last_error:null,last_persisted_at:null,channel_issues:[]};
   }
   tick(){if(this.running)return this.running;this.running=this.scan().finally(()=>{this.running=null});return this.running;}
@@ -96,13 +101,15 @@ export class ObservationPump {
     // channel stays strictly ordered. One-at-a-time capped ALL channels together
     // near 19 frames/s (8 channels x 3 FPS needs 24).
     const channelDirectories=directories.filter(d=>d.isDirectory()&&/^[a-f0-9]{64}$/.test(d.name));
+    const later=typeof this.consumer.makeDurable==='function';
     const consumeChannel=async directory=>{
       const folder=path.join(this.root,directory.name);
-      const records=(await readdir(folder)).filter(n=>recordName.test(n)).sort();pending+=records.length;
+      const held=this.awaiting.get(directory.name);
+      const records=(await readdir(folder)).filter(n=>recordName.test(n)&&!held?.has(n)).sort();pending+=records.length;
       // Fair bounded batches keep one busy channel from starving another.
       let step='read',sample,reason,removed=false;
       for(const name of records.slice(0,100)){
-        if(this.stopping)break;
+        if(this.stopping||(later&&this.awaitingCount()>=this.maxAwaiting))break;
         const file=path.join(folder,name);
         try{
           step='read';reason=null;sample=null;
@@ -112,15 +119,21 @@ export class ObservationPump {
           step='convert';
           const converted=observationEnvelope(sample,snapshot.rules);
           if(converted.waiting){reason=converted.waiting;throw Error('Source binding not configured');}
-          if(converted.envelope){step='consume';const result=await this.consumer.consume(converted.envelope,{deferAcknowledgement:true});if(result.durable!==true)throw Error('Consumption not durable');this.status.consumed++;this.status.last_persisted_at=new Date().toISOString();}
+          if(converted.envelope){step='consume';const result=await this.consumer.consume(converted.envelope,{deferAcknowledgement:true,...(later?{deferDurability:true}:{})});if(result.durable!==true&&!(later&&result.deferred===true))throw Error('Consumption not durable');this.status.consumed++;this.status.last_persisted_at=new Date().toISOString();}
           else {this.status.ignored++;this.status.last_ignored_reason=converted.ignored;
             if(this.repository.reviewContext?.root)await new EvidenceSpool(this.repository.reviewContext.root).acknowledge(sample,{defer:true});
           }
           if(converted.ignored==='source_binding_mismatch')this.rememberIssue(directory.name,sample,'source_binding_mismatch','ignored');
           else this.issues.delete(directory.name);
           step='acknowledge';
-          await unlink(file).catch(e=>{if(e.code!=='ENOENT')throw e;});
-          removed=true;
+          if(later){
+            // Kept in order with its channel: an ignored record waits too.
+            let names=this.awaiting.get(directory.name);if(!names)this.awaiting.set(directory.name,names=new Set());
+            names.add(name);this.awaitingSince??=Date.now();
+          }else{
+            await unlink(file).catch(e=>{if(e.code!=='ENOENT')throw e;});
+            removed=true;
+          }
           pending--;
         }catch(e){
           if(e.code==='ENOENT')continue;
@@ -148,12 +161,36 @@ export class ObservationPump {
     await Promise.all(Array.from({length:Math.min(this.concurrency,queue.length)},async()=>{
       for(let directory;!this.stopping&&(directory=queue.shift());)await consumeChannel(directory);
     }));
+    if(this.awaitingCount()&&(Date.now()-this.awaitingSince>=this.windowMs||this.awaitingCount()>=this.maxAwaiting)&&!await this.settleWindow())failed=true;
     const present=new Set(directories.filter(d=>d.isDirectory()).map(d=>d.name));
     for(const key of this.issues.keys())if(!present.has(key))this.issues.delete(key);
     for(const key of this.pendingDirectorySyncs)if(!present.has(key))this.pendingDirectorySyncs.delete(key);
     this.status.channel_issues=[...this.issues.values()];
     this.status.pending=pending;this.status.state=failed||this.issues.size?'degraded':'ready';
     if(!failed)this.status.last_error=this.issues.size?'source_binding_mismatch':null;
+  }
+  awaitingCount(){let n=0;for(const names of this.awaiting.values())n+=names.size;return n;}
+  // Barrier first, then ACKs, deletions and one directory sync per channel. On
+  // any failure the remaining records stay and the next scan retries.
+  async settleWindow(){
+    try{await this.consumer.makeDurable();}
+    catch{this.status.failed++;this.status.last_error='durability_pending';return false;}
+    let ok=true;
+    try{
+      await this.consumer.flushAcknowledgements?.();
+      if(this.repository.reviewContext?.root)await new EvidenceSpool(this.repository.reviewContext.root).flushAcknowledgements();
+    }catch{this.status.failed++;this.status.last_error='acknowledgement_pending';return false;}
+    for(const [key,names] of this.awaiting){
+      const folder=path.join(this.root,key);
+      try{
+        for(const name of [...names]){await unlink(path.join(folder,name)).catch(e=>{if(e.code!=='ENOENT')throw e;});names.delete(name);}
+        this.awaiting.delete(key);
+        await this.syncDirectory(folder);
+        if(this.issues.get(key)?.reason==='acknowledgement_pending')this.issues.delete(key);
+      }catch{ok=false;this.pendingDirectorySyncs.add(key);this.status.failed++;this.status.last_error='acknowledgement_pending';}
+    }
+    if(!this.awaitingCount())this.awaitingSince=null;
+    return ok;
   }
   async syncDirectory(folder){const handle=await open(folder,'r');try{await handle.sync();}finally{await handle.close();}}
   // The status API only carries a coarse reason. Write the real cause to the service log, once per
@@ -176,5 +213,5 @@ export class ObservationPump {
     while(this.issues.size>128)this.issues.delete(this.issues.keys().next().value);
   }
   run(){const next=async()=>{if(this.stopping)return;try{await this.tick();}catch{this.status.state='degraded';this.status.failed++;this.status.last_error='journal_scan_failed';}if(!this.stopping){this.timer=setTimeout(next,100);this.timer.unref();}};void next();}
-  async close(){this.stopping=true;clearTimeout(this.timer);await this.running;}
+  async close(){this.stopping=true;clearTimeout(this.timer);await this.running;if(this.awaitingCount())await this.settleWindow();}
 }

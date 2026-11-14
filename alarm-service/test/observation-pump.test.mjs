@@ -113,6 +113,53 @@ test('pump defers per-frame ACK syncs and commits them before journal deletions'
  }finally{await rm(root,{recursive:true,force:true});}
 });
 
+// A durable-later consumer commits frames without forcing Mongo's journal; one
+// barrier per window makes them durable. Until then every record stays on SSD.
+const windowFixture=async(fn)=>{
+ const root=await mkdtemp(path.join(tmpdir(),'ainvr-window-')),dir=path.join(root,rawHash('processor'));
+ try{
+  await mkdir(dir);
+  const put=async offset=>writeFile(path.join(dir,offset.padStart(20,'0')+'.json'),JSON.stringify({...sample,offset}));
+  const order=[],options=[];let failBarrier=0;
+  const consumer={consume:async(e,o)=>{options.push(o);order.push('consume:'+e.offset);return {durable:false,deferred:true};},
+   makeDurable:async()=>{if(failBarrier>0){failBarrier--;throw Error('journal unavailable');}order.push('barrier');return true;},
+   flushAcknowledgements:async()=>{order.push('flush');}};
+  const pump=new ObservationPump(root,consumer,{ruleSnapshots:{current:async()=>({rules:[rule]})}});
+  pump.syncDirectory=async()=>{order.push('sync');};
+  await fn({pump,put,order,options,files:async()=>(await readdir(dir)).sort(),failNext:()=>{failBarrier++;}});
+ }finally{await rm(root,{recursive:true,force:true});}
+};
+test('records of a window are deleted only after one durability barrier, and acknowledgements follow it',()=>windowFixture(async({pump,put,order,options,files})=>{
+ pump.windowMs=60000;
+ for(const offset of ['0','1','2'])await put(offset);
+ await pump.tick();
+ assert.deepEqual(order,['consume:0','consume:1','consume:2']);
+ assert.ok(options.every(o=>o?.deferAcknowledgement===true&&o?.deferDurability===true));
+ assert.equal((await files()).length,3,'nothing is deleted before the barrier');
+ await put('3');await pump.tick();
+ assert.deepEqual(order.slice(3),['consume:3'],'records awaiting the barrier are not consumed again');
+ pump.windowMs=0;await pump.tick();
+ assert.deepEqual(order.slice(4),['barrier','flush','sync']);
+ assert.deepEqual(await files(),[]);
+ assert.equal(pump.status.consumed,4);assert.equal(pump.status.state,'ready');
+ await pump.tick();assert.equal(order.filter(x=>x==='barrier').length,1,'an empty window needs no barrier');
+}));
+test('a failed durability barrier keeps every record and retries',()=>windowFixture(async({pump,put,order,files,failNext})=>{
+ pump.windowMs=0;await put('0');await put('1');failNext();
+ await pump.tick();
+ assert.equal((await files()).length,2);assert.equal(pump.status.state,'degraded');assert.equal(pump.status.last_error,'durability_pending');
+ assert.ok(!order.includes('flush'),'no acknowledgement before a durable commit');
+ await pump.tick();
+ assert.deepEqual(await files(),[]);assert.equal(pump.status.state,'ready');
+ assert.equal(order.filter(x=>x.startsWith('consume')).length,2,'the retry does not consume the records again');
+}));
+test('stopping makes the open window durable before deleting its records',()=>windowFixture(async({pump,put,order,files})=>{
+ pump.windowMs=60000;await put('0');await pump.tick();
+ assert.equal((await files()).length,1);
+ await pump.close();
+ assert.deepEqual(order,['consume:0','barrier','flush','sync']);assert.deepEqual(await files(),[]);
+}));
+
 test('channels are consumed concurrently, each in order, and a blocked channel never stalls another',async()=>{
  const root=await mkdtemp(path.join(tmpdir(),'ainvr-observations-'));
  try{

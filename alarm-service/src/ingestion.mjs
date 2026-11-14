@@ -32,16 +32,42 @@ export class ObservationConsumer {
     this.repository=repository;this.collection=repository.checkpoints;
     this.now=now;this.leaseMs=leaseMs;this.hook=hook;this.dwellStarted=new Set();
     this.spool=repository.reviewContext?.root?new EvidenceSpool(repository.reviewContext.root):null;
+    this.deferred={settles:new Map(),acks:[]};
   }
   // deferAcknowledgement: the caller commits ACKs with flushAcknowledgements()
   // before it durably deletes the input (journal pump). Others get durable ACKs.
+  // deferDurability: the caller still holds the input on SSD and calls
+  // makeDurable() before deleting it. Commits then skip forcing Mongo's journal
+  // (one forced flush per frame was most of Mongo's SSD writes); a crash loses
+  // only a suffix of commits, whose inputs are replayed. Releasing evidence pins
+  // and acknowledging source frames wait for the barrier: the AI cache drops a
+  // frame as soon as its ACK exists, durable or not.
   async consume(envelope,options={}) {
     const release=observationBarrier(this.repository).enter();
     try{return await this.consumeFrame(envelope,options);}finally{release();}
   }
   async flushAcknowledgements(){await this.spool?.flushAcknowledgements();}
+  // One journaled write makes every earlier commit durable (Mongo has one
+  // sequential journal). Returns false when nothing was waiting.
+  async makeDurable(){
+    const {settles,acks}=this.deferred;
+    if(!settles.size&&!acks.length)return false;
+    this.deferred={settles:new Map(),acks:[]};
+    try{
+      await this.repository.db.collection('alarm_journal_barrier').updateOne({_id:'consumer'},{$inc:{n:1},$set:{at:new Date(this.now())}},{upsert:true,writeConcern:{w:1,j:true}});
+      for(const [channel,{checkpoint,generation}] of settles)await this.spool?.settle(checkpoint,channel,generation);
+      for(const frame of acks)await this.spool?.acknowledge(frame,{defer:true});
+      await this.spool?.flushAcknowledgements();
+    }catch(error){
+      // Retried as a whole next time: settle and ACK are idempotent.
+      for(const [channel,value] of settles)if(!this.deferred.settles.has(channel))this.deferred.settles.set(channel,value);
+      this.deferred.acks.unshift(...acks);
+      throw error;
+    }
+    return true;
+  }
   async consumeFrame(envelope,options={}) {
-    const defer={defer:options.deferAcknowledgement===true};
+    const defer={defer:options.deferAcknowledgement===true,later:options.deferDurability===true};
     if(!envelope||envelope.schema_version!=='1.0')fail('invalid_envelope','Unsupported input envelope');
     const producer=identity(envelope.producer_id,'producer_id');
     const offset=integerText(envelope.offset,'offset');
@@ -56,15 +82,19 @@ export class ObservationConsumer {
     if(!doc)fail('consumer_busy','Channel is being processed; retry same input',503);
     const fence={channel_id:channel,lease_token:token,generation:doc.generation};
     const validFence=()=>({...fence,lease_until:{$gt:this.now()}});
+    // The commit of this input also releases the lease (one write less per frame).
+    const lease={held:true};
     try {
       if(doc.producer_id!==producer)fail('producer_changed','Producer identity changed; explicit migration required',409);
       // Complete a previously prepared outcome before reading current rules.
       // Old/stale workers can only materialize this same immutable outcome.
+      // The lease stays held: this input itself is still to be consumed.
       if(doc.pending)doc=await this.finish(doc,validFence,false,defer);
       if(doc.offset!==null&&offset<=BigInt(doc.offset)) {
         if(offset===BigInt(doc.offset)&&doc.fingerprint!==fingerprint)fail('offset_conflict','Same offset has different content',409);
-        await this.spool?.acknowledge(frame,defer);
-        return {durable:true,outcome:'already_consumed',offset:envelope.offset,events:[]};
+        // The stored offset may itself still await the barrier.
+        if(defer.later)this.deferred.acks.push(frame);else await this.spool?.acknowledge(frame,defer);
+        return {durable:!defer.later,deferred:defer.later,outcome:'already_consumed',offset:envelope.offset,events:[]};
       }
       const gap=doc.offset!==null&&offset!==BigInt(doc.offset)+1n;
       const baseRules=(await this.repository.listRules(channel)).map(({history,...r})=>r);
@@ -127,18 +157,49 @@ export class ObservationConsumer {
       }
       if(pendingBytes>8*1024*1024)fail('checkpoint_capacity','Channel state exceeds bounded checkpoint capacity',503);
       await this.spool?.protect(pending,channel,frame.stream_session_id,doc.generation);
-      const prepared=await this.collection.findOneAndUpdate({...validFence(),pending:null},{$set:{pending}},{returnDocument:'after'});
-      if(!prepared)fail('lease_expired','Input lease expired; retry same input',503);
-      await this.hook('prepared');
-      doc=await this.finish(prepared,validFence,true,defer);
+      // Most frames change only the channel state. Storing such an outcome first
+      // (prepare) protects nothing, as nothing is materialized from it; it only
+      // wrote a second full copy of the state per frame, ~70% of the service's
+      // Mongo journal. Lost before the commit, the frame is simply evaluated again,
+      // exactly like a frame lost before a prepare. Pins taken above are released
+      // by settle() of the generation that commits.
+      const quiet=!pending.events.length&&!pending.capture_intents.length&&!pending.dwell_facts.length&&!pending.heat_facts.length&&
+        !pending.coverage.length&&!pending.ended_episodes.length&&!pending.active_episodes.length;
+      if(quiet){
+        await this.hook('before_checkpoint');
+        doc=await this.commit({...validFence(),pending:null},pending,channel,doc.generation,defer,lease);
+      }else{
+        const prepared=await this.collection.findOneAndUpdate({...validFence(),pending:null},{$set:{pending}},{returnDocument:'after'});
+        if(!prepared)fail('lease_expired','Input lease expired; retry same input',503);
+        await this.hook('prepared');
+        doc=await this.finish(prepared,validFence,true,defer,lease);
+      }
       this.dwellStarted.add(channel);
       if(this.dwellStarted.size>1024)this.dwellStarted.delete(this.dwellStarted.values().next().value);
-      return {durable:true,outcome:'consumed',offset:doc.offset,events:[...new Set(pending.events.filter(e=>e.rule.snapshot.alarm_enabled!==false).map(e=>e.episode_id??e.alarm_id))],behavior_events:pending.events.flatMap(e=>(e.group_members??[e]).map(member=>behaviorEvent(member).event_id)),issues:result.issues};
+      return {durable:!defer.later,deferred:defer.later,outcome:'consumed',offset:doc.offset,events:[...new Set(pending.events.filter(e=>e.rule.snapshot.alarm_enabled!==false).map(e=>e.episode_id??e.alarm_id))],behavior_events:pending.events.flatMap(e=>(e.group_members??[e]).map(member=>behaviorEvent(member).event_id)),issues:result.issues};
     } finally {
-      await this.collection.updateOne(fence,{$set:{lease_until:0},$unset:{lease_token:''}});
+      if(lease.held)await this.collection.updateOne(fence,{$set:{lease_until:0},$unset:{lease_token:''}});
     }
   }
-  async finish(doc,fence,protectedInThisAttempt=false,defer={}) {
+  // Checkpoint commit, journaled unless durability is deferred to makeDurable().
+  // With `lease`, the same write releases it.
+  async commit(filter,p,channel,generation,defer,lease=null) {
+    const $set={offset:p.offset,fingerprint:p.fingerprint,checkpoint:p.checkpoint,pending:null,last_consumed_at:new Date(this.now()).toISOString(),last_issues:p.issues};
+    const update=lease?{$set:{...$set,lease_until:0},$unset:{lease_token:''}}:{$set};
+    const saved=await this.collection.findOneAndUpdate(filter,update,{returnDocument:'after',writeConcern:defer.later?{w:1}:{w:1,j:true}});
+    if(!saved)fail('lease_expired','Checkpoint not committed; retry same input',503);
+    if(lease)lease.held=false;
+    if(defer.later){
+      // settle() of the newest generation releases every older pin of the channel.
+      this.deferred.settles.set(channel,{checkpoint:p.checkpoint,generation});
+      if(p.source_frame)this.deferred.acks.push(p.source_frame);
+      return saved;
+    }
+    await this.spool?.settle(p.checkpoint,channel,generation);
+    if(p.source_frame)await this.spool?.acknowledge(p.source_frame,defer);
+    return saved;
+  }
+  async finish(doc,fence,protectedInThisAttempt=false,defer={},lease=null) {
     const p=doc.pending;
     // Prepared outcomes can be recovered by a different lease generation.
     // The normal path already fsynced these exact immutable pending keys before
@@ -235,12 +296,6 @@ export class ObservationConsumer {
     await this.hook('before_checkpoint');
     for(const episode of p.active_episodes??[])await this.repository.events.updateOne({alarm_id:episode.episode_id,'lifecycle.state':'active'},{$max:{last_seen_at:episode.last_seen_at}});
     for(const episode of p.ended_episodes??[])await this.repository.endEpisode(episode);
-    const saved=await this.collection.findOneAndUpdate({...fence(),'pending.fingerprint':p.fingerprint},
-      {$set:{offset:p.offset,fingerprint:p.fingerprint,checkpoint:p.checkpoint,pending:null,last_consumed_at:new Date(this.now()).toISOString(),last_issues:p.issues}},
-      {returnDocument:'after',writeConcern:{w:1,j:true}});
-    if(!saved)fail('lease_expired','Checkpoint not committed; retry same input',503);
-    await this.spool?.settle(p.checkpoint,doc.channel_id,doc.generation);
-    if(p.source_frame)await this.spool?.acknowledge(p.source_frame,defer);
-    return saved;
+    return this.commit({...fence(),'pending.fingerprint':p.fingerprint},p,doc.channel_id,doc.generation,defer,lease);
   }
 }
