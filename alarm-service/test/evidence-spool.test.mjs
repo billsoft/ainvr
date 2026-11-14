@@ -15,7 +15,10 @@ test('checkpoint-owned frames stay pinned; only durable consumed frames are ackn
   await spool.settle({session:'s',states:{a:{review_compact:{start:s}}}},'c');
   assert.equal((await readdir(join(root,'raw'))).filter(n=>n.endsWith('.pin')).length,1);
   await spool.acknowledge({...s,channel_id:'c',stream_session_id:'s',evidence_delivery:{schema_version:2,state:'durable'}});
-  assert.equal(await readFile(join(root,'raw',frameKey('c','s',s)+'.ack'),'utf8'),'1');
+  // Name-only marker: an empty ACK costs no 64 KiB page on a memory spool.
+  assert.equal(await readFile(join(root,'raw',frameKey('c','s',s)+'.ack'),'utf8'),'');
+  await spool.acknowledge({...s,frame_id:'s:2',source_frame_index:'2',channel_id:'c',stream_session_id:'s',evidence_delivery:{schema_version:2,state:'durable'}},{defer:true});
+  assert.equal((await stat(join(root,'raw',frameKey('c','s',{...s,source_frame_index:'2'})+'.ack'))).size,0);
   await spool.settle({session:'s',states:{}},'c');assert.equal((await readdir(join(root,'raw'))).filter(n=>n.endsWith('.pin')).length,0);
  }finally{await rm(root,{recursive:true,force:true});}
 });

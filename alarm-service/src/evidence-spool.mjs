@@ -104,11 +104,13 @@ export class EvidenceSpool {
  async acknowledge(frame,{defer=false}={}){
   if(frame.evidence_delivery?.schema_version!==2||frame.evidence_delivery.state!=='durable')return;
   const path=join(this.root,frameKey(frame.channel_id,frame.stream_session_id,frame)+'.ack');
-  if(!defer)return durableFile(path,'1');
+  // Empty on purpose: the AI cache reads only the ACK's name and age, and on a
+  // memory spool (64 KiB pages on .190) a 1-byte file costs a whole page per frame.
+  if(!defer)return durableFile(path,'');
   // The AI cache tests only the ACK name and its age, never its bytes. A deferred
   // ACK is made durable by flushAcknowledgements() before its journal record's
   // deletion is committed, so a crash replays the record and ACKs it again.
-  await writeFile(path,'1',{mode:0o600});dirtyAcks.add(this.root);
+  await writeFile(path,'',{mode:0o600});dirtyAcks.add(this.root);
  }
  async flushAcknowledgements(){
   if(!dirtyAcks.has(this.root))return;

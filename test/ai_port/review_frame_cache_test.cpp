@@ -214,6 +214,71 @@ int main(int argc,char** argv){try{
   gate.Release();Check(first.get(),"first frame not stored");
   for(auto& r:rest)Check(r.get(),"stalled frame not stored");
   WaitWritten(root,61);Check(Status(root).at("dropped")==0,"stall dropped evidence");
+ }else if(mode=="spool_space"){
+  // The budget follows the spool's own filesystem. A fixed 2 GiB on a 384 MiB
+  // memory spool reaches ENOSPC first; the consumer's 1-byte ACKs then fail too,
+  // nothing becomes evictable and the spool wedges.
+  constexpr uintmax_t KiB=1024,MiB=1024*KiB;
+  Check(ReviewFrameCache::SpoolCapacity(384*MiB)==288*MiB,"memory spool must keep a quarter free");
+  Check(ReviewFrameCache::SpoolCapacity(234ULL*1024*MiB)==2048*MiB,"large disks keep the 2 GiB bound");
+  Check(ReviewFrameCache::SpoolReserve(384*MiB)==24*MiB,"reserve scales with the spool");
+  Check(ReviewFrameCache::SpoolReserve(234ULL*1024*MiB)==64*MiB,"reserve is capped on large disks");
+  Check(ReviewFrameCache::SpoolReserve(4*MiB)==256*KiB,"reserve has a floor on tiny spools");
+  Check(ReviewFrameCache::SpoolAdmits({384*MiB,100*MiB,100000},100*MiB,MiB),"free spool refused a frame");
+  Check(!ReviewFrameCache::SpoolAdmits({384*MiB,100*MiB,100000},288*MiB,1),"budget exceeded");
+  Check(!ReviewFrameCache::SpoolAdmits({384*MiB,24*MiB,100000},10*MiB,MiB),"frame consumed the ACK reserve");
+  Check(!ReviewFrameCache::SpoolAdmits({384*MiB,100*MiB,100},10*MiB,MiB),"frame consumed the inode reserve");
+ }else if(mode=="small_spool"){
+  // A real 4 MiB tmpfs: frames stop at the derived budget, never at ENOSPC, and
+  // every stored frame can still be acknowledged and then reclaimed.
+  struct statfs fs{};Check(statfs((root/"raw").c_str(),&fs)==0&&fs.f_type==0x01021994,"small_spool needs a tmpfs raw mount");
+  std::vector<uint8_t> jpeg(300*1024,0);jpeg[0]=255;jpeg[1]=216;jpeg[jpeg.size()-2]=255;jpeg.back()=217;
+  int stored=0;
+  for(int i=1;i<=20;++i){if(!cache.OfferPreparedAsync(Metadata(i),[&]{return ReviewEncodedFrame{jpeg,64,64};}).get())break;++stored;}
+  // Budget counts allocated blocks (64 KiB tmpfs pages on .190), not apparent bytes.
+  const uintmax_t block=fs.f_bsize,total=uintmax_t(fs.f_blocks)*fs.f_frsize;
+  const auto allocated=[&](uintmax_t n){return (n+block-1)/block*block;};
+  Check(stored==int(ReviewFrameCache::SpoolCapacity(total)/(allocated(jpeg.size())+allocated(1))),"memory spool budget not derived from its allocated size");
+  size_t acked=0,temporaries=0;
+  for(const auto& e:std::filesystem::directory_iterator(root/"raw")){
+   temporaries+=e.path().extension()==".tmp";
+   if(e.path().extension()!=".jpg")continue;
+   // One byte, like a pre-upgrade consumer: the reserve must still hold it.
+   auto ack=e.path();ack.replace_extension(".ack");{std::ofstream out(ack);out<<"1";out.flush();Check(out.good(),"ACK failed on a full spool");}
+   std::filesystem::last_write_time(ack,std::filesystem::file_time_type::clock::now()-std::chrono::seconds(60));++acked;
+  }
+  Check(acked==size_t(stored)&&temporaries==0,"full spool left partial frames");
+  Check(statfs((root/"raw").c_str(),&fs)==0&&uintmax_t(fs.f_bavail)*fs.f_bsize>=ReviewFrameCache::SpoolReserve(uintmax_t(fs.f_blocks)*fs.f_bsize)/2,"ACK reserve was consumed");
+  std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+  Check(cache.OfferPreparedAsync(Metadata(100),[&]{return ReviewEncodedFrame{jpeg,64,64};}).get(),"acknowledged frames were not reclaimed");
+ }else if(mode=="orphans"){
+  // A channel deleted with one observation still journaled leaves a frame that no
+  // consumer will ever ACK. Unacknowledged frames otherwise never expire, so on a
+  // memory spool such orphans accumulate. Only a frame of a channel that is no
+  // longer captured AND unacknowledged for an hour is reclaimed.
+  const auto plant=[&](const std::string& channel,int n,std::chrono::seconds age){
+   auto m=Metadata(n);m["channel_id"]=channel;m["schema_version"]=2;
+   const std::string id=channel+"\ns\n"+std::to_string(n)+"\n"+std::to_string(n);
+   unsigned char d[SHA256_DIGEST_LENGTH];SHA256(reinterpret_cast<const unsigned char*>(id.data()),id.size(),d);std::string k;for(auto b:d){k+="0123456789abcdef"[b>>4];k+="0123456789abcdef"[b&15];}
+   const auto jpg=root/"raw"/(k+".jpg"),meta=root/"raw"/(k+".json");
+   {std::ofstream(jpg)<<"jpeg";}{std::ofstream(meta)<<m.dump();}
+   for(const auto& p:{jpg,meta})std::filesystem::last_write_time(p,std::filesystem::file_time_type::clock::now()-age);
+   return jpg;};
+  std::filesystem::create_directories(root/"raw");
+  const auto gone_old=plant("deleted",1,std::chrono::hours(2)),gone_new=plant("deleted",2,std::chrono::minutes(10));
+  const auto live_old=plant("test",3,std::chrono::hours(2));
+  auto pinned=plant("deleted",4,std::chrono::hours(2));auto pin=pinned;pin.replace_extension(".owner.0.pin");std::ofstream(pin)<<"";
+  Check(cache.OfferAsync(Metadata(10),[]{return cv::Mat(32,32,CV_8UC4);}).get(),"live frame not stored");
+  std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+  cache.OfferAsync(Metadata(11),[]{return cv::Mat(32,32,CV_8UC4);}).get();
+  Check(!std::filesystem::exists(gone_old)&&!std::filesystem::exists(std::filesystem::path(gone_old).replace_extension(".json")),"orphan of a deleted channel was kept");
+  Check(std::filesystem::exists(gone_new),"recent frame of a deleted channel must wait out the hour");
+  Check(std::filesystem::exists(live_old),"unacknowledged frame of a captured channel must never expire");
+  Check(std::filesystem::exists(pinned),"pinned frame was reclaimed");
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));cache.OfferAsync(Metadata(12),[]{return cv::Mat(32,32,CV_8UC4);}).get();
+  Json stats;const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+  do{try{stats=Status(root);}catch(...){}if(stats.value("orphan_evicted",0U)>=1)break;std::this_thread::sleep_for(std::chrono::milliseconds(20));}while(std::chrono::steady_clock::now()<until);
+  Check(stats.value("orphan_evicted",0U)==1,"orphan reclamation not accounted");
  }else throw std::runtime_error("unknown scenario");
  std::cout<<mode<<" software cache check passed\n";
  }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
