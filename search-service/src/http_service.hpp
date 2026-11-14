@@ -44,6 +44,7 @@ class MatchEngine {
   void Start(const Scope& window);
   size_t Warm(const std::vector<Record>& records);
   uint64_t CacheEpoch(){return projection_.CacheEpoch();}
+  uint64_t ShardEpoch(const std::string& channel, int64_t utc_day){return projection_.ShardEpoch(channel, utc_day);}
   std::optional<uint64_t> Resident(const std::vector<Record>& rows){return projection_.Resident(rows);}
   void Rebuild(const Scope& window);
   void Put(const Sample& sample);

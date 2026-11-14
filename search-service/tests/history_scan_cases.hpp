@@ -19,7 +19,10 @@ void ScanPlans(const std::string& uri, const std::string& database, int64_t at,
       sample.evidence[field]=sample.record.channel;
     if(n%7==0)sample.record.model="other-model";
     // Larger than metadata, but deliberately small enough for a lightweight fixture.
-    sample.jpeg.insert(sample.jpeg.begin()+2,16384,17);
+    // Built as a new buffer: GCC 11 reports a false stringop-overflow for a mid-vector fill insert under -Werror.
+    std::vector<uint8_t> padded(sample.jpeg.begin(),sample.jpeg.begin()+2);
+    padded.resize(2+16384,17); padded.insert(padded.end(),sample.jpeg.begin()+2,sample.jpeg.end());
+    sample.jpeg=std::move(padded);
     history.Put(sample);written.push_back(std::move(sample));
   }
   // Expiry and durable deletion intent must still exclude rows under the hint.

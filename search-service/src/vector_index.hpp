@@ -112,6 +112,11 @@ class VectorIndex {
     return found->second.fingerprint;
   }
   void Remove(const std::string& id) { records_.erase(id); }
+  std::optional<IndexReference> Reference(const std::string& id) const {
+    const auto found = records_.find(id);
+    if (found == records_.end()) return std::nullopt;
+    return IndexReference{found->first, found->second.fingerprint, found->second.channel, found->second.captured_ms};
+  }
   size_t Size() const { return records_.size(); }
   // Bounded global maintenance cursor, independent of any query scope. Copy
   // only identity/digest; never materialize vectors just to check liveness.

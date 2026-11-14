@@ -1356,13 +1356,15 @@ HistoryIndexChanges HistoryMongo::ScanIndexChanges(const std::string& model,
   HistoryIndexChanges out; out.checkpoint = after;
   const std::vector<std::string> selected(channels.begin(), channels.end());
   Scope window; window.from_ms = INT64_MAX;
+  // Index-only: every filtered, sorted and returned field is in the channel scan index, so no sample document
+  // (with its JPEG and vector) is read. Integrity of the documents is verified where they are used, by Scan.
   state_->Each(c, "search_samples", {{"model", model}, {"channel", {{"$in", selected}}},
     {"ordinal", {{"$gt", after}}}, {"expires_at", {{"$gt", Date(Now())}}}},
-    {{"sort", {{"ordinal", 1}}}, {"limit", limit}, {"projection", {{"jpeg", 0}, {"vector", 0}}}}, [&](const bson_t* doc) {
-      const auto meta = CheckedMetadata(doc);
-      const auto channel = meta.at("channel").get<std::string>();
-      const auto at = meta.at("captured_ms").get<int64_t>(); const auto ordinal = Number(doc, "ordinal");
-      if (!channels.count(channel) || meta.at("model") != model || at < 0 || at == INT64_MAX ||
+    {{"sort", {{"ordinal", 1}}}, {"limit", limit}, {"hint", kHistoryScanChannelIndex},
+     {"projection", {{"_id", 0}, {"channel", 1}, {"captured_ms", 1}, {"ordinal", 1}}}}, [&](const bson_t* doc) {
+      const auto channel = Text(doc, "channel");
+      const auto at = ExactInteger(doc, "captured_ms"); const auto ordinal = Number(doc, "ordinal");
+      if (!channels.count(channel) || at < 0 || at == INT64_MAX ||
           ordinal <= out.checkpoint || ordinal > 9007199254740991LL)
         throw std::runtime_error("history_metadata_integrity");
       out.checkpoint = ordinal; out.items.push_back({channel, at, ordinal});

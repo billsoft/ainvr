@@ -20,6 +20,8 @@ int main() {
   index.Upsert(Row("d", "allowed", "session2", "track1", {0.9f, 0.1f}));
   index.Upsert(Row("e", "allowed", "session1", "other-person", {1, 0}));
   auto last = Row("f", "allowed", "session3", "track1", {1, 0}); last.captured_ms = 2000; index.Upsert(last);
+  // A removed entry can be attributed to its channel and day (projection shard epochs).
+  { const auto ref = index.Reference("f"); Check(ref && ref->channel == "allowed" && ref->captured_ms == 2000 && !index.Reference("missing")); }
   auto hits = index.Query({1, 0}, {{"allowed"}, 1000, 2000, 20});
   Check(hits.size() == 3 && hits[0].id == "a" && hits[1].id == "e" && hits[2].id == "d");
   Reject([&]{ index.Upsert(Row("overflow", "allowed", "s", "t", {1, 0})); });

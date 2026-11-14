@@ -1,5 +1,6 @@
 #pragma once
 #include "history_mongo.hpp"
+#include <map>
 #include <mutex>
 #include <chrono>
 namespace ainvr::search {
@@ -14,12 +15,21 @@ class IndexProjection {
  public:
   IndexProjection(HistoryMongo& history, std::string model, size_t dimensions, size_t capacity, size_t views = 1)
     : history_(history), model_(std::move(model)), dimensions_(dimensions), capacity_(capacity), views_(views) {}
+  static int64_t UtcDay(int64_t captured_ms) { return captured_ms >= 0 ? captured_ms / 86400000 : (captured_ms - 86399999) / 86400000; }
   uint64_t CacheEpoch() {std::lock_guard<std::mutex> lock(mutex_);return cache_epoch_;}
+  // Changes when the whole projection is replaced or when an entry of this channel and UTC day leaves it. A
+  // published shard file needs re-reading only then: an eviction elsewhere (for example another day expiring)
+  // leaves its rows resident.
+  uint64_t ShardEpoch(const std::string& channel, int64_t utc_day) {
+    std::lock_guard<std::mutex> lock(mutex_);return ShardEpochLocked(channel, utc_day);
+  }
   std::optional<uint64_t> Resident(const std::vector<Record>& rows) {
     std::lock_guard<std::mutex> lock(mutex_);
     if(!index_)return std::nullopt;
     for(const auto& row:rows)if(index_->Fingerprint(row.id)!=std::optional<std::string>(row.fingerprint))return std::nullopt;
-    return cache_epoch_;
+    if(rows.empty())return cache_epoch_<<32;
+    for(const auto& row:rows)if(row.channel!=rows.front().channel||UtcDay(row.captured_ms)!=UtcDay(rows.front().captured_ms))return std::nullopt;
+    return ShardEpochLocked(rows.front().channel, UtcDay(rows.front().captured_ms));
   }
   // Production starts a bounded derived working set. Large histories never
   // block readiness on a full Mongo scan or falsely claim complete coverage.
@@ -35,7 +45,7 @@ class IndexProjection {
     }
     if (!part.channels.empty()) VectorIndex::ValidateScope(part);
     std::lock_guard<std::mutex> lock(mutex_);
-    ++cache_epoch_;index_ = std::make_unique<VectorIndex>(model_, dimensions_, capacity_, views_);
+    ++cache_epoch_;shard_epochs_.clear();index_ = std::make_unique<VectorIndex>(model_, dimensions_, capacity_, views_);
     window_ = window; maintenance_cursor_.clear();
     writes_since_maintenance_ = 0; recovery_scope_ = {}; recovery_checkpoint_ = 0;
     recovery_exhausted_=false;recovery_revision_=0;
@@ -66,7 +76,7 @@ class IndexProjection {
       checkpoint = batch.checkpoint;
     }
     // Admission failures leave the previously usable projection intact.
-    ++cache_epoch_;index_ = std::move(next); window_ = window;
+    ++cache_epoch_;shard_epochs_.clear();index_ = std::move(next); window_ = window;
     maintenance_cursor_.clear(); writes_since_maintenance_ = 0;
     recovery_scope_ = {}; recovery_checkpoint_ = 0;
     recovery_exhausted_=false;recovery_revision_=0;
@@ -144,7 +154,7 @@ class IndexProjection {
         if (row==rows.end() || hit.fingerprint.empty() || row->second.fingerprint != hit.fingerprint) {
           // A crash or an authority write may replace the image before this
           // projection updates. Never pair the old score with that new image.
-          if(index_->Fingerprint(hit.id)==std::optional<std::string>(hit.fingerprint)){index_->Remove(hit.id);++cache_epoch_;}
+          if(index_->Fingerprint(hit.id)==std::optional<std::string>(hit.fingerprint))Evict(hit.id);
           removed = true; out.partial = true; recovery_exhausted_=false;recovery_checkpoint_=0;continue;
         }
         out.items.push_back({std::move(row->second), hit.score, hit.evidence_refs, hit.view});
@@ -161,6 +171,18 @@ class IndexProjection {
   }
  private:
   static constexpr size_t kMaintenanceBatch = 32;
+  uint64_t ShardEpochLocked(const std::string& channel, int64_t utc_day) const {
+    const auto found = shard_epochs_.find({channel, utc_day});
+    return (cache_epoch_ << 32) | (found == shard_epochs_.end() ? 0 : found->second & 0xffffffffULL);
+  }
+  // `restorable`: a still-valid entry dropped only to make room, which its published shard file can restore.
+  // Entries removed because Mongo holds a newer version or no longer holds them are as stale in that file, so
+  // re-reading it would only put them back for the next maintenance pass to remove again.
+  void Evict(const std::string& id, bool restorable = false) {
+    const auto ref = restorable ? index_->Reference(id) : std::nullopt;
+    index_->Remove(id);
+    if (ref) ++shard_epochs_[{ref->channel, UtcDay(ref->captured_ms)}];
+  }
   void Maintain(const std::string& refreshing_id = "") {
     const auto references = index_->ScanReferences(maintenance_cursor_, kMaintenanceBatch);
     if (references.empty()) return;
@@ -174,7 +196,7 @@ class IndexProjection {
       if (ref.id == refreshing_id) continue;
       const auto current = visible.find(ref.id);
       if (ref.fingerprint.empty() || current == visible.end() || current->second != ref.fingerprint) {
-        index_->Remove(ref.id); ++cache_epoch_;recovery_exhausted_=false;recovery_checkpoint_=0;
+        Evict(ref.id);recovery_exhausted_=false;recovery_checkpoint_=0;
       }
     }
   }
@@ -197,7 +219,7 @@ class IndexProjection {
       const auto references = index_->ScanReferences(maintenance_cursor_, kMaintenanceBatch);
       for (const auto& ref : references)
         if (!scope.channels.count(ref.channel) || ref.captured_ms < scope.from_ms || ref.captured_ms >= scope.to_ms)
-          {index_->Remove(ref.id);++cache_epoch_;recovery_checkpoint_=0;recovery_exhausted_=false;}
+          {Evict(ref.id,true);recovery_checkpoint_=0;recovery_exhausted_=false;}
     }
     // Even a full cache may already contain all rows. Allow one metadata-free
     // bounded scan to prove exhaustion; never evict required rows to certify it.
@@ -209,7 +231,7 @@ class IndexProjection {
     for (const auto& sample : batch.samples) {
       const auto previous = index_->Fingerprint(sample.record.id);
       if (!previous && index_->Size() >= capacity_) {recovery_exhausted_=false;return;}
-      if (previous && *previous != sample.fingerprint) {index_->Remove(sample.record.id);++cache_epoch_;}
+      if (previous && *previous != sample.fingerprint) Evict(sample.record.id);
       index_->Upsert(sample.record);
     }
     recovery_checkpoint_ = batch.checkpoint;
@@ -228,6 +250,7 @@ class IndexProjection {
   int64_t recovery_checkpoint_ = 0;
   uint64_t recovery_revision_=0;
   uint64_t cache_epoch_=0;
+  std::map<std::pair<std::string,int64_t>,uint64_t> shard_epochs_;
   bool recovery_exhausted_=false;
 };
 }  // namespace ainvr::search

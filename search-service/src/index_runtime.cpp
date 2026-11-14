@@ -2,11 +2,21 @@
 #include "index_discovery.hpp"
 #include "../../shared/cpp/config_center_client.hpp"
 #include <condition_variable>
+#include <ctime>
+#include <iomanip>
+#include <optional>
+#include <sstream>
 #include <iostream>
 #include <mutex>
 #include <thread>
 namespace ainvr::search {
 namespace {
+// UTC day index of a shard name ("YYYY-MM-DD"), the same unit as IndexProjection::UtcDay.
+std::optional<int64_t> ShardDay(const std::string& day) {
+  std::tm date{}; std::istringstream input(day); input >> std::get_time(&date, "%Y-%m-%d");
+  if (input.fail() || day.size() != 10) return std::nullopt;
+  return int64_t(timegm(&date)) / 86400;
+}
 IndexShardFiles& RequireFiles(const std::unique_ptr<IndexShardFiles>& files) {
   if (!files) throw std::invalid_argument("invalid_index_runtime");
   return *files;
@@ -109,15 +119,19 @@ struct ManagedIndexRuntime::Impl {
       if (Cancelled()) return;
       published.shard.dimensions = dimensions; // Bound to the verified model version.
       try {
+        // Re-read an unchanged file only when an entry of its own channel and day left the projection.
+        const auto day=ShardDay(published.shard.utc_day);
         const auto cached=resident_publications.find(published.shard.id);
-        if(cached!=resident_publications.end()&&cached->second.first==published.publication.manifest_sha256&&
-            cached->second.second==engine->CacheEpoch())return;
+        if(cached!=resident_publications.end()&&cached->second.first==published.publication.manifest_sha256&&day&&
+            cached->second.second==engine->ShardEpoch(published.shard.channel_id,*day))return;
         auto rows = files->Load(published.shard, published.publication);
         engine->Warm(rows); ++verified_files; // At most one bounded file transiently coexists with RAM cache.
-        if(auto epoch=engine->Resident(rows)){
-          if(resident_publications.size()>=3200)resident_publications.clear();
-          resident_publications[published.shard.id]={published.publication.manifest_sha256,*epoch};
-        }else resident_publications.erase(published.shard.id);
+        // Remember the attempt even when some rows did not become resident: rows outside the retention window,
+        // rows the projection already holds in a newer version, or a full projection are not changed by reading
+        // the same file again. A new file, or an entry of this channel and day leaving the projection, re-reads it.
+        if(resident_publications.size()>=3200)resident_publications.clear();
+        if(day)resident_publications[published.shard.id]={published.publication.manifest_sha256,engine->ShardEpoch(published.shard.channel_id,*day)};
+        else resident_publications.erase(published.shard.id);
       } catch (...) {
         // A missing/corrupt derived file cannot close producer admission or
         // fabricate a complete negative; lazy Mongo retrieval remains partial.
