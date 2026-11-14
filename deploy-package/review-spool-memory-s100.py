@@ -72,17 +72,40 @@ def wait_journal_drain():
         last = now
 
 
-def migrate(src, dst, owner):
-    """Copy what a consumer can still need: pinned frames and recent unacknowledged ones."""
+def captured_channels():
+    try:
+        channels = json.loads((CACHE / 'enabled.json').read_text()).get('channels')
+        return set(channels) if isinstance(channels, list) else None
+    except (OSError, ValueError):
+        return None
+
+
+def frame_channel(src, key):
+    try:
+        return json.loads((src / (key + '.json')).read_text()).get('channel_id')
+    except (OSError, ValueError):
+        return None
+
+
+def migrate(src, dst, owner, captured=None):
+    """Copy what a consumer can still need: pinned frames and recent unacknowledged ones.
+
+    A frame pinned for over RECENT_SECONDS by a channel that is no longer captured
+    belongs to a deleted channel whose pins were never released (.189: 16 stress
+    test channels left 114k pins on ~100 frames); it stays in the SSD copy only.
+    Without a readable capture list (None) every pinned frame is kept.
+    """
     names = set(os.listdir(src))
     keys = {n[:-4] for n in names if n.endswith('.jpg')}
     pins = [n for n in names if n.endswith('.pin')]
     pinned = {p[:64] for p in pins}
     now, chosen = time.time(), set()
     for k in keys:
+        recent = now - (src / (k + '.jpg')).stat().st_mtime < RECENT_SECONDS
         if k in pinned:
-            chosen.add(k)
-        elif k + '.ack' not in names and now - (src / (k + '.jpg')).stat().st_mtime < RECENT_SECONDS:
+            if captured is None or recent or frame_channel(src, k) in captured:
+                chosen.add(k)
+        elif k + '.ack' not in names and recent:
             chosen.add(k)
     need = sum((src / (k + e)).stat().st_size for k in chosen for e in ('.jpg', '.json') if k + e in names)
     free = shutil.disk_usage(dst).free
@@ -196,7 +219,7 @@ def apply(size, binary):
         run('systemctl', 'start', mount_unit())
         if not is_memory_mount():
             raise RuntimeError('memory spool did not mount')
-        copied = migrate(old, RAW, owner)
+        copied = migrate(old, RAW, owner, captured_channels())
     except BaseException:
         if (backup / 'ainvr_ai_service.previous').exists():
             shutil.copy2(backup / 'ainvr_ai_service.previous', AI_BIN)
@@ -223,7 +246,7 @@ def rollback():
     stage = ROLLBACK / ('to-ssd-' + stamp)
     stage.mkdir(parents=True)
     stop_services()
-    copied = migrate(RAW, stage, owner)
+    copied = migrate(RAW, stage, owner, captured_channels())
     run('systemctl', 'stop', mount_unit())
     remove_config()
     copied['restored'] = migrate(stage, RAW, owner)['frames']
