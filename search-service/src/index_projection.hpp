@@ -17,6 +17,8 @@ class IndexProjection {
     : history_(history), model_(std::move(model)), dimensions_(dimensions), capacity_(capacity), views_(views) {}
   static int64_t UtcDay(int64_t captured_ms) { return captured_ms >= 0 ? captured_ms / 86400000 : (captured_ms - 86399999) / 86400000; }
   uint64_t CacheEpoch() {std::lock_guard<std::mutex> lock(mutex_);return cache_epoch_;}
+  // A full projection admits no row from a file (Warm stops at capacity).
+  bool Full() {std::lock_guard<std::mutex> lock(mutex_);return index_&&index_->Size()>=capacity_;}
   // Changes when the whole projection is replaced or when an entry of this channel and UTC day leaves it. A
   // published shard file needs re-reading only then: an eviction elsewhere (for example another day expiring)
   // leaves its rows resident.

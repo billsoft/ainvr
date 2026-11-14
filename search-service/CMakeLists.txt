@@ -181,6 +181,11 @@ target_link_libraries(ainvr_search_index_discovery_test PRIVATE nlohmann_json::n
 target_compile_options(ainvr_search_index_discovery_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME search_index_discovery COMMAND ainvr_search_index_discovery_test)
 set_tests_properties(search_index_discovery PROPERTIES LABELS software TIMEOUT 15)
+add_executable(ainvr_search_index_warm_policy_test tests/index_warm_policy_test.cpp)
+target_include_directories(ainvr_search_index_warm_policy_test PRIVATE src)
+target_compile_options(ainvr_search_index_warm_policy_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME search_index_warm_policy COMMAND ainvr_search_index_warm_policy_test)
+set_tests_properties(search_index_warm_policy PROPERTIES LABELS software TIMEOUT 15)
 
 include(cmake/index_runtime.cmake)
 

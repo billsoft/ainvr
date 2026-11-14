@@ -1,5 +1,6 @@
 #include "index_runtime.hpp"
 #include "index_discovery.hpp"
+#include "index_warm_policy.hpp"
 #include "../../shared/cpp/config_center_client.hpp"
 #include <condition_variable>
 #include <ctime>
@@ -44,7 +45,8 @@ struct ManagedIndexRuntime::Impl {
   std::optional<IndexCatalogPage> warm_page;
   std::optional<IndexRetiredCatalogPage> cleanup_page;
   size_t warm_position = 0, cleanup_position = 0;
-  std::map<std::string,std::pair<std::string,uint64_t>> resident_publications;
+  ShardWarmRecord warm_record;
+  size_t pass_faults = 0;   // runtime thread only
   bool cleanup_rescan_requested = false;
   Clock::time_point discover_after{}, warm_after{}, cleanup_after{},source_after{};
   std::string state = "pending";
@@ -81,6 +83,7 @@ struct ManagedIndexRuntime::Impl {
   }
   bool Cancelled() const { return stopping.load() || !admitted->load(); }
   void State(const char* next) {
+    if (RecoveredIndexState(next, true)) ++pass_faults;   // a transient fault in this pass
     std::lock_guard<std::mutex> lock(status_mutex);
     if (state != next) { state = next; std::cerr << "search_index_state=" << next << '\n'; }
   }
@@ -119,19 +122,16 @@ struct ManagedIndexRuntime::Impl {
       if (Cancelled()) return;
       published.shard.dimensions = dimensions; // Bound to the verified model version.
       try {
-        // Re-read an unchanged file only when an entry of its own channel and day left the projection.
+        // See ShardWarmRecord: a file is read only when doing so can add rows.
         const auto day=ShardDay(published.shard.utc_day);
-        const auto cached=resident_publications.find(published.shard.id);
-        if(cached!=resident_publications.end()&&cached->second.first==published.publication.manifest_sha256&&day&&
-            cached->second.second==engine->ShardEpoch(published.shard.channel_id,*day))return;
+        const auto epoch=[&]()->std::optional<uint64_t>{
+          if(!day)return std::nullopt;
+          return engine->ShardEpoch(published.shard.channel_id,*day);
+        };
+        if(!warm_record.NeedsLoad(published.shard.id,published.publication.manifest_sha256,epoch(),engine->Full()))return;
         auto rows = files->Load(published.shard, published.publication);
         engine->Warm(rows); ++verified_files; // At most one bounded file transiently coexists with RAM cache.
-        // Remember the attempt even when some rows did not become resident: rows outside the retention window,
-        // rows the projection already holds in a newer version, or a full projection are not changed by reading
-        // the same file again. A new file, or an entry of this channel and day leaving the projection, re-reads it.
-        if(resident_publications.size()>=3200)resident_publications.clear();
-        if(day)resident_publications[published.shard.id]={published.publication.manifest_sha256,engine->ShardEpoch(published.shard.channel_id,*day)};
-        else resident_publications.erase(published.shard.id);
+        warm_record.Loaded(published.shard.id,published.publication.manifest_sha256,epoch(),engine->Full());
       } catch (...) {
         // A missing/corrupt derived file cannot close producer admission or
         // fabricate a complete negative; lazy Mongo retrieval remains partial.
@@ -200,6 +200,7 @@ struct ManagedIndexRuntime::Impl {
         // Independent bounded stages: unavailable GC cannot stop querying or
         // sample persistence. Only existing PG leases decide publication work.
         if(jobs&&Clock::now()>=source_after){
+        pass_faults = 0;
         try { Cleanup(); } catch (...) { State("cleanup_pending"); }
         try { Build(); } catch (...) { State("dependency_unavailable"); }
         try { Warm(); } catch (...) { State("cache_unavailable"); }
@@ -208,6 +209,10 @@ struct ManagedIndexRuntime::Impl {
             discover_after = Clock::now() + std::chrono::seconds(30);
           discovery_checkpoint.store(discovery->Checkpoint());
         } catch (...) { State("discovery_pending"); discover_after = Clock::now() + std::chrono::seconds(5); }
+        if (!pass_faults) {
+          std::string current; { std::lock_guard<std::mutex> lock(status_mutex); current = state; }
+          if (const auto recovered = RecoveredIndexState(current, true)) State(recovered);
+        }
         source_after=Clock::now()+std::chrono::seconds(1);
         }
         // Same owner thread/files; target vectors never enter the old engine.
