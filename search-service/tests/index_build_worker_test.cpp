@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "index_build_worker.hpp"
 #include <filesystem>
 #include <iostream>
@@ -49,8 +50,14 @@ struct Fixture {
     jobs.job=IndexJob{"44444444-4444-4444-8444-444444444444",worker,1,"index",shard,context.revision,context.package_id,"","",{}};
     shard.revision=1;shard.dimensions=3;jobs.lease={shard,jobs.job->id,worker,1,IndexShardFiles::ManifestKey(shard),{}};
   }
+  // Shard files store fixed 36-character sample ids (UUIDs, as HistoryMongo issues them).
+  static std::string Uid(const std::string& name){
+    if(name.size()==36)return name;
+    char id[37];std::snprintf(id,sizeof id,"%08x-0000-4000-8000-%012llx",unsigned(name.size()),(unsigned long long)(std::hash<std::string>{}(name)&0xffffffffffffULL));
+    return id;
+  }
   Sample Row(const std::string& id,bool slot=false,char fp='c')const{
-    Sample row;row.record={id,channel,"processor","session","track",context.model_version,86401000,false,{3,0,4},std::string(64,fp)};
+    Sample row;row.record={Uid(id),channel,"processor","session","track",context.model_version,86401000,false,{3,0,4},std::string(64,fp)};
     if(slot)row.track_slot=0;
     return row;
   }
@@ -65,7 +72,7 @@ int main(){try{
       return after==0?HistoryBatch{{f.Row("one")},1}:HistoryBatch{{},1};
     },*f.files,f.jobs,f.context,3);
     auto out=b.RunOne(worker);Check(out.state==State::Published&&out.publication->record_count==1&&scans==2&&f.jobs.publishes==1,"normal_publish");++cases;
-    auto rows=f.files->Load(out.lease->shard,*out.publication);Check(rows.size()==1&&rows[0].id=="one"&&std::abs(rows[0].vector[0]-.6)<1e-6,"normalized_file");++cases;
+    auto rows=f.files->Load(out.lease->shard,*out.publication);Check(rows.size()==1&&rows[0].id==Fixture::Uid("one")&&std::abs(rows[0].vector[0]-.6)<0.01,"normalized_file");++cases;
   }
   {
     Fixture f;int scans=0;

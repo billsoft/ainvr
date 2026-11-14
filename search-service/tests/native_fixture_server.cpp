@@ -93,7 +93,7 @@ int main() {
     const Scope scope{{Id(1)}, at, at + 25000, 60};
     history.PutCoverage(Id(20), "fixture-pair-v1", Id(1), at, at + 25000, false, "sampled", Now() + 3600000);
     history.PutCoverage(Id(21), "fixture-pair-v1", Id(1), at, at + 25000, true, "sampled", Now() + 3600000);
-    FixtureEncoder encoder; MatchEngine engine(history, encoder, 64); engine.Rebuild(scope);
+    FixtureEncoder encoder; MatchEngine engine(history, encoder); engine.Rebuild(scope);
     HttpAccess access; access.console_key = token; access.producer_key = std::string(48, 'p');
     access.management_key = std::string(48, 'm'); access.revision = std::string(64, '0');
     access.enabled = true; access.unavailable_reason.clear(); access.ingestion_model = "fixture-pair-v1";

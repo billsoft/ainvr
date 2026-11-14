@@ -181,11 +181,17 @@ target_link_libraries(ainvr_search_index_discovery_test PRIVATE nlohmann_json::n
 target_compile_options(ainvr_search_index_discovery_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME search_index_discovery COMMAND ainvr_search_index_discovery_test)
 set_tests_properties(search_index_discovery PROPERTIES LABELS software TIMEOUT 15)
-add_executable(ainvr_search_index_warm_policy_test tests/index_warm_policy_test.cpp)
-target_include_directories(ainvr_search_index_warm_policy_test PRIVATE src)
-target_compile_options(ainvr_search_index_warm_policy_test PRIVATE -Wall -Wextra -Werror)
-add_test(NAME search_index_warm_policy COMMAND ainvr_search_index_warm_policy_test)
-set_tests_properties(search_index_warm_policy PROPERTIES LABELS software TIMEOUT 15)
+add_executable(ainvr_search_index_runtime_policy_test tests/index_runtime_policy_test.cpp)
+target_include_directories(ainvr_search_index_runtime_policy_test PRIVATE src)
+target_compile_options(ainvr_search_index_runtime_policy_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME search_index_runtime_policy COMMAND ainvr_search_index_runtime_policy_test)
+set_tests_properties(search_index_runtime_policy PROPERTIES LABELS software TIMEOUT 15)
+# Query over shard files plus the Mongo tail: a fake authority and real v2 files, no Mongo.
+add_executable(ainvr_search_index_projection_test tests/index_projection_test.cpp)
+target_link_libraries(ainvr_search_index_projection_test PRIVATE ainvr_search_index_shard_files_test_impl ainvr_search_history)
+target_compile_options(ainvr_search_index_projection_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME search_index_projection COMMAND ainvr_search_index_projection_test)
+set_tests_properties(search_index_projection PROPERTIES LABELS software TIMEOUT 30)
 
 include(cmake/index_runtime.cmake)
 

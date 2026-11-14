@@ -38,7 +38,7 @@ void ParameterIntegration(const std::string& url) {
   };
   char name[]="/tmp/ainvr-index-parameter-wire-XXXXXX";const auto made=mkdtemp(name);Check(made,"test_tmp_failed");const fs::path root=made;
   try {
-    HistoryMongo history(uri,database);history.Initialize();NeverEncoder encoder(true);MatchEngine engine(history,encoder,8);
+    HistoryMongo history(uri,database);history.Initialize();NeverEncoder encoder(true);MatchEngine engine(history,encoder);
     const Scope scope{{source},now-1000,now+1000,20};engine.Start(scope);
     auto files=IndexShardFiles::OpenForTesting(root);
     const IndexJobContext context{std::string(64,'b'),files->StorageGeneration(),"siglip2-base-full-int8",encoder.ModelVersion(),{source},30};
@@ -121,7 +121,7 @@ void Integration() {
   };
   char name[]="/tmp/ainvr-index-runtime-live-XXXXXX";const auto made=mkdtemp(name);Check(made,"test_tmp_failed");const fs::path root=made;
   try {
-    HistoryMongo history(uri,database);history.Initialize();NeverEncoder encoder(true);MatchEngine engine(history,encoder,8);
+    HistoryMongo history(uri,database);history.Initialize();NeverEncoder encoder(true);MatchEngine engine(history,encoder);
     engine.Start({{source},now-1000,now+1000,20});
     for(int n=1;n<=2;++n){
       const auto id="00000000-0000-4000-8000-00000000000"+std::to_string(n);
@@ -183,7 +183,7 @@ void Integration() {
       const auto matches=engine.Match("explicit software oracle",{{source},now-1000,now+1000,20});
       Check(matches.at("items").size()==2&&matches.at("partial")==false,"restored_scope_not_certified_or_lost_rows");
       owner->Stop(); owner.reset();Check(history.Usage().at("samples")==2,"background_changed_history");
-      Check(fs::remove(root/identity.id/"1.records.f32le"),"fixture_file_missing");
+      Check(fs::remove(root/identity.id/"1.records.i8"),"fixture_file_missing");
       auto repair_files=IndexShardFiles::OpenForTesting(root);
       ManagedIndexRuntime repair_owner(bootstrap,history,engine,std::move(repair_files),context,2,admitted);
       const auto repair_deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
@@ -204,7 +204,7 @@ int main(){try{
   // Construction of the unconnected Mongo owner does not access a database.
   // No server, credentials, SDK or hardware models exist in this test.
   HistoryMongo history("mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=100", "ainvr_search_runtime_unused");
-  NeverEncoder encoder; MatchEngine engine(history,encoder,8);
+  NeverEncoder encoder; MatchEngine engine(history,encoder);
   const auto source="22222222-2222-4222-8222-222222222222";
   engine.Start({{source},0,86400000,20});
   const auto bootstrap=nlohmann::json{{"control_url","http://127.0.0.1:1"},{"service_token",std::string(48,'s')}};

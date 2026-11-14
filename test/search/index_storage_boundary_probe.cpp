@@ -131,7 +131,7 @@ int main(int argc,char** argv){
   store=IndexShardFiles::OpenProduction(authorization,limits);Require(store->Load(id,first).size()==3,"storage_probe_restart_restore_failed");
   auto second_id=id;second_id.revision=2;const auto second=store->Publish(second_id,Records(second_id));deadline();
   phase="corrupt_own_data";Fd shard(openat(target.fd,id.id.c_str(),O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));Require(shard.fd>=0,"storage_probe_fixture_shard_missing");
-  Fd data(openat(shard.fd,"1.records.f32le",O_RDWR|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC));Require(data.fd>=0,"storage_probe_fixture_data_missing");Regular(data.fd,target_identity.st_dev,4096);
+  Fd data(openat(shard.fd,"1.records.i8",O_RDWR|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC));Require(data.fd>=0,"storage_probe_fixture_data_missing");Regular(data.fd,target_identity.st_dev,4096);
   const auto data_size=Stat(data.fd).st_size;Require(data_size>24,"storage_probe_fixture_data_too_small");unsigned char byte=0;
   Require(pread(data.fd,&byte,1,data_size-1)==1,"storage_probe_corrupt_read_failed");byte^=1;
   Require(pwrite(data.fd,&byte,1,data_size-1)==1,"storage_probe_corrupt_write_failed");Sync(data.fd);

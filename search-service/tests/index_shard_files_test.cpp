@@ -1,5 +1,7 @@
 #include "index_shard_files.hpp"
+#include "index_int8.hpp"
 #include <nlohmann/json.hpp>
+#include <cstring>
 #include <openssl/evp.h>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -46,12 +48,16 @@ IndexShardIdentity Identity(IndexShardFiles& store,uint64_t revision = 1) {
   return {"11111111-1111-4111-8111-111111111111",revision,"22222222-2222-4222-8222-222222222222",
     "search-v1-"+std::string(64,'a'),"1970-01-02",3,7,store.StorageGeneration()};
 }
+const std::string kRecordA = "aaaaaaaa-0000-4000-8000-000000000001", kRecordB = "bbbbbbbb-0000-4000-8000-000000000002";
 std::vector<Record> Records(const IndexShardIdentity& identity) {
-  return {{"record-b",identity.channel_id,"processor","session","track-b",identity.model_version,86401000,false,{0,3,4},std::string(64,'b')},
-          {"record-a",identity.channel_id,"processor","session","track-a",identity.model_version,86402000,false,{1,0,0},std::string(64,'a')}};
+  return {{kRecordB,identity.channel_id,"processor","session","track-b",identity.model_version,86401000,false,{0,3,4},std::string(64,'b')},
+          {kRecordA,identity.channel_id,"processor","session","track-a",identity.model_version,86402000,false,{1,0,0},std::string(64,'a')}};
 }
 fs::path Manifest(const Temp& tmp,const IndexShardIdentity& id) { return tmp.root/id.id/(std::to_string(id.revision)+".manifest.json"); }
-fs::path Data(const Temp& tmp,const IndexShardIdentity& id) { return tmp.root/id.id/(std::to_string(id.revision)+".records.f32le"); }
+fs::path Data(const Temp& tmp,const IndexShardIdentity& id) { return tmp.root/id.id/(std::to_string(id.revision)+".records.i8"); }
+fs::path DataV1(const Temp& tmp,const IndexShardIdentity& id) { return tmp.root/id.id/(std::to_string(id.revision)+".records.f32le"); }
+// v2 layout of the two 3-d fixture records: columns start at 64-byte boundaries.
+constexpr size_t kScalesAt = 448, kCountAt = 24;
 uint32_t U32(const std::string& bytes,size_t at) {
   uint32_t value = 0; for (size_t i = 0; i < 4; ++i) value |= uint32_t(static_cast<unsigned char>(bytes.at(at+i))) << (8*i); return value;
 }
@@ -62,12 +68,32 @@ void Rehash(const Temp& tmp,const IndexShardIdentity& id,ShardPublication& publi
   const auto text = manifest.dump(); Write(Manifest(tmp,id),text);
   publication.manifest_sha256 = Sha(text); publication.byte_count = data.size()+text.size();
 }
-void RewriteRow(const Temp& tmp,const IndexShardIdentity& id,ShardPublication& publication,size_t row,const std::function<void(Json&)>& edit) {
-  auto data = Read(Data(tmp,id)); size_t at = 24;
-  for (size_t i = 0; i < row; ++i) at += 4+U32(data,at)+id.dimensions*4;
-  const auto length = U32(data,at); auto metadata = Json::parse(data.substr(at+4,length)); edit(metadata);
-  const auto changed = metadata.dump(); data.replace(at+4,length,changed); Put32(data,at,uint32_t(changed.size()));
-  Write(Data(tmp,id),data); Rehash(tmp,id,publication);
+// Same-length edit of the stored metadata, rehashed so only the content checks can catch it.
+void RewriteMeta(const Temp& tmp,const IndexShardIdentity& id,ShardPublication& publication,const std::string& from,const std::string& to) {
+  auto data = Read(Data(tmp,id)); const auto at = data.rfind(from);
+  Check(at != std::string::npos && from.size() == to.size(),"fixture_metadata_missing");
+  data.replace(at,from.size(),to); Write(Data(tmp,id),data); Rehash(tmp,id,publication);
+}
+// A file in the previous float32 format, as the boards still hold it.
+ShardPublication WriteV1(const Temp& tmp,const IndexShardIdentity& id,const std::vector<Record>& sorted,const std::string& volume) {
+  std::string data = "AINVRSH1"; const auto u = [&](uint64_t v,size_t n){ for(size_t i=0;i<n;++i) data.push_back(char((v>>(8*i))&255)); };
+  u(1,4); u(id.dimensions,4); u(sorted.size(),8);
+  for (const auto& r : sorted) {
+    const auto meta = Json{{"id",r.id},{"channel",r.channel},{"processor",r.processor},{"session",r.session},{"track",r.track},
+      {"model",r.model},{"captured_ms",r.captured_ms},{"scene",r.scene},{"fingerprint",r.fingerprint}}.dump();
+    u(meta.size(),4); data += meta;
+    double norm = 0; for (float v : r.vector) norm += double(v)*v; norm = std::sqrt(norm);
+    for (float v : r.vector) { const float x = float(v/norm); uint32_t bits; std::memcpy(&bits,&x,4); u(bits,4); }
+  }
+  fs::create_directories(tmp.root/id.id); fs::permissions(tmp.root/id.id,fs::perms::owner_all,fs::perm_options::replace);
+  Write(DataV1(tmp,id),data); fs::permissions(DataV1(tmp,id),fs::perms::owner_read|fs::perms::owner_write,fs::perm_options::replace);
+  const auto manifest = Json{{"schema_version",1},{"shard_id",id.id},{"revision",id.revision},{"channel_id",id.channel_id},
+      {"model_version",id.model_version},{"utc_day",id.utc_day},{"dimensions",id.dimensions},
+      {"checkpoint",id.checkpoint},{"storage_generation",id.storage_generation},{"volume_id",volume},
+      {"record_count",sorted.size()},{"dtype","F32LE"},{"normalization","l2-f32-v1"},
+      {"data",{{"file",std::to_string(id.revision)+".records.f32le"},{"bytes",data.size()},{"sha256",Sha(data)}}}}.dump();
+  Write(Manifest(tmp,id),manifest); fs::permissions(Manifest(tmp,id),fs::perms::owner_read|fs::perms::owner_write,fs::perm_options::replace);
+  return {id.id+"/"+std::to_string(id.revision)+".manifest.json",Sha(manifest),id.checkpoint,sorted.size(),data.size()+manifest.size()};
 }
 void NoTemporary(const Temp& tmp) {
   for (const auto& entry : fs::recursive_directory_iterator(tmp.root))
@@ -81,15 +107,38 @@ int main() {
       const auto publication = store->Publish(id,records); ++cases;
       Check(publication.manifest_key == id.id+"/1.manifest.json","wrong_catalog_key");
       Check(publication.byte_count == fs::file_size(Data(tmp,id))+fs::file_size(Manifest(tmp,id)),"wrong_publication_bytes");
-      auto loaded = store->Load(id,publication); Check(loaded.size() == 2 && loaded[0].id == "record-a","restart_order");
-      const auto raw = Read(Data(tmp,id)); const auto vector_at = 28+U32(raw,24);
-      Check(U32(raw,8) == 1 && U32(raw,12) == 3 && U32(raw,16) == 2 && U32(raw,vector_at) == 0x3f800000,"f32le_layout");
+      auto loaded = store->Load(id,publication); Check(loaded.size() == 2 && loaded[0].id == kRecordA,"restart_order");
+      const auto raw = Read(Data(tmp,id));
+      Check(raw.substr(0,8) == "AINVRSH2" && U32(raw,8) == 2 && U32(raw,12) == 3 && U32(raw,16) == 1 && U32(raw,kCountAt) == 2,"i8_layout");
       VectorIndex baseline(id.model_version,3,10), restored(id.model_version,3,10);
       for (const auto& record : records) baseline.Upsert(record);
       for (const auto& record : loaded) restored.Upsert(record);
       Scope scope{{id.channel_id},86400000,172800000,10}; const auto a = baseline.Query({1,0,0},scope), b = restored.Query({1,0,0},scope);
       Check(a.size() == b.size(),"exact_baseline_size");
-      for (size_t i = 0; i < a.size(); ++i) Check(a[i].id == b[i].id && a[i].fingerprint == b[i].fingerprint && std::abs(a[i].score-b[i].score)<1e-6,"exact_baseline_changed");
+      // int8 per view: scores within quantization error, identity and order unchanged.
+      for (size_t i = 0; i < a.size(); ++i) Check(a[i].id == b[i].id && a[i].fingerprint == b[i].fingerprint && std::abs(a[i].score-b[i].score)<0.01,"exact_baseline_changed");
+      ++cases;
+      // Columns served from the mapping: no per-record parsing, the same rows.
+      const auto view = store->Open(id,publication);
+      Check(view && view->count == 2 && !view->converted && view->views == 1 && view->Id(0) == kRecordA && view->Id(1) == kRecordB,"mapped_columns");
+      Check(view->Fingerprint(0) == std::string(64,'a') && view->captured_ms[1] == 86401000 && view->scene[0] == 0,"mapped_metadata");
+      Check(view->Find(kRecordB) == std::optional<size_t>(1) && !view->Find("cccccccc-0000-4000-8000-000000000003"),"mapped_lookup");
+      Check(std::memcmp(view->groups, RecordGroup(loaded[0]).data(), 16) == 0,"mapped_group");
+      const float q[3] = {1,0,0};
+      Check(std::abs(CoarseBestView(view->vectors,view->scales,1,3,q,nullptr) - 1.0f) < 0.01f &&
+            std::abs(CoarseBestView(view->vectors+3,view->scales+1,1,3,q,nullptr)) < 0.01f,"mapped_scores");
+      ++cases;
+      // A v1 (float32) file from before this format still loads and opens (converted).
+      auto legacy = id; legacy.revision = 20;
+      auto sorted = Records(legacy); std::reverse(sorted.begin(),sorted.end());
+      const auto legacy_publication = WriteV1(tmp,legacy,sorted,"test-only");
+      const auto legacy_rows = store->Load(legacy,legacy_publication);
+      Check(legacy_rows.size() == 2 && legacy_rows[0].id == kRecordA && std::abs(legacy_rows[1].vector[2]-0.8f) < 1e-6,"v1_load");
+      const auto converted = store->Open(legacy,legacy_publication);
+      Check(converted->converted && converted->count == 2 && converted->Id(1) == kRecordB &&
+            std::abs(CoarseBestView(converted->vectors,converted->scales,1,3,q,nullptr) - 1.0f) < 0.01f,"v1_open");
+      store->DeleteAuthorized(legacy,legacy_publication);
+      Check(!fs::exists(DataV1(tmp,legacy)) && !fs::exists(Manifest(tmp,legacy)),"v1_reclaimable");
       ++cases;
       std::reverse(records.begin(),records.end()); const auto retry = store->Publish(id,records);
       Check(retry.manifest_sha256 == publication.manifest_sha256 && retry.byte_count == publication.byte_count,"retry_not_idempotent"); ++cases;
@@ -155,12 +204,12 @@ int main() {
     for (const auto& mutation : std::vector<std::function<void(const Temp&,const IndexShardIdentity&,ShardPublication&)>>{
       [](const auto& t,const auto& id,auto&){ Write(Manifest(t,id),Read(Manifest(t,id))+" "); },
       [](const auto& t,const auto& id,auto&){ auto bytes=Read(Data(t,id));bytes.back()^=1;Write(Data(t,id),bytes); },
-      [](const auto& t,const auto& id,auto& p){ RewriteRow(t,id,p,0,[](auto& j){j["captured_ms"]=0;}); },
-      [](const auto& t,const auto& id,auto& p){ RewriteRow(t,id,p,0,[](auto& j){j["model"]="other-model";}); },
-      [](const auto& t,const auto& id,auto& p){ RewriteRow(t,id,p,0,[](auto& j){j["fingerprint"]="bad";}); },
-      [](const auto& t,const auto& id,auto& p){ RewriteRow(t,id,p,1,[](auto& j){j["id"]="record-a";}); },
-      [](const auto& t,const auto& id,auto& p){auto data=Read(Data(t,id));Put32(data,28+U32(data,24),0x7fc00000);Write(Data(t,id),data);Rehash(t,id,p);},
-      [](const auto& t,const auto& id,auto& p){auto data=Read(Data(t,id));Put32(data,24,0xffffffff);Write(Data(t,id),data);Rehash(t,id,p);},
+      [](const auto& t,const auto& id,auto& p){ RewriteMeta(t,id,p,"\"captured_ms\":86401000","\"captured_ms\":86401001"); },
+      [](const auto& t,const auto& id,auto& p){ RewriteMeta(t,id,p,"\"model\":\"search-v1-a","\"model\":\"search-v1-b"); },
+      [](const auto& t,const auto& id,auto& p){ RewriteMeta(t,id,p,"\"fingerprint\":\"bbbb","\"fingerprint\":\"cbbb"); },
+      [](const auto& t,const auto& id,auto& p){ RewriteMeta(t,id,p,"\"id\":\"bbbbbbbb","\"id\":\"aaaaaaaa"); },
+      [](const auto& t,const auto& id,auto& p){auto data=Read(Data(t,id));Put32(data,kScalesAt,0x7fc00000);Write(Data(t,id),data);Rehash(t,id,p);},
+      [](const auto& t,const auto& id,auto& p){auto data=Read(Data(t,id));Put32(data,kCountAt,0xffffffff);Write(Data(t,id),data);Rehash(t,id,p);},
       [](const auto& t,const auto& id,auto& p){auto j=Json::parse(Read(Manifest(t,id)));j["unexpected"]=true;auto text=j.dump();Write(Manifest(t,id),text);p.manifest_sha256=Sha(text);p.byte_count=fs::file_size(Data(t,id))+text.size();},
       [](const auto& t,const auto& id,auto& p){auto text=std::string("{\"schema_version\":1,")+Read(Manifest(t,id)).substr(1);Write(Manifest(t,id),text);p.manifest_sha256=Sha(text);p.byte_count=fs::file_size(Data(t,id))+text.size();},
     }) {

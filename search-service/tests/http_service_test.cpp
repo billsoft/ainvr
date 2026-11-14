@@ -144,7 +144,7 @@ void RunSourceAdmissionCases(const std::string& uri,const std::string& database)
         {"source",pin(source)},{"target",pin(target)},{"scope",{{"channel_ids",{channel}},{"from_ms",at-1},{"to_ms",at+10}}},
         {"source_high_watermark","9223372036854775807"},{"target_checkpoint","0"},{"lease_until_ms",Now()+10000},{"job_expires_ms",Now()+60000}}}};
     };
-    FixtureEncoder encoder;encoder.version=source.model_version;MatchEngine engine(history,encoder,16);
+    FixtureEncoder encoder;encoder.version=source.model_version;MatchEngine engine(history,encoder);
     HttpService service(&history,access,&engine);
     service.SetMigrationArtifacts([](const auto&,const auto&){return Json{{"fixture_artifacts",true}};});
     RunningServer running(service);httplib::Client client("127.0.0.1",running.port);client.set_read_timeout(5);
@@ -315,7 +315,7 @@ int main() {
     Json coverage_query = {{"model_version", "fixture-pair-v1"}, {"scope", scope}};
     auto ranges = Expect(client.Post("/v1/coverage", auth, coverage_query.dump(), "application/json"), 200);
     Check(ranges.at("ranges").size() == 1, "coverage missing");
-    FixtureEncoder encoder; MatchEngine engine(history, encoder, 8);
+    FixtureEncoder encoder; MatchEngine engine(history, encoder);
     HttpService available(&history, Access(), &engine); RunningServer available_server(available);
     httplib::Client compute("127.0.0.1", available_server.port); compute.set_read_timeout(5);
     Check(!Expect(compute.Get("/v1/status", auth), 200).at("ready").get<bool>(), "index falsely ready");
@@ -346,7 +346,7 @@ int main() {
     Expect(compute.Post("/v1/match",auth,scaled.dump(),"application/json"),200);
     Check(encoder.calls.load()==encoded_scaled,"normalized model vector not retained");
     FixtureEncoder changed_model;changed_model.version="fixture-pair-v2";
-    MatchEngine changed_engine(history,changed_model,8);changed_engine.Rebuild({{channel},at-1,at+1,20});
+    MatchEngine changed_engine(history,changed_model);changed_engine.Rebuild({{channel},at-1,at+1,20});
     Check(changed_engine.Match("person in red jacket",{{channel},at-1,at+1,20}).at("items").empty()&&
       changed_model.calls.load()==1,"new model instance reused previous embedding space");
     Json session = {{"id", Id(40)}, {"actor", "fixture-operator"}, {"query", "person in red jacket"},

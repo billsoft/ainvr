@@ -97,7 +97,7 @@ IndexBuildOutcome IndexBuildWorker::RunOne(const std::string& worker,const std::
       if(window.to_ms<=window.from_ms)return Result(State::Stale);
     }
     if(stopped())return Result(State::Cancelled);
-    build=jobs_.Begin(*job); build->shard.dimensions=dimensions_;
+    build=jobs_.Begin(*job); build->shard.dimensions=dimensions_; build->shard.views=context_.views;
     if(!SameBuild(*job,*build))return Result(State::Invalid);
     VectorIndex index(context_.model_version,dimensions_,capacity_,context_.views);
     int64_t checkpoint=0; size_t batches=0;

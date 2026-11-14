@@ -92,7 +92,7 @@ int main(){if(!std::getenv("AINVR_SEARCH_TEST_MONGO"))return 77;try{
     const auto page=call(read,200);Check(page.at("partitions").size()==1&&page.at("encoded")==1&&page.at("unavailable")==0,"report_wire_not_actual_current_lineage");
     auto bad=read;bad["worker"]=proof.worker;call(bad,400);bad=read;bad["actor"]="wrong";call(bad,409);bad=read;bad["after"]="not_a_partition";call(bad,400);
     Check(index_calls>=3&&history.Usage().at("samples")==2,"artifact_pass_changed_original_history");
-    fs::remove(root/shard.id/"1.records.f32le");++proof.generation;request["generation"]=proof.generation;call(request,200);
+    fs::remove(root/shard.id/"1.records.i8");++proof.generation;request["generation"]=proof.generation;call(request,200);
     for(int n=0;n<4;++n)runtime.Step();
     Check(call(request,200).at("state")!="ready","missing_actual_file_was_marked_ready");
     ++proof.generation;request["generation"]=proof.generation;index_ready=false;call(request,200);

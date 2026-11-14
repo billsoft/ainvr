@@ -82,7 +82,7 @@ int Run(const std::string& database){
  auto encoder=BpuTextEncoder::Load(std::move(package));
  if(encoder->ModelVersion()!=verified_version||encoder->Dimensions()!=FindPackageSpec(TestPackage()).dimensions||!encoder->Healthy())
   throw std::runtime_error("fixture_encoder_contract_failed");
- auto engine=std::make_unique<MatchEngine>(history,*encoder,64);
+ auto engine=std::make_unique<MatchEngine>(history,*encoder);
  const int64_t at=Now();const Scope scope{{output},at-30000,at+120000,64};
  engine->Rebuild(scope);
  if(!engine->Ready())throw std::runtime_error("fixture_empty_projection_not_ready");

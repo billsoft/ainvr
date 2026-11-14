@@ -39,15 +39,18 @@ class TextEncoder {
 
 class MatchEngine {
  public:
-  // `views` stored vectors per scene sample; `capacity` is a sample count.
-  MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t capacity, size_t views = 1);
+  // `views` stored vectors per scene sample. Queries read the attached shard files and
+  // the newest rows from Mongo (see IndexProjection); nothing is resident per sample.
+  MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t views = 1);
   void Start(const Scope& window);
-  size_t Warm(const std::vector<Record>& records);
-  uint64_t CacheEpoch(){return projection_.CacheEpoch();}
-  uint64_t ShardEpoch(const std::string& channel, int64_t utc_day){return projection_.ShardEpoch(channel, utc_day);}
-  bool Full(){return projection_.Full();}
-  std::optional<uint64_t> Resident(const std::vector<Record>& rows){return projection_.Resident(rows);}
+  // Start, with the attached shards (none) taken as the whole catalog: tests, fixtures.
   void Rebuild(const Scope& window);
+  void Attach(std::shared_ptr<const ShardView> shard) { projection_.Attach(std::move(shard)); }
+  void Detach(const std::string& shard_id) { projection_.Detach(shard_id); }
+  std::map<std::string, std::string> Attached() const { return projection_.Attached(); }
+  void MarkCatalogComplete() { projection_.MarkCatalogComplete(); }
+  nlohmann::json IndexStatus() const { return projection_.Status(); }
+  std::vector<IndexShardIdentity> TakeRebuildRequests() { return projection_.TakeRebuildRequests(); }
   void Put(const Sample& sample);
   std::string ReplaceTrackSlot(const Sample& sample, size_t slot, const std::string& expected_fingerprint,
                                const std::string& replacement_token);

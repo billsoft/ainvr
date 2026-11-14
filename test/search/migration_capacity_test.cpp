@@ -109,7 +109,7 @@ Json Run(size_t count,size_t channels){
       }else throw std::runtime_error("unexpected_index_operation");
       res.set_content(out.dump(),"application/json");});
     control.Start();const Json bootstrap{{"control_url","http://127.0.0.1:"+std::to_string(control.port)},{"service_token",std::string(48,'s')}};
-    Oracle oracle(old.model_version);MatchEngine engine(history,oracle,512);engine.Start(scope);
+    Oracle oracle(old.model_version);MatchEngine engine(history,oracle);engine.Start(scope);
     HttpAccess access;access.revision=context.revision;access.enabled=true;access.unavailable_reason.clear();access.console_key=std::string(48,'c');access.producer_key=std::string(48,'p');
     HttpService api(&history,access,&engine);Server web;api.Register(web.value);web.Start();
     const Json query{{"query","explicit software vector oracle"},{"scope",{{"channel_ids",std::vector<std::string>(scope.channels.begin(),scope.channels.end())},{"from_ms",scope.from_ms},{"to_ms",scope.to_ms},{"limit",20}}}};

@@ -1,45 +1,89 @@
 #pragma once
+// Query over the published shard files plus the newest rows still only in Mongo.
+//
+// Every query has a time range (at most 31 days) and a channel set, and the shards are
+// cut by (channel, UTC day). So a query reads only the shards of its scope, straight
+// from their memory mappings (int8, ~3.6 KB per four-view sample), and nothing is held
+// resident per sample: memory does not grow with retention. This replaces a float32
+// RAM projection that filled up (~41.7k samples on .190 against 100k in Mongo), had
+// to be re-warmed from files and recovered from Mongo, and reported every query on a
+// live board as partial.
+//
+// Rows newer than a shard's checkpoint (written since its last build, including
+// replaced track slots) are read from Mongo at query time and override the shard row
+// with the same id: for today and yesterday, and for a day without a shard. Older days
+// with a shard read no tail: a late write there advances the discovery cursor and the
+// shard is rebuilt within the refresh interval. Known edge: a row whose ordinal was
+// allocated before, but committed after, the build that covered its day, and that is
+// the last row of that day, stays invisible until another write rebuilds the day.
 #include "history_mongo.hpp"
+#include "index_int8.hpp"
+#include "index_shard_files.hpp"
+#include <chrono>
+#include <ctime>
+#include <deque>
+#include <functional>
+#include <iomanip>
 #include <map>
 #include <mutex>
-#include <chrono>
+#include <set>
+#include <sstream>
+#include <unordered_set>
+
 namespace ainvr::search {
 struct RankedSample { Sample sample; double score; std::vector<IndexEvidenceRef> evidence_refs{}; size_t view = 0; };
 struct ProjectionResult {
   std::vector<RankedSample> items;
-  // A resource-limited or not fully loaded window cannot report a definitive
-  // negative. This is propagated to the UI's partial-coverage state.
+  // The scope could not be read completely (unknown days during startup, a capped
+  // Mongo tail, or too many candidates vanished). The UI shows partial coverage.
   bool partial = false;
 };
+// What the projection reads and writes through: Mongo in production, a fake in tests.
+class IndexAuthority {
+ public:
+  virtual ~IndexAuthority() = default;
+  virtual void Put(const Sample& sample) = 0;
+  virtual std::string ReplaceTrackSlot(const Sample& sample, size_t slot, const std::string& expected, const std::string& token) = 0;
+  virtual HistoryBatch Scan(const std::string& model, const Scope& scope, int64_t after, size_t limit) = 0;
+  virtual std::map<std::string, Sample> ReadVisibleSamples(const std::string& model, const Scope& scope,
+                                                           const std::vector<std::string>& ids) = 0;
+};
+class HistoryAuthority final : public IndexAuthority {
+ public:
+  explicit HistoryAuthority(HistoryMongo& history) : history_(history) {}
+  void Put(const Sample& sample) override { history_.Put(sample); }
+  std::string ReplaceTrackSlot(const Sample& s, size_t slot, const std::string& e, const std::string& t) override {
+    return history_.ReplaceTrackSlot(s, slot, e, t);
+  }
+  HistoryBatch Scan(const std::string& m, const Scope& s, int64_t a, size_t l) override { return history_.Scan(m, s, a, l); }
+  std::map<std::string, Sample> ReadVisibleSamples(const std::string& m, const Scope& s, const std::vector<std::string>& ids) override {
+    return history_.ReadVisibleSamples(m, s, ids);
+  }
+ private:
+  HistoryMongo& history_;
+};
+
 class IndexProjection {
  public:
-  IndexProjection(HistoryMongo& history, std::string model, size_t dimensions, size_t capacity, size_t views = 1)
-    : history_(history), model_(std::move(model)), dimensions_(dimensions), capacity_(capacity), views_(views) {}
-  static int64_t UtcDay(int64_t captured_ms) { return captured_ms >= 0 ? captured_ms / 86400000 : (captured_ms - 86399999) / 86400000; }
-  uint64_t CacheEpoch() {std::lock_guard<std::mutex> lock(mutex_);return cache_epoch_;}
-  // A full projection admits no row from a file (Warm stops at capacity).
-  bool Full() {std::lock_guard<std::mutex> lock(mutex_);return index_&&index_->Size()>=capacity_;}
-  // Changes when the whole projection is replaced or when an entry of this channel and UTC day leaves it. A
-  // published shard file needs re-reading only then: an eviction elsewhere (for example another day expiring)
-  // leaves its rows resident.
-  uint64_t ShardEpoch(const std::string& channel, int64_t utc_day) {
-    std::lock_guard<std::mutex> lock(mutex_);return ShardEpochLocked(channel, utc_day);
+  using Clock = std::function<int64_t()>;   // wall-clock milliseconds; UTC days decide which tails are read
+  static constexpr size_t kTailBudget = 2000;   // Mongo rows (~12 KB vectors each) per query
+  static constexpr size_t kTailPage = 128;
+  IndexProjection(HistoryMongo& history, std::string model, size_t dimensions, size_t views = 1, Clock clock = {})
+      : owned_(std::make_unique<HistoryAuthority>(history)), authority_(*owned_), model_(std::move(model)),
+        dimensions_(dimensions), views_(views), clock_(std::move(clock)) { Validate(); }
+  IndexProjection(IndexAuthority& authority, std::string model, size_t dimensions, size_t views = 1, Clock clock = {})
+      : authority_(authority), model_(std::move(model)), dimensions_(dimensions), views_(views), clock_(std::move(clock)) { Validate(); }
+  static int64_t UtcDay(int64_t ms) { return ms >= 0 ? ms / 86400000 : (ms - 86399999) / 86400000; }
+  static std::optional<int64_t> ShardDay(const std::string& day) {
+    std::tm date{}; std::istringstream input(day); input >> std::get_time(&date, "%Y-%m-%d");
+    if (input.fail() || day.size() != 10) return std::nullopt;
+    return int64_t(timegm(&date)) / 86400;
   }
-  std::optional<uint64_t> Resident(const std::vector<Record>& rows) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if(!index_)return std::nullopt;
-    for(const auto& row:rows)if(index_->Fingerprint(row.id)!=std::optional<std::string>(row.fingerprint))return std::nullopt;
-    if(rows.empty())return cache_epoch_<<32;
-    for(const auto& row:rows)if(row.channel!=rows.front().channel||UtcDay(row.captured_ms)!=UtcDay(rows.front().captured_ms))return std::nullopt;
-    return ShardEpochLocked(rows.front().channel, UtcDay(rows.front().captured_ms));
-  }
-  // Production starts a bounded derived working set. Large histories never
-  // block readiness on a full Mongo scan or falsely claim complete coverage.
-  // This internal authorized source window can span 1024 sources; each user
-  // query keeps its existing 100-source/31-day limit.
+  // The authorized sources. Until the shard catalog has been read once, a day without
+  // an attached shard is unknown (partial), never assumed empty, and never read whole
+  // from Mongo per query (that would bring back the read storm after every restart).
   void Start(const Scope& window) {
-    if (window.channels.empty() || window.channels.size() > 1024)
-      throw std::invalid_argument("invalid_index_sources");
+    if (window.channels.empty() || window.channels.size() > 1024) throw std::invalid_argument("invalid_index_sources");
     Scope part = window; part.channels.clear();
     for (const auto& source : window.channels) {
       part.channels.insert(source);
@@ -47,212 +91,233 @@ class IndexProjection {
     }
     if (!part.channels.empty()) VectorIndex::ValidateScope(part);
     std::lock_guard<std::mutex> lock(mutex_);
-    ++cache_epoch_;shard_epochs_.clear();index_ = std::make_unique<VectorIndex>(model_, dimensions_, capacity_, views_);
-    window_ = window; maintenance_cursor_.clear();
-    writes_since_maintenance_ = 0; recovery_scope_ = {}; recovery_checkpoint_ = 0;
-    recovery_exhausted_=false;recovery_revision_=0;
+    started_ = true; catalog_complete_ = false;
   }
-  size_t Warm(const std::vector<Record>& records) {
+  // The attached shards are the whole catalog: a day without one is read from Mongo.
+  void MarkCatalogComplete() { std::lock_guard<std::mutex> lock(mutex_); catalog_complete_ = true; }
+  void Rebuild(const Scope& window) { Start(window); MarkCatalogComplete(); }
+  void Attach(std::shared_ptr<const ShardView> shard) {
+    if (!shard || shard->identity.model_version != model_ || shard->dimensions != dimensions_ || shard->views != views_)
+      throw std::invalid_argument("search_index_shard_mismatch");
+    const auto day = ShardDay(shard->identity.utc_day);
+    if (!day) throw std::invalid_argument("search_index_shard_mismatch");
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!index_ || records.size() > 100000) throw std::runtime_error("search_index_not_loaded");
-    size_t inserted = 0;
-    for (const auto& row : records) {
-      if (row.model != model_ || !window_.channels.count(row.channel) || row.captured_ms < window_.from_ms ||
-          row.captured_ms >= window_.to_ms || row.fingerprint.empty()) continue;
-      // A file is a cache, never allowed to overwrite a newer live CAS. Query
-      // revalidates every candidate against Mongo before returning evidence.
-      if (index_->Fingerprint(row.id)) continue;
-      if (index_->Size() >= capacity_) break;
-      index_->Upsert(row); ++inserted;
-    }
-    return inserted;
+    const auto previous = by_id_.find(shard->identity.id);
+    if (previous != by_id_.end()) shards_.erase(previous->second);
+    const std::pair<std::string, int64_t> key{shard->identity.channel_id, *day};
+    const auto replaced = shards_.find(key);
+    if (replaced != shards_.end()) { by_id_.erase(replaced->second->identity.id); Forget(replaced->second->identity.id); }
+    Forget(shard->identity.id);
+    shards_[key] = shard; by_id_[shard->identity.id] = key;
   }
-  void Rebuild(const Scope& window) {
+  void Detach(const std::string& shard_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto next = std::make_unique<VectorIndex>(model_, dimensions_, capacity_, views_);
-    int64_t checkpoint = 0;
-    for (;;) {
-      const auto batch = history_.Scan(model_, window, checkpoint, 512);
-      for (const auto& sample : batch.samples) next->Upsert(sample.record);
-      if (batch.checkpoint == checkpoint) break;
-      checkpoint = batch.checkpoint;
-    }
-    // Admission failures leave the previously usable projection intact.
-    ++cache_epoch_;shard_epochs_.clear();index_ = std::move(next); window_ = window;
-    maintenance_cursor_.clear(); writes_since_maintenance_ = 0;
-    recovery_scope_ = {}; recovery_checkpoint_ = 0;
-    recovery_exhausted_=false;recovery_revision_=0;
+    const auto found = by_id_.find(shard_id);
+    if (found == by_id_.end()) return;
+    shards_.erase(found->second); by_id_.erase(found); Forget(shard_id);
   }
-  void Put(const Sample& sample) {
-    history_.Put(sample);  // Authority first; a crashed projection is rebuildable.
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!index_ || sample.record.model != model_ || !window_.channels.count(sample.record.channel) || sample.record.captured_ms < window_.from_ms)
-      return;
-    // The live producer owns this window; coverage is tracked independently.
-    window_.to_ms = std::max(window_.to_ms, sample.record.captured_ms + 1);
-    try {
-      MaintainForWrite(sample.record.id);
-      auto saved = history_.Get(sample.record.id, false);
-      if (!saved) { recovery_exhausted_=false;recovery_checkpoint_=0;return; }
-      index_->Upsert(saved->record);
-    } catch (...) {
-      // Mongo already acknowledged the immutable write. A rebuildable cache
-      // must never turn that success into a failed producer ACK/retry loop.
-      recovery_exhausted_=false;recovery_checkpoint_=0;
-    }
+  // Shards whose rows were found gone from Mongo (evicted by its byte budget, deleted,
+  // expired): rebuilding them from Mongo drops those rows. Each shard is offered once
+  // until a new revision is attached.
+  std::vector<IndexShardIdentity> TakeRebuildRequests() {
+    std::lock_guard<std::mutex> lock(mutex_); std::vector<IndexShardIdentity> out; out.swap(rebuilds_); return out;
   }
-  std::string ReplaceTrackSlot(const Sample& sample, size_t slot,
-                               const std::string& expected_fingerprint,
-                               const std::string& replacement_token) {
-    auto fingerprint = history_.ReplaceTrackSlot(sample, slot, expected_fingerprint, replacement_token);
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!index_ || sample.record.model != model_ || !window_.channels.count(sample.record.channel) || sample.record.captured_ms < window_.from_ms)
-      return fingerprint;
-    window_.to_ms = std::max(window_.to_ms, sample.record.captured_ms + 1);
-    try {
-      MaintainForWrite(sample.record.id);
-      // Another acknowledged slot replacement may overtake this thread before
-      // it acquires the cache lock. Project the current authority, never its
-      // older local body; the caller still receives its own write receipt.
-      auto saved=history_.Get(sample.record.id,false);
-      if(!saved){recovery_exhausted_=false;return fingerprint;}
-      index_->ReplaceTrackSlot(std::move(saved->record),index_->Fingerprint(sample.record.id).value_or(""));
-    } catch (...) { recovery_exhausted_=false;recovery_checkpoint_=0; } // The authority CAS/fingerprint is final.
-    return fingerprint;
-  }
-  ProjectionResult Query(const std::vector<float>& query, const Scope& scope) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    VectorIndex::ValidateScope(scope); // Invalid scopes cannot sweep/evict cache.
-    if (!index_) throw std::runtime_error("search_index_not_loaded");
-    // Sweep the whole bounded projection, including sources/times which no
-    // user will ever query again. One batch, never N roundtrips per sample.
-    try { Maintain(); } catch (...) { recovery_exhausted_=false;recovery_checkpoint_=0; }
-    const auto recovery_deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(50);
-    try {
-      for(int page=0;page<8;++page){
-        const auto previous=recovery_checkpoint_;Recover(scope);
-        if(recovery_exhausted_||recovery_checkpoint_==previous||std::chrono::steady_clock::now()>=recovery_deadline)break;
-      }
-    } catch (...) { recovery_exhausted_=false; }
-    ProjectionResult out;
-    const auto stamp=history_.ProjectionStamp();
-    out.partial=!recovery_exhausted_||!stamp.settled||stamp.revision!=recovery_revision_;
-    Scope candidates = scope; candidates.limit = 100;
-    // Remove stale references without ever showing expired/deleted evidence.
-    // Bound work under a mass expiration; a subsequent request can continue.
-    for (int attempt = 0; attempt < 3; ++attempt) {
-      out.items.clear(); bool removed = false;
-      const auto hits = index_->Query(query, candidates);
-      std::vector<std::string> ids;for(const auto& hit:hits)ids.push_back(hit.id);
-      // The history owner provides one visibility snapshot. Do not retain the
-      // projection lock across Mongo I/O and block acknowledged live writes.
-      lock.unlock();
-      std::map<std::string,Sample> rows;
-      try { rows=history_.ReadVisibleSamples(model_,scope,ids); }
-      catch(...) { lock.lock();throw; }
-      lock.lock();
-      for (const auto& hit : hits) {
-        auto row = rows.find(hit.id);
-        if (row==rows.end() || hit.fingerprint.empty() || row->second.fingerprint != hit.fingerprint) {
-          // A crash or an authority write may replace the image before this
-          // projection updates. Never pair the old score with that new image.
-          if(index_->Fingerprint(hit.id)==std::optional<std::string>(hit.fingerprint))Evict(hit.id);
-          removed = true; out.partial = true; recovery_exhausted_=false;recovery_checkpoint_=0;continue;
-        }
-        out.items.push_back({std::move(row->second), hit.score, hit.evidence_refs, hit.view});
-        if (out.items.size() >= scope.limit) break;
-      }
-      if (!removed || out.items.size() >= scope.limit || hits.size() < candidates.limit) {
-        const auto current=history_.ProjectionStamp();
-        out.partial=out.partial||!current.settled||current.revision!=recovery_revision_;
-        return out;
-      }
-    }
-    out.partial = true;
+  // Attached shard id -> manifest hash, so an unchanged publication is not reopened.
+  std::map<std::string, std::string> Attached() const {
+    std::lock_guard<std::mutex> lock(mutex_); std::map<std::string, std::string> out;
+    for (const auto& [_, shard] : shards_) out[shard->identity.id] = shard->publication.manifest_sha256;
     return out;
   }
+  nlohmann::json Status() const {
+    std::lock_guard<std::mutex> lock(mutex_); size_t records = 0, converted = 0, dead = 0;
+    for (const auto& [_, shard] : shards_) { records += shard->count; converted += shard->converted; }
+    for (const auto& [_, rows] : dead_) dead += size_t(std::count(rows->begin(), rows->end(), true));
+    return {{"attached_shards", shards_.size()}, {"converted_shards", converted}, {"attached_records", records},
+            {"dead_rows", dead}, {"catalog_complete", catalog_complete_}};
+  }
+  void Put(const Sample& sample) { authority_.Put(sample); }
+  std::string ReplaceTrackSlot(const Sample& sample, size_t slot, const std::string& expected, const std::string& token) {
+    return authority_.ReplaceTrackSlot(sample, slot, expected, token);
+  }
+  ProjectionResult Query(const std::vector<float>& raw_query, const Scope& scope);
+
  private:
-  static constexpr size_t kMaintenanceBatch = 32;
-  uint64_t ShardEpochLocked(const std::string& channel, int64_t utc_day) const {
-    const auto found = shard_epochs_.find({channel, utc_day});
-    return (cache_epoch_ << 32) | (found == shard_epochs_.end() ? 0 : found->second & 0xffffffffULL);
+  struct Ref { int64_t at = 0; const char* id = nullptr; const ShardView* shard = nullptr; size_t row = 0; const Sample* tail = nullptr; };
+  struct Group { double score = -3; bool exact = false; size_t view = 0; Ref best, first, last; };
+  void Validate() const {
+    if (model_.empty() || model_.size() > 128 || !views_ || views_ > 8 || !dimensions_ || dimensions_ > 4096 || dimensions_ % views_)
+      throw std::invalid_argument("invalid_index_budget");
   }
-  // `restorable`: a still-valid entry dropped only to make room, which its published shard file can restore.
-  // Entries removed because Mongo holds a newer version or no longer holds them are as stale in that file, so
-  // re-reading it would only put them back for the next maintenance pass to remove again.
-  void Evict(const std::string& id, bool restorable = false) {
-    const auto ref = restorable ? index_->Reference(id) : std::nullopt;
-    index_->Remove(id);
-    if (ref) ++shard_epochs_[{ref->channel, UtcDay(ref->captured_ms)}];
+  int64_t Now() const {
+    return clock_ ? clock_() : std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
   }
-  void Maintain(const std::string& refreshing_id = "") {
-    const auto references = index_->ScanReferences(maintenance_cursor_, kMaintenanceBatch);
-    if (references.empty()) return;
-    std::vector<std::string> ids; ids.reserve(references.size());
-    // A just-committed local write is refreshed immediately by the caller.
-    // Do not mistake its temporary old cache fingerprint for an unknown gap.
-    for (const auto& ref : references) if (ref.id != refreshing_id) ids.push_back(ref.id);
-    if (ids.empty()) return;
-    const auto visible = history_.ReadVisibleFingerprints(model_, ids);
-    for (const auto& ref : references) {
-      if (ref.id == refreshing_id) continue;
-      const auto current = visible.find(ref.id);
-      if (ref.fingerprint.empty() || current == visible.end() || current->second != ref.fingerprint) {
-        Evict(ref.id);recovery_exhausted_=false;recovery_checkpoint_=0;
+  static bool Before(const Ref& a, const Ref& b) {
+    return a.at < b.at || (a.at == b.at && std::memcmp(a.id, b.id, 36) < 0);
+  }
+  static IndexEvidenceRef Evidence(const Ref& ref) {
+    if (ref.tail) return {ref.tail->record.id, ref.tail->fingerprint, ref.at};
+    return {ref.shard->Id(ref.row), ref.shard->Fingerprint(ref.row), ref.at};
+  }
+  std::unique_ptr<IndexAuthority> owned_;
+  IndexAuthority& authority_;
+  std::string model_;
+  size_t dimensions_, views_;
+  Clock clock_;
+  using DeadRows = std::shared_ptr<const std::vector<bool>>;   // copy-on-write, indexed by shard row
+  void Forget(const std::string& shard_id) { dead_.erase(shard_id); requested_.erase(shard_id); }   // mutex_ held
+  // Rows of `shard` that verification found gone: skipped from now on, and the shard
+  // offered for a rebuild once. Ignored if the shard was replaced meanwhile.
+  void MarkGone(const ShardView* shard, const std::vector<size_t>& rows) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto& id = shard->identity.id;
+    const auto attached = by_id_.find(id);
+    if (attached == by_id_.end() || shards_.at(attached->second).get() != shard) return;
+    auto next = std::make_shared<std::vector<bool>>(shard->count, false);
+    if (const auto found = dead_.find(id); found != dead_.end()) *next = *found->second;
+    for (const auto row : rows) if (row < next->size()) (*next)[row] = true;
+    dead_[id] = next;
+    if (requested_.insert(id).second) rebuilds_.push_back(shard->identity);
+  }
+  mutable std::mutex mutex_;
+  bool started_ = false, catalog_complete_ = false;
+  std::map<std::pair<std::string, int64_t>, std::shared_ptr<const ShardView>> shards_;
+  std::map<std::string, std::pair<std::string, int64_t>> by_id_;
+  std::map<std::string, DeadRows> dead_;
+  std::set<std::string> requested_;
+  std::vector<IndexShardIdentity> rebuilds_;
+};
+
+inline ProjectionResult IndexProjection::Query(const std::vector<float>& raw_query, const Scope& scope) {
+  VectorIndex::ValidateScope(scope);
+  const size_t per = dimensions_ / views_;
+  std::map<std::pair<std::string, int64_t>, std::shared_ptr<const ShardView>> shards; bool complete = false;
+  std::map<const ShardView*, DeadRows> dead;
+  const int64_t first_day = UtcDay(scope.from_ms), last_day = UtcDay(scope.to_ms - 1);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!started_) throw std::runtime_error("search_index_not_loaded");
+    complete = catalog_complete_;
+    for (const auto& channel : scope.channels)
+      for (auto day = first_day; day <= last_day; ++day) {
+        const auto found = shards_.find({channel, day});
+        if (found == shards_.end()) continue;
+        shards[found->first] = found->second;
+        if (const auto rows = dead_.find(found->second->identity.id); rows != dead_.end()) dead[found->second.get()] = rows->second;
+      }
+  }
+  const auto query = NormalizeVector(raw_query, per);
+  ProjectionResult out;
+  std::map<GroupKey, Group> groups;
+  const auto note = [&](const GroupKey& key, double score, bool exact, size_t view, const Ref& ref) {
+    auto [entry, fresh] = groups.try_emplace(key);
+    auto& group = entry->second;
+    if (fresh) { group.score = score; group.exact = exact; group.view = view; group.best = group.first = group.last = ref; return; }
+    if (score > group.score || (score == group.score && std::memcmp(ref.id, group.best.id, 36) < 0)) {
+      group.score = score; group.exact = exact; group.view = view; group.best = ref;
+    }
+    if (Before(ref, group.first)) group.first = ref;
+    if (Before(group.last, ref)) group.last = ref;
+  };
+  // 1. Rows only in Mongo: exact scores, and they override shard rows with the same id.
+  std::deque<Sample> tail; std::set<std::pair<std::string, int64_t>> tail_days; std::unordered_set<std::string> tail_ids;
+  const int64_t today = UtcDay(Now());
+  for (const auto& channel : scope.channels) {
+    for (auto day = first_day; day <= last_day; ++day) {
+      const auto shard = shards.find({channel, day});
+      if (shard == shards.end() && !complete) { out.partial = true; continue; }
+      if (shard != shards.end() && day < today - 1) continue;
+      Scope part{{channel}, std::max(scope.from_ms, day * 86400000), std::min(scope.to_ms, (day + 1) * 86400000), scope.limit};
+      int64_t after = shard != shards.end() ? shard->second->identity.checkpoint : 0;
+      for (;;) {
+        if (tail.size() >= kTailBudget) { out.partial = true; break; }
+        auto batch = authority_.Scan(model_, part, after, std::min(kTailPage, kTailBudget - tail.size()));
+        for (auto& sample : batch.samples) {
+          if (sample.record.model != model_ || sample.record.channel != channel ||
+              sample.record.captured_ms < part.from_ms || sample.record.captured_ms >= part.to_ms) continue;
+          std::vector<float> normalized;
+          try { normalized = NormalizeViews(sample.record.vector, dimensions_, views_); } catch (...) { continue; }
+          size_t view = 0; const double score = ExactBestView(normalized, views_, query, &view);
+          tail.push_back(std::move(sample)); const auto& kept = tail.back();
+          tail_ids.insert(kept.record.id); tail_days.insert({channel, day});
+          note(RecordGroup(kept.record), score, true, view, Ref{kept.record.captured_ms, kept.record.id.data(), nullptr, 0, &kept});
+        }
+        if (batch.exhausted || batch.samples.empty() || batch.checkpoint == after) break;
+        after = batch.checkpoint;
       }
     }
   }
-  void MaintainForWrite(const std::string& id) {
-    if (++writes_since_maintenance_ >= kMaintenanceBatch ||
-        (index_->Size() >= capacity_ && !index_->Fingerprint(id))) {
-      writes_since_maintenance_ = 0; Maintain(id);
+  // 2. Shard rows: an int8 coarse pass, rows already overridden by the tail skipped.
+  for (const auto& [key, shard] : shards) {
+    const auto& v = *shard;
+    const bool check = tail_days.count(key) > 0;
+    const auto gone = dead.find(&v); const std::vector<bool>* skip = gone == dead.end() ? nullptr : gone->second.get();
+    for (size_t row = 0; row < v.count; ++row) {
+      const int64_t at = v.captured_ms[row];
+      if (at < scope.from_ms || at >= scope.to_ms) continue;
+      if (skip && (*skip)[row]) continue;
+      if (check && tail_ids.count(v.Id(row))) continue;
+      size_t view = 0;
+      const float score = CoarseBestView(v.vectors + row * v.dimensions, v.scales + row * v.views, v.views, v.per, query.data(), &view);
+      GroupKey group; std::memcpy(group.data(), v.groups + 16 * row, group.size());
+      note(group, score, false, view, Ref{at, v.ids + 36 * row, &v, row, nullptr});
     }
   }
-  void Recover(const Scope& scope) {
-    const bool same=scope.channels==recovery_scope_.channels&&scope.from_ms==recovery_scope_.from_ms&&scope.to_ms==recovery_scope_.to_ms;
-    if(!same){recovery_checkpoint_=0;recovery_exhausted_=false;}
-    recovery_scope_=scope;
-    const auto before=history_.ProjectionStamp();
-    if(recovery_exhausted_&&before.settled&&before.revision==recovery_revision_)return;
-    if (index_->Size() >= capacity_) {
-      // A working set is not the source of truth. Make bounded room for the
-      // requested scope instead of pinning still-valid old scopes forever.
-      // Only derived RAM entries leave; immutable Mongo facts remain intact.
-      const auto references = index_->ScanReferences(maintenance_cursor_, kMaintenanceBatch);
-      for (const auto& ref : references)
-        if (!scope.channels.count(ref.channel) || ref.captured_ms < scope.from_ms || ref.captured_ms >= scope.to_ms)
-          {Evict(ref.id,true);recovery_checkpoint_=0;recovery_exhausted_=false;}
+  // 3. The best groups by coarse score; shard winners are re-read and scored exactly.
+  // Rows found gone are skipped and the next batch verified, at most three batches
+  // (rows of a shard Mongo evicted since its build fail verification).
+  std::vector<Group*> ranked; ranked.reserve(groups.size());
+  for (auto& [_, group] : groups) ranked.push_back(&group);
+  std::sort(ranked.begin(), ranked.end(), [](const Group* a, const Group* b) {
+    return a->score != b->score ? a->score > b->score : std::memcmp(a->best.id, b->best.id, 36) < 0;
+  });
+  // Verification reads whole Mongo documents (the JPEG included, ~150 KB on .190), so
+  // the batch is what the float projection verified before: 100 groups. Measured on
+  // .190 vectors: int8 top 100 + exact rescoring keeps 99.9% of the exact top 20.
+  const size_t batch = std::max<size_t>(100, 3 * scope.limit);
+  struct Final { Group* group; Sample sample; };
+  std::vector<Final> finals; size_t next = 0;
+  std::map<const ShardView*, std::vector<size_t>> gone_rows;
+  for (int round = 0; round < 3 && next < ranked.size() && finals.size() < scope.limit; ++round) {
+    const size_t end = std::min(ranked.size(), next + batch);
+    std::map<std::string, Sample> verified; std::vector<std::string> ids;
+    for (size_t i = next; i < end; ++i) if (!ranked[i]->exact) ids.push_back(ranked[i]->best.shard->Id(ranked[i]->best.row));
+    for (size_t at = 0; at < ids.size(); at += 100) {
+      auto rows = authority_.ReadVisibleSamples(model_, scope, std::vector<std::string>(ids.begin() + std::ptrdiff_t(at),
+          ids.begin() + std::ptrdiff_t(std::min(ids.size(), at + 100))));
+      for (auto& [id, sample] : rows) verified.emplace(id, std::move(sample));
     }
-    // Even a full cache may already contain all rows. Allow one metadata-free
-    // bounded scan to prove exhaustion; never evict required rows to certify it.
-    // Keep exactly one bounded recovery cursor, not a second ingestion queue.
-    // Any changed source/time boundary resets it; an older append ordinal can
-    // become eligible when the time window changes. Recovery never certifies
-    // complete coverage after a cache gap.
-    const auto batch = history_.Scan(model_, scope, recovery_checkpoint_, kMaintenanceBatch);
-    for (const auto& sample : batch.samples) {
-      const auto previous = index_->Fingerprint(sample.record.id);
-      if (!previous && index_->Size() >= capacity_) {recovery_exhausted_=false;return;}
-      if (previous && *previous != sample.fingerprint) Evict(sample.record.id);
-      index_->Upsert(sample.record);
+    for (size_t i = next; i < end; ++i) {
+      auto* group = ranked[i];
+      if (group->exact) { finals.push_back({group, *group->best.tail}); continue; }
+      const auto found = verified.find(group->best.shard->Id(group->best.row));
+      // Expired, evicted, deleted or replaced since the shard was built: never pair the
+      // old score with a newer image, and skip that row from now on.
+      if (found == verified.end() || found->second.fingerprint != group->best.shard->Fingerprint(group->best.row)) {
+        gone_rows[group->best.shard].push_back(group->best.row); continue;
+      }
+      std::vector<float> normalized;
+      try { normalized = NormalizeViews(found->second.record.vector, dimensions_, views_); } catch (...) { continue; }
+      group->score = ExactBestView(normalized, views_, query, &group->view); group->exact = true;
+      finals.push_back({group, std::move(found->second)});
     }
-    recovery_checkpoint_ = batch.checkpoint;
-    recovery_revision_=batch.stamp.revision;
-    recovery_exhausted_=batch.exhausted&&batch.stamp.settled;
+    next = end;
   }
-  HistoryMongo& history_;
-  std::string model_;
-  size_t dimensions_, capacity_, views_ = 1;
-  std::mutex mutex_;
-  std::unique_ptr<VectorIndex> index_;
-  Scope window_;
-  std::string maintenance_cursor_;
-  size_t writes_since_maintenance_ = 0;
-  Scope recovery_scope_;
-  int64_t recovery_checkpoint_ = 0;
-  uint64_t recovery_revision_=0;
-  uint64_t cache_epoch_=0;
-  std::map<std::pair<std::string,int64_t>,uint64_t> shard_epochs_;
-  bool recovery_exhausted_=false;
-};
+  std::sort(finals.begin(), finals.end(), [](const Final& a, const Final& b) {
+    return a.group->score != b.group->score ? a.group->score > b.group->score : a.sample.record.id < b.sample.record.id;
+  });
+  for (const auto& [shard, rows] : gone_rows) MarkGone(shard, rows);
+  if (finals.size() < scope.limit && next < ranked.size()) out.partial = true;
+  for (auto& final : finals) {
+    if (out.items.size() >= scope.limit) break;
+    auto& group = *final.group;
+    std::vector<IndexEvidenceRef> refs{Evidence(group.best)};
+    for (const auto* ref : {&group.first, &group.last}) {
+      auto evidence = Evidence(*ref);
+      if (std::none_of(refs.begin(), refs.end(), [&](const auto& item) { return item.id == evidence.id; })) refs.push_back(std::move(evidence));
+    }
+    refs[0].fingerprint = final.sample.fingerprint;
+    out.items.push_back({std::move(final.sample), group.score, std::move(refs), group.view});
+  }
+  return out;
+}
 }  // namespace ainvr::search

@@ -1,5 +1,7 @@
 #include "index_shard_files.hpp"
+#include "index_int8.hpp"
 #include "index_limits.hpp"
+#include <sys/mman.h>
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -31,6 +33,11 @@ using Json = nlohmann::json;
 constexpr uint64_t kSafeInteger = 9007199254740991ULL;
 constexpr size_t kManifestLimit = 65536, kMetadataLimit = 4096;
 constexpr unsigned char kMagic[8] = {'A','I','N','V','R','S','H','1'};
+// v2: fixed-width columns (64-byte aligned) the query reads straight from a memory
+// mapping, so resident memory does not grow with retention. v1 files stay readable.
+constexpr unsigned char kMagic2[8] = {'A','I','N','V','R','S','H','2'};
+constexpr const char* kDataV1 = ".records.f32le";
+constexpr const char* kDataV2 = ".records.i8";
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559, "F32LE needs IEEE float32");
 struct CloseDirectory { void operator()(DIR* directory) const { if (directory) closedir(directory); } };
 [[noreturn]] void Fail(const char* code) { throw std::runtime_error(code); }
@@ -185,6 +192,11 @@ int64_t DayStart(const std::string& day) {
     Fail("search_index_day_invalid");
   return int64_t(utc) * 1000;
 }
+size_t ViewsOf(const IndexShardIdentity& value) {
+  const size_t views = value.views ? value.views : 1;
+  if (views > 8 || !value.dimensions || value.dimensions % views) Fail("search_index_identity_invalid");
+  return views;
+}
 void KeyIdentity(const IndexShardIdentity& value) {
   if (!Uuid(value.id) || !Uuid(value.channel_id) || !value.revision || value.revision > kSafeInteger ||
       !std::regex_match(value.model_version, std::regex("[a-zA-Z0-9_.:-]{1,128}")) ||
@@ -281,26 +293,132 @@ uint64_t ReadInteger(int fd, uint64_t& offset, size_t bytes, uint64_t total) {
   for (size_t i = 0; i < bytes; ++i) result |= uint64_t(data[i]) << (8*i);
   return result;
 }
-void Emit(const IndexShardIdentity& identity, const std::vector<Record>& records,
-          const std::vector<size_t>& order, const Sink& sink) {
-  sink(kMagic, sizeof(kMagic)); Integer(sink, 1, 4); Integer(sink, identity.dimensions, 4); Integer(sink, records.size(), 8);
+struct LayoutV2 { uint64_t ids, fingerprints, captured, scene, groups, scales, vectors, meta_index, meta, end; };
+uint64_t AlignUp(uint64_t n) { return (n + 63) / 64 * 64; }
+LayoutV2 Layout(uint64_t count, size_t dimensions, size_t views, uint64_t meta_bytes) {
+  LayoutV2 l{}; uint64_t at = 64;
+  l.ids = at; at = AlignUp(at + 36 * count);
+  l.fingerprints = at; at = AlignUp(at + 32 * count);
+  l.captured = at; at = AlignUp(at + 8 * count);
+  l.scene = at; at = AlignUp(at + count);
+  l.groups = at; at = AlignUp(at + 16 * count);
+  l.scales = at; at = AlignUp(at + 4 * views * count);
+  l.vectors = at; at = AlignUp(at + uint64_t(dimensions) * count);
+  l.meta_index = at; at = AlignUp(at + 8 * (count + 1));
+  l.meta = at; l.end = at + meta_bytes;
+  return l;
+}
+unsigned Nibble(char c) { return c <= '9' ? unsigned(c - '0') : unsigned(c - 'a' + 10); }
+// Same records, metadata and id order as v1; vectors as per-view int8 with scales.
+void EmitV2(const IndexShardIdentity& identity, const std::vector<Record>& records,
+            const std::vector<size_t>& order, const Sink& sink) {
+  const size_t views = ViewsOf(identity), dims = identity.dimensions;
+  std::vector<std::string> metas; metas.reserve(order.size()); uint64_t meta_bytes = 0;
   for (const auto index : order) {
     const auto& record = records[index];
+    if (!Uuid(record.id)) Fail("search_index_record_invalid");
     std::string metadata;
     try { metadata = Metadata(record, identity).dump(); }
     catch (const Json::exception&) { Fail("search_index_record_invalid"); }
     if (metadata.size() > kMetadataLimit) Fail("search_index_record_invalid");
-    std::vector<float> normalized;
-    try { normalized = NormalizeVector(record.vector, identity.dimensions); }
-    catch (...) { Fail("search_index_record_invalid"); }
-    Integer(sink, metadata.size(), 4); sink(metadata.data(), metadata.size());
-    std::vector<unsigned char> bytes(normalized.size()*4);
-    for (size_t i = 0; i < normalized.size(); ++i) {
-      uint32_t bits; static_assert(sizeof(bits) == sizeof(float)); std::memcpy(&bits, &normalized[i], sizeof(bits));
-      for (size_t k = 0; k < 4; ++k) bytes[i*4+k] = (bits >> (8*k)) & 255;
-    }
-    sink(bytes.data(), bytes.size());
+    meta_bytes += metadata.size(); metas.push_back(std::move(metadata));
   }
+  const uint64_t count = order.size(); const auto l = Layout(count, dims, views, meta_bytes);
+  uint64_t written = 0;
+  const auto put = [&](const void* data, size_t bytes) { sink(data, bytes); written += bytes; };
+  const auto pad = [&](uint64_t to) { static const unsigned char zero[64]{}; while (written < to) put(zero, size_t(std::min<uint64_t>(64, to - written))); };
+  put(kMagic2, 8); Integer(put, 2, 4); Integer(put, dims, 4); Integer(put, views, 4); Integer(put, 0, 4);
+  Integer(put, count, 8); Integer(put, meta_bytes, 8); pad(l.ids);
+  for (const auto index : order) put(records[index].id.data(), 36);
+  pad(l.fingerprints);
+  for (const auto index : order) {
+    unsigned char bytes[32]; const auto& hex = records[index].fingerprint;
+    for (size_t i = 0; i < 32; ++i) bytes[i] = (unsigned char)(Nibble(hex[2*i]) << 4 | Nibble(hex[2*i+1]));
+    put(bytes, 32);
+  }
+  pad(l.captured);
+  for (const auto index : order) Integer(put, uint64_t(records[index].captured_ms), 8);
+  pad(l.scene);
+  for (const auto index : order) { const unsigned char s = records[index].scene ? 1 : 0; put(&s, 1); }
+  pad(l.groups);
+  for (const auto index : order) { const auto g = RecordGroup(records[index]); put(g.data(), g.size()); }
+  std::vector<int8_t> quantized(dims); std::vector<float> scales(views);
+  pad(l.scales);
+  for (const auto index : order) {
+    std::vector<float> normalized;
+    try { normalized = NormalizeViews(records[index].vector, dims, views); }
+    catch (...) { Fail("search_index_record_invalid"); }
+    QuantizeViews(normalized, views, quantized.data(), scales.data());
+    for (const auto scale : scales) { uint32_t bits; std::memcpy(&bits, &scale, 4); Integer(put, bits, 4); }
+  }
+  pad(l.vectors);
+  for (const auto index : order) {
+    QuantizeViews(NormalizeViews(records[index].vector, dims, views), views, quantized.data(), scales.data());
+    put(quantized.data(), quantized.size());
+  }
+  pad(l.meta_index);
+  uint64_t offset = 0;
+  for (const auto& m : metas) { Integer(put, offset, 8); offset += m.size(); }
+  Integer(put, offset, 8);
+  pad(l.meta);
+  for (const auto& m : metas) put(m.data(), m.size());
+  if (written != l.end) Fail("search_index_record_invalid");
+}
+// Columns over v2 bytes that the caller has already verified by hash.
+void BindV2(ShardView& view, const unsigned char* base, uint64_t bytes, const IndexShardIdentity& identity) {
+  if (bytes < 64 || std::memcmp(base, kMagic2, 8)) Fail("search_index_file_invalid");
+  const auto u32 = [&](size_t at) { uint32_t v; std::memcpy(&v, base + at, 4); return uint64_t(v); };
+  const auto u64 = [&](size_t at) { uint64_t v; std::memcpy(&v, base + at, 8); return v; };
+  const auto dims = u32(12), views = u32(16), count = u64(24), meta_bytes = u64(32);
+  if (u32(8) != 2 || dims != identity.dimensions || !views || views > 8 || dims % views ||
+      (identity.views && identity.views != views) || count > 1000000) Fail("search_index_file_invalid");
+  const auto l = Layout(count, size_t(dims), size_t(views), meta_bytes);
+  if (l.end != bytes) Fail("search_index_file_invalid");
+  view.count = size_t(count); view.dimensions = size_t(dims); view.views = size_t(views); view.per = size_t(dims / views);
+  view.ids = reinterpret_cast<const char*>(base + l.ids);
+  view.fingerprints = base + l.fingerprints;
+  view.captured_ms = reinterpret_cast<const int64_t*>(base + l.captured);
+  view.scene = base + l.scene;
+  view.groups = base + l.groups;
+  view.scales = reinterpret_cast<const float*>(base + l.scales);
+  view.vectors = reinterpret_cast<const int8_t*>(base + l.vectors);
+}
+// Full records from v2 bytes (builder verification, migration): metadata, and vectors
+// rebuilt from int8. Every column is checked against the record it belongs to.
+std::vector<Record> RecordsV2(const unsigned char* base, uint64_t bytes, const IndexShardIdentity& identity) {
+  ShardView view; BindV2(view, base, bytes, identity);
+  const auto meta_bytes = [&] { uint64_t v; std::memcpy(&v, base + 32, 8); return v; }();
+  const auto l = Layout(view.count, view.dimensions, view.views, meta_bytes);
+  std::vector<Record> result; result.reserve(view.count); std::string previous;
+  for (size_t row = 0; row < view.count; ++row) {
+    uint64_t from, to; std::memcpy(&from, base + l.meta_index + 8 * row, 8); std::memcpy(&to, base + l.meta_index + 8 * (row + 1), 8);
+    if (from > to || to > meta_bytes || to - from == 0 || to - from > kMetadataLimit) Fail("search_index_record_invalid");
+    const std::string raw(reinterpret_cast<const char*>(base + l.meta + from), size_t(to - from));
+    const auto metadata = Parse(raw); Record record;
+    try {
+      if (!metadata.at("captured_ms").is_number_integer() || !metadata.at("scene").is_boolean()) Fail("search_index_record_invalid");
+      record = {metadata.at("id").get<std::string>(),metadata.at("channel").get<std::string>(),
+        metadata.at("processor").get<std::string>(),metadata.at("session").get<std::string>(),metadata.at("track").get<std::string>(),
+        metadata.at("model").get<std::string>(),metadata.at("captured_ms").get<int64_t>(),metadata.at("scene").get<bool>(),{},
+        metadata.at("fingerprint").get<std::string>()};
+      if (Metadata(record,identity).dump() != raw || (row && record.id <= previous)) Fail("search_index_record_invalid");
+    } catch (const Json::exception&) { Fail("search_index_record_invalid"); }
+    if (record.id != view.Id(row) || record.fingerprint != view.Fingerprint(row) || record.captured_ms != view.captured_ms[row] ||
+        record.scene != (view.scene[row] != 0) || std::memcmp(RecordGroup(record).data(), view.groups + 16 * row, 16))
+      Fail("search_index_record_invalid");
+    previous = record.id;
+    record.vector.resize(view.dimensions);
+    for (size_t v = 0; v < view.views; ++v) {
+      const float scale = view.scales[row * view.views + v];
+      if (!std::isfinite(scale) || scale < 0) Fail("search_index_vector_invalid");
+      for (size_t i = 0; i < view.per; ++i)
+        record.vector[v * view.per + i] = scale * float(view.vectors[row * view.dimensions + v * view.per + i]);
+    }
+    try { record.vector = NormalizeViews(record.vector, view.dimensions, view.views); }
+    catch (...) { Fail("search_index_vector_invalid"); }
+    result.push_back(std::move(record));
+  }
+  return result;
 }
 class IoLock {
  public:
@@ -473,7 +591,7 @@ struct IndexShardFiles::Impl {
           if (unlinkat(shard.get(),child.c_str(),0)) Fail("search_index_temporary_cleanup_failed");
           continue;
         }
-        if (temporary || !std::regex_match(child,std::regex("[1-9][0-9]{0,15}\\.(?:records\\.f32le|manifest\\.json)")) || st.st_nlink != 1)
+        if (temporary || !std::regex_match(child,std::regex("[1-9][0-9]{0,15}\\.(?:records\\.f32le|records\\.i8|manifest\\.json)")) || st.st_nlink != 1)
           Fail("search_index_file_invalid");
         account(st);
         ++surviving;
@@ -491,12 +609,20 @@ struct IndexShardFiles::Impl {
       {"model_version",identity.model_version},{"utc_day",identity.utc_day},{"dimensions",identity.dimensions},
       {"checkpoint",identity.checkpoint},{"storage_generation",identity.storage_generation},{"volume_id",authorization.volume_id},
       {"record_count",count},{"dtype","F32LE"},{"normalization","l2-f32-v1"},
-      {"data",{{"file",Base(identity)+".records.f32le"},{"bytes",bytes},{"sha256",hash}}}};
+      {"data",{{"file",Base(identity)+kDataV1},{"bytes",bytes},{"sha256",hash}}}};
+  }
+  Json ManifestV2(const IndexShardIdentity& identity, size_t views, uint64_t count, uint64_t bytes, const std::string& hash) const {
+    return {{"schema_version",2},{"shard_id",identity.id},{"revision",identity.revision},{"channel_id",identity.channel_id},
+      {"model_version",identity.model_version},{"utc_day",identity.utc_day},{"dimensions",identity.dimensions},{"views",views},
+      {"checkpoint",identity.checkpoint},{"storage_generation",identity.storage_generation},{"volume_id",authorization.volume_id},
+      {"record_count",count},{"dtype","I8V2"},{"normalization","l2-view-i8-v2"},
+      {"data",{{"file",Base(identity)+kDataV2},{"bytes",bytes},{"sha256",hash}}}};
   }
   struct Validated {
     Fd data;
     uint64_t bytes = 0, count = 0;
     struct stat identity{};
+    bool v2 = false; size_t views = 1;
   };
   Validated Verify(int directory, const IndexShardIdentity& identity, const ShardPublication& publication) const {
     if (publication.manifest_key != identity.id+"/"+Base(identity)+".manifest.json" || !HashString(publication.manifest_sha256) ||
@@ -505,19 +631,63 @@ struct IndexShardFiles::Impl {
     const auto raw = FileText(manifest.get(),kManifestLimit);
     if (Sha(raw) != publication.manifest_sha256) Fail("search_index_manifest_hash_mismatch");
     const auto parsed = Parse(raw);
-    uint64_t bytes = 0, count = 0; std::string hash;
+    uint64_t bytes = 0, count = 0; std::string hash; bool v2 = false; size_t views = 1;
     try {
       if (!parsed.at("data").at("bytes").is_number_unsigned() || !parsed.at("record_count").is_number_unsigned()) Fail("search_index_file_invalid");
       bytes = parsed.at("data").at("bytes").get<uint64_t>(); count = parsed.at("record_count").get<uint64_t>();
       hash = parsed.at("data").at("sha256").get<std::string>();
-      if (bytes < 24 || bytes > limits.max_shard_bytes || count > limits.max_records ||
-          count > kMaxIndexFloats/identity.dimensions || !HashString(hash) ||
-          raw != Manifest(identity,count,bytes,hash).dump() || count != publication.record_count ||
-          bytes+raw.size() != publication.byte_count) Fail("search_index_manifest_invalid");
+      v2 = parsed.at("dtype") == "I8V2";
+      if (v2) {
+        if (!parsed.at("views").is_number_unsigned()) Fail("search_index_manifest_invalid");
+        views = parsed.at("views").get<size_t>();
+        if (!views || views > 8 || identity.dimensions % views || (identity.views && identity.views != views)) Fail("search_index_manifest_invalid");
+      } else if (count > kMaxIndexFloats/identity.dimensions) Fail("search_index_manifest_invalid");
+      if (bytes < 24 || bytes > limits.max_shard_bytes || count > limits.max_records || !HashString(hash) ||
+          raw != (v2 ? ManifestV2(identity,views,count,bytes,hash) : Manifest(identity,count,bytes,hash)).dump() ||
+          count != publication.record_count || bytes+raw.size() != publication.byte_count) Fail("search_index_manifest_invalid");
     } catch (const Json::exception&) { Fail("search_index_manifest_invalid"); }
-    auto data = Regular(directory,Base(identity)+".records.f32le",root_identity.st_dev,limits.max_shard_bytes);
+    auto data = Regular(directory,Base(identity)+(v2?kDataV2:kDataV1),root_identity.st_dev,limits.max_shard_bytes);
     if (FileSha(data.get(),bytes) != hash) Fail("search_index_data_hash_mismatch");
-    const auto st = Stat(data.get()); return {std::move(data),bytes,count,st};
+    const auto st = Stat(data.get()); return {std::move(data),bytes,count,st,v2,views};
+  }
+  std::vector<Record> LoadV1(Validated& file, const IndexShardIdentity& identity) const {
+    uint64_t at = 0;
+    unsigned char magic[8]; ReadAll(file.data.get(),at,magic,sizeof(magic),file.bytes);
+    if (std::memcmp(magic,kMagic,8) || ReadInteger(file.data.get(),at,4,file.bytes) != 1 ||
+        ReadInteger(file.data.get(),at,4,file.bytes) != identity.dimensions || ReadInteger(file.data.get(),at,8,file.bytes) != file.count)
+      Fail("search_index_file_invalid");
+    std::vector<Record> result; result.reserve(size_t(file.count)); std::string previous;
+    for (uint64_t row = 0; row < file.count; ++row) {
+      const auto length = ReadInteger(file.data.get(),at,4,file.bytes);
+      if (!length || length > kMetadataLimit) Fail("search_index_record_invalid");
+      std::string raw(size_t(length),'\0'); ReadAll(file.data.get(),at,raw.data(),raw.size(),file.bytes);
+      const auto metadata = Parse(raw); Record record;
+      try {
+        if (!metadata.at("captured_ms").is_number_integer() || !metadata.at("scene").is_boolean()) Fail("search_index_record_invalid");
+        record = {metadata.at("id").get<std::string>(),metadata.at("channel").get<std::string>(),
+          metadata.at("processor").get<std::string>(),metadata.at("session").get<std::string>(),metadata.at("track").get<std::string>(),
+          metadata.at("model").get<std::string>(),metadata.at("captured_ms").get<int64_t>(),metadata.at("scene").get<bool>(),{},
+          metadata.at("fingerprint").get<std::string>()};
+        if (Metadata(record,identity).dump() != raw || (row && record.id <= previous)) Fail("search_index_record_invalid");
+      } catch (const Json::exception&) { Fail("search_index_record_invalid"); }
+      previous = record.id; std::vector<unsigned char> bytes(identity.dimensions*4);
+      ReadAll(file.data.get(),at,bytes.data(),bytes.size(),file.bytes); record.vector.resize(identity.dimensions);
+      for (size_t i = 0; i < identity.dimensions; ++i) {
+        uint32_t bits = 0; for (size_t k = 0; k < 4; ++k) bits |= uint32_t(bytes[i*4+k]) << (8*k);
+        std::memcpy(&record.vector[i],&bits,sizeof(bits));
+      }
+      try { record.vector = NormalizeVector(record.vector,identity.dimensions); }
+      catch (...) { Fail("search_index_vector_invalid"); }
+      result.push_back(std::move(record));
+    }
+    if (at != file.bytes || !Same(file.identity,Stat(file.data.get()))) Fail("search_index_file_changed");
+    return result;
+  }
+  std::vector<unsigned char> ReadV2(Validated& file) const {
+    std::vector<unsigned char> bytes(size_t(file.bytes)); uint64_t at = 0;
+    ReadAll(file.data.get(),at,bytes.data(),bytes.size(),file.bytes);
+    if (!Same(file.identity,Stat(file.data.get()))) Fail("search_index_file_changed");
+    return bytes;
   }
 };
 
@@ -550,18 +720,18 @@ ShardPublication IndexShardFiles::Publish(const IndexShardIdentity& identity, co
   std::unique_lock<std::mutex> serial(impl_->mutex,std::try_to_lock);
   if (!serial.owns_lock()) Fail("search_index_busy");
   IoLock io(impl_->writer.get()); impl_->Current(); impl_->Check(identity);
-  if (records.size() > impl_->limits.max_records || records.size() > kMaxIndexFloats/identity.dimensions)
-    Fail("search_index_record_capacity");
+  if (records.size() > impl_->limits.max_records) Fail("search_index_record_capacity");
+  const size_t views = ViewsOf(identity);
   std::vector<size_t> order(records.size()); std::iota(order.begin(),order.end(),0);
   for (const auto& record : records) if (record.id.empty() || record.id.size() > 256) Fail("search_index_record_invalid");
   std::sort(order.begin(),order.end(),[&](size_t a,size_t b) { return records[a].id < records[b].id; });
   for (size_t i = 1; i < order.size(); ++i) if (records[order[i-1]].id == records[order[i]].id) Fail("search_index_duplicate_record");
   uint64_t bytes = 0; Digest expected;
-  Emit(identity,records,order,[&](const void* data,size_t count) {
+  EmitV2(identity,records,order,[&](const void* data,size_t count) {
     if (count > impl_->limits.max_shard_bytes - bytes) Fail("search_index_byte_capacity");
     bytes += count; expected.Add(data,count);
   });
-  const auto hash = expected.Finish(); const auto manifest = impl_->Manifest(identity,records.size(),bytes,hash).dump();
+  const auto hash = expected.Finish(); const auto manifest = impl_->ManifestV2(identity,views,records.size(),bytes,hash).dump();
   if (manifest.size() > kManifestLimit) Fail("search_index_manifest_invalid");
   ShardPublication publication{ManifestKey(identity),Sha(manifest),identity.checkpoint,records.size(),bytes+manifest.size()};
   auto usage = impl_->Scan(true); const auto base = Base(identity);
@@ -575,8 +745,8 @@ ShardPublication IndexShardFiles::Publish(const IndexShardIdentity& identity, co
       (void)impl_->Verify(directory.get(),identity,publication); impl_->Current(); return publication;
     }
     if (errno != ENOENT) Fail("search_index_storage_unavailable");
-    if (!fstatat(directory.get(),(base+".records.f32le").c_str(),&st,AT_SYMLINK_NOFOLLOW)) {
-      auto file = Regular(directory.get(),base+".records.f32le",impl_->root_identity.st_dev,impl_->limits.max_shard_bytes);
+    if (!fstatat(directory.get(),(base+kDataV2).c_str(),&st,AT_SYMLINK_NOFOLLOW)) {
+      auto file = Regular(directory.get(),base+kDataV2,impl_->root_identity.st_dev,impl_->limits.max_shard_bytes);
       if (FileSha(file.get(),bytes) != hash) Fail("search_index_revision_conflict");
       existing_data = true;
     } else if (errno != ENOENT) Fail("search_index_storage_unavailable");
@@ -590,7 +760,7 @@ ShardPublication IndexShardFiles::Publish(const IndexShardIdentity& identity, co
   std::unique_ptr<Temporary> data;
   if (!existing_data) {
     data = std::make_unique<Temporary>(directory.get(),base+"-data"); Digest actual; uint64_t written = 0;
-    Emit(identity,records,order,[&](const void* source,size_t count) {
+    EmitV2(identity,records,order,[&](const void* source,size_t count) {
       if (count > bytes-written) Fail("search_index_record_changed");
       WriteAll(data->get(),source,count); actual.Add(source,count); written += count;
     });
@@ -599,7 +769,7 @@ ShardPublication IndexShardFiles::Publish(const IndexShardIdentity& identity, co
   }
   Temporary pending(directory.get(),base+"-manifest"); WriteAll(pending.get(),manifest.data(),manifest.size()); Sync(pending.get());
   impl_->Current();
-  if (data) { Commit(*data,directory.get(),base+".records.f32le"); Sync(directory.get()); }
+  if (data) { Commit(*data,directory.get(),base+kDataV2); Sync(directory.get()); }
   Commit(pending,directory.get(),base+".manifest.json"); Sync(directory.get()); impl_->Current();
   return publication;
 }
@@ -608,37 +778,43 @@ std::vector<Record> IndexShardFiles::Load(const IndexShardIdentity& identity, co
   if (!serial.owns_lock()) Fail("search_index_busy");
   IoLock io(impl_->writer.get()); impl_->Current(); impl_->Check(identity); (void)impl_->Scan(true);
   auto directory = Child(impl_->root.get(),identity.id,impl_->root_identity.st_dev,false);
-  auto file = impl_->Verify(directory.get(),identity,publication); uint64_t at = 0;
-  unsigned char magic[8]; ReadAll(file.data.get(),at,magic,sizeof(magic),file.bytes);
-  if (std::memcmp(magic,kMagic,8) || ReadInteger(file.data.get(),at,4,file.bytes) != 1 ||
-      ReadInteger(file.data.get(),at,4,file.bytes) != identity.dimensions || ReadInteger(file.data.get(),at,8,file.bytes) != file.count)
-    Fail("search_index_file_invalid");
-  std::vector<Record> result; result.reserve(size_t(file.count)); std::string previous;
-  for (uint64_t row = 0; row < file.count; ++row) {
-    const auto length = ReadInteger(file.data.get(),at,4,file.bytes);
-    if (!length || length > kMetadataLimit) Fail("search_index_record_invalid");
-    std::string raw(size_t(length),'\0'); ReadAll(file.data.get(),at,raw.data(),raw.size(),file.bytes);
-    const auto metadata = Parse(raw); Record record;
-    try {
-      if (!metadata.at("captured_ms").is_number_integer() || !metadata.at("scene").is_boolean()) Fail("search_index_record_invalid");
-      record = {metadata.at("id").get<std::string>(),metadata.at("channel").get<std::string>(),
-        metadata.at("processor").get<std::string>(),metadata.at("session").get<std::string>(),metadata.at("track").get<std::string>(),
-        metadata.at("model").get<std::string>(),metadata.at("captured_ms").get<int64_t>(),metadata.at("scene").get<bool>(),{},
-        metadata.at("fingerprint").get<std::string>()};
-      if (Metadata(record,identity).dump() != raw || (row && record.id <= previous)) Fail("search_index_record_invalid");
-    } catch (const Json::exception&) { Fail("search_index_record_invalid"); }
-    previous = record.id; std::vector<unsigned char> bytes(identity.dimensions*4);
-    ReadAll(file.data.get(),at,bytes.data(),bytes.size(),file.bytes); record.vector.resize(identity.dimensions);
-    for (size_t i = 0; i < identity.dimensions; ++i) {
-      uint32_t bits = 0; for (size_t k = 0; k < 4; ++k) bits |= uint32_t(bytes[i*4+k]) << (8*k);
-      std::memcpy(&record.vector[i],&bits,sizeof(bits));
-    }
-    try { record.vector = NormalizeVector(record.vector,identity.dimensions); }
-    catch (...) { Fail("search_index_vector_invalid"); }
-    result.push_back(std::move(record));
-  }
-  if (at != file.bytes || !Same(file.identity,Stat(file.data.get()))) Fail("search_index_file_changed");
+  auto file = impl_->Verify(directory.get(),identity,publication);
+  std::vector<Record> result;
+  if (file.v2) { auto view = identity; view.views = file.views; const auto bytes = impl_->ReadV2(file); result = RecordsV2(bytes.data(),bytes.size(),view); }
+  else result = impl_->LoadV1(file,identity);
   impl_->Current(); return result;
+}
+std::shared_ptr<const ShardView> IndexShardFiles::Open(const IndexShardIdentity& identity, const ShardPublication& publication) {
+  std::unique_lock<std::mutex> serial(impl_->mutex,std::try_to_lock);
+  if (!serial.owns_lock()) Fail("search_index_busy");
+  IoLock io(impl_->writer.get()); impl_->Current(); impl_->Check(identity);
+  auto directory = Child(impl_->root.get(),identity.id,impl_->root_identity.st_dev,false);
+  auto file = impl_->Verify(directory.get(),identity,publication);
+  auto view = std::make_shared<ShardView>(); view->identity = identity; view->publication = publication;
+  if (file.v2) {
+    view->identity.views = file.views;
+    // Verified by hash above; a published revision is immutable (renamed in, never
+    // rewritten), and a retired one stays readable through this mapping until released.
+    void* mapped = mmap(nullptr, size_t(file.bytes), PROT_READ, MAP_SHARED, file.data.get(), 0);
+    if (mapped == MAP_FAILED) Fail("search_index_map_failed");
+    const size_t length = size_t(file.bytes);
+    view->storage = std::shared_ptr<const void>(mapped, [length](const void* p) { munmap(const_cast<void*>(p), length); });
+    if (!Same(file.identity,Stat(file.data.get()))) Fail("search_index_file_changed");
+    BindV2(*view, static_cast<const unsigned char*>(mapped), file.bytes, view->identity);
+  } else {
+    // Transition only: a v1 shard is converted into the same columns in owned memory
+    // (~3.6 KB per four-view sample instead of a 12 KB float record). v1 files age out.
+    auto records = impl_->LoadV1(file,identity);
+    view->identity.views = identity.views ? identity.views : 1;
+    std::vector<size_t> order(records.size()); std::iota(order.begin(),order.end(),0); // already sorted by id
+    auto bytes = std::make_shared<std::vector<unsigned char>>();
+    EmitV2(view->identity,records,order,[&](const void* data,size_t count) {
+      const auto* at = static_cast<const unsigned char*>(data); bytes->insert(bytes->end(),at,at+count); });
+    std::vector<Record>().swap(records);
+    BindV2(*view, bytes->data(), bytes->size(), view->identity);
+    view->converted = true; view->storage = bytes;
+  }
+  impl_->Current(); return view;
 }
 void IndexShardFiles::DeleteAuthorized(const IndexShardIdentity& identity, const ShardPublication& publication) {
   Identity(identity);
@@ -664,15 +840,18 @@ void IndexShardFiles::DeleteExact(const IndexShardIdentity& identity) {
   auto directory = Child(impl_->root.get(),identity.id,impl_->root_identity.st_dev,false);
   const auto base = std::to_string(identity.revision);
   Fd manifest_file, data_file;
-  bool manifest_present = false, data_present = false;
+  bool manifest_present = false, data_present = false; std::string data_name;
   if (!fstatat(directory.get(),(base+".manifest.json").c_str(),&found,AT_SYMLINK_NOFOLLOW)) {
     manifest_file = Regular(directory.get(),base+".manifest.json",impl_->root_identity.st_dev,1099511627776ULL);
     manifest_present = true;
   } else if (errno != ENOENT) Fail("search_index_storage_unavailable");
-  if (!fstatat(directory.get(),(base+".records.f32le").c_str(),&found,AT_SYMLINK_NOFOLLOW)) {
-    data_file = Regular(directory.get(),base+".records.f32le",impl_->root_identity.st_dev,1099511627776ULL);
-    data_present = true;
-  } else if (errno != ENOENT) Fail("search_index_storage_unavailable");
+  for (const auto* suffix : {kDataV2, kDataV1}) {
+    if (!fstatat(directory.get(),(base+suffix).c_str(),&found,AT_SYMLINK_NOFOLLOW)) {
+      if (data_present) Fail("search_index_file_invalid"); // one revision has one data file
+      data_file = Regular(directory.get(),base+suffix,impl_->root_identity.st_dev,1099511627776ULL);
+      data_present = true; data_name = base + suffix;
+    } else if (errno != ENOENT) Fail("search_index_storage_unavailable");
+  }
   // PG already hid and authorized this immutable exact key. Corrupt derived
   // bytes must remain reclaimable; content hashes are a LOAD condition, not a
   // reason to retain garbage forever. Both objects are type-checked first.
@@ -683,7 +862,7 @@ void IndexShardFiles::DeleteExact(const IndexShardIdentity& identity) {
   // A replay after manifest-first deletion may finish its exact private data
   // file, just as a catalog-authorized unpublished build can be discarded.
   if (data_present) {
-    if (unlinkat(directory.get(),(base+".records.f32le").c_str(),0)) Fail("search_index_delete_failed");
+    if (unlinkat(directory.get(),data_name.c_str(),0)) Fail("search_index_delete_failed");
     Sync(directory.get());
   }
   if (!unlinkat(impl_->root.get(),identity.id.c_str(),AT_REMOVEDIR)) Sync(impl_->root.get());
@@ -703,11 +882,13 @@ void IndexShardFiles::DiscardUnpublished(const IndexShardIdentity& identity) {
   const auto base = Base(identity);
   if (!fstatat(directory.get(),(base+".manifest.json").c_str(),&st,AT_SYMLINK_NOFOLLOW) || errno != ENOENT)
     Fail("search_index_manifest_requires_authorized_delete");
-  if (!fstatat(directory.get(),(base+".records.f32le").c_str(),&st,AT_SYMLINK_NOFOLLOW)) {
-    auto data = Regular(directory.get(),base+".records.f32le",impl_->root_identity.st_dev,1099511627776ULL);
-    if (unlinkat(directory.get(),(base+".records.f32le").c_str(),0)) Fail("search_index_delete_failed");
-    Sync(directory.get());
-  } else if (errno != ENOENT) Fail("search_index_storage_unavailable");
+  for (const auto* suffix : {kDataV2, kDataV1}) {
+    if (!fstatat(directory.get(),(base+suffix).c_str(),&st,AT_SYMLINK_NOFOLLOW)) {
+      auto data = Regular(directory.get(),base+suffix,impl_->root_identity.st_dev,1099511627776ULL);
+      if (unlinkat(directory.get(),(base+suffix).c_str(),0)) Fail("search_index_delete_failed");
+      Sync(directory.get());
+    } else if (errno != ENOENT) Fail("search_index_storage_unavailable");
+  }
   if (!unlinkat(impl_->root.get(),identity.id.c_str(),AT_REMOVEDIR)) Sync(impl_->root.get());
   else if (errno != ENOTEMPTY) Fail("search_index_delete_failed");
   impl_->Current();

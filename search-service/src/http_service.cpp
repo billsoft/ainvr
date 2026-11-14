@@ -177,15 +177,12 @@ template<class Function> httplib::Server::Handler Handle(Function fn) {
 }
 }  // namespace
 
-MatchEngine::MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t capacity, size_t views)
+MatchEngine::MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t views)
     : model_(encoder.ModelVersion()), dimensions_(encoder.Dimensions()), views_(views), encoder_(encoder),
-      projection_(history, model_, dimensions_ * views, capacity, views), text_cache_(model_, dimensions_) {
+      projection_(history, model_, dimensions_ * views, views), text_cache_(model_, dimensions_) {
   if (model_.empty() || model_.size() > 128) throw std::invalid_argument("invalid_search_model");
-  // Validate dimensions/capacity before the first request arrives.
-  VectorIndex validate(model_, dimensions_ * views_, capacity, views_);
 }
 void MatchEngine::Start(const Scope& window) { projection_.Start(window); loaded_.store(true); }
-size_t MatchEngine::Warm(const std::vector<Record>& records) { return projection_.Warm(records); }
 void MatchEngine::Rebuild(const Scope& window) { projection_.Rebuild(window); loaded_.store(true); }
 void MatchEngine::Put(const Sample& sample) { projection_.Put(sample); }
 std::string MatchEngine::ReplaceTrackSlot(const Sample& sample, size_t slot, const std::string& expected,

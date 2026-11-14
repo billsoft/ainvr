@@ -218,8 +218,7 @@ int main(int argc, char** argv) {
               } else encoder = LoadConfiguredTextEncoder(runtime, ProductionTextLoader(runtime,*history));
               if (encoder) {
                 const size_t views = FindPackageSpec(runtime.package_id).views;
-                engine = std::make_unique<MatchEngine>(*history, *encoder,
-                    RuntimeProjectionCapacity(runtime, encoder->Dimensions() * views), views);
+                engine = std::make_unique<MatchEngine>(*history, *encoder, views);
                 runtime.access.ingestion_model = encoder->ModelVersion();
                 engine->Start(window);
                 text_ready = true;

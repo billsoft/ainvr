@@ -140,7 +140,7 @@ void TrackSlots(const std::string& uri, const std::string& database, int64_t at,
   history.reset(); history = std::make_unique<HistoryMongo>(uri, database, budget); history->Initialize();
   Check(history->ReplaceTrackSlot(last, 0, fingerprint, token) == fingerprint); // Retry survives process restart.
   Reject([&] { history->ReplaceTrackSlot(first, 0, "", "first"); });
-  IndexProjection projection(*history, "pair-v1", 2, 8); projection.Rebuild(scope);
+  IndexProjection projection(*history, "pair-v1", 2); projection.Rebuild(scope);
   const auto ranked = projection.Query({1, 0}, scope);
   Check(ranked.items.size() == 1 && ranked.items[0].sample.record.id == sample.record.id && ranked.items[0].score == 1);
   SearchSessionRequest request{Id(3000), "slot-operator", "person", "pair-v1", scope, false, Now() + 60000};
@@ -248,7 +248,7 @@ void ProjectionMaintenance(const std::string& uri, const std::string& database, 
   HistoryBudget budget; budget.max_samples = 128;
   HistoryMongo history(uri, database, budget); history.Initialize();
   history.Put(Make(9001, at)); history.Put(Make(9002, at));
-  IndexProjection projection(history, "pair-v1", 2, 2);
+  IndexProjection projection(history, "pair-v1", 2);
   projection.Rebuild({{channel}, at - 1, at + 1, 20});
   auto next = Make(9003, at + 1000);
   projection.Put(next); // Mongo succeeds although the cache still has 2 live rows.
@@ -287,7 +287,7 @@ void ProjectionMaintenance(const std::string& uri, const std::string& database, 
 
   HistoryMongo ttl(uri, database + "_ttl", budget); ttl.Initialize();
   ttl.Put(Make(9101, at)); ttl.Put(Make(9102, at));
-  IndexProjection expiring(ttl, "pair-v1", 2, 2); expiring.Rebuild({{channel}, at - 1, at + 1, 20});
+  IndexProjection expiring(ttl, "pair-v1", 2); expiring.Rebuild({{channel}, at - 1, at + 1, 20});
   Command(client, database + "_ttl", {{"update", "search_samples"}, {"updates", Json::array({
     {{"q", {{"_id", {{"$in", {Id(9101), Id(9102)}}}}}}, {"u", {{"$set", {{"expires_at", {{"$date", {{"$numberLong", std::to_string(at - 1)}}}}}}}}}, {"multi", true}}
   })}});
@@ -299,7 +299,7 @@ void ProjectionMaintenance(const std::string& uri, const std::string& database, 
   auto first = Make(9201, at); first.record.vector = {1, 0};
   const auto original = slots.ReplaceTrackSlot(first, 0, "", "original");
   slots.Put(Make(9202, at));
-  IndexProjection mutable_cache(slots, "pair-v1", 2, 2);
+  IndexProjection mutable_cache(slots, "pair-v1", 2);
   mutable_cache.Rebuild({{channel}, at - 1, at + 2001, 20});
   auto changed = first; changed.record.captured_ms = at + 1000; changed.record.vector = {0, 1};
   changed.evidence["frame_id"] = Id(9250); changed.evidence["source_frame_index"] = "9250";
@@ -327,7 +327,7 @@ void ProjectionMaintenance(const std::string& uri, const std::string& database, 
 
   HistoryMongo pages(uri, database + "_pages", budget); pages.Initialize();
   for (int n = 0; n < 65; ++n) pages.Put(Make(9700 + n, at));
-  IndexProjection paging(pages, "pair-v1", 2, 100);
+  IndexProjection paging(pages, "pair-v1", 2);
   paging.Rebuild({{Id(9999)}, at - 1, at + 1, 20});
   const Scope all{{channel}, at - 1, at + 1, 100};
   bool complete=false;
@@ -540,35 +540,28 @@ int main() {
     VectorIndex rebuilt("pair-v1", 2, 8);
     for (const auto& row : history->Scan("pair-v1", scope, 0, 10).samples) rebuilt.Upsert(row.record);
     Check(rebuilt.Query({1, 0}, scope).size() == 2);
-    IndexProjection working(*history, "pair-v1", 2, 1);
+    IndexProjection working(*history, "pair-v1", 2);
     working.Start(scope);
-    Check(working.Query({1, 0}, scope).partial); // Capacity never pretends a full negative.
-    auto indexed = history->Scan("pair-v1", scope, 0, 10);
-    Check(working.Warm({indexed.samples[0].record}) == 0); // Query already filled bounded cache.
-    IndexProjection warmed(*history, "pair-v1", 2, 8); warmed.Start(scope);
-    Check(warmed.Warm({indexed.samples[0].record}) == 1);
-    auto stale = indexed.samples[0].record; stale.fingerprint = std::string(64, 'a');
-    Check(warmed.Warm({stale}) == 0); // A file cannot overwrite a live generation.
-    Check(!warmed.Query({1, 0}, scope).partial && warmed.Query({1, 0}, scope).items.size() == 2);
+    // Before the shard catalog has been read a day is unknown, never a full negative.
+    Check(working.Query({1, 0}, scope).partial);
+    working.MarkCatalogComplete();
     const auto stamp_before=history->ProjectionStamp();
-    Check(!warmed.Query({1, 0}, scope).partial&&history->ProjectionStamp().revision==stamp_before.revision);
-    Check(warmed.Resident({indexed.samples[0].record}).has_value());
-    auto wrong_model = indexed.samples[0].record; wrong_model.model = "other";
-    Check(warmed.Warm({wrong_model}) == 0);
+    Check(!working.Query({1, 0}, scope).partial && working.Query({1, 0}, scope).items.size() == 2);
+    Check(history->ProjectionStamp().revision==stamp_before.revision); // a query writes nothing
     Scope many_sources = scope; for (int n = 0; n < 100; ++n) many_sources.channels.insert(Id(n));
-    warmed.Start(many_sources); // Internal warmup accepts all sources without selecting first 100.
-    Check(warmed.Query({1, 0}, scope).items.size() == 2);
-    IndexProjection projection(*history, "pair-v1", 2, 8);
+    working.Start(many_sources); working.MarkCatalogComplete(); // The internal window accepts all sources.
+    Check(working.Query({1, 0}, scope).items.size() == 2);
+    IndexProjection projection(*history, "pair-v1", 2);
     Reject([&] { projection.Query({1, 0}, scope); });
     projection.Rebuild(scope);
     Check(projection.Query({1, 0}, scope).items.size() == 2);
     Check(projection.Query({1, 0}, scope).items[0].sample.jpeg.empty());
     Check(std::abs(projection.Query({1, 0}, scope).items[0].score - 0.89442719) < 1e-6);
     Scope invalid = scope; invalid.limit = 0; Reject([&] { projection.Query({1, 0}, invalid); });
-    IndexProjection small(*history, "pair-v1", 2, 1);
+    IndexProjection small(*history, "pair-v1", 2);
     small.Rebuild(denied);
-    Reject([&] { small.Rebuild(scope); });
-    Check(small.Query({1, 0}, denied).items.empty()); // Failed rebuild kept prior usable state.
+    Check(small.Query({1, 0}, denied).items.empty()); // A source without samples is empty, not partial.
+    Check(!small.Query({1, 0}, denied).partial);
     Scope wider = scope; wider.from_ms -= 100;
     Check(!projection.Query({1, 0}, wider).partial); // Wider but authoritatively exhausted.
     history->PutCoverage(Id(40), "pair-v1", channel, at - 1, at + 1, false, "pending", at + 60000);
@@ -632,8 +625,10 @@ int main() {
     Check(!reconstructed.ProjectionStamp().settled);
     reconstructed.BeginSourceWriterEpoch(Id(90002),SourceWriterBootstrap::Denied);
     Check(!reconstructed.ProjectionStamp().settled);
-    IndexProjection uncertain(reconstructed,"pair-v1",2,8);uncertain.Start(scope);
-    Check(uncertain.Query({1,0},scope).partial);
+    // An unconfirmed write no longer makes every query partial: if it committed, the query
+    // reads it from Mongo (tail) or the rebuilt shard, like any other row.
+    IndexProjection uncertain(reconstructed,"pair-v1",2);uncertain.Rebuild(scope);
+    Check(!uncertain.Query({1,0},scope).partial);
     RollingRetention(uri, database, client.get());
     cleanup(); std::cout << "history: durability, replay, scope, integrity, deletion, coverage and quotas passed\n";
   } catch (const std::exception& error) {

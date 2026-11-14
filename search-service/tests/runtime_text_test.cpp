@@ -89,19 +89,12 @@ int main() { try {
   {
     HistoryMongo unused("mongodb://127.0.0.1:1", "ainvr_search_software_unused");
     SentinelEncoder faulted(version, 768); faulted.healthy = false;
-    MatchEngine engine(unused, faulted, 8);
+    MatchEngine engine(unused, faulted);
     Check(!engine.Healthy() && !engine.Ready());
     Reject([&] { engine.Match("no computation", {}); });
     Check(faulted.calls == 0);
   }
   runtime.budget.max_samples = 100000;
-  Check(RuntimeProjectionCapacity(runtime, 768) == 100000);     // the retention cap binds below the 128M-float ceiling
-  Check(RuntimeProjectionCapacity(runtime, 1152) == 100000);
-  Check(RuntimeProjectionCapacity(runtime, 2048) == 62500);     // 2048-d vectors are bounded by the 512 MB projection
-  runtime.budget.max_samples = 64; Check(RuntimeProjectionCapacity(runtime, 768) == 64);
-  Reject([&] { RuntimeProjectionCapacity(runtime, 0); });
-  Reject([&] { RuntimeProjectionCapacity(runtime, 4097); });
-  runtime.budget.max_samples = 0; Reject([&] { RuntimeProjectionCapacity(runtime, 768); });
   constexpr int64_t now = int64_t(1000) * 86400000;
   Reject([&] { RuntimeProjectionWindow(runtime, now); });
   runtime.access.sources.emplace("00000000-0000-4000-8000-000000000001", ProducerSource{});

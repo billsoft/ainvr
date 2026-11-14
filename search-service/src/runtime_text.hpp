@@ -51,13 +51,6 @@ inline std::unique_ptr<TextEncoder> LoadConfiguredTextEncoder(const EffectiveRun
     throw std::runtime_error("search_encoder_identity_invalid");
   return encoder;
 }
-inline size_t RuntimeProjectionCapacity(const EffectiveRuntime& runtime, size_t dimensions) {
-  if (!dimensions || dimensions > 4096 || runtime.budget.max_samples < 1)
-    throw std::invalid_argument("invalid_index_budget");
-  // Match the existing exact projection's kMaxIndexFloats ceiling. max_samples is
-  // history retention capacity, not a promise to hold every vector in RAM.
-  return std::min(size_t(runtime.budget.max_samples), size_t(kMaxIndexFloats) / dimensions);
-}
 inline Scope RuntimeProjectionWindow(const EffectiveRuntime& runtime, int64_t now) {
   if (now <= 0 || runtime.access.sources.empty() || runtime.access.sources.size() > 1024)
     throw std::runtime_error("search_projection_scope_pending");

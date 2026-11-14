@@ -1,23 +1,16 @@
 #include "index_runtime.hpp"
 #include "index_discovery.hpp"
-#include "index_warm_policy.hpp"
+#include "index_runtime_policy.hpp"
 #include "../../shared/cpp/config_center_client.hpp"
 #include <condition_variable>
-#include <ctime>
-#include <iomanip>
+#include <deque>
 #include <optional>
-#include <sstream>
 #include <iostream>
 #include <mutex>
+#include <set>
 #include <thread>
 namespace ainvr::search {
 namespace {
-// UTC day index of a shard name ("YYYY-MM-DD"), the same unit as IndexProjection::UtcDay.
-std::optional<int64_t> ShardDay(const std::string& day) {
-  std::tm date{}; std::istringstream input(day); input >> std::get_time(&date, "%Y-%m-%d");
-  if (input.fail() || day.size() != 10) return std::nullopt;
-  return int64_t(timegm(&date)) / 86400;
-}
 IndexShardFiles& RequireFiles(const std::unique_ptr<IndexShardFiles>& files) {
   if (!files) throw std::invalid_argument("invalid_index_runtime");
   return *files;
@@ -45,7 +38,10 @@ struct ManagedIndexRuntime::Impl {
   std::optional<IndexCatalogPage> warm_page;
   std::optional<IndexRetiredCatalogPage> cleanup_page;
   size_t warm_position = 0, cleanup_position = 0;
-  ShardWarmRecord warm_record;
+  std::set<std::string> walk_seen;   // shards listed in the current catalog pass (runtime thread only)
+  std::map<std::string, std::string> opened;   // shard id -> manifest hash opened by this runtime
+  std::deque<IndexShardIdentity> rebuilds;     // shards with rows gone from Mongo, not yet requested
+  std::map<std::string, Clock::time_point> rebuild_requested;
   size_t pass_faults = 0;   // runtime thread only
   bool cleanup_rescan_requested = false;
   Clock::time_point discover_after{}, warm_after{}, cleanup_after{},source_after{};
@@ -118,23 +114,23 @@ struct ManagedIndexRuntime::Impl {
       }
     }
   }
+  // Attach a published shard to the query engine: opened (hash verified) once per runtime,
+  // then served from its memory mapping until a new publication replaces it.
   void WarmPublished(PublishedIndexShard published) {
       if (Cancelled()) return;
       published.shard.dimensions = dimensions; // Bound to the verified model version.
+      published.shard.views = context.views;
+      walk_seen.insert(published.shard.id);
       try {
-        // See ShardWarmRecord: a file is read only when doing so can add rows.
-        const auto day=ShardDay(published.shard.utc_day);
-        const auto epoch=[&]()->std::optional<uint64_t>{
-          if(!day)return std::nullopt;
-          return engine->ShardEpoch(published.shard.channel_id,*day);
-        };
-        if(!warm_record.NeedsLoad(published.shard.id,published.publication.manifest_sha256,epoch(),engine->Full()))return;
-        auto rows = files->Load(published.shard, published.publication);
-        engine->Warm(rows); ++verified_files; // At most one bounded file transiently coexists with RAM cache.
-        warm_record.Loaded(published.shard.id,published.publication.manifest_sha256,epoch(),engine->Full());
+        // Opened (hash verified) by this runtime: every runtime verifies each file once.
+        const auto found = opened.find(published.shard.id);
+        if (found != opened.end() && found->second == published.publication.manifest_sha256) return;
+        engine->Attach(files->Open(published.shard, published.publication)); ++verified_files;
+        opened[published.shard.id] = published.publication.manifest_sha256;
       } catch (...) {
         // A missing/corrupt derived file cannot close producer admission or
-        // fabricate a complete negative; lazy Mongo retrieval remains partial.
+        // fabricate a complete negative: the day is read from Mongo (bounded; partial if
+        // capped) while the repair job below rebuilds the file.
         State("cache_unavailable");
         if (!Cancelled()) {
           const auto current = jobs->Published(published.shard.id);
@@ -158,17 +154,43 @@ struct ManagedIndexRuntime::Impl {
   void Warm() {
     if (Clock::now() < warm_after || Cancelled()) return;
     if (!warm_page) {
+      if (!warm_cursor) walk_seen.clear();   // a new pass over the whole catalog
       warm_page = jobs->Catalog(warm_cursor, 16); warm_position = 0;
       if (!warm_page) throw std::runtime_error("index_catalog_unavailable");
     }
+    // One shard per tick, the pace of the former warm loop (a v1 file is ~50 MB).
     if (warm_position < warm_page->shards.size()) {
       WarmPublished(warm_page->shards[warm_position]);
       ++warm_position;
     }
     if (warm_position >= warm_page->shards.size()) {
       warm_cursor = warm_page->next_cursor; warm_page.reset();
-      if (!warm_cursor) warm_after = Clock::now() + std::chrono::seconds(60);
+      if (!warm_cursor) {
+        // A whole pass: shards no longer in the catalog (retired) are released, and
+        // from now on a day without an attached shard is read from Mongo, not unknown.
+        for (const auto& [id, _] : engine->Attached()) if (!walk_seen.count(id)) { engine->Detach(id); opened.erase(id); }
+        engine->MarkCatalogComplete();
+        warm_after = Clock::now() + std::chrono::seconds(60);
+      }
     }
+  }
+  // Mongo evicts old samples by its byte budget (and deletes/expires rows) without a new
+  // ordinal, so discovery never rebuilds those shards. The query engine reports a shard
+  // whose rows it found gone; rebuilding it from Mongo drops them. At most once per
+  // shard per 30 minutes; a failed request is retried on the next pass.
+  void RequestRebuilds() {
+    for (auto& shard : engine->TakeRebuildRequests()) rebuilds.push_back(std::move(shard));
+    const auto now = Clock::now();
+    while (!rebuilds.empty() && !Cancelled()) {
+      const auto& shard = rebuilds.front();
+      const auto last = rebuild_requested.find(shard.id);
+      if (last == rebuild_requested.end() || now - last->second >= std::chrono::minutes(30)) {
+        if (!jobs->Refresh(shard.channel_id, shard.utc_day, shard.checkpoint + 1)) throw std::runtime_error("index_refresh_unavailable");
+        rebuild_requested[shard.id] = now;
+      }
+      rebuilds.pop_front();
+    }
+    if (rebuild_requested.size() > 4096) rebuild_requested.clear();
   }
   void Published(const IndexBuildOutcome& result) {
     if (!result.lease || !result.publication) throw std::runtime_error("index_publication_invalid");
@@ -204,6 +226,7 @@ struct ManagedIndexRuntime::Impl {
         try { Cleanup(); } catch (...) { State("cleanup_pending"); }
         try { Build(); } catch (...) { State("dependency_unavailable"); }
         try { Warm(); } catch (...) { State("cache_unavailable"); }
+        try { RequestRebuilds(); } catch (...) { State("dependency_unavailable"); }
         if (Clock::now() >= discover_after && !Cancelled()) try {
           if (!discovery->Step([this] { return Cancelled(); }))
             discover_after = Clock::now() + std::chrono::seconds(30);
