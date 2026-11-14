@@ -2,7 +2,7 @@
 import {open,mkdir,readdir,rename,unlink,link,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-const metrics={writes:0,failures:0,total_ms:0,max_ms:0,directory_scans:0,buckets:{le_1:0,le_5:0,le_20:0,le_100:0,gt_100:0}};
+const metrics={writes:0,failures:0,total_ms:0,max_ms:0,directory_scans:0,deduplicated:0,anchor_rotations:0,released_inactive:0,buckets:{le_1:0,le_5:0,le_20:0,le_100:0,gt_100:0}};
 const record=ms=>{++metrics.writes;metrics.total_ms+=ms;metrics.max_ms=Math.max(metrics.max_ms,ms);++metrics.buckets[ms<=1?'le_1':ms<=5?'le_5':ms<=20?'le_20':ms<=100?'le_100':'gt_100'];};
 // Per spool root, shared by every EvidenceSpool instance in this process.
 // A full listing of a busy spool (tens of thousands of frames) per consumed
@@ -13,6 +13,11 @@ const dirtyAcks=new Set(),pinIndexes=new Map(),durablePins=new Map(),anchors=new
 // directory anyway cost ~40 ms per consumed frame. Names found on disk at startup
 // are not trusted as durable and are committed once when first referenced.
 const durableSet=root=>{let set=durablePins.get(root);if(!set)durablePins.set(root,set=new Set());return set;};
+// Per root: when each owner last protected anything (any path, HTTP input included) and
+// when a sweep first found it without an enabled rule. In memory only: a restart restarts
+// the clocks, which can only keep pins longer.
+const protectedAt=new Map(),inactiveSince=new Map();
+const ownerClock=(map,root)=>{let clock=map.get(root);if(!clock)map.set(root,clock=new Map());return clock;};
 // Pin names grouped by the channel that owns them. Releasing pins after each consumed frame
 // walks one channel's own handful of names, never every pin in the spool: pins left behind by
 // channels that stopped consuming used to cost every other channel a full scan per frame.
@@ -58,8 +63,28 @@ export class EvidenceSpool {
   // One durable anchor per spool per process, shared by every instance (the pump
   // creates short-lived instances; re-writing the anchor cost two syncs each).
   let anchor=anchors.get(this.root);
-  if(!anchor){anchor=durableFile(join(this.root,'.pin-anchor'),'1');anchors.set(this.root,anchor);anchor.catch(()=>{if(anchors.get(this.root)===anchor)anchors.delete(this.root);});}
-  await anchor;return join(this.root,'.pin-anchor');
+  if(!anchor){const path=join(this.root,'.pin-anchor');anchor=durableFile(path,'1').then(()=>path);anchors.set(this.root,anchor);anchor.catch(()=>{if(anchors.get(this.root)===anchor)anchors.delete(this.root);});}
+  return anchor;
+ }
+ // ext4 caps one inode at 65 000 links. At the cap every protect failed for every
+ // channel of the process (.189: one anchor reached 64 999 links), so a full anchor
+ // is replaced by a fresh one. Returns the anchor the pin was linked to.
+ async linkPin(anchor,name){
+  try{await link(anchor,join(this.root,name));return anchor;}
+  catch(error){
+   if(error.code==='EEXIST')return anchor;
+   if(error.code!=='EMLINK')throw error;
+  }
+  const current=await anchors.get(this.root);
+  let next=current;
+  if(!current||current===anchor){
+   const path=join(this.root,'.pin-anchor.'+randomUUID());
+   const made=durableFile(path,'').then(()=>path);anchors.set(this.root,made);
+   made.catch(()=>{if(anchors.get(this.root)===made)anchors.delete(this.root);});
+   next=await made;++metrics.anchor_rotations;
+  }
+  await link(next,join(this.root,name)).catch(error=>{if(error.code!=='EEXIST')throw error;});
+  return next;
  }
  keys(value,channel,session){
   const keys=new Set();
@@ -71,16 +96,26 @@ export class EvidenceSpool {
  async protect(value,channel,session,generation=0){
   if(!Number.isSafeInteger(generation)||generation<0)throw Error('invalid_evidence_generation');
   await mkdir(this.root,{recursive:true,mode:0o700});
-  const owner=hash(channel);
+  const owner=hash(channel);ownerClock(protectedAt,this.root).set(owner,Date.now());
   const keys=this.keys(value,channel,session);if(!keys.size)return;
-  const anchor=await this.pinAnchor(),started=performance.now();let synced=false;
+  let anchor=await this.pinAnchor();const started=performance.now();let synced=false;
   try{
    const index=await pinIndex(this.root),durable=durableSet(this.root),names=[];
-   for(const key of keys){const name=key+'.'+owner+'.'+generation+'.pin';await link(anchor,join(this.root,name)).catch(error=>{if(error.code!=='EEXIST')throw error;});let mine=index.get(owner);if(!mine)index.set(owner,mine=new Set());mine.add(name);names.push(name);}
+   for(const key of keys){const name=key+'.'+owner+'.'+generation+'.pin';anchor=await this.linkPin(anchor,name);let mine=index.get(owner);if(!mine)index.set(owner,mine=new Set());mine.add(name);names.push(name);}
    if(names.every(name=>durable.has(name)))return;
    synced=true;
    const directory=await open(this.root,'r');try{await directory.sync();}finally{await directory.close();}
    for(const name of names)durable.add(name);
+   // A retried outcome pins the same frames again under each new lease generation.
+   // Once these names are durable, older generations of the SAME keys protect
+   // nothing more (.189: 1433 generations per frame). Older pins of other keys are
+   // left to settle(). A lost unlink only keeps a frame longer: no directory sync.
+   const mine=index.get(owner);
+   for(const old of [...mine]){
+    const match=pinName.exec(old);
+    if(!match||!keys.has(match[1])||Number(match[3]??0)>=generation)continue;
+    await unlink(join(this.root,old)).catch(e=>{if(e.code!=='ENOENT')throw e;});mine.delete(old);durable.delete(old);++metrics.deduplicated;
+   }
   }catch(error){++metrics.failures;synced=true;throw error;}
   finally{if(synced)record(performance.now()-started);}
  }
@@ -100,6 +135,30 @@ export class EvidenceSpool {
    if(pinGeneration>generation||(pinGeneration===generation&&keep.has(match[1])))continue;
    await unlink(join(this.root,name)).catch(e=>{if(e.code!=='ENOENT')throw e;});mine.delete(name);durableSet(this.root).delete(name);
   }
+ }
+ // settle() releases pins only when their channel consumes again. A channel whose
+ // rules were deleted or disabled never does, so its pins, and the frames they hold,
+ // would stay forever. `channels` are the channels with an enabled rule in the rule
+ // snapshot just loaded; null (no snapshot) judges nothing inactive. An owner is
+ // released after an hour both without an enabled rule and without any protect().
+ // Re-enabled later, an old pending outcome finds its frame gone and publishes
+ // without a screenshot (source_frame_missing), the existing graceful path.
+ async releaseInactive(channels,{now=Date.now(),graceMs=3600000,limit=1000}={}){
+  if(!Array.isArray(channels))return 0;
+  const active=new Set(channels.map(hash)),index=await pinIndex(this.root);
+  const since=ownerClock(inactiveSince,this.root),touched=ownerClock(protectedAt,this.root),durable=durableSet(this.root);
+  let released=0;
+  owners: for(const [owner,names] of index){
+   if(active.has(owner)){since.delete(owner);continue;}
+   if(!since.has(owner))since.set(owner,now);
+   if(names.size&&now-Math.max(since.get(owner),touched.get(owner)??0)<graceMs)continue;
+   for(const name of [...names]){
+    if(released>=limit)break owners;
+    await unlink(join(this.root,name)).catch(e=>{if(e.code!=='ENOENT')throw e;});names.delete(name);durable.delete(name);++released;
+   }
+   if(!names.size){index.delete(owner);since.delete(owner);touched.delete(owner);}
+  }
+  metrics.released_inactive+=released;return released;
  }
  async acknowledge(frame,{defer=false}={}){
   if(frame.evidence_delivery?.schema_version!==2||frame.evidence_delivery.state!=='durable')return;

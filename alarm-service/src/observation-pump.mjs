@@ -84,6 +84,12 @@ export class ObservationPump {
     const snapshot=await this.repository.ruleSnapshots.current();
     if(!snapshot){this.status.state='waiting';this.status.last_error='rules_not_configured';return;}
     if(this.reconciledRevision!==snapshot.revision){await this.repository.reconcileActivities?.(snapshot);this.reconciledRevision=snapshot.revision;}
+    // Release evidence pins of channels that no longer consume, against the snapshot
+    // just loaded. Bounded per minute; a failure never blocks consumption.
+    if(this.repository.reviewContext?.root&&Date.now()-(this.pinSweepAt??0)>=60000){
+      this.pinSweepAt=Date.now();
+      try{await new EvidenceSpool(this.repository.reviewContext.root).releaseInactive(Array.isArray(snapshot.rules)?snapshot.rules.filter(r=>r.state==='enabled').map(r=>r.channel_id):null);}catch{}
+    }
     let pending=0,failed=false;
     // Channels are independent (one lease and checkpoint each): consume them
     // concurrently so their syncs and journaled Mongo commits overlap, while each
