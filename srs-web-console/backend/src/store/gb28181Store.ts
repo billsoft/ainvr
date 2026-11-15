@@ -11,7 +11,24 @@ export class GBError extends Error {
 }
 /** Every desired-state edit shares a revision lock, including secret rotation. */
 export class GB28181Store {
-  constructor(public pg:PgConfigStore){}
+  /** inputExists answers whether a console input still exists. When a customer
+   *  deletes a GB input, the sync disables its mapping but keeps the id for
+   *  history; such a disabled mapping to a deleted input is free to add again. */
+  constructor(public pg:PgConfigStore,private inputExists?:(id:string)=>Promise<boolean>){}
+  private async deletedInput(binding:{input_id?:string|null;enabled?:boolean}|undefined){
+    return !!binding?.input_id&&!binding.enabled&&!!this.inputExists&&!(await this.inputExists(binding.input_id));
+  }
+  /** Catalog rows with their mapping; a disabled mapping to a deleted input is reported free. */
+  async channelInputs(device:string,client:{query:PoolClient['query']}=this.pg.pool){
+    const {rows}=await client.query(`SELECT c.channel_id AS id,c.document,c.available,b.input_id,b.enabled,b.transport
+      FROM gb28181_catalog c LEFT JOIN gb28181_bindings b USING(device_id,channel_id) WHERE c.device_id=$1 ORDER BY c.channel_id`,[device]);
+    for(const row of rows)if(await this.deletedInput(row))row.input_id=null;
+    return rows;
+  }
+  private async releaseDeletedInput(client:PoolClient,binding:{binding_id:string;input_id?:string|null;enabled?:boolean}|undefined){
+    if(binding&&await this.deletedInput(binding))
+      await client.query('UPDATE gb28181_bindings SET input_id=NULL WHERE binding_id=$1',[binding.binding_id]);
+  }
   async readSettings(){
     const {rows}=await this.pg.pool.query('SELECT revision,document FROM gb28181_settings WHERE singleton');
     if(!rows.length)throw new GBError('国标参数库尚未就绪',503);
@@ -73,6 +90,7 @@ export class GB28181Store {
     const {rows}=await this.pg.pool.query(`SELECT c.channel_id AS id,c.document,c.available,b.binding_id,b.input_id,b.enabled,b.transport
       FROM gb28181_catalog c LEFT JOIN gb28181_bindings b USING(device_id,channel_id)
       WHERE c.device_id=$1 ORDER BY c.channel_id`,[device]);
+    for(const row of rows)if(await this.deletedInput(row))row.input_id=null;
     return rows;
   }
   async removeDevice(device:string,expected:number,actor:string){
@@ -98,7 +116,10 @@ export class GB28181Store {
       const known=await client.query('SELECT 1 FROM gb28181_catalog WHERE device_id=$1 AND channel_id=$2',[input.deviceId,input.channelId]);
       if(!known.rowCount)throw new GBError('请先获取并选择设备目录');
       const current=(await client.query('SELECT * FROM gb28181_bindings WHERE device_id=$1 AND channel_id=$2 FOR UPDATE',[input.deviceId,input.channelId])).rows[0];
-      if(input.inputId ? current?.input_id!==input.inputId : !!current?.input_id)throw new GBError('该目录通道已接入或映射已变化，请从通道列表编辑',409);
+      const released=!input.inputId&&await this.deletedInput(current);
+      if(released)await client.query('UPDATE gb28181_bindings SET input_id=NULL WHERE binding_id=$1',[current.binding_id]);
+      const currentInput=released?null:current?.input_id;
+      if(input.inputId ? currentInput!==input.inputId : !!currentInput)throw new GBError('该目录通道已接入或映射已变化，请从通道列表编辑',409);
       const settings=(await client.query('SELECT document FROM gb28181_settings WHERE singleton')).rows[0].document;
       const count=(await client.query('SELECT count(*) AS n FROM gb28181_bindings WHERE enabled AND NOT(device_id=$1 AND channel_id=$2)',[input.deviceId,input.channelId])).rows[0].n;
       if(input.enabled&&Number(count)>=Number(settings.capacity??4))throw new GBError('已达到同时收流上限');
@@ -114,7 +135,8 @@ export class GB28181Store {
     return this.mutate(expected,actor,'gb-bind',async client=>{
       const known=await client.query('SELECT 1 FROM gb28181_catalog WHERE device_id=$1 AND channel_id=$2',[device,channel]);
       if(!known.rowCount)throw new GBError('请先获取设备目录');
-      const current=await client.query('SELECT * FROM gb28181_bindings WHERE device_id=$1 AND channel_id=$2',[device,channel]);
+      const current=await client.query('SELECT * FROM gb28181_bindings WHERE device_id=$1 AND channel_id=$2 FOR UPDATE',[device,channel]);
+      await this.releaseDeletedInput(client,current.rows[0]);
       const settings=await client.query('SELECT document FROM gb28181_settings WHERE singleton');
       const count=await client.query('SELECT count(*) AS n FROM gb28181_bindings WHERE enabled AND NOT(device_id=$1 AND channel_id=$2)',[device,channel]);
       if(enabled&&Number(count.rows[0].n)>=Number(settings.rows[0].document.capacity??4))throw new GBError('已达到同时收流上限');
@@ -134,6 +156,7 @@ export class GB28181Store {
       const count=await client.query('SELECT count(*) AS n FROM gb28181_bindings WHERE enabled AND NOT(device_id=$1 AND channel_id=ANY($2::text[]))',[device,channels]);
       if(Number(count.rows[0].n)+channels.length>Number(settings.rows[0].document.capacity??4))throw new GBError('选择的通道超过同时收流上限，请减少选择或先停用其他通道');
       for(const channel of channels){
+        await this.releaseDeletedInput(client,(await client.query('SELECT * FROM gb28181_bindings WHERE device_id=$1 AND channel_id=$2 FOR UPDATE',[device,channel])).rows[0]);
         const id=randomUUID();
         await client.query(`INSERT INTO gb28181_bindings(binding_id,device_id,channel_id,stream_name,enabled,transport)
           VALUES($1,$2,$3,$4,true,$5) ON CONFLICT(device_id,channel_id) DO UPDATE SET enabled=true,transport=EXCLUDED.transport`,

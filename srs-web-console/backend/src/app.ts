@@ -476,7 +476,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const armingStore=pgStore&&alarmConfigurationReady?new AlarmArmingStore(pgStore.pool):null;
     const ruleSync=triggerStore&&armingStore&&pgStore?new AlarmRuleSync(new PtzGuardedSnapshot(new AlarmCombinedSnapshot(triggerStore,armingStore),pgStore.pool,async()=>({channels:(await channelStore.read()).channels,ai:await ptzAI!.list()})),alarmConnection,
       async()=>armingStore.reconcileCatalogs(async id=>readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore))):null;
-    const gbStore=pgStore?new GB28181Store(pgStore):null;
+    const gbStore=pgStore?new GB28181Store(pgStore,async id=>(await channelStore.read()).channels.some(c=>c.id===id)):null;
     gbSync=gbStore?new GB28181Sync(gbStore,channelService):null;
     await instance.register(gb28181Routes,{store:gbStore,sync:gbSync,principal:alarmPrincipal,onPtzChanged:async key=>ptzManager?.invalidateCamera(key)});
     const onvifStore=pgStore?new OnvifStore(pgStore):null;

@@ -35,7 +35,8 @@ export async function gb28181Routes(app:FastifyInstance,options:Options){
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const revision=Number((await client.query('SELECT revision FROM gb28181_settings WHERE singleton')).rows[0]?.revision);
       const devices=(await client.query('SELECT device_id AS id,name,profile AS version,enabled,media_ips AS "mediaIPs" FROM gb28181_devices ORDER BY name,device_id')).rows;
-      const items=deviceId?(await client.query(`SELECT c.channel_id AS id,c.document,c.available,b.input_id,b.enabled,b.transport FROM gb28181_catalog c LEFT JOIN gb28181_bindings b USING(device_id,channel_id) WHERE c.device_id=$1 ORDER BY c.channel_id`,[deviceId])).rows:[];
+      // A channel whose input the customer deleted is offered for adding again.
+      const items=deviceId?await store().channelInputs(deviceId,client):[];
       await client.query('COMMIT');return {revision,devices,items};
     }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
   });
