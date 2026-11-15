@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -51,7 +52,23 @@ func (m *Manager) Apply(ctx context.Context, c RuntimeConfig) error {
 			return nil
 		}
 	}
+	healthy := m.lastError == ""
 	m.mu.Unlock()
+	// Camera and channel edits are routine on a live site: apply them in place so
+	// other cameras keep their registrations and streams. Only platform settings
+	// (identity, listeners, media receiver, bridge, limits) rebuild the gateway.
+	if old != nil && healthy && samePlatform(old.config, c) {
+		if e := old.Update(c); e != nil {
+			slog.Warn("gb configuration rejected", "revision", c.Revision, "mode", "in_place")
+			return e
+		}
+		m.mu.Lock()
+		m.hash = hash
+		m.mu.Unlock()
+		slog.Info("gb configuration applied", "revision", c.Revision, "mode", "in_place")
+		return nil
+	}
+	slog.Info("gb configuration applied", "revision", c.Revision, "mode", "rebuild")
 	next, e := NewRuntime(c)
 	if e != nil {
 		return e

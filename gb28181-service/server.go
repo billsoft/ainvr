@@ -259,9 +259,64 @@ func (s *Server) online(st *DeviceState, now time.Time) bool {
 	}
 	return true
 }
+
+// device returns the provisioned configuration; the table changes at runtime.
+func (s *Server) device(id string) (DeviceConfig, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.devices[id]
+	return d, ok
+}
+
+func (s *Server) mediaIPs(id string) []string {
+	d, _ := s.device(id)
+	return d.MediaIPs
+}
+
+// UpdateDevices applies camera provisioning edits without touching other
+// cameras. A camera whose credential, protocol version or enablement changed
+// (or that was removed) loses its registration and must authenticate again;
+// every other camera keeps its registration, catalog and live sessions.
+func (s *Server) UpdateDevices(devices []DeviceConfig) error {
+	next := s.config
+	next.Devices = devices
+	if e := next.Validate(); e != nil {
+		return e
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wanted := map[string]DeviceConfig{}
+	for _, d := range devices {
+		wanted[d.ID] = d
+	}
+	for id, old := range s.devices {
+		d, ok := wanted[id]
+		if !ok {
+			delete(s.devices, id)
+			delete(s.states, id)
+			continue
+		}
+		if d.Password != old.Password || d.Version != old.Version || d.Enabled != old.Enabled {
+			generation := uint64(0)
+			if st := s.states[id]; st != nil {
+				generation = st.Generation + 1
+			}
+			s.states[id] = &DeviceState{ID: id, Generation: generation}
+		}
+	}
+	for _, d := range devices {
+		s.devices[d.ID] = d
+		if s.states[d.ID] == nil {
+			s.states[d.ID] = &DeviceState{ID: d.ID}
+		}
+	}
+	s.config.Devices = devices
+	return nil
+}
+
 func (s *Server) register(req *sip.Request, tx sip.ServerTransaction) {
 	id := requestDevice(req)
-	d, ok := s.devices[id]
+	d, ok := s.device(id)
 	if !ok || !d.Enabled {
 		s.respond(req, tx, 403, "Forbidden")
 		return
@@ -310,6 +365,12 @@ func (s *Server) register(req *sip.Request, tx sip.ServerTransaction) {
 	}
 	s.mu.Lock()
 	st := s.states[id]
+	if current, ok := s.devices[id]; st == nil || !ok || !current.Enabled || current.Password != d.Password {
+		// Removed, disabled or re-keyed while this request was being verified.
+		s.mu.Unlock()
+		s.respond(req, tx, 403, "Forbidden")
+		return
+	}
 	peerChanged := st.source != req.Source() || st.transport != req.Transport()
 	// Only a newly authenticated registration may rebind the port of the same
 	// provisioned device on the same host. Different hosts remain conflicts while

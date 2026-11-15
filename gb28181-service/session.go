@@ -79,7 +79,7 @@ func (s *Server) InviteLive(ctx context.Context, deviceID, channelID, mediaIP st
 		closeDialog()
 		return nil, errors.New("invalid registered peer")
 	}
-	answer, e := ParseMediaAnswer(dialog.InviteResponse.Body(), lease, ip, s.devices[deviceID].MediaIPs...)
+	answer, e := ParseMediaAnswer(dialog.InviteResponse.Body(), lease, ip, s.mediaIPs(deviceID)...)
 	if e != nil {
 		closeDialog()
 		return nil, e

@@ -46,36 +46,57 @@ type Runtime struct {
 	mu        sync.Mutex
 	states    map[string]InputState
 	listeners atomic.Int32
+	// One media worker per enabled binding, so camera and channel edits can be
+	// applied in place instead of restarting every registration and stream.
+	work    func(context.Context, Binding)
+	runCtx  context.Context
+	workers map[string]*bindingWorker
+	running sync.WaitGroup
 }
 
-func NewRuntime(c RuntimeConfig) (*Runtime, error) {
-	if !c.Enabled {
-		return &Runtime{config: c, states: map[string]InputState{}}, nil
+type bindingWorker struct {
+	binding Binding
+	cancel  context.CancelFunc
+	done    chan struct{}
+}
+
+// samePlatform reports whether two configurations differ only in provisioned
+// cameras and channel bindings. Identity, listeners, media receiver, bridge and
+// limits are fixed at installation; changing them still rebuilds the gateway.
+func samePlatform(a, b RuntimeConfig) bool {
+	strip := func(c RuntimeConfig) string {
+		c.Revision, c.Bindings, c.SIP.Devices = 0, nil, nil
+		bytes, _ := json.Marshal(c)
+		return string(bytes)
 	}
+	return a.Enabled && b.Enabled && strip(a) == strip(b)
+}
+
+func validateRuntime(c RuntimeConfig) error {
 	if !trustedMediaBase(c.SRSAPI, "http") {
-		return nil, errors.New("SRS API must be a trusted loopback endpoint")
+		return errors.New("SRS API must be a trusted loopback endpoint")
 	}
 	if c.Media.DomainID != c.SIP.ServerID {
-		return nil, errors.New("media domain must match SIP platform identity")
+		return errors.New("media domain must match SIP platform identity")
 	}
 	devices := map[string]bool{}
 	for _, d := range c.SIP.Devices {
 		devices[d.ID] = true
 	}
 	if len(c.Bindings) > 10000 {
-		return nil, errors.New("too many bindings")
+		return errors.New("too many bindings")
 	}
 	seen, outputs := map[string]bool{}, map[string]bool{}
 	enabled := 0
 	for _, b := range c.Bindings {
 		if !devices[b.DeviceID] {
-			return nil, errors.New("binding device is not provisioned")
+			return errors.New("binding device is not provisioned")
 		}
 		if !streamPart.MatchString(b.ID) || !deviceIDPattern.MatchString(b.DeviceID) || !deviceIDPattern.MatchString(b.ChannelID) || !streamPart.MatchString(b.App) || !streamPart.MatchString(b.Stream) || seen[b.ID] || outputs[b.App+"/"+b.Stream] {
-			return nil, errors.New("invalid or duplicate binding")
+			return errors.New("invalid or duplicate binding")
 		}
 		if b.Mode != "udp" && b.Mode != "tcp-passive" && b.Mode != "tcp-active" {
-			return nil, errors.New("invalid binding transport")
+			return errors.New("invalid binding transport")
 		}
 		seen[b.ID] = true
 		outputs[b.App+"/"+b.Stream] = true
@@ -84,7 +105,17 @@ func NewRuntime(c RuntimeConfig) (*Runtime, error) {
 		}
 	}
 	if enabled > c.Media.Capacity {
-		return nil, errors.New("enabled inputs exceed capacity")
+		return errors.New("enabled inputs exceed capacity")
+	}
+	return c.SIP.Validate()
+}
+
+func NewRuntime(c RuntimeConfig) (*Runtime, error) {
+	if !c.Enabled {
+		return &Runtime{config: c, states: map[string]InputState{}}, nil
+	}
+	if e := validateRuntime(c); e != nil {
+		return nil, e
 	}
 	m, e := NewMediaReceiver(c.Media)
 	if e != nil {
@@ -94,7 +125,100 @@ func NewRuntime(c RuntimeConfig) (*Runtime, error) {
 	if e != nil {
 		return nil, e
 	}
-	return &Runtime{config: c, server: s, receiver: m, states: map[string]InputState{}}, nil
+	r := &Runtime{config: c, server: s, receiver: m, states: map[string]InputState{}, workers: map[string]*bindingWorker{}}
+	r.work = r.worker
+	return r, nil
+}
+
+// activate starts media workers for the current bindings under ctx.
+func (r *Runtime) activate(ctx context.Context) {
+	r.mu.Lock()
+	r.runCtx = ctx
+	bindings := r.config.Bindings
+	r.mu.Unlock()
+	r.reconcile(bindings)
+}
+
+// reconcile stops workers whose binding vanished, was disabled or changed, then
+// starts workers for enabled bindings without one. Untouched streams keep running.
+// A changed binding is stopped before its replacement starts, so the old session
+// releases its media lease and output stream first.
+func (r *Runtime) reconcile(bindings []Binding) {
+	wanted := map[string]Binding{}
+	for _, b := range bindings {
+		wanted[b.ID] = b
+	}
+	r.mu.Lock()
+	ctx := r.runCtx
+	var stopping []*bindingWorker
+	for id, w := range r.workers {
+		if b, ok := wanted[id]; !ok || !b.Enabled || b != w.binding {
+			w.cancel()
+			stopping = append(stopping, w)
+			delete(r.workers, id)
+		}
+	}
+	for id := range r.states {
+		if _, ok := wanted[id]; !ok {
+			delete(r.states, id)
+		}
+	}
+	r.mu.Unlock()
+	// One shared bound, so a batch edit of many channels cannot multiply it.
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for _, w := range stopping {
+		select {
+		case <-w.done:
+			continue
+		case <-deadline.C:
+		}
+		break
+	}
+	if ctx == nil || ctx.Err() != nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, b := range bindings {
+		if !b.Enabled {
+			r.states[b.ID] = InputState{ID: b.ID, State: "disabled", UpdatedAt: time.Now()}
+			continue
+		}
+		if r.workers[b.ID] != nil {
+			continue
+		}
+		workerCtx, cancel := context.WithCancel(ctx)
+		w := &bindingWorker{binding: b, cancel: cancel, done: make(chan struct{})}
+		r.workers[b.ID] = w
+		r.running.Add(1)
+		go func(binding Binding) {
+			defer r.running.Done()
+			defer close(w.done)
+			r.work(workerCtx, binding)
+		}(b)
+	}
+}
+
+// Update applies camera and channel edits in place. Callers use it only when
+// samePlatform holds; an invalid configuration leaves the running site untouched.
+func (r *Runtime) Update(c RuntimeConfig) error {
+	if r.server == nil || !samePlatform(r.config, c) {
+		return errors.New("platform settings changed; rebuild required")
+	}
+	if e := validateRuntime(c); e != nil {
+		return e
+	}
+	if e := r.server.UpdateDevices(c.SIP.Devices); e != nil {
+		return e
+	}
+	// Platform fields are identical and read by live sessions; replace only the
+	// parts that changed.
+	r.mu.Lock()
+	r.config.Revision, r.config.Bindings, r.config.SIP.Devices = c.Revision, c.Bindings, c.SIP.Devices
+	r.mu.Unlock()
+	r.reconcile(c.Bindings)
+	return nil
 }
 func (r *Runtime) set(b Binding, state, reason, audio, generation string) {
 	r.mu.Lock()
@@ -107,12 +231,13 @@ func (r *Runtime) Snapshot() map[string]any {
 	for _, s := range r.states {
 		states = append(states, s)
 	}
+	revision := r.config.Revision
 	r.mu.Unlock()
 	devices := []DeviceState{}
 	if r.server != nil {
 		devices = r.server.Snapshot()
 	}
-	return map[string]any{"revision": r.config.Revision, "enabled": r.config.Enabled, "ready": r.listeners.Load() == 2, "inputs": states, "devices": devices, "validation": "development_unverified"}
+	return map[string]any{"revision": revision, "enabled": r.config.Enabled, "ready": r.listeners.Load() == 2, "inputs": states, "devices": devices, "validation": "development_unverified"}
 }
 func (r *Runtime) Refresh(ctx context.Context, id string) error {
 	if r.server == nil {
@@ -129,14 +254,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	defer cancel()
 	defer r.server.Close()
 	var workers sync.WaitGroup
-	for _, b := range r.config.Bindings {
-		if !b.Enabled {
-			r.set(b, "disabled", "", "", "")
-			continue
-		}
-		workers.Add(1)
-		go func(binding Binding) { defer workers.Done(); r.worker(ctx, binding) }(b)
-	}
+	r.activate(ctx)
 	// Keep catalog discovery independent of enabled media. Queries remain bounded.
 	workers.Add(1)
 	go func() {
@@ -148,6 +266,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	r.listeners.Store(0)
 	cancel()
 	workers.Wait()
+	r.running.Wait()
 	return e
 }
 func wait(ctx context.Context, d time.Duration) bool {
@@ -218,7 +337,8 @@ func (m *MediaReceiver) tracks(ctx context.Context, l MediaLease) (string, strin
 	return video, audio, nil
 }
 func (r *Runtime) published(ctx context.Context, b Binding) bool {
-	req, e := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(r.config.SRSAPI, "/")+"/api/v1/streams/", nil)
+	// The media server lists only the first 10 streams unless a count is given.
+	req, e := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(r.config.SRSAPI, "/")+"/api/v1/streams/?start=0&count=1000", nil)
 	if e != nil {
 		return false
 	}
