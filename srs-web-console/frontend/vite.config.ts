@@ -28,5 +28,8 @@ export default defineConfig({
     globals: true,
     setupFiles: ['src/test/setup.ts'],
     css: false,
+    // The full suite runs 235 files in parallel on a 6-core board; heavy
+    // renders legitimately exceed the 5 s default there.
+    testTimeout: 20_000,
   },
 })

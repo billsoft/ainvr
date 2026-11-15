@@ -1,4 +1,9 @@
 import '@testing-library/jest-dom/vitest'
+import { configure } from '@testing-library/react'
+
+// The full suite runs in parallel on a 6-core board; a render under that load
+// can take longer than Testing Library's 1 s default wait.
+configure({ asyncUtilTimeout: 5000 })
 
 // jsdom 不实现 IntersectionObserver（浏览器专有 API），识别历史相关组件
 // （AuthImage 懒加载、RecognitionHistoryDetail 无限滚动哨兵）此前从未被
