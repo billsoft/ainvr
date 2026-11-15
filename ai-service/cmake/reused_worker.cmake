@@ -20,6 +20,11 @@ if(AINVR_S100P)
   target_link_libraries(ainvr_reused_worker PUBLIC ainvr_reused_controller ainvr_stream_source ainvr_bpu_images ainvr_bytetrack ainvr_analytics_events ainvr_archive_spool)
   target_link_libraries(ainvr_s100p_control_service PRIVATE ainvr_reused_worker)
   target_sources(ainvr_s100p_control_service PRIVATE src/utils/crash_handler.cpp)
+  # The controller instantiates the BPU adapters, so its output test needs
+  # their implementation just like the service does.
+  if(TARGET reused_controller_output_test)
+    target_link_libraries(reused_controller_output_test PRIVATE ainvr_reused_worker)
+  endif()
   if(BUILD_TESTING)
     # Pure API diagnostics contract: no model, decoder, hardware or persistence.
     add_executable(timing_observation_test ../test/ai_port/timing_observation_test.cpp)
