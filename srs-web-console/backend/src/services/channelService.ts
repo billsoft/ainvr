@@ -8,7 +8,7 @@ function publicSourceUrl(value:string|undefined,onvif:OnvifBinding|undefined){
   if(!value||!onvif)return value;
   const url=new URL(value);url.search='';return url.toString();
 }
-import { normalizeInput, hasVideo, safeChannel } from './ingestPolicy.js';
+import { normalizeInput, hasVideo, safeChannel, videoProgress } from './ingestPolicy.js';
 import type { PgConfigStore } from '../store/pgStore.js';
 import { JsonStore } from '../store/jsonStore.js';
 import { SrsClient } from './srsClient.js';
@@ -449,11 +449,12 @@ export class ChannelService {
     // 否则自定义了 app 的通道永远匹配不到 SRS 流，误判永久离线、码率永远空。
     const stream = streams.find(s => s.app === (ch.app || this.defaultApp) && s.name === ch.streamName);
     let online = srsOnline && hasVideo(stream);
-    if (online && typeof stream.frames === 'number') {
+    const progress = online ? videoProgress(stream) : undefined;
+    if (progress !== undefined) {
       const prior = this.videoProgress.get(ch.id);
       const cid = stream.publish?.cid;
-      if (!prior || prior.frames !== stream.frames || prior.cid !== cid) {
-        this.videoProgress.set(ch.id, { frames: stream.frames, cid, at: performance.now() });
+      if (!prior || prior.frames !== progress || prior.cid !== cid) {
+        this.videoProgress.set(ch.id, { frames: progress, cid, at: performance.now() });
       } else if (performance.now() - prior.at > 15_000) online = false;
     }
 

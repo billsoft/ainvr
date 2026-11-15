@@ -34,8 +34,21 @@ export function normalizeInput(input: InputFields): { publicUrl?: string; secret
   return { publicUrl: u.toString(), secret };
 }
 
+// SRS 7 never counts frames for SRT publishers (frames/video_frames stay 0), so their
+// liveness follows received bytes once the video codec is known. Others keep the frame counter.
+function srtPublisher(s: any): boolean {
+  return typeof s?.tcUrl === 'string' && s.tcUrl.startsWith('srt://');
+}
+
+export function videoProgress(s: any): number | undefined {
+  if (srtPublisher(s)) return s.video?.codec && typeof s.recv_bytes === 'number' ? s.recv_bytes : 0;
+  return typeof s?.frames === 'number' ? s.frames : undefined;
+}
+
 export function hasVideo(s: any): boolean {
-  return !!s?.publish?.active && (typeof s.frames === 'number' ? s.frames > 0 : !!s.video?.codec);
+  if (!s?.publish?.active) return false;
+  const progress = videoProgress(s);
+  return progress !== undefined ? progress > 0 : !!s.video?.codec;
 }
 
 export function safeChannel<T extends Channel>(ch: T): T {

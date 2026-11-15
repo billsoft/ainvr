@@ -28,6 +28,15 @@ class VideoProgress:
     advanced_at: float | None
 
 
+def _video_progress(s: dict):
+    """SRS 7 never counts frames for SRT publishers (frames stays 0), so they advance by
+    received bytes once the video codec is known. Other publishers keep the frame counter."""
+    if str(s.get("tcUrl") or "").startswith("srt://"):
+        received = s.get("recv_bytes")
+        return received if (s.get("video") or {}).get("codec") and type(received) is int else 0
+    return s.get("frames")
+
+
 def _http_get_json(url: str, token: str = "", timeout: float = 5.0):
     req = urllib.request.Request(url)
     if token:
@@ -151,7 +160,7 @@ class ChannelManager:
                 # 只有观看方的流（相机已停推，录像/AI 仍在尝试拉流时流媒体服务会保留它）
                 # 不算在线，否则录像会反复拉起读不到数据的读端
                 continue
-            frames = s.get("frames")
+            frames = _video_progress(s)
             if isinstance(frames, (int, float)) and frames <= 0:
                 continue
             if not v.get("codec"):
