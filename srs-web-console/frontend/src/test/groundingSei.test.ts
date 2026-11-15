@@ -40,10 +40,11 @@ describe('Original C++ point SEI -> browser and recorded playback', () => {
     const cache = new SeiFrameCache()
     const parsed = extractSeiDetections(bytes(point.annexb_hex))!
     cache.put(90000, parsed)
-    cache.put(180000, { ...parsed, grounding: { points: [{ ...parsed.grounding!.points[0]!, x: .75 }], omitted: 0 } })
+    // 100 ms inference cadence: the hold is cadence-adaptive, floored at 300 ms.
+    cache.put(99000, { ...parsed, grounding: { points: [{ ...parsed.grounding!.points[0]!, x: .75 }], omitted: 0 } })
     expect(cache.getForDisplay(90000)!.grounding!.points[0]!.x).toBe(.5)
-    expect(cache.getForDisplay(117000)!.displayAgeMs).toBe(300)
-    expect(cache.getForDisplay(117001)).toBeNull()
+    expect(cache.getForDisplay(126000)!.displayAgeMs).toBe(300)
+    expect(cache.getForDisplay(126001)).toBeNull()
     cache.put(100000, extractSeiDetections(bytes(clear.annexb_hex))!)
     expect(cache.getForDisplay(101000)!.grounding!.points).toEqual([])
   })

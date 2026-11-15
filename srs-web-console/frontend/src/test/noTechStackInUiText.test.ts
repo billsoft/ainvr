@@ -14,6 +14,11 @@ const TECH = /(?<![A-Za-z0-9_])(SRS|srs|Mongo(DB)?|mongo(db)?|Postgre(SQL|s)?|po
 const CJK = /[一-鿿]/
 const STR = /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/gs
 const JSX_TEXT = />([^<>{}]+)</g
+// Text between two JSX expressions, e.g. `{a}SRS {b}`; judged with its line,
+// since the Chinese words around it sit inside the neighbouring expressions.
+const JSX_BETWEEN = /\}([^<>{}\n]+)\{/g
+// `a > b ... c < d` in code is not JSX text.
+const CODE = /===|!==|&&|\|\||\breturn\b/
 
 // 有意保留：外部系统对接的示例代码必须是真实可用的代码；连接串输入框必须提示格式
 const ALLOW: Array<{ file: string; pattern: RegExp }> = [
@@ -33,7 +38,12 @@ function findOffenders(sources: Record<string, string>): string[] {
     const rel = path.replace(/^\.\.\//, '')
     const text = stripComments(raw)
     const candidates = [...text.matchAll(STR)].map((m) => m[0])
-      .concat([...text.matchAll(JSX_TEXT)].map((m) => m[1]!))
+      .concat([...text.matchAll(JSX_TEXT)].map((m) => m[1]!).filter((s) => !CODE.test(s)))
+    for (const m of text.matchAll(JSX_BETWEEN)) {
+      const start = text.lastIndexOf('\n', m.index) + 1, end = text.indexOf('\n', m.index)
+      const line = text.slice(start, end < 0 ? undefined : end)
+      if (TECH.test(m[1]!) && CJK.test(line) && !CODE.test(m[1]!)) offenders.push(`${rel}: ${m[1]!.trim().slice(0, 120)}`)
+    }
     for (const s of candidates) {
       if (!CJK.test(s) || !TECH.test(s)) continue
       if (ALLOW.some((a) => a.file === rel && a.pattern.test(s.trim()))) continue
@@ -48,8 +58,11 @@ describe('界面文字不暴露技术栈', () => {
     const found = findOffenders({
       '../a.tsx': `const a = <p>暂无 SRS 通道，请先添加</p>\nconst b = '模型：YOLOv12 人脸检测'`,
       '../b.ts': `// 注释里写 MongoDB 没关系\nconst adapter = 'yolo26_trt'\nconst label = '参数库'`,
+      '../c.tsx': `const c = <p>{off ? '已停用' : '正常'}{' · '}SRS {ok ? '已收到' : '未收到'}</p>`,
+      '../d.ts': `if (n > (adapter === 'yoloe_bpu' ? 300 : 1000)) return '超出范围' ; if (m < 2) x()`,
     })
-    expect(found).toHaveLength(2)
+    expect(found).toHaveLength(3)
+    expect(found.join('\n')).toMatch(/c\.tsx: SRS/)
     expect(found.join('\n')).toMatch(/a\.tsx: .*SRS/)
   })
 

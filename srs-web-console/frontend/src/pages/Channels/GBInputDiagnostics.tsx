@@ -97,7 +97,7 @@ export function GBInputDiagnostics({
           : globalState === 'disabled' ? '国标接入已全局停用'
           : ['failed', 'unavailable'].includes(globalState) ? '国标服务尚未就绪，请检查服务状态'
           : input ? states[input.state] ?? '等待接入状态更新' : '等待接入任务'}
-        {' · '}SRS {published ? '已收到发布流' : '尚未收到发布流'}
+        {' · '}{published ? '流媒体服务已收到视频' : '流媒体服务尚未收到视频'}
       </p>
       {!disabled && input?.reason && (
         <p className="mt-2 text-warning-700">{reasons[input.reason] ?? '接入尚未完成，请查看国标服务日志。'}</p>

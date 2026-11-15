@@ -20,7 +20,7 @@ describe('GB input diagnostics', () => {
     render(<GBInputDiagnostics channel={channel} onStatus={status} />)
     await screen.findByRole('region', { name: '国标摄像头接入诊断' })
     expect(screen.getByText(/PCMA → AAC/)).toBeTruthy()
-    expect(screen.getByText(/SRS 已收到发布流/)).toBeTruthy()
+    expect(screen.getByText(/流媒体服务已收到视频/)).toBeTruthy()
     expect(status).toHaveBeenCalledWith(channel.status)
   })
   it('explains rejected RTP origins instead of displaying a raw reason code', async () => {
