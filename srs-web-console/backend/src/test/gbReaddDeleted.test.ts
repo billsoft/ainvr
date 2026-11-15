@@ -20,7 +20,8 @@ it.skipIf(process.env.AINVR_GB_TEST_PG!=='1')('a deleted GB input does not block
  try{
   for(const file of ['001_initial_schema.sql','012_gb28181.sql','013_gb_media_addresses.sql','014_gb_channel_config.sql'])await pg.pool.query(readFileSync(new URL('../store/migrations/'+file,import.meta.url),'utf8'));
   const existing=new Set<string>();
-  const store=new GB28181Store(pg,async id=>existing.has(id));
+  let lookups=0;
+  const store=new GB28181Store(pg,async()=>{lookups++;return existing;},4);
   const device='34020000001320000001',channels=['34020000001320000002','34020000001320000003','34020000001320000004'];
   let rev=(await store.readSettings()).revision;
   rev=(await store.saveDevice({id:device,name:'设备',version:'auto',enabled:true,mediaIPs:[],password:'test-secret-password'},rev,'test')).revision;
@@ -37,7 +38,9 @@ it.skipIf(process.env.AINVR_GB_TEST_PG!=='1')('a deleted GB input does not block
   const inputOf=async(c:string)=>(await pg.pool.query('SELECT input_id,enabled FROM gb28181_bindings WHERE channel_id=$1',[c])).rows[0];
 
   // Wizard: offered as free, then accepted; the stale input id is released so a new input is created.
+  lookups=0;
   const free=await store.channelInputs(device);
+  expect(lookups).toBe(1); // one input lookup however many catalog rows
   expect(free.find(i=>i.id===channels[0])?.input_id).toBeNull();
   expect(free.find(i=>i.id===channels[2])?.input_id).toBe(live);
   // The wizard refreshes the list from the device catalog endpoint as well.
@@ -58,6 +61,27 @@ it.skipIf(process.env.AINVR_GB_TEST_PG!=='1')('a deleted GB input does not block
   // A mapping whose input still exists is not taken over by the wizard.
   await expect(store.saveChannel({deviceId:device,channelId:channels[2],transport:'udp',enabled:true,config},rev,'test')).rejects.toMatchObject({statusCode:409});
   expect((await inputOf(channels[2])).input_id).toBe(live);
+
+  // The device list shows how many channels each device still feeds.
+  expect((await store.deviceOverview()).find(d=>d.id===device)).toMatchObject({channels:1});
+  // A device cannot be deleted while a channel is in use...
+  await expect(store.removeDevice(device,rev,'test')).rejects.toMatchObject({statusCode:409,message:expect.stringContaining('3 路')});
+  // ...but once the customer deleted every channel it fed, it can be.
+  for(const c of channels)await pg.pool.query('UPDATE gb28181_bindings SET input_id=$1,enabled=false WHERE channel_id=$2',[randomUUID(),c]);
+  existing.clear();
+  rev=(await store.removeDevice(device,rev,'test')).revision;
+  expect((await store.devices()).some(d=>d.id===device)).toBe(false);
+  expect((await pg.pool.query('SELECT count(*)::int AS n FROM gb28181_bindings WHERE device_id=$1',[device])).rows[0].n).toBe(0);
+  expect(await pg.getSecret(`gb28181/device/${device}`)).toBeFalsy();
+
+  // A fresh S100 offers its whole board (8 streams) and refuses more.
+  const board=new GB28181Store(pg,undefined,8);
+  const fresh=await pg.pool.query("UPDATE gb28181_settings SET document='{}'");expect(fresh.rowCount).toBe(1);
+  const settings=await board.readSettings();
+  expect(settings.settings.capacity).toBe(8);
+  await expect(board.saveSettings({...settings.settings,capacity:9},undefined,settings.revision,'test')).rejects.toThrow('最多同时接入 8 路');
+  rev=(await board.saveSettings({...settings.settings,capacity:6},undefined,settings.revision,'test')).revision;
+  expect((await board.readSettings()).settings.capacity).toBe(6); // a saved choice is kept
  }finally{
   await pg.pool.end();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();rmSync(dir,{recursive:true,force:true});
  }

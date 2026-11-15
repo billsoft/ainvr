@@ -31,6 +31,10 @@ type MediaConfig struct {
 
 var mediaLeaseSuffix = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
+// MaxMediaCapacity is the gateway's ceiling on concurrent GB streams. The
+// console applies the lower per-board limit (S100 8, S100P 16).
+const MaxMediaCapacity = 16
+
 type MediaLease struct {
 	Stream string `json:"stream"`
 	Port   int    `json:"port"`
@@ -56,7 +60,7 @@ func NewMediaReceiver(c MediaConfig) (*MediaReceiver, error) {
 	if ip == nil || (!ip.IsLoopback() && u.Scheme != "https") || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, errors.New("media API requires loopback HTTP or protected HTTPS")
 	}
-	if !deviceIDPattern.MatchString(c.DomainID) || len(c.Secret) < 16 || net.ParseIP(c.ListenIP) == nil || net.ParseIP(c.AdvertiseIP) == nil || c.Capacity < 1 || c.Capacity > 4 || c.PortStart < 1024 || c.PortStart%2 != 0 || c.PortEnd > 65535 || c.PortEnd-c.PortStart < 2*c.Capacity {
+	if !deviceIDPattern.MatchString(c.DomainID) || len(c.Secret) < 16 || net.ParseIP(c.ListenIP) == nil || net.ParseIP(c.AdvertiseIP) == nil || c.Capacity < 1 || c.Capacity > MaxMediaCapacity || c.PortStart < 1024 || c.PortStart%2 != 0 || c.PortEnd > 65535 || c.PortEnd-c.PortStart < 2*c.Capacity {
 		return nil, errors.New("invalid media limits")
 	}
 	return &MediaReceiver{config: c, client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, leases: map[string]MediaLease{}, pending: map[string]bool{}, nextPort: c.PortStart, retired: map[uint32]time.Time{}}, nil

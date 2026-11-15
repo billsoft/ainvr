@@ -52,6 +52,13 @@ type Runtime struct {
 	runCtx  context.Context
 	workers map[string]*bindingWorker
 	running sync.WaitGroup
+	// stopWait bounds how long an edit waits for stopping sessions; a changed
+	// binding's replacement still waits for its own predecessor to exit.
+	stopWait time.Duration
+	// One media-server stream list per second, shared by every channel.
+	streamsMu sync.Mutex
+	streamsAt time.Time
+	streams   map[string]bool
 }
 
 type bindingWorker struct {
@@ -125,7 +132,7 @@ func NewRuntime(c RuntimeConfig) (*Runtime, error) {
 	if e != nil {
 		return nil, e
 	}
-	r := &Runtime{config: c, server: s, receiver: m, states: map[string]InputState{}, workers: map[string]*bindingWorker{}}
+	r := &Runtime{config: c, server: s, receiver: m, states: map[string]InputState{}, workers: map[string]*bindingWorker{}, stopWait: 10 * time.Second}
 	r.work = r.worker
 	return r, nil
 }
@@ -151,10 +158,12 @@ func (r *Runtime) reconcile(bindings []Binding) {
 	r.mu.Lock()
 	ctx := r.runCtx
 	var stopping []*bindingWorker
+	predecessor := map[string]*bindingWorker{}
 	for id, w := range r.workers {
 		if b, ok := wanted[id]; !ok || !b.Enabled || b != w.binding {
 			w.cancel()
 			stopping = append(stopping, w)
+			predecessor[id] = w
 			delete(r.workers, id)
 		}
 	}
@@ -165,7 +174,11 @@ func (r *Runtime) reconcile(bindings []Binding) {
 	}
 	r.mu.Unlock()
 	// One shared bound, so a batch edit of many channels cannot multiply it.
-	deadline := time.NewTimer(10 * time.Second)
+	limit := r.stopWait
+	if limit <= 0 {
+		limit = 10 * time.Second
+	}
+	deadline := time.NewTimer(limit)
 	defer deadline.Stop()
 	for _, w := range stopping {
 		select {
@@ -192,11 +205,20 @@ func (r *Runtime) reconcile(bindings []Binding) {
 		w := &bindingWorker{binding: b, cancel: cancel, done: make(chan struct{})}
 		r.workers[b.ID] = w
 		r.running.Add(1)
-		go func(binding Binding) {
+		go func(binding Binding, previous *bindingWorker) {
 			defer r.running.Done()
 			defer close(w.done)
+			// The old session of this channel must release its media lease and
+			// output stream before the new one starts, however long it takes.
+			if previous != nil {
+				select {
+				case <-previous.done:
+				case <-workerCtx.Done():
+					return
+				}
+			}
 			r.work(workerCtx, binding)
-		}(b)
+		}(b, predecessor[b.ID])
 	}
 }
 
@@ -233,11 +255,11 @@ func (r *Runtime) Snapshot() map[string]any {
 	}
 	revision := r.config.Revision
 	r.mu.Unlock()
-	devices := []DeviceState{}
+	devices, unknown := []DeviceState{}, []UnknownDevice{}
 	if r.server != nil {
-		devices = r.server.Snapshot()
+		devices, unknown = r.server.Snapshot(), r.server.Unknown()
 	}
-	return map[string]any{"revision": revision, "enabled": r.config.Enabled, "ready": r.listeners.Load() == 2, "inputs": states, "devices": devices, "validation": "development_unverified"}
+	return map[string]any{"revision": revision, "enabled": r.config.Enabled, "ready": r.listeners.Load() == 2, "inputs": states, "devices": devices, "unknownDevices": unknown, "validation": "development_unverified"}
 }
 func (r *Runtime) Refresh(ctx context.Context, id string) error {
 	if r.server == nil {
@@ -336,20 +358,40 @@ func (m *MediaReceiver) tracks(ctx context.Context, l MediaLease) (string, strin
 	}
 	return video, audio, nil
 }
+
+// published reports whether the channel's output is live on the media server.
+// Every channel checks once per second; they share one stream list per second
+// instead of each fetching and decoding the whole list.
 func (r *Runtime) published(ctx context.Context, b Binding) bool {
+	r.streamsMu.Lock()
+	defer r.streamsMu.Unlock()
+	if r.streams == nil || time.Since(r.streamsAt) >= 900*time.Millisecond {
+		live := r.fetchStreams(ctx)
+		if ctx.Err() != nil {
+			// A stopping channel's aborted request says nothing about the others.
+			return false
+		}
+		r.streams, r.streamsAt = live, time.Now()
+	}
+	return r.streams[b.App+"/"+b.Stream]
+}
+
+// fetchStreams returns the live outputs with video; an empty set on failure.
+func (r *Runtime) fetchStreams(ctx context.Context) map[string]bool {
+	live := map[string]bool{}
 	// The media server lists only the first 10 streams unless a count is given.
 	req, e := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(r.config.SRSAPI, "/")+"/api/v1/streams/?start=0&count=1000", nil)
 	if e != nil {
-		return false
+		return live
 	}
 	client := &http.Client{Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, e := client.Do(req)
 	if e != nil {
-		return false
+		return live
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
-		return false
+		return live
 	}
 	var result struct {
 		Code    int `json:"code"`
@@ -363,24 +405,17 @@ func (r *Runtime) published(ctx context.Context, b Binding) bool {
 		} `json:"streams"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(nil, response.Body, 2*1024*1024)).Decode(&result) != nil || result.Code != 0 {
-		return false
+		return live
 	}
 	for _, s := range result.Streams {
-		if s.App == b.App && s.Name == b.Stream && s.Publish.Active && s.Video != nil {
-			return true
+		if s.Publish.Active && s.Video != nil {
+			live[s.App+"/"+s.Name] = true
 		}
 	}
-	return false
+	return live
 }
 func (r *Runtime) stream(ctx context.Context, b Binding) string {
-	online := false
-	for _, d := range r.server.Snapshot() {
-		if d.ID == b.DeviceID && d.Registered {
-			online = true
-			break
-		}
-	}
-	if !online {
+	if online, _ := r.server.session(b.DeviceID); !online {
 		r.set(b, "waiting_device", "", "", "")
 		if !wait(ctx, time.Second) {
 			return ""
@@ -485,14 +520,7 @@ func (r *Runtime) stream(ctx context.Context, b Binding) string {
 					return "audio_tracks_changed"
 				}
 			}
-			valid := false
-			for _, d := range r.server.Snapshot() {
-				if d.ID == b.DeviceID && d.Registered && d.Generation == session.DeviceGeneration {
-					valid = true
-					break
-				}
-			}
-			if !valid {
+			if online, generation := r.server.session(b.DeviceID); !online || generation != session.DeviceGeneration {
 				return "device_session_changed"
 			}
 		}

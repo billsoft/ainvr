@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -93,6 +94,7 @@ type DeviceState struct {
 	Info            *DeviceInfo   `json:"info,omitempty"`
 	DeviceOnline    string        `json:"deviceOnline,omitempty"`
 	DeviceHealth    string        `json:"deviceHealth,omitempty"`
+	Address         string        `json:"address,omitempty"`
 	pending         map[string]pendingQuery
 	source          string
 	transport       string
@@ -130,7 +132,76 @@ type Server struct {
 	sequence      atomic.Uint32
 	queries       chan struct{}
 	dialogs       map[string]*sipgo.DialogClientCache
+	// Recent registrations from identities nobody provisioned: on site this is
+	// almost always a typo in the device number, so the console can show it.
+	strangers map[string]UnknownDevice
 }
+
+// UnknownDevice is a registration attempt from an identity that is not provisioned.
+type UnknownDevice struct {
+	ID          string    `json:"id"`
+	Address     string    `json:"address"`
+	LastAttempt time.Time `json:"lastAttempt"`
+}
+
+const maxStrangers = 32
+
+func (s *Server) noteStranger(id, source string, now time.Time) {
+	if !deviceIDPattern.MatchString(id) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.strangers == nil {
+		s.strangers = map[string]UnknownDevice{}
+	}
+	if _, ok := s.strangers[id]; !ok && len(s.strangers) >= maxStrangers {
+		oldest := ""
+		for k, v := range s.strangers {
+			if oldest == "" || v.LastAttempt.Before(s.strangers[oldest].LastAttempt) {
+				oldest = k
+			}
+		}
+		delete(s.strangers, oldest)
+	}
+	s.strangers[id] = UnknownDevice{ID: id, Address: source, LastAttempt: now}
+}
+
+// noteAuthFailure tells the installer why a camera stays offline. A request
+// with a wrong credential is unauthenticated and may be forged, so it never
+// changes the state of a camera that is currently registered.
+func (s *Server) noteAuthFailure(id string, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.states[id]; st != nil && !s.online(st, now) {
+		st.LastError = "authentication_failed"
+	}
+}
+
+// Unknown lists recent registration attempts from unprovisioned identities, newest first.
+func (s *Server) Unknown() []UnknownDevice {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]UnknownDevice, 0, len(s.strangers))
+	for _, v := range s.strangers {
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastAttempt.After(out[j].LastAttempt) })
+	return out
+}
+
+// session reports registration and generation without copying catalogs, so
+// per-second media checks stay cheap with many cameras and large directories.
+func (s *Server) session(id string) (bool, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.states[id]
+	if !s.online(st, time.Now()) {
+		return false, 0
+	}
+	return true, st.Generation
+}
+
 type DeviceInfo struct {
 	Name         string `json:"name"`
 	Manufacturer string `json:"manufacturer"`
@@ -306,6 +377,7 @@ func (s *Server) UpdateDevices(devices []DeviceConfig) error {
 	}
 	for _, d := range devices {
 		s.devices[d.ID] = d
+		delete(s.strangers, d.ID)
 		if s.states[d.ID] == nil {
 			s.states[d.ID] = &DeviceState{ID: d.ID}
 		}
@@ -318,6 +390,9 @@ func (s *Server) register(req *sip.Request, tx sip.ServerTransaction) {
 	id := requestDevice(req)
 	d, ok := s.device(id)
 	if !ok || !d.Enabled {
+		if !ok {
+			s.noteStranger(id, req.Source(), time.Now())
+		}
 		s.respond(req, tx, 403, "Forbidden")
 		return
 	}
@@ -355,6 +430,7 @@ func (s *Server) register(req *sip.Request, tx sip.ServerTransaction) {
 			s.respond(req, tx, 401, "Unauthorized", sip.NewHeader("WWW-Authenticate", challenge))
 			return
 		}
+		s.noteAuthFailure(id, now)
 		s.respond(req, tx, 403, "Forbidden")
 		return
 	}
@@ -623,6 +699,7 @@ func (s *Server) Snapshot() []DeviceState {
 	for _, st := range s.states {
 		v := *st
 		v.Registered = s.online(st, time.Now())
+		v.Address = st.source
 		v.Catalog = append([]CatalogItem(nil), st.Catalog...)
 		out = append(out, v)
 	}

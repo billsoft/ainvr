@@ -16,7 +16,7 @@ it.skipIf(process.env.AINVR_GB_TEST_PG!=='1')('GB parameter database: concurrent
  const pg=new PgConfigStore({poolConfig:{...connection,options:`-c search_path=${schema}`},masterKeyPath:key});
  try{
   for(const file of ['001_initial_schema.sql','012_gb28181.sql','013_gb_media_addresses.sql','014_gb_channel_config.sql'])await pg.pool.query(readFileSync(new URL('../store/migrations/'+file,import.meta.url),'utf8'));
-  const store=new GB28181Store(pg),device={id:'34020000001320000001',name:'设备',version:'auto',enabled:true,mediaIPs:['192.0.2.25'],password:'test-secret-password'};
+  const store=new GB28181Store(pg,undefined,4),device={id:'34020000001320000001',name:'设备',version:'auto',enabled:true,mediaIPs:['192.0.2.25'],password:'test-secret-password'};
   expect((await store.readSettings()).settings.enabled).toBe(false);
   const writes=await Promise.allSettled([store.saveDevice(device,1,'test'),store.saveSettings(defaultGBSettings,undefined,1,'test')]);
   expect(writes.filter(v=>v.status==='fulfilled')).toHaveLength(1);
@@ -31,11 +31,12 @@ it.skipIf(process.env.AINVR_GB_TEST_PG!=='1')('GB parameter database: concurrent
   await pg.pool.query('INSERT INTO gb28181_catalog(device_id,channel_id,document) VALUES($1,$2,$3)',[device.id,channel,{name:'甲板'}]);
   current=await store.readSettings();
   const first=await store.bind(device.id,channel,'udp',true,current.revision,'test');
+  // A device whose channel is in use cannot be deleted.
+  await expect(store.removeDevice(device.id,first.revision,'test')).rejects.toMatchObject({statusCode:409});
+  expect((await store.readSettings()).revision).toBe(first.revision);
   const second=await store.bind(device.id,channel,'tcp-passive',false,first.revision,'test');
   expect(second.result.bindingId).toBe(first.result.bindingId);
   expect((await store.catalog(device.id))).toHaveLength(1);
-  await expect(store.removeDevice(device.id,second.revision,'test')).rejects.toMatchObject({statusCode:409});
-  expect((await store.readSettings()).revision).toBe(second.revision);
   expect((await pg.pool.query('SELECT count(*)::int AS n FROM config_audit_logs')).rows[0].n).toBe(4);
   const more=['34020000001320000003','34020000001320000004','34020000001320000005','34020000001320000006'];
   for(const id of more)await pg.pool.query('INSERT INTO gb28181_catalog(device_id,channel_id,document) VALUES($1,$2,$3)',[device.id,id,{name:id}]);

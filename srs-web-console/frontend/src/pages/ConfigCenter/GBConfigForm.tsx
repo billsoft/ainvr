@@ -1,10 +1,11 @@
 import {useEffect,useState} from 'react'
 import {PtzGlobalSettings} from './PtzGlobalSettings'
+import {GBDeviceManager} from './GBDeviceManager'
 import {request} from '@/api/httpClient'
 
 type Settings={enabled:boolean;gatewayUrl:string;serverId:string;realm:string;listenIp:string;sipPort:number;advertiseIp:string;mediaAdvertiseIp:string;mediaPortStart:number;mediaPortEnd:number;capacity:number;heartbeatTimeoutSec:number}
 export function GBConfigForm(){
- const [data,setData]=useState<{revision:number;settings:Settings;tokenSet:boolean}|null>(null)
+ const [data,setData]=useState<{revision:number;settings:Settings;tokenSet:boolean;capacityLimit?:number;addresses?:string[]}|null>(null)
  const [token,setToken]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[message,setMessage]=useState('')
  const [status,setStatus]=useState<{state?:string;revision?:number}>({})
  const [dirty,setDirty]=useState(false)
@@ -23,13 +24,18 @@ export function GBConfigForm(){
   {data&&<fieldset disabled={busy} className="mt-4 space-y-4"><label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={data.settings.enabled} onChange={e=>setData({...data,settings:{...data.settings,enabled:e.target.checked}})}/>启用国标网关</label>
    <div className="grid gap-4 md:grid-cols-2">{fields.map(([key,label,numeric])=><label key={key} className="text-sm">{label}<input className="mt-1 block min-h-11 w-full rounded border border-line px-3" type={numeric?'number':'text'} value={String(data.settings[key])} onChange={e=>setData({...data,settings:{...data.settings,[key]:numeric?Number(e.target.value):e.target.value}})}/></label>)}
    <label className="text-sm">网关服务密钥<input className="mt-1 block min-h-11 w-full rounded border border-line px-3" type="password" autoComplete="new-password" placeholder={data.tokenSet?'已设置，留空保持':'填写部署时生成的服务密钥'} value={token} onChange={e=>setToken(e.target.value)}/></label></div>
+   {data.capacityLimit&&<p className="text-sm text-ink-subtle">本机最多同时接入 {data.capacityLimit} 路国标视频；录像和 AI 识别同样占用这些名额。</p>}
+   {[data.settings.advertiseIp,data.settings.mediaAdvertiseIp].some(ip=>ip.startsWith('127.')||ip==='0.0.0.0')&&!!data.addresses?.length&&<div className="flex flex-wrap items-center gap-2 text-sm" role="group" aria-label="本机地址">
+    <span className="text-warning-700">摄像头无法访问 127.0.0.1，请填写本机局域网地址：</span>
+    {data.addresses.map(ip=><button key={ip} type="button" className="min-h-11 rounded-base border border-line px-3 hover:border-primary" onClick={()=>{setData({...data,settings:{...data.settings,advertiseIp:ip,mediaAdvertiseIp:ip}});setDirty(true)}}>使用 {ip}</button>)}
+   </div>}
    <p className="text-sm text-ink-subtle">服务密钥用于连接独立网关；修改时须与网关部署凭据一致。启用前填写摄像头实际可访问的地址，不能使用 127.0.0.1。</p>
    <details className="rounded-base border border-line p-3 text-sm text-ink-subtle"><summary className="min-h-11 cursor-pointer font-medium text-ink">外置网关部署说明</summary>
     <p className="mt-2">默认网关运行在本机，无需额外转发。使用其他主机上的网关时，请先由管理员配置受信任的 HTTPS 管理连接，以及返回本机流媒体服务的安全转发；只修改管理地址不能完成外置接入。</p>
     <p className="mt-2">信令和媒体地址应填写外置网关上摄像头可达的地址。设备账号仍在新建通道向导中配置，不在此处填写。</p>
    </details>
-   <p className="text-sm text-ink-subtle">仅用于 2016／2022 摄像头实时接入。真机兼容性及持续运行验证尚未完成。</p>
+   <p className="text-sm text-ink-subtle">支持 2016／2022 摄像头和 NVR 的实时视频、录像、AI 识别与云台控制；不含语音对讲、读取设备端录像和向上级平台级联。各厂商真机兼容性及持续运行验证尚未完成。</p>
    <button className="min-h-11 rounded-base bg-primary px-4 text-white hover:bg-primary-600" onClick={()=>void save()}>{busy?'保存中…':'保存国标配置'}</button>
   </fieldset>}
- </section><PtzGlobalSettings/></>
+ </section><GBDeviceManager/><PtzGlobalSettings/></>
 }

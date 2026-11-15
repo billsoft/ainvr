@@ -1,7 +1,30 @@
 import {isIP} from 'node:net';
+import {readFileSync} from 'node:fs';
+import {networkInterfaces} from 'node:os';
 import {z} from 'zod';
 
 const ip=z.string().refine(v=>isIP(v)===4,'请输入 IPv4 地址');
+/** Gateway ceiling on concurrent GB streams; each board applies its own lower limit. */
+export const GB_MAX_CAPACITY=16;
+/** Concurrent GB streams one board can record and analyse: S100P 16, S100 8, otherwise 4.
+ *  AINVR_GB_CAPACITY_LIMIT overrides it for other hardware. */
+export function boardCapacityLimit(model=readBoardModel(),override=process.env.AINVR_GB_CAPACITY_LIMIT){
+  const forced=Number(override);
+  if(override&&Number.isInteger(forced)&&forced>=1)return Math.min(forced,GB_MAX_CAPACITY);
+  return /S100P/i.test(model)?16:/S100/i.test(model)?8:4;
+}
+function readBoardModel(){
+  try{return readFileSync('/proc/device-tree/model','utf8');}catch{return '';}
+}
+/** Non-loopback IPv4 addresses of this host, offered as the address cameras should use. */
+export function lanAddresses(interfaces=networkInterfaces()){
+  const out:string[]=[];
+  for(const [name,list] of Object.entries(interfaces)){
+    if(/^(docker|br-|veth|lo)/.test(name))continue;
+    for(const a of list??[])if(a.family==='IPv4'&&!a.internal&&!a.address.startsWith('169.254.')&&!out.includes(a.address))out.push(a.address);
+  }
+  return out;
+}
 const port=z.number().int().min(1024).max(65535);
 const endpoint=z.string().url().refine(value=>{
   const u=new URL(value);
@@ -12,7 +35,7 @@ export const gbSettingsSchema=z.object({
   enabled:z.boolean(),gatewayUrl:endpoint,
   serverId:z.string().regex(/^\d{20}$/),realm:z.string().regex(/^\d{10}$/),
   listenIp:ip,sipPort:port,advertiseIp:ip,mediaAdvertiseIp:ip,
-  mediaPortStart:port,mediaPortEnd:port,capacity:z.number().int().min(1).max(4),
+  mediaPortStart:port,mediaPortEnd:port,capacity:z.number().int().min(1).max(GB_MAX_CAPACITY),
   heartbeatTimeoutSec:z.number().int().min(30).max(3600),
 }).strict().superRefine((v,ctx)=>{
   if(v.mediaPortStart%2||v.mediaPortEnd-v.mediaPortStart<2*v.capacity)

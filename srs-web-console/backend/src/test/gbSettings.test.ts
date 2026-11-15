@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {defaultGBSettings,gbSettingsSchema,gbDeviceSchema} from '../store/gbSettings.js';
+import {boardCapacityLimit,defaultGBSettings,gbSettingsSchema,gbDeviceSchema,lanAddresses} from '../store/gbSettings.js';
 
 describe('GB gateway configuration boundaries',()=>{
   it('starts disabled without changing existing input configuration',()=>{
@@ -10,8 +10,21 @@ describe('GB gateway configuration boundaries',()=>{
       expect(gbSettingsSchema.safeParse({...defaultGBSettings,gatewayUrl}).success).toBe(false);
   });
   it('bounds media capacity and prevents port overlap',()=>{
-    for(const value of [{capacity:5},{mediaPortStart:30001},{mediaPortEnd:30004},{sipPort:30000}])
+    for(const value of [{capacity:17},{capacity:0},{mediaPortStart:30001},{mediaPortEnd:30004},{sipPort:30000},{capacity:16,mediaPortEnd:30030}])
       expect(gbSettingsSchema.safeParse({...defaultGBSettings,...value}).success).toBe(false);
+    expect(gbSettingsSchema.safeParse({...defaultGBSettings,capacity:16}).success).toBe(true);
+  });
+  it('limits concurrent GB streams by board',()=>{
+    expect(boardCapacityLimit('D-Robotics RDK S100P V1P0\0','')).toBe(16);
+    expect(boardCapacityLimit('D-Robotics RDK S100 V1P1\0','')).toBe(8);
+    expect(boardCapacityLimit('NVIDIA Jetson Orin NX','')).toBe(4);
+    expect(boardCapacityLimit('D-Robotics RDK S100 V1P1','6')).toBe(6);
+    expect(boardCapacityLimit('','99')).toBe(16);
+  });
+  it('offers this host\'s LAN addresses, not loopback, link-local or container bridges',()=>{
+    const v4=(address:string,internal=false)=>({address,family:'IPv4',internal,netmask:'255.255.255.0',mac:'00:00:00:00:00:00',cidr:null});
+    expect(lanAddresses({lo:[v4('127.0.0.1',true)],eth0:[v4('192.168.100.190'),{...v4('fe80::1'),family:'IPv6'}],docker0:[v4('172.17.0.1')],wlan0:[v4('169.254.3.4'),v4('192.168.1.20')]} as never))
+      .toEqual(['192.168.100.190','192.168.1.20']);
   });
   it('does not accept unknown fields or invalid device identity',()=>{
     expect(gbSettingsSchema.safeParse({...defaultGBSettings,ffmpeg:'/tmp/command'}).success).toBe(false);

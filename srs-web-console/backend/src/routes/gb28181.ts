@@ -2,7 +2,7 @@ import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import {PtzError,ptzCameraDraftSchema} from '../store/ptzStore.js';
 import {GB28181Store,GBError} from '../store/gb28181Store.js';
-import {gbSettingsSchema} from '../store/gbSettings.js';
+import {gbSettingsSchema,lanAddresses} from '../store/gbSettings.js';
 import type {GB28181Sync} from '../services/gb28181Sync.js';
 
 interface Options {store:GB28181Store|null;sync:GB28181Sync|null;principal:(request:FastifyRequest)=>Promise<string|null>;onPtzChanged?:(key:string)=>Promise<unknown>}
@@ -70,12 +70,13 @@ export async function gb28181Routes(app:FastifyInstance,options:Options){
     const b=z.object({transport:z.enum(['udp','tcp-passive','tcp-active']),enabled:z.boolean(),expectedRevision:revision}).strict().parse(req.body);
     return store().bind(params.id,params.channel,b.transport,b.enabled,b.expectedRevision,actors.get(req)!);
   });
-  app.get('/gb28181/settings',async()=>store().readSettings());
+  // The board limit and this host's addresses help an installer fill the form correctly.
+  app.get('/gb28181/settings',async()=>({...await store().readSettings(),capacityLimit:store().capacityLimit,addresses:lanAddresses()}));
   app.put('/gb28181/settings',async req=>{
     const b=z.object({settings:gbSettingsSchema,token:z.string().optional(),expectedRevision:revision}).strict().parse(req.body);
     return store().saveSettings(b.settings,b.token,b.expectedRevision,actors.get(req)!);
   });
-  app.get('/gb28181/devices',async()=>({items:await store().devices(),revision:(await store().readSettings()).revision}));
+  app.get('/gb28181/devices',async()=>({items:await store().deviceOverview(),revision:(await store().readSettings()).revision}));
   app.post('/gb28181/devices',async req=>{
     const b=z.object({device:z.unknown(),expectedRevision:revision}).strict().parse(req.body);
     return store().saveDevice(b.device,b.expectedRevision,actors.get(req)!);

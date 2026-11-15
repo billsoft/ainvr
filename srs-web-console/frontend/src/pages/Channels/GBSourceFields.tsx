@@ -15,7 +15,10 @@ const deviceErrors:Record<string,string>={
  device_reported_error:'设备已注册，但报告自身故障，请检查摄像头或 NVR 状态。',
  registration_conflict:'检测到相同编号的设备注册冲突，请核对设备身份。',
  device_query_failed:'设备未能完成信息查询，请检查设备状态后重试。',
+ authentication_failed:'设备注册密码不正确：请核对设备端填写的密码与此处登记的一致，或在“编辑设备注册信息”中重新设置。',
 }
+/** A large NVR or lower platform can list thousands of channels; render a page and let search narrow it. */
+const CATALOG_PAGE=200
 
 /** Device registration is a prerequisite; video binding is only saved by the wizard. */
 export function GBSourceFields({binding,onDraft,onDirty,onBusy}:{binding?:GBBinding;onDraft:(draft:GBSourceDraft)=>void;onDirty:(dirty:boolean)=>void;onBusy:(busy:boolean)=>void}){
@@ -29,7 +32,10 @@ export function GBSourceFields({binding,onDraft,onDirty,onBusy}:{binding?:GBBind
  const [ready,setReady]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[message,setMessage]=useState('')
  const [refresh,setRefresh]=useState(0),[dirty,setDirty]=useState(false),[query,setQuery]=useState('')
  const [form,setForm]=useState<'new'|'edit'|null>(null),[device,setDevice]=useState({...emptyDevice}),[deviceDirty,setDeviceDirty]=useState(false)
- const [runtime,setRuntime]=useState<{state?:string;devices?:{id:string;registered:boolean;lastError?:string;deviceOnline?:string;deviceHealth?:string;version?:{profile:string;confirmed:boolean;peer?:string}}[]}>({})
+ const [runtime,setRuntime]=useState<{state?:string;devices?:{id:string;registered:boolean;lastError?:string;deviceOnline?:string;deviceHealth?:string;version?:{profile:string;confirmed:boolean;peer?:string}}[];unknownDevices?:{id:string;address:string}[]}>({})
+ const matched=options.items.filter(i=>(!binding||i.id===binding.channel_id)&&((i.document.name??'').includes(query)||i.id.includes(query)))
+ const selectable=matched.filter(i=>!i.input_id||i.input_id===binding?.input_id)
+ const unknownNumbers=(runtime.unknownDevices??[]).filter(u=>!options.devices.some(d=>d.id===u.id))
  useEffect(()=>{onDraft({revision:editRevision===undefined?options.revision:Number(editRevision),deviceId:selected,channelId:channel,transport,enabled,ready,registrationDirty:deviceDirty,batch,channels:selectedChannels.map(id=>({id,name:options.items.find(i=>i.id===id)?.document.name||id}))})},[editRevision,options.revision,selected,channel,transport,enabled,ready,deviceDirty,batch,selectedChannels,options.items,onDraft])
  useEffect(()=>{onDirty(dirty||deviceDirty)},[dirty,deviceDirty,onDirty])
  useEffect(()=>{
@@ -90,12 +96,15 @@ export function GBSourceFields({binding,onDraft,onDirty,onBusy}:{binding?:GBBind
     <p className="text-xs text-slate-500">自动模式依据设备版本声明选择兼容配置；未声明时按 2016 兼容接入。手动指定用于兼容排查，不代表通过完整标准认证。</p>
     {runtime.devices?.filter(d=>d.id===selected && d.registered && d.version).map(d=><p key={d.id} className="text-sm text-slate-600">当前兼容配置：{d.version!.profile} · {d.version!.peer ? `设备声明：${d.version!.peer}` : '设备版本未确认'}</p>)}
     {runtime.devices?.filter(d=>d.id===selected && d.lastError).map(d=><p key={d.id} role="alert" className="rounded-base bg-warning/5 p-3 text-sm text-warning-700">{d.lastError==='device_reported_error'&&d.deviceHealth==='ERROR'?'设备自检报告异常；注册连接仍在，请检查摄像头或 NVR。':deviceErrors[d.lastError!]??'设备状态异常，请查看国标服务日志。'}</p>)}
+    {!runtime.devices?.find(d=>d.id===selected)?.registered&&unknownNumbers.length>0&&<p role="status" className="rounded-base bg-warning/5 p-3 text-sm text-warning-700">收到未登记编号 {unknownNumbers.map(u=>`${u.id}（来自 ${u.address.replace(/:\d+$/,'')}）`).join('、')} 的注册请求。若这是本设备，请核对设备端填写的设备编号。</p>}
     {runtime.devices?.filter(d=>d.id===selected && d.deviceOnline==='OFFLINE').map(d=><p key={d.id} role="status" className="text-sm text-warning-700">设备查询结果报告离线；媒体状态仍以实际收到的视频为准。</p>)}
     <div className="flex items-center justify-between gap-2 text-sm"><span>设备状态：{runtime.devices?.find(d=>d.id===selected)?.registered?'已注册':runtime.state==='disabled'?'国标服务已停用':'等待注册'}</span><button type="button" className={button} onClick={async()=>{setError('');try{await request(`/gb28181/devices/${selected}/catalog-refresh`,{method:'POST',body:'{}'});setMessage('目录请求已发送，列表会自动更新。')}catch(e){setError((e as Error).message)}}}>刷新设备目录</button></div>
     {!binding&&<label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={batch} onChange={e=>{setBatch(e.target.checked);setSelectedChannels([]);setChannel('');setDirty(true)}}/>批量接入 NVR 视频通道</label>}
-    {batch&&<p className="text-xs text-ink-subtle">已选 {selectedChannels.length} 路。名称采用“基本信息中的名称 · 目录名称”；共用备注、传输和播放设置，最后统一保存。容量不足时整批不保存。</p>}
+    {batch&&<div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-ink-subtle">已选 {selectedChannels.length} 路。名称采用“基本信息中的名称 · 目录名称”；共用备注、传输和播放设置，最后统一保存。容量不足时整批不保存。</p>
+     <button type="button" className={button} disabled={!selectable.length} onClick={()=>{const all=selectable.slice(0,100).map(i=>i.id);setSelectedChannels(old=>all.every(id=>old.includes(id))?old.filter(id=>!all.includes(id)):[...new Set([...old,...all])]);setDirty(true)}}>{selectable.length&&selectable.slice(0,100).every(i=>selectedChannels.includes(i.id))?'取消全选':`全选可接入的 ${Math.min(selectable.length,100)} 路`}</button></div>}
     <label className="block text-sm">搜索视频目录<input className={field} value={query} onChange={e=>setQuery(e.target.value)} placeholder="名称或国标编号"/></label>
-    <div className="max-h-56 overflow-auto rounded-base border border-line">{options.items.filter(i=>(!binding||i.id===binding.channel_id)&&((i.document.name??'').includes(query)||i.id.includes(query))).map(i=><label key={i.id} className={`flex min-h-14 cursor-pointer items-center gap-3 border-b border-line p-3 text-sm ${(batch?selectedChannels.includes(i.id):channel===i.id)?'bg-primary-50':''}`}><input type={batch?"checkbox":"radio"} name="gb-catalog" checked={batch?selectedChannels.includes(i.id):channel===i.id} disabled={!!i.input_id&&i.input_id!==binding?.input_id} onChange={()=>{if(batch)setSelectedChannels(old=>old.includes(i.id)?old.filter(id=>id!==i.id):[...old,i.id]);else setChannel(i.id);setDirty(true)}}/><span><strong className="block">{i.document.name||i.id}</strong><span className="text-xs text-ink-subtle">{i.id}{i.input_id&&i.input_id!==binding?.input_id?' · 已接入，请从列表编辑':''}{!i.available?' · 目录暂不可用':''}</span></span></label>)}{!options.items.length&&<p className="p-3 text-sm text-ink-subtle">尚未收到目录。保存设备注册信息并完成设备端配置后，可刷新目录。已有配置可离线编辑。</p>}</div>
+    {matched.length>CATALOG_PAGE&&<p role="status" className="text-xs text-ink-subtle">目录共 {matched.length} 项，仅显示前 {CATALOG_PAGE} 项，请输入名称或编号筛选。</p>}
+    <div className="max-h-56 overflow-auto rounded-base border border-line">{matched.slice(0,CATALOG_PAGE).map(i=><label key={i.id} className={`flex min-h-14 cursor-pointer items-center gap-3 border-b border-line p-3 text-sm ${(batch?selectedChannels.includes(i.id):channel===i.id)?'bg-primary-50':''}`}><input type={batch?"checkbox":"radio"} name="gb-catalog" checked={batch?selectedChannels.includes(i.id):channel===i.id} disabled={!!i.input_id&&i.input_id!==binding?.input_id} onChange={()=>{if(batch)setSelectedChannels(old=>old.includes(i.id)?old.filter(id=>id!==i.id):[...old,i.id]);else setChannel(i.id);setDirty(true)}}/><span><strong className="block">{i.document.name||i.id}</strong><span className="text-xs text-ink-subtle">{i.id}{i.input_id&&i.input_id!==binding?.input_id?' · 已接入，请从列表编辑':''}{!i.available?' · 目录暂不可用':''}</span></span></label>)}{!options.items.length&&<p className="p-3 text-sm text-ink-subtle">尚未收到目录。保存设备注册信息并完成设备端配置后，可刷新目录。已有配置可离线编辑。</p>}</div>
     <label className="block text-sm">媒体传输方式<select className={field} value={transport} onChange={e=>{setTransport(e.target.value);setDirty(true)}}><option value="tcp-passive">TCP · 摄像头连接网关</option><option value="tcp-active">TCP · 网关连接摄像头</option><option value="udp">UDP</option></select></label>
     <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={enabled} onChange={e=>{setEnabled(e.target.checked);setDirty(true)}}/>启用此视频通道（停用后录像和 AI 等待视频源）</label>
    </>}
