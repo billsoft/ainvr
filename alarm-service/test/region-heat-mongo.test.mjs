@@ -70,7 +70,9 @@ test('Mongo shared pending capacity drops only heat first, preserves dwell and m
   await repo.checkpoints.updateOne({channel_id:'c'},{$set:{'checkpoint.region_heat.padding':'x'.repeat(7*1024*1024)}});
   const e=heatEnvelope(2,{time:200});e.frame.tracks.push({...e.frame.tracks[0],track_id:'t2'});
   const result=await consumer.consume(e);assert.equal(result.durable,true);assert.ok(result.issues.includes('heat_capacity'));assert.ok(!result.issues.includes('dwell_capacity'));
-  assert.equal(await repo.events.countDocuments(),2);const cp=await repo.checkpoints.findOne({channel_id:'c'});
+  // The second target's alarm is materialized, folded into the open alarm of its rule.
+  assert.equal(await repo.events.countDocuments(),1);assert.equal((await repo.events.findOne({})).fold_count,1);
+  const cp=await repo.checkpoints.findOne({channel_id:'c'});
   assert.equal(cp.checkpoint.region_heat.disabled_session,'s');assert.equal(cp.checkpoint.dwell.disabled_session,undefined);assert.ok(Object.values(cp.checkpoint.dwell.visits).some(v=>v.observed_ms===100));
   const heat=await repo.heat.query(range);assert.equal(heat.status,'capacity_suspended');assert.equal(heat.gaps.length,1);
 }));

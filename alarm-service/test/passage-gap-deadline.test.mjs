@@ -17,10 +17,12 @@ test('configured passage deadline is milliseconds, independent of sampling caden
     }
   }
 });
-test('alarm gaps remain strict and default statistics deadline stays bounded', () => {
-  assert.equal(gapAllowance({alarm_enabled:true}),0);
+test('alarms and statistics share one bounded default deadline; an explicit zero stays strict', () => {
+  assert.equal(gapAllowance({alarm_enabled:true}),1000);
   assert.equal(gapAllowance({alarm_enabled:false}),1000);
   assert.equal(gapAllowance({alarm_enabled:false,passage:{max_gap_ms:0}}),0);
   assert.equal(holdPassage({alarm_enabled:true},{source_pts_ns:'1000000001'},
+    {passage_observation:{pts:'1000000000'}}),true);
+  assert.equal(holdPassage({alarm_enabled:true},{source_pts_ns:'2000000001'},
     {passage_observation:{pts:'1000000000'}}),false);
 });

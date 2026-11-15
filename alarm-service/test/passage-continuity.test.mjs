@@ -25,8 +25,15 @@ test('hard loss, ID/session changes, explicit input gap and gap over deadline ne
  assert.equal(replay([.2,.4,{x:.5,gap:true,ms:1500},{x:.8,ms:1600}]).events.length,0);
  assert.equal(replay([.2,.4,{x:.5,gap:true},.8],{passage:{kind:'zone',max_gap_ms:0}}).events.length,0);
  assert.equal(replay([.2,.4,{x:.5,predicted:true},{x:.8,ms:1400}]).events.length,0);
- // Alarm sources remain strict unless explicitly opted into the statistics contract.
+ // An alarm still needs a real observation inside the zone as its evidence: a passage whose
+ // only interior point is predicted is counted by statistics but never raised as an alarm.
  assert.equal(replay([.2,.4,{x:.5,predicted:true},.8],{alarm_enabled:true}).events.length,0);
+});
+test('an alarm passage at 5 fps survives one missed detection but not a pause over a second',()=>{
+ const at=(x,ms,extra={})=>({x,ms,...extra});
+ // Real 190 footage: a person walking through a busy corridor is missed for one 200 ms frame.
+ assert.equal(replay([at(.2,0),at(.4,200),at(.5,400,{predicted:true}),at(.6,600),at(.8,800),at(.9,1000)],{alarm_enabled:true}).events.length,1);
+ assert.equal(replay([at(.2,0),at(.4,200),at(.5,400,{predicted:true}),at(.6,1700),at(.8,1900),at(.9,2100)],{alarm_enabled:true}).events.length,0);
 });
 test('crossing at a hidden interval needs plausible observed endpoints and unique geometry',()=>{
  assert.equal(replay([.2,.4,.5,{x:.6,predicted:true},.8]).events.length,1);

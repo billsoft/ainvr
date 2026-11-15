@@ -49,8 +49,12 @@ it('UI edge identities compile into actual entry/passage gates without invented 
  expect(events[0]).toMatchObject({rule:{id:'selection',version:3},direction:{entry_edge:3,exit_edge:1}});
  expect(run(passage,[.8,.6,.4,.2])).toEqual([]);
  expect(run(passage,[.2,.4,.2])).toEqual([]);
- expect(run(passage,[.2,.4,.6,.8],(f,i)=>{if(i===2){f.tracks[0].observation='lost';f.tracks[0].predicted_bbox=f.tracks[0].bbox;}})).toEqual([]);
- expect(run(passage,[.2,.4,.6,.8],(f,i)=>{if(i===2)f.tracks[0].event_eligible=false;})).toEqual([]);
+ // One missed detection (200 ms) after a real observation inside is bridged, like counting does;
+ // a loss longer than the 1 s passage deadline never completes a passage.
+ expect(run(passage,[.2,.4,.6,.8],(f,i)=>{if(i===2){f.tracks[0].observation='lost';f.tracks[0].predicted_bbox=f.tracks[0].bbox;}})).toHaveLength(1);
+ expect(run(passage,[.2,.4,.45,.5,.55,.6,.65,.8],(f,i)=>{if(i>=2&&i<=6){f.tracks[0].observation='lost';f.tracks[0].predicted_bbox=f.tracks[0].bbox;}})).toEqual([]);
+ // A single non-eligible (low-confidence) observation is bridged like a missed one, as counting does.
+ expect(run(passage,[.2,.4,.6,.8],(f,i)=>{if(i===2)f.tracks[0].event_eligible=false;})).toHaveLength(1);
  expect(run(compile('region_approach',['left']),[.2,.295,.295])).toHaveLength(1);
  expect(run(compile('region_approach',['right']),[.2,.295])).toEqual([]);
  expect(run(compile('appearance'),[.2,.4,.4])).toHaveLength(1);

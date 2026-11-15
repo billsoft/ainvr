@@ -22,7 +22,10 @@ test('initial inside, lost track and session/gap do not invent traversal; one st
   const through=run([.2,.8]);assert.equal(through.length,1);
   assert.equal(through[0].analysis_evidence.traversal.interior_observed,false);assert.equal(through[0].direction.entry_side_deg,270);assert.equal(through[0].direction.exit_side_deg,90);
   for(const change of [(f,i)=>{if(i===1)f.gap=true;},(f,i)=>{if(i>=1)f.stream_session_id='new';}])assert.equal(run([.2,.8],change).length,0);
-  for(const change of [(f,i)=>{if(i===2)f.tracks=[];},(f,i)=>{if(i>=2)f.stream_session_id='new';},(f,i)=>{if(i===2)f.gap=true;}])assert.equal(run([.2,.4,.5,.8],change).length,0);
+  for(const change of [(f,i)=>{if(i===2)f.tracks=[];},(f,i)=>{if(i>=2)f.stream_session_id='new';}])assert.equal(run([.2,.4,.5,.8],change).length,0);
+  // An input gap is bridged like an occlusion within the passage deadline (1 s), never beyond it.
+  assert.equal(run([.2,.4,.5,.8],(f,i)=>{if(i===2)f.gap=true;}).length,1);
+  assert.equal(run([.2,.4,.5,.8],(f,i)=>{if(i>=2){f.source_pts_ns=String(BigInt(f.source_pts_ns)+600000000n);for(const t of f.tracks)t.last_observed_pts_ns=f.source_pts_ns;}if(i===2)f.gap=true;}).length,0);
 });
 test('boundary hysteresis does not emit repeated events; angles use original aspect ratio',()=>{
   assert.equal(run([.2,.299,.301,.299,.302,.4,.699,.701,.698,.8,.9]).length,1);

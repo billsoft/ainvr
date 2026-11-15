@@ -31,6 +31,8 @@ export function AlarmRow({alarm,trigger,channelName,onHandle,onOpen}:Props){
  const reviewFrame=shot?reviewThumbnail(alarm,shot.at):undefined
  const diagnostic=reviewDiagnostic(alarm.review)
  const time=new Date(alarm.occurred_at)
+ // Later occurrences of the same rule are folded into one alarm until it is handled.
+ const folded=(alarm.fold_count??0)>0&&alarm.last_occurred_at?new Date(alarm.last_occurred_at):null
  return <article aria-label={`${channelName} · ${alarmBusinessTitle(alarm,behaviorNames[alarm.behavior]??'告警')}`} className={`alarm-list-row grid grid-cols-[80px_minmax(0,1fr)] items-center gap-x-3 gap-y-2 border-b border-line px-3 py-3 last:border-b-0 [@container(min-width:56rem)]:grid-cols-[96px_minmax(0,1fr)_auto] ${done?'bg-surface-page/50':'bg-surface'}`}>
   <div className="relative w-20 shrink-0 [@container(min-width:56rem)]:w-24">
    {faceRecordId?<FaceAlarmPhoto compact recordId={faceRecordId} onOpen={()=>onOpen()}/>:kind!=='face_watchlist'&&shot?<EvidenceThumb compact eventId={shot.behavior_event_ids![0]!} reviewFrame={reviewFrame} label={alarmBusinessTitle(alarm,behaviorNames[shot.behavior]??'告警')} onOpen={()=>onOpen(shot.event_id)}/>:
@@ -50,6 +52,7 @@ export function AlarmRow({alarm,trigger,channelName,onHandle,onOpen}:Props){
    <p className="mt-1 break-words text-sm text-ink" title={faceText??described.sentence}>{faceText??described.sentence}</p>
    <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-subtle">
     <time dateTime={alarm.occurred_at} title={time.toLocaleString('zh-CN')} className="shrink-0 tabular-nums">{time.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}</time>
+    {folded&&<span aria-label="发生次数" title={`确认前同一规则又发生的记录已合并到这条告警，最近一次 ${folded.toLocaleString('zh-CN')}`} className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-800 tabular-nums">共 {1+(alarm.fold_count??0)} 次 · 最近 {folded.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}</span>}
     <span className="break-words" title={`${watchlist?'名单':'触发器'}「${alarm.rule.name}」`}>{watchlist?'名单':'触发器'}「{alarm.rule.name}」</span>
    </div>
    {spatial&&stages.length>1&&<p aria-label="阶段" className="mt-1 break-words text-xs text-ink-faint">经过：{stages.map(s=>behaviorNames[s.behavior]??s.behavior).join(' → ')}</p>}

@@ -2,7 +2,13 @@
 const ms=(a,b)=>Number(BigInt(a)-BigInt(b))/1e6;
 // Real observations kept to estimate how the target moved just before a pause.
 const MOTION_WINDOW_MS=1000,MOTION_POINTS=16;
-export function gapAllowance(rule){return rule.passage?.max_gap_ms??(rule.alarm_enabled===false?1000:0);}
+// One default deadline for alarm and statistics passages. A zero deadline made alarm
+// passages break on a single missed detection (one frame at 5 fps in a busy corridor),
+// so an alarm and a counter on the same zone disagreed on the same people (190 footage:
+// 14 vs 23). The sanity gates in restorePassage apply to both, and repeated alarms are
+// folded per rule until handled.
+export const DEFAULT_PASSAGE_GAP_MS=1000;
+export function gapAllowance(rule){return rule.passage?.max_gap_ms??DEFAULT_PASSAGE_GAP_MS;}
 export function holdPassage(rule,frame,state){
  // Predictions can retain identity, but cannot accrue post-crossing confirmation time.
  const pending=state.traversal?.line_pending;

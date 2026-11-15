@@ -66,3 +66,11 @@ it('passes the review frame captured at the shown stage, and no frame from anoth
  const second=render(<AlarmRow alarm={other} trigger={undefined} channelName="仓库" onHandle={vi.fn()} onOpen={vi.fn()}/>)
  expect(second.container.querySelector('[data-review-frame]')).toHaveAttribute('data-review-frame','')
 })
+it('shows how often a folded alarm happened and when it last did; a single occurrence shows nothing extra',()=>{
+ const {unmount}=render(<AlarmRow alarm={alarm} trigger={undefined} channelName="入口" onHandle={vi.fn()} onOpen={vi.fn()}/>)
+ expect(screen.queryByLabelText('发生次数')).not.toBeInTheDocument()
+ unmount()
+ render(<AlarmRow alarm={{...alarm,fold_count:4,last_occurred_at:'2026-11-13T00:07:09Z'}} trigger={undefined} channelName="入口" onHandle={vi.fn()} onOpen={vi.fn()}/>)
+ const count=screen.getByLabelText('发生次数')
+ expect(count).toHaveTextContent(/共 5 次 · 最近 \d{2}:07:09/)
+})

@@ -15,10 +15,22 @@ import {acknowledge, digest, fail, identity, validateRule} from './domain.mjs';
 
 // review.checkpoint (raw model responses kept for retry reuse) and the worker
 // lease token are internal; clients never receive them.
-const withoutInternal=d=>{if(!d)return null;const {_id,operations,...publicDoc}=d;
+const withoutInternal=d=>{if(!d)return null;const {_id,operations,fold_ids,...publicDoc}=d;
   if(publicDoc.review&&typeof publicDoc.review==='object'){const {checkpoint,token,rule_evidence,...review}=publicDoc.review;if(review.reference){const {token:lease,...reference}=review.reference;review.reference=reference;}publicDoc.review=review;}
   return publicDoc;};
 const pendingFilter=()=>({'handling.state':'unacknowledged','handling.disposition':{$ne:'false_positive'}});
+// One notification per rule at a time. While a rule's alarm is unhandled (by an
+// operator or the AI review), a later occurrence of the same rule on the same
+// channel by another target is folded into it: counted, its time kept, no new
+// alarm and no new review. Once handled, the rule alarms again at most once per
+// FOLD_INTERVAL_MS of frame time. Behavior facts, counting and dwell still record
+// every occurrence; only the notification is folded. Watchlist alarms (a face or
+// a plate) are per identity and keep their own delivery and dedupe. An edited rule
+// (new version) is a deliberate change: its first occurrence alarms afresh.
+export const FOLD_INTERVAL_MS=60000;
+const FOLD_IDS=256;
+const foldScope=event=>event.event_kind==='face_watchlist'||event.analysis_evidence?.vehicle||!event.rule?.id||!event.channel_id?null:
+  {channel_id:event.channel_id,'rule.id':event.rule.id,'rule.version':event.rule.version};
 const zoneFilter=zone_id=>({$or:[{'rule.snapshot.zone_id':zone_id},{'stages.zone_id':zone_id}]});
 const locationPairs=value=>{
   if(typeof value==='string'){
@@ -69,6 +81,8 @@ export class AlarmRepository {
     await this.events.createIndex({occurred_at:-1,alarm_id:-1});
     await this.events.createIndex({channel_id:1,occurred_at:-1,alarm_id:-1});
     await this.events.createIndex({event_kind:1,occurred_at:-1,alarm_id:-1});
+    await this.events.createIndex({channel_id:1,'rule.id':1,'rule.version':1,occurred_at:-1});
+    await this.events.createIndex({fold_ids:1},{sparse:true});
     await this.rules.createIndex({id:1},{unique:true});
     await this.checkpoints.createIndex({channel_id:1},{unique:true});
     await this.captureJobs.createIndex({state:1,next_at:1,created_at:1});
@@ -99,11 +113,30 @@ export class AlarmRepository {
   }
   async insert(event,{durable=false}={}) {
     if(await this.isCleared(event))return false;
+    if(await this.fold(event))return false;
     if(event.episode_id)return this.mergeEpisode(event);
     const document={...structuredClone(event),review:reviewFor(event),ingested_at:this.clock(),operations:[],logs:[{
       operation_id:`created:${event.alarm_id}`,alarm_id:event.alarm_id,action:'created',actor:'alarm-service',at:this.clock()}]};
     const result=await this.events.updateOne({alarm_id:event.alarm_id},{$setOnInsert:document},{upsert:true,...(durable?{writeConcern:{w:1,j:true},maxTimeMS:5000}:{})});
     return result.upsertedCount===1;
+  }
+  // True when the occurrence belongs to another alarm of its rule (folded now or
+  // before, so a replay counts once); false when it is, or starts, its own alarm.
+  async fold(event){
+    const scope=foldScope(event);if(!scope)return false;
+    const key=event.episode_id??event.alarm_id,at=event.occurred_at;
+    const known=await this.events.findOne({$or:[{alarm_id:key},{fold_ids:key}]},{projection:{alarm_id:1}});
+    if(known){
+      if(known.alarm_id===key)return false; // its own alarm: activity stages merge as before
+      await this.events.updateOne({alarm_id:known.alarm_id},{$max:{last_occurred_at:at}});
+      return true;
+    }
+    const update={$inc:{fold_count:1,version:1},$max:{last_occurred_at:at},$push:{fold_ids:{$each:[key],$slice:-FOLD_IDS}}};
+    const fresh={...scope,alarm_id:{$ne:key},fold_ids:{$ne:key}};
+    const open=await this.events.findOneAndUpdate({...fresh,...pendingFilter()},update,{sort:{occurred_at:-1}});
+    if(open)return true;
+    const since=new Date(Date.parse(at)-FOLD_INTERVAL_MS).toISOString();
+    return !!await this.events.findOneAndUpdate({...fresh,occurred_at:{$gte:since,$lte:at}},update,{sort:{occurred_at:-1}});
   }
   // An activity spans several triggers: it ends only when none of its rules remain.
   async reconcileActivities(snapshot){

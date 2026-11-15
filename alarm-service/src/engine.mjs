@@ -282,7 +282,10 @@ export function evaluate(checkpoint,input,rules) {
       }
       // Outside waiting is not part of a future passage. Retain its exact last
       // observation so a new crossing remains reviewable after a long wait.
-      if(sample&&!inside(g.points,p)&&!s.traversal?.entry)delete s.review_compact;
+      // Only a stable outside frame replaces it (remember() below records it); a frame
+      // within the boundary band is not remembered, so it must not discard the last
+      // stable one, or the passage loses its "进入前" keyframe and is never reviewed.
+      if(sample&&!inside(g.points,p)&&!s.traversal?.entry&&boundaryStable(g,f,p))delete s.review_compact;
     } else if(r.behavior==='region_enter') {
       const inRegion=inside(g.points,p),stable=boundaryStable(g,f,p)?(inRegion?'in':'out'):null;
       // A concave shortcut cannot prove continuous dwell or a new entry edge.

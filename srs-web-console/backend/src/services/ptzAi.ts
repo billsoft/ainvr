@@ -12,7 +12,8 @@ const ai = z.object({
     stream: z.object({ url: z.string().max(2048) }),
     publish: z.object({
       enabled: z.boolean(),
-      effective_target_url: z.string().max(2048).optional(),
+      // null when the analysed picture is not published (publish.enabled=false).
+      effective_target_url: z.string().max(2048).nullable().optional(),
       target_url: z.string().max(2048).nullable().optional(),
     }),
   }),

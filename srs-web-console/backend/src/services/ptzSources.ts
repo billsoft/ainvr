@@ -5,7 +5,7 @@ export interface AiSourceLink {
   id: string;
   config: {
     stream: { url: string };
-    publish: { enabled: boolean; effective_target_url?: string; target_url?: string | null };
+    publish: { enabled: boolean; effective_target_url?: string | null; target_url?: string | null };
   };
 }
 export function localRtmpStreamPath(url: string) {

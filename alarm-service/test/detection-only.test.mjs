@@ -34,7 +34,9 @@ test('detector observations cannot masquerade as tracked input',()=>{
  const f=frame(1);delete f.observation_mode;assert.throws(()=>evaluate(null,f,[rule()]));
 });
 
-test('durable detection-only alarms preserve independent review and replay idempotence',{skip:process.env.AINVR_ALARM_TEST_MONGO!=='1'},async()=>{
+// Two detections of one rule in one frame are two behavior facts but one alarm (one
+// review) until it is handled; see alarm-fold.test.mjs.
+test('durable detection-only alarms fold per rule, keep every fact and replay idempotently',{skip:process.env.AINVR_ALARM_TEST_MONGO!=='1'},async()=>{
  const {MongoClient}=await import('mongodb');
  const {randomUUID}=await import('node:crypto');
  const {AlarmRepository}=await import('../src/repository.mjs');
@@ -46,12 +48,13 @@ test('durable detection-only alarms preserve independent review and replay idemp
    const consumer=new ObservationConsumer(repo);
    const envelope={schema_version:'1.0',producer_id:'test',offset:'1',frame:frame(1,[.4,.7])};
    await consumer.consume(envelope);await consumer.consume(envelope);
-   assert.equal(await repo.events.countDocuments(),2);
-   const events=await repo.events.find({}).toArray();assert.notEqual(events[0].alarm_id,events[1].alarm_id);
-   await repo.events.updateOne({alarm_id:events[0].alarm_id},{$set:{'handling.state':'acknowledged','handling.disposition':'false_positive'}});
-   assert.equal((await repo.events.findOne({alarm_id:events[1].alarm_id})).handling.state,'unacknowledged');
+   assert.equal(await repo.behaviors.collection.countDocuments(),2);
+   assert.equal(await repo.events.countDocuments(),1);
+   const [alarm]=await repo.events.find({}).toArray();assert.equal(alarm.fold_count,1);
+   // Handled as a false positive: the next frame, seconds later, is still within the minute.
+   await repo.events.updateOne({alarm_id:alarm.alarm_id},{$set:{'handling.state':'acknowledged','handling.disposition':'false_positive'}});
    await consumer.consume({...envelope,offset:'2',frame:frame(2,[.4,.7])});
-   assert.equal(await repo.events.countDocuments(),2);
+   assert.equal(await repo.events.countDocuments(),1);
  }finally{await db.dropDatabase();await client.close();}
 });
 

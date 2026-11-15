@@ -24,6 +24,8 @@ export interface AlarmEvent {
  evidence?:{state?:string;refs?:{kind:string;record_id?:string;photo_ref?:string;frame_id?:string}[]}
  review_evidence?:RuleEvidence
  group_summary?:{count:number;mode:string;window_ms:number};version?:number;playback_stream_id?:string;
+ /** Later occurrences of the same rule folded into this alarm while it was unhandled or within its minute. */
+ fold_count?:number;last_occurred_at?:string
  alarm_id:string;event_kind?:string;occurred_at:string;last_seen_at:string;channel_id:string;behavior:string;input_stream_id?:string;trigger_id?:string;activity_started_at?:string
  analysis_evidence?:{face?:FaceAlarmFact;vehicle?:{text:string;reason:string;passage_event_id:string;support?:number};group?:{candidate_count?:number;mode:'simultaneous'|'completed_in_window';window_ms:number;minimum:number;labels:'all'|'any';members:{event_id:string;name?:string;sample:GroupSample;identity_sample?:GroupSample;transition?:GroupSample[];start?:GroupSample}[]};started_at?:string;source:{width:number;height:number};review_context?:{schema_version?:string;anchor?:string;approach_px?:number|null;region:{points:[number,number][]}|null;trace:{frame_id?:string;bbox:{x:number;y:number;w:number;h:number};event_eligible:boolean;observation:string;source_pts_ns:string}[]}}
  rule:{id:string;name:string;snapshot?:{points?:[number,number][];zone_name?:string}};severity:string;lifecycle:{state:string;end_reason?:string}
