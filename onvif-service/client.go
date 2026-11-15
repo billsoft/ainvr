@@ -131,7 +131,9 @@ func (c *Client) soap(ctx context.Context, endpoint, namespace, action, inner st
 	}
 	body := `<s:Envelope xmlns:s="` + soapNS + `" xmlns:tt="` + schemaNS + `"><s:Header>` + header + `</s:Header><s:Body><m:` + action + ` xmlns:m="` + namespace + `">` + inner + `</m:` + action + `></s:Body></s:Envelope>`
 	authorization := ""
-	for attempt := 0; attempt < 2; attempt++ {
+	// One Digest answer to the first challenge, plus at most one more when the
+	// camera reports the nonce stale (RFC 7616 3.3): bounded, no login loop.
+	for attempt := 0; attempt < 3; attempt++ {
 		req, e := http.NewRequestWithContext(ctx, "POST", endpoint, strings.NewReader(body))
 		if e != nil {
 			return nil, failure("invalid_device_address")
@@ -163,7 +165,7 @@ func (c *Client) soap(ctx context.Context, endpoint, namespace, action, inner st
 			return nil, failure("response_too_large")
 		}
 		if resp.StatusCode == 401 {
-			if attempt != 0 || anonymous {
+			if anonymous || attempt > 1 {
 				return nil, failure("authentication_failed")
 			}
 			var challenge *digest.Challenge
@@ -174,7 +176,9 @@ func (c *Client) soap(ctx context.Context, endpoint, namespace, action, inner st
 					break
 				}
 			}
-			if challenge == nil {
+			// After our Digest answer only a stale nonce is worth one retry;
+			// any other rejection means the credentials are wrong.
+			if challenge == nil || attempt == 1 && !challenge.Stale {
 				return nil, failure("authentication_failed")
 			}
 			// Core 5.9.1: do not send HTTP and WS-Security credentials together.
