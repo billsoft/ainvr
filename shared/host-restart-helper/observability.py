@@ -133,6 +133,10 @@ def run(args: list[str], timeout: float = 3, limit: int = 262144, merge_stderr=F
         p.stdout.close()
 
 
+# The media server lists only the first 10 streams unless a count is given.
+SRS_STREAMS_URL = 'http://127.0.0.1:1985/api/v1/streams/?start=0&count=1000'
+
+
 def http_json(url: str):
     with build_opener(ProxyHandler({})).open(url, timeout=1.5) as r:
         return json.loads(r.read(262144))
@@ -768,7 +772,7 @@ class Observer:
                     except Exception:
                         row['detail']='数据库连接指标不可用（权限或响应超时）'
                 try:
-                    streams=http_json('http://127.0.0.1:1985/api/v1/streams/').get('streams',[])
+                    streams=http_json(SRS_STREAMS_URL).get('streams',[])
                     row=next(s for s in services if s['id']=='srs')
                     row['connections']=sum(s.get('clients',0) for s in streams)
                     row['detail']=f'{len(streams)} 路视频流'

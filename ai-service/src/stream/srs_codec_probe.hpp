@@ -11,6 +11,9 @@
 
 namespace ai_service::stream {
 
+// The media server lists only the first 10 streams unless a count is given.
+inline constexpr char kSrsStreamsPath[] = "/api/v1/streams/?count=1000";
+
 // rtmp://host[:port]/app/stream[?q] → {host, app, stream};解析失败返回 nullopt
 struct RtmpTarget {
   std::string host;

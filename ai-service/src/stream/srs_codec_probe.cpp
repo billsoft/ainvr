@@ -24,7 +24,7 @@ std::optional<std::string> ReadSrsStreams(const std::string& base, int timeout_m
     httplib::Client cli(base);
     cli.set_connection_timeout(0, timeout_ms * 1000);
     cli.set_read_timeout(0, timeout_ms * 1000);
-    auto res = cli.Get("/api/v1/streams/?count=1000");
+    auto res = cli.Get(kSrsStreamsPath);
     if (res && res->status == 200) return res->body;
   } catch (...) {}
   return std::nullopt;

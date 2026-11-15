@@ -104,7 +104,7 @@ def selected(path, keys):
 def fetch_streams():
     started = time.monotonic()
     try:
-        with OPENER.open('http://127.0.0.1:1985/api/v1/streams/', timeout=.7) as r:
+        with OPENER.open('http://127.0.0.1:1985/api/v1/streams/?start=0&count=1000', timeout=.7) as r:
             body = json.loads(r.read(2 * 1024 * 1024))
         if body.get('code') != 0:
             raise ValueError('SRS API rejected query')

@@ -2,6 +2,7 @@
 #include "publisher.hpp"
 #include "au_spool.hpp"
 #include "flv_hevc_elements.hpp"
+#include "srs_codec_probe.hpp"
 
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
@@ -629,7 +630,7 @@ bool StreamPublisher::VerifySrsAcceptedStream() {
       httplib::Client cli(cfg_.srs_api_base);
       cli.set_connection_timeout(1, 0);
       cli.set_read_timeout(1, 0);
-      auto res = cli.Get("/api/v1/streams/");
+      auto res = cli.Get(kSrsStreamsPath);
       if (res && res->status == 200) {
         api_reachable = true;
         auto j = nlohmann::json::parse(res->body, nullptr, false);

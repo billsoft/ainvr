@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../../src/stream/publisher.hpp"
+#include "../../src/stream/srs_codec_probe.hpp"
 
 using ai_service::stream::PtsRebaser;
 
@@ -244,4 +245,13 @@ TEST(SourceRecoveryLatch, EachInterruptionGetsItsOwnRebuild) {
   EXPECT_TRUE(latch.Observe(false, true));
   latch.Observe(true, false);
   EXPECT_TRUE(latch.Observe(false, true));
+}
+
+// The media server lists only the first 10 streams unless a count is given. With
+// more channels the output stream sits beyond that page and publish verification
+// would declare every reconnect failed.
+TEST(SrsStreamsQuery, AsksForEveryStreamNotTheDefaultPage) {
+  const std::string path = ai_service::stream::kSrsStreamsPath;
+  EXPECT_EQ(path.rfind("/api/v1/streams/", 0), 0u);
+  EXPECT_NE(path.find("count=1000"), std::string::npos);
 }

@@ -70,6 +70,14 @@ class ObserverTest(unittest.TestCase):
         self.assertTrue(fetched['ok'])
         self.assertEqual(fetched['streams']['internal-id']['vhost'], 'host-id')
 
+    def test_fetch_requests_every_stream_not_the_default_page(self):
+        # The media server lists only the first 10 streams unless a count is given.
+        body = {'code': 0, 'streams': []}
+        with patch.object(observer.OPENER, 'open',
+                          return_value=io.BytesIO(json.dumps(body).encode())) as opened:
+            observer.fetch_streams()
+        self.assertIn('count=1000', opened.call_args[0][0])
+
     def test_normal_bytes_do_not_trigger(self):
         self.assertEqual(observer.triggers(sample(), sample(count=20)), [])
     def test_republish_and_disappearance(self):
