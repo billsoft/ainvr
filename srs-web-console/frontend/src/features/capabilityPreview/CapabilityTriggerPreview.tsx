@@ -24,13 +24,9 @@ const sceneNotes: Partial<Record<PreviewScene, string>> = {
   understaffed: '人数是画面中当前识别到的人数，被完全遮挡的人不会计入；断流或识别暂停不会当作无人。',
   fall: '根据人体关节点判断是否持续呈倒地姿态，无法区分跌倒和主动躺下；关节点看不清时不会告警。试用功能。',
 }
-export function CapabilitySceneLauncher({ sources, disabled, onCreate }: { sources: AlarmSource[]; disabled?: boolean; onCreate: (prefill: Partial<TriggerDefinitionInput>) => void }) {
-  const [open, setOpen] = useState(false)
-  return <>
-    <button type="button" className={secondary} disabled={disabled} onClick={() => setOpen(true)}><FlaskConical size={16} aria-hidden="true" />新建场景</button>
-    {open && <PreviewDialog mode="create" sources={sources} initial={createPreviewDraft('understaffed')} onClose={() => setOpen(false)} onKeep={() => {}} onCreate={prefill => { setOpen(false); onCreate(prefill) }} />}
-    {import.meta.env.DEV && <details className="text-xs text-ink-subtle"><summary className="flex min-h-11 cursor-pointer items-center">开发预览</summary><CapabilityTriggerPreview disabled={disabled} /></details>}
-  </>
+/** Scene setup opened from the new-rule chooser, already on the chosen situation. */
+export function CapabilitySceneDialog({ scene, title, sources, onClose, onCreate }: { scene: PreviewScene; title: string; sources: AlarmSource[]; onClose: () => void; onCreate: (prefill: Partial<TriggerDefinitionInput>) => void }) {
+  return <PreviewDialog mode="create" title={`新建告警规则 · ${title}`} sources={sources} initial={createPreviewDraft(scene)} onClose={onClose} onKeep={() => {}} onCreate={onCreate} />
 }
 
 /** Lives only for this page mount; intentionally has no API/storage dependency. */
@@ -44,14 +40,14 @@ export function CapabilityTriggerPreview({ disabled = false }: { disabled?: bool
     </button>
     {retained && <>
       <span role="status" className="text-xs text-amber-800">本次内存草稿 · 未启用</span>
-      <button type="button" className={secondary} disabled={disabled} onClick={() => discard.requestDiscard(true, '仅清除本次页面内存中的场景草稿，不影响任何真实触发器。', () => setRetained(null))}>清除草稿</button>
+      <button type="button" className={secondary} disabled={disabled} onClick={() => discard.requestDiscard(true, '仅清除本次页面内存中的场景草稿，不影响任何真实告警规则。', () => setRetained(null))}>清除草稿</button>
     </>}
     {open && <PreviewDialog initial={retained ?? createPreviewDraft()} onClose={() => setOpen(false)} onKeep={draft => { setRetained({ ...draft }); setOpen(false) }} />}
     {discard.dialog}
   </div>
 }
 
-function PreviewDialog({ initial, onClose, onKeep, mode = 'design', sources = [], onCreate }: { initial: PreviewDraft; onClose: () => void; onKeep: (draft: PreviewDraft) => void; mode?: 'design' | 'create'; sources?: AlarmSource[]; onCreate?: (prefill: Partial<TriggerDefinitionInput>) => void }) {
+function PreviewDialog({ initial, onClose, onKeep, mode = 'design', title: dialogTitle = '新建告警规则', sources = [], onCreate }: { initial: PreviewDraft; onClose: () => void; onKeep: (draft: PreviewDraft) => void; mode?: 'design' | 'create'; title?: string; sources?: AlarmSource[]; onCreate?: (prefill: Partial<TriggerDefinitionInput>) => void }) {
   const [draft, setDraft] = useState<PreviewDraft>(() => ({ ...initial }))
   const [simulation, setSimulation] = useState(initialSimulation)
   const [quality, setQuality] = useState<ObservationQuality>('valid')
@@ -63,7 +59,7 @@ function PreviewDialog({ initial, onClose, onKeep, mode = 'design', sources = []
   const baseline = useRef(JSON.stringify(initial))
   const discard = useDiscardConfirmation()
   const close = () => discard.requestDiscard(JSON.stringify(draft) !== baseline.current || sourceId !== '',
-    mode === 'create' ? '放弃本次场景设置？尚未保存触发器。' : '放弃本窗口尚未保留的修改？此前保留的内存草稿不受影响；模拟结果随窗口关闭清除。', onClose)
+    mode === 'create' ? '放弃本次场景设置？尚未保存告警规则。' : '放弃本窗口尚未保留的修改？此前保留的内存草稿不受影响；模拟结果随窗口关闭清除。', onClose)
   const closeRef = useRef(close)
   useEffect(() => { closeRef.current = close })
   useEffect(() => {
@@ -129,13 +125,13 @@ function PreviewDialog({ initial, onClose, onKeep, mode = 'design', sources = []
         className="alarm-workspace relative flex max-h-[calc(100dvh-1rem)] w-full max-w-[960px] flex-col rounded-panel bg-surface shadow-modal">
         <button type="button" aria-label="关闭" onClick={close} className="absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover"><X size={18} aria-hidden="true" /></button>
         <header className="border-b border-line px-4 py-4 pr-16 sm:px-6 sm:pr-16">
-          <h2 ref={heading} id={title} tabIndex={-1} className="text-base font-semibold outline-none">{mode === 'create' ? '新建场景' : '新建场景 · 设计预览'}</h2>
-          <p className="mt-1 text-sm text-ink-subtle">{mode === 'create' ? '选一个常用场景和识别通道，下一步确认条件后保存。' : '选择业务条件，预演预期行为；区域仍在原实时监看布防中绘制。'}</p>
+          <h2 ref={heading} id={title} tabIndex={-1} className="text-base font-semibold outline-none">{mode === 'create' ? dialogTitle : '新建场景 · 设计预览'}</h2>
+          <p className="mt-1 text-sm text-ink-subtle">{mode === 'create' ? '选好识别通道，设置持续时间，下一步确认后保存。' : '选择业务条件，预演预期行为；区域仍在原实时监看布防中绘制。'}</p>
         </header>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 sm:p-6">
           <section aria-label={mode === 'create' ? '场景启用步骤' : '设计预览边界'} className="rounded-base border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
             <strong>{mode === 'create' ? '保存后还需两步才会告警' : '设计预览 · 未接入真实规则 · 未启用'}</strong>
-            <p className="mt-1">{mode === 'create' ? '① 在实时监看的布防中把它绑定到热区；② 回到“告警 → 触发规则”启用。建议先观察一段时间再正式使用。' : '仅创建本次页面内存草稿；刷新或离开页面即丢失。不请求真实能力、不调用保存接口、不写入存储、不生成告警。'}</p>
+            <p className="mt-1">{mode === 'create' ? '① 在实时监看的布防中把它关联到整个画面或某个热区；② 回到“告警 → 告警规则”启用。建议先观察一段时间再正式使用。' : '仅创建本次页面内存草稿；刷新或离开页面即丢失。不请求真实能力、不调用保存接口、不写入存储、不生成告警。'}</p>
             {mode === 'design' && <p className="mt-1">阈值为起始建议，需现场验证；缺少实际标签或已验证能力时不能继续创建。</p>}
           </section>
           <p className="text-xs text-ink-subtle">{mode === 'create' ? '切换场景会重置下方条件。' : '切换模板会重置示例条件与模拟。'}</p>
@@ -197,7 +193,7 @@ function PreviewDialog({ initial, onClose, onKeep, mode = 'design', sources = []
           </section>}
         </div>
         <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-line p-4">
-          <p className="mr-auto text-xs text-ink-subtle">{mode === 'create' ? '下一步可继续修改，保存前不会生效。' : '内存草稿不进入真实触发器列表。'}</p>
+          <p className="mr-auto text-xs text-ink-subtle">{mode === 'create' ? '下一步可继续修改，保存前不会生效。' : '内存草稿不进入真实告警规则列表。'}</p>
           <button type="button" className={secondary} onClick={close}>取消</button>
           <button type="button" className="btn-primary !min-h-11 min-w-11" disabled={!!problem || (mode === 'create' && !selectedSource)} onClick={submit}>{mode === 'create' ? '下一步' : '保留本次草稿'}</button>
         </footer>

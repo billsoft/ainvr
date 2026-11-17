@@ -210,7 +210,7 @@ describe('RecordingTimeline 指针定位与时间气泡', () => {
   })
 })
 
-describe('RecordingTimeline —— 时间范围触发器/弹窗/预设（与识别历史页共用同一套组件）', () => {
+describe('RecordingTimeline —— 时间范围告警规则/弹窗/预设（与识别历史页共用同一套组件）', () => {
   it('触发按钮显示当前窗口范围，点击后打开时间范围弹窗', async () => {
     render(
       <ControlledTimeline

@@ -157,7 +157,7 @@ export class AlarmArmingStore {
       JOIN alarm_arming_sources s ON s.source_id=a.source_id
       WHERE a.trigger_id=d.trigger_id AND a.active=TRUE),'[]'::jsonb) AS usages
       FROM alarm_trigger_definitions d ORDER BY d.trigger_id LIMIT 1001`);
-    if(rows.rows.length>1000)fail('capacity','触发器数量超过上限');
+    if(rows.rows.length>1000)fail('capacity','告警规则数量超过上限');
     return rows.rows.map(r=>({...r.document,version:r.version,usages:r.usages}));
   }
   async readArming(sourceId:string,processorId?:string){
@@ -197,8 +197,8 @@ export class AlarmArmingStore {
     const definition=parseTriggerDefinition(input);
     return this.operation('definition',definition,expected,actor,key,async c=>{
       const old=(await c.query('SELECT document,version FROM alarm_trigger_definitions WHERE trigger_id=$1',[definition.trigger_id])).rows[0];
-      if((old?.version??0)!==expected)fail('version_conflict','触发器已变化，请重新读取');
-      if(old?.document.state==='archived')fail('archived_trigger','已归档触发器不能直接修改');
+      if((old?.version??0)!==expected)fail('version_conflict','告警规则已变化，请重新读取');
+      if(old?.document.state==='archived')fail('archived_trigger','已归档告警规则不能直接修改');
       const version=expected+1;
       await c.query('INSERT INTO alarm_trigger_definitions(trigger_id,version,document) VALUES($1,$2,$3) ON CONFLICT(trigger_id) DO UPDATE SET version=EXCLUDED.version,document=EXCLUDED.document,updated_at=now()',[definition.trigger_id,version,JSON.stringify(definition)]);
       await c.query('INSERT INTO alarm_trigger_definition_versions(trigger_id,version,document,actor) VALUES($1,$2,$3,$4)',[definition.trigger_id,version,JSON.stringify(definition),actor]);
@@ -417,9 +417,9 @@ export class AlarmArmingStore {
       for(const a of doc.assignments){
         if(processorId&&a.processor_id!==processorId)continue;
         const previous=(await c.query('SELECT source_id,trigger_id,execution_version,compiled_rule,active FROM alarm_trigger_assignments WHERE assignment_id=$1',[a.assignment_id])).rows[0];
-        if(previous&&(previous.source_id!==doc.source_id||previous.trigger_id!==a.trigger_id))fail('assignment_identity','选用编号不能迁移到其他来源或触发器');
+        if(previous&&(previous.source_id!==doc.source_id||previous.trigger_id!==a.trigger_id))fail('assignment_identity','选用编号不能迁移到其他来源或告警规则');
         const trigger=(await c.query('SELECT document,version FROM alarm_trigger_definitions WHERE trigger_id=$1',[a.trigger_id])).rows[0];
-        if(!trigger||trigger.document.state==='archived')fail('trigger_unavailable','触发器不存在或已归档');
+        if(!trigger||trigger.document.state==='archived')fail('trigger_unavailable','告警规则不存在或已归档');
         const source=await live(a.processor_id)??(previous?.active?frozenSource(a.processor_id,trigger.document,previous.compiled_rule):null);
         if(!source)fail('source_unavailable','来源暂不可用，请保留草稿');
         // Validate all assignments even when the definition is paused. Only the

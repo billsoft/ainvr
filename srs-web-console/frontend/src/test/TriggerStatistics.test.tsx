@@ -25,5 +25,5 @@ it('the alarm list filters spatial alarms by stage using the four trigger behavi
   render(<MemoryRouter><AlarmListPage/></MemoryRouter>)
   // Stages apply to spatial alarms only; other business kinds have no stage.
   const group=await screen.findByRole('group',{name:'空间阶段'})
-  expect([...group.querySelectorAll('button')].map(b=>b.textContent)).toEqual(['全部阶段','出现','接近','碰撞侵入','穿过'])
+  expect([...group.querySelectorAll('button')].map(b=>b.textContent)).toEqual(['全部阶段','出现','接近','进入区域','穿过'])
 })

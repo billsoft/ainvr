@@ -26,7 +26,7 @@ it('whole frame does not offer zone-dependent triggers',()=>{
 it('one compatible processor is selected and direction is stored by stable edge ID',()=>{
  const apply=vi.fn()
  render(<AssignmentEditor sourceId="cam" geometryRevision="g" zone={zone} definitions={[{...trigger,behavior:'region_traverse'}]} sources={[source]} onApply={apply}/> )
- fireEvent.change(screen.getByLabelText('触发器'),{target:{value:'t'}})
+ fireEvent.change(screen.getByLabelText('告警规则'),{target:{value:'t'}})
  fireEvent.click(screen.getByRole('button',{name:/进入边 1/}))
  fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
  expect(apply).toHaveBeenCalledWith(expect.objectContaining({triggerId:'t',processorId:'ai1',zoneId:'z',entryEdges:['e1'],needsDirectionConfirmation:false}),'labels')
@@ -34,7 +34,7 @@ it('one compatible processor is selected and direction is stored by stable edge 
 it('multiple processors require explicit selection; incompatible labels are excluded',()=>{
  const apply=vi.fn()
  render(<AssignmentEditor sourceId="cam" geometryRevision="g" zone={zone} definitions={[trigger]} sources={[source,{...source,channel_id:'ai2',channel_name:'检测2'},{...source,channel_id:'bad',channel_name:'不同标签',labels:[]}]} onApply={apply}/> )
- fireEvent.change(screen.getByLabelText('触发器'),{target:{value:'t'}})
+ fireEvent.change(screen.getByLabelText('告警规则'),{target:{value:'t'}})
  fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
  expect(screen.queryByRole('option',{name:'不同标签'})).not.toBeInTheDocument()
  fireEvent.change(screen.getByLabelText('AI 处理器'),{target:{value:'ai2'}})
@@ -63,7 +63,7 @@ it('state intrusion removes obsolete direction restrictions when explicitly appl
 it('multi-target conditions exclude processors that provide detections without tracking',()=>{
  const apply=vi.fn()
  render(<AssignmentEditor sourceId="cam" geometryRevision="g" zone={zone} definitions={[{...trigger,group:{labels:'any',minimum:3,window_ms:1000}}]} sources={[{...source,tracking_available:false,detection_available:true}]} onApply={apply}/> )
- fireEvent.change(screen.getByLabelText('触发器'),{target:{value:'t'}})
+ fireEvent.change(screen.getByLabelText('告警规则'),{target:{value:'t'}})
  expect(screen.queryByRole('option',{name:source.channel_name})).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))
  expect(apply).not.toHaveBeenCalled()

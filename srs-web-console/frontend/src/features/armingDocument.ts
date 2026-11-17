@@ -61,7 +61,7 @@ export function buildArmingRequest(snapshot:ArmingSnapshot,base:ArmingDocument|n
  if(base&&(base.source_id!==snapshot.sourceId||(!resetGeometry&&base.geometry_revision!==snapshot.geometryRevision)||base.revision!==snapshot.revision))throw Error('布防版本已变化，请重新读取')
  if(resetGeometry&&(!base||base.geometry_revision===snapshot.geometryRevision||snapshot.counterBindings.some(b=>base.counter_bindings?.some(old=>old.binding_id===b.id))||
   snapshot.zones.some(z=>base.zones.some(old=>old.zone_id===z.id))||
-  snapshot.assignments.some(a=>base.assignments.some(old=>old.assignment_id===a.id))))throw Error('规格变化后请重新绘制热区并重新选用触发器')
+  snapshot.assignments.some(a=>base.assignments.some(old=>old.assignment_id===a.id))))throw Error('规格变化后请重新绘制热区并重新选用告警规则')
  createArmingDraft(snapshot).changeSet()
  const zones:ArmingZoneDocument[]=snapshot.zones.map(z=>{
   const old=base?.zones.find(o=>o.zone_id===z.id)

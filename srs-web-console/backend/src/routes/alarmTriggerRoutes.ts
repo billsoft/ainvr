@@ -13,7 +13,7 @@ export async function alarmTriggerRoutes(app:FastifyInstance,options:Options){
   app.addHook('preHandler',async(req,reply)=>{
     if(!await options.principal(req))return reply.code(401).send({error:{code:'unauthorized',message:'需要登录'}});
     if(!options.store)return reply.code(503).send({error:{code:'configuration_unavailable',message:'参数库暂不可用'}});
-    if(options.readOnly&&req.method!=='GET')return reply.code(409).send({error:{code:'configuration_moved',message:'触发器管理已更新，请刷新页面使用新版布防。'}});
+    if(options.readOnly&&req.method!=='GET')return reply.code(409).send({error:{code:'configuration_moved',message:'告警规则管理已更新，请刷新页面使用新版布防。'}});
   });
   app.setErrorHandler((error,req,reply)=>{
     if(error instanceof AlarmConfigError)return reply.code(error.statusCode).send({error:{code:error.code,message:error.message}});
@@ -34,7 +34,7 @@ export async function alarmTriggerRoutes(app:FastifyInstance,options:Options){
     const body=req.body as {trigger?:{trigger_id?:unknown};expected_version?:unknown}|null;
     const key=req.headers['idempotency-key'];
     if(!body||Object.keys(body).some(k=>!['trigger','expected_version'].includes(k))||typeof body.expected_version!=='number'||!body.trigger||typeof body.trigger!=='object'||typeof key!=='string')
-      throw new AlarmConfigError('invalid_request','触发器参数或操作编号无效');
+      throw new AlarmConfigError('invalid_request','告警规则参数或操作编号无效');
     const actor=await options.principal(req);if(!actor)throw new AlarmConfigError('unauthorized','需要登录',401);
     return apply(await options.store!.save(body.trigger,body.expected_version,actor,key,options.catalog));
   });

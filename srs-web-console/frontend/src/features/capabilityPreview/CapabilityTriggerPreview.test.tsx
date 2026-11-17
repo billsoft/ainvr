@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { CapabilitySceneLauncher, CapabilityTriggerPreview } from './CapabilityTriggerPreview'
+import { CapabilitySceneDialog, CapabilityTriggerPreview } from './CapabilityTriggerPreview'
 import { createPreviewDraft, draftError, initialSimulation, previewSummary, simulateObservation, type SimulatedObservation } from './triggerPreviewModel'
 import TriggerDefinitionsPage from '@/pages/AlarmCenter/TriggerDefinitionsPage'
 import { alarmDefinitionService } from '@/api/alarmDefinitionService'
@@ -90,8 +90,7 @@ describe('design-only business semantics', () => {
 describe('integrated modal and memory-only draft', () => {
   it('helmet-head alone cannot create a PPE candidate or claim head is no_helmet', () => {
     const create = vi.fn()
-    render(<CapabilitySceneLauncher sources={[{ channel_id: 'helmet-head', channel_name: '安全帽与头部检测', input_stream_id: 'camera', input_name: '门口', tracking_available: true, detection_available: true, label_map_version: 'lm', geometry_revision: 'g', target_model: { name: 'helmet-head', adapter: 'yolo26_bpu', mode: 'fixed' }, labels: [{ class_id: 0, label_id: 'helmet', name: 'helmet', description: '' }, { class_id: 1, label_id: 'head', name: 'head', description: '' }], region_capabilities: [] }]} onCreate={create} />)
-    fireEvent.click(screen.getByRole('button', { name: '新建场景' }))
+    render(<CapabilitySceneDialog scene="understaffed" title="区域人数" sources={[{ channel_id: 'helmet-head', channel_name: '安全帽与头部检测', input_stream_id: 'camera', input_name: '门口', tracking_available: true, detection_available: true, label_map_version: 'lm', geometry_revision: 'g', target_model: { name: 'helmet-head', adapter: 'yolo26_bpu', mode: 'fixed' }, labels: [{ class_id: 0, label_id: 'helmet', name: 'helmet', description: '' }, { class_id: 1, label_id: 'head', name: 'head', description: '' }], region_capabilities: [] }]} onClose={vi.fn()} onCreate={create} />)
     fireEvent.click(screen.getByRole('button', { name: /^安全帽/ }))
     expect(screen.queryByRole('option', { name: '安全帽与头部检测' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '下一步' })).toBeDisabled()
@@ -100,8 +99,7 @@ describe('integrated modal and memory-only draft', () => {
   })
   it('offers real suspected-down candidates separately from developer-only pose observations', () => {
     const create = vi.fn()
-    render(<CapabilitySceneLauncher sources={[{ channel_id: 'pose', channel_name: '姿态通道', input_stream_id: 'camera', input_name: '门口', tracking_available: false, detection_available: true, label_map_version: 'lm', geometry_revision: 'g', target_model: { name: 'pose17', adapter: 'yolo26_pose_bpu', mode: 'fixed' }, labels: [{ class_id: 0, label_id: 'p', name: 'person', description: '' }], region_capabilities: [{ event_kind: 'suspected_down', ready: true, label_ids: ['p'] }] }]} onCreate={create} />)
-    fireEvent.click(screen.getByRole('button', { name: '新建场景' }))
+    render(<CapabilitySceneDialog scene="understaffed" title="区域人数" sources={[{ channel_id: 'pose', channel_name: '姿态通道', input_stream_id: 'camera', input_name: '门口', tracking_available: false, detection_available: true, label_map_version: 'lm', geometry_revision: 'g', target_model: { name: 'pose17', adapter: 'yolo26_pose_bpu', mode: 'fixed' }, labels: [{ class_id: 0, label_id: 'p', name: 'person', description: '' }], region_capabilities: [{ event_kind: 'suspected_down', ready: true, label_ids: ['p'] }] }]} onClose={vi.fn()} onCreate={create} />)
     expect(screen.queryByRole('button', { name: /^姿态试验/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^疑似倒地/ }))
     fireEvent.change(screen.getByRole('combobox', { name: '识别通道' }), { target: { value: 'pose' } })
@@ -114,29 +112,29 @@ describe('integrated modal and memory-only draft', () => {
       target_model: { name: 'yolo26x', adapter: 'yolo26_bpu', mode: 'fixed' }, labels: [{ class_id: 0, label_id: 'class:0', name: 'person', description: '' }] })
     vi.mocked(alarmDefinitionService.save).mockImplementationOnce(async input => ({ saved: true, trigger: { ...input, version: 1, usages: [] }, application: { state: 'pending' } }))
     render(<MemoryRouter><TriggerDefinitionsPage /></MemoryRouter>)
-    await screen.findByText(/还没有符合筛选的触发器/)
-    fireEvent.click(screen.getByRole('button', { name: '新建场景' }))
+    await screen.findByText(/还没有符合筛选的告警规则/)
+    fireEvent.click(screen.getByRole('button', { name: '新建告警规则' }))
+    fireEvent.click(screen.getByRole('button', { name: /区域人数不够/ }))
     await screen.findByRole('option', { name: '大厅人员检测' })
     expect(screen.queryByRole('region', { name: '观测模拟' })).not.toBeInTheDocument()
     changeField('识别通道', 'processor')
     fireEvent.click(screen.getByRole('button', { name: '下一步' }))
-    expect(screen.getByRole('dialog', { name: '新建触发器' })).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: '新建告警规则' })).toBeInTheDocument()
     expect(alarmDefinitionService.save).not.toHaveBeenCalled()
     expect(screen.getByRole('combobox', { name: '人数条件' })).toHaveValue('count_below')
     changeField('人数条件', 'count_at_least'); changeField('人数阈值（人）', '3'); changeField('持续多久后告警（秒）', '2')
     fireEvent.click(screen.getByRole('button', { name: '下一步' }))
     expect(screen.getByText(/先保存为草稿，不会立即告警/)).toBeInTheDocument()
-    expect(screen.queryByLabelText('此触发器使用 AI 审核')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('此告警规则使用 AI 审核')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
     expect(alarmDefinitionService.save).toHaveBeenCalledOnce()
     expect(vi.mocked(alarmDefinitionService.save).mock.calls[0]?.[0]).toMatchObject({ state: 'draft', behavior: 'appearance', duration_ms: 0, labels: [{ label_id: 'class:0', name: 'person' }],
       region_state: { operator: 'count_at_least', threshold: 3, duration_ms: 2000, recovery_ms: 5000, event_kind: 'region_count' }, review: { enabled: false } })
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建触发器' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建告警规则' })).not.toBeInTheDocument())
   })
   it('missing real capabilities cannot create a saved scene or fake target labels', () => {
     const create = vi.fn()
-    render(<CapabilitySceneLauncher sources={[]} onCreate={create} />)
-    fireEvent.click(screen.getByRole('button', { name: '新建场景' }))
+    render(<CapabilitySceneDialog scene="understaffed" title="区域人数" sources={[]} onClose={vi.fn()} onCreate={create} />)
     expect(screen.getByRole('button', { name: '下一步' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: /^疑似倒地/ }))
     expect(screen.getByRole('button', { name: '下一步' })).toBeDisabled()
@@ -144,13 +142,13 @@ describe('integrated modal and memory-only draft', () => {
   })
   it('opens directly on the existing trigger page and preserves the original creation action', async () => {
     render(<MemoryRouter><TriggerDefinitionsPage /></MemoryRouter>)
-    await screen.findByText(/还没有符合筛选的触发器/)
+    await screen.findByText(/还没有符合筛选的告警规则/)
     const reads = vi.mocked(alarmDefinitionService.list).mock.calls.length
     const channels = vi.mocked(aiChannelService.list).mock.calls.length
     fireEvent.click(screen.getByText('开发预览'))
     openPreview()
     expect(screen.getByRole('dialog', { name: '新建场景 · 设计预览' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '新建触发器' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '新建告警规则' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '保留本次草稿' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.getByText('本次内存草稿 · 未启用')).toBeInTheDocument()

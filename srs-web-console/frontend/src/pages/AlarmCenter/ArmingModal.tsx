@@ -3,7 +3,7 @@ import {ZoneHandles} from './ZoneHandles'
 import {ZoneDrawing} from './ZoneDrawing'
 import {zoneGeometryError,type ZonePoint} from '@/features/alarmGeometry'
 import {ApproachBand} from './ApproachBand'
-import {SquarePlus,Trash2,RectangleHorizontal,Pentagon,MousePointerClick,Globe,Undo2,Redo2,Save,X,ArrowLeft,RefreshCw} from 'lucide-react'
+import {SquarePlus,Maximize,Trash2,RectangleHorizontal,Pentagon,MousePointerClick,Globe,Undo2,Redo2,Save,X,ArrowLeft,RefreshCw} from 'lucide-react'
 import {ToolButton,ToolSelect,ToolDivider} from './ToolButton'
 import {ArmingMarkers,ArmingSelection} from './ArmingMarkers'
 import type {MarkerTarget} from '@/features/armingMarkerLayout'
@@ -64,7 +64,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
  const [session]=useState(()=>createArmingSaveSession(send,newAlarmOperationId))
  const [,refresh]=useState(0),[editZone,setEditZone]=useState<string|null>(null)
  const [select,setSelect]=useState<{zoneId:string|null;initial?:DraftAssignment}|null>(null)
- const [activeZone,setActiveZone]=useState<string|null>(null),[removeZone,setRemoveZone]=useState<string|null>(null)
+ const [activeZone,setActiveZone]=useState<string|null>(()=>draft.read().zones.length?null:FRAME),[removeZone,setRemoveZone]=useState<string|null>(null)
  const [approach,setApproach]=useState<{id:string;value:number}|null>(null),[approachEdit,setApproachEdit]=useState<{id:string;value:number;revision:number}>()
  const [highlight,setHighlight]=useState<{entry:string[];exit:string[]}>({entry:[],exit:[]})
  const [error,setError]=useState(''),[busy,setBusy]=useState(false),[discard,setDiscard]=useState(false)
@@ -131,7 +131,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
  }
  const editing=editZone?current.zones.find(z=>z.id===editZone):undefined
  const selectedZone=select?.zoneId?current.zones.find(z=>z.id===select.zoneId):null
- const triggerName=(id:string)=>definitions.find(t=>t.trigger_id===id)?.name??'触发器'
+ const triggerName=(id:string)=>definitions.find(t=>t.trigger_id===id)?.name??'告警规则'
  const processorName=(id:string)=>sources.find(s=>s.channel_id===id)?.channel_name??'AI 处理器'
  const zoneName=(id:string|null)=>current.zones.find(z=>z.id===id)?.name??'整个画面'
  const counterOf=(id:string)=>counters.find(c=>c.counter_id===id)
@@ -163,7 +163,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
  const newZoneName=()=>{let n=current.zones.length+1;while(current.zones.some(z=>z.name===`热区 ${n}`))n++;return `热区 ${n}`}
  const title=<h2 className="hidden lg:block max-w-[12rem] shrink-0 truncate text-base font-semibold text-ink" title={`布防 · ${sourceName}`}>布防 · {sourceName}</h2>
  const selectedTarget=targets.find(t=>t.id===activeZone)
- const hint=drawing?(drawing==='rectangle'?'拖出矩形，松手后即可改名和关联。':'逐点绘制多边形，点“完成绘制”后即可关联。'):counting?(pick?'在画面上点热区的边设置计数线，箭头为“进”的方向。':'先在右侧选用计数器，再在画面上设置计数线。'):select?'直接编辑设置；返回或切换对象会保留有效修改，最后统一保存布防。':activeZone?'直接拖动选中热区；右侧修改名称和关联；所有修改统一保存。':'点画面中的热区或它的标记选中；所有修改在“保存布防”后统一生效。'
+ const hint=drawing?(drawing==='rectangle'?'拖出矩形，松手后即可改名和关联。':'逐点绘制多边形，点“完成绘制”后即可关联。'):counting?(pick?'在画面上点热区的边设置计数线，箭头为“进”的方向。':'先在右侧选用计数器，再在画面上设置计数线。'):select?'直接编辑设置；返回或切换对象会保留有效修改，最后统一保存布防。':activeZone?'直接拖动选中热区；右侧修改名称和关联；所有修改统一保存。':'点画面中的热区或它的标记选中；不画热区可点“整个画面”直接关联告警规则。所有修改在“保存布防”后统一生效。'
  return createPortal(<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-2 sm:p-4">
   <div role="dialog" aria-modal="true" aria-label={`布防 · ${sourceName}`} tabIndex={-1} ref={dialog} className="alarm-workspace relative flex h-full w-full flex-col overflow-hidden rounded-panel bg-surface shadow-modal outline-none" onKeyDown={e=>{
    if(e.key==='Escape'){
@@ -186,6 +186,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
      <ToolDivider/>
      <ToolButton icon={<SquarePlus size={20} aria-hidden="true"/>} label="新增热区" disabled={locked||!frameReady||!!drawing} onClick={()=>startDrawing('rectangle')}/>
      {drawing&&<><ToolButton icon={<RectangleHorizontal size={20}/>} label="矩形" pressed={drawing==='rectangle'} onClick={()=>{setDrawing('rectangle');setDrawingPoints([])}}/><ToolButton icon={<Pentagon size={20}/>} label="多边形" pressed={drawing==='polygon'} onClick={()=>{setDrawing('polygon');setDrawingPoints([])}}/>{drawing==='polygon'&&<button type="button" className="btn-primary shrink-0" onClick={()=>finishDrawing(drawingPoints)}>完成绘制</button>}<button type="button" className="btn-secondary shrink-0" onClick={cancelDrawing}>取消绘制</button></>}
+     <ToolButton icon={<Maximize size={20} aria-hidden="true"/>} label="整个画面" pressed={activeZone===FRAME} disabled={locked||!!drawing} onClick={()=>chooseTarget(FRAME)}/>
      <ToolButton icon={<Trash2 size={20}/>} label="删除热区" name="删除所选热区" disabled={locked||!!drawing||!activeZone||activeZone===FRAME} onClick={()=>{if(leaveEditor())setRemoveZone(activeZone)}}/>
      <ToolSelect icon={<MousePointerClick size={20} aria-hidden="true"/>} label={activeZone===FRAME?'整个画面':current.zones.find(z=>z.id===activeZone)?.name??'选择热区'} name="选择热区" disabled={locked||!!drawing} value={activeZone??''} onChange={v=>chooseTarget(v||null)}>
       <option value="">不选中</option><option value={FRAME}>整个画面</option>{current.zones.map(z=><option key={z.id} value={z.id}>{z.name}</option>)}
@@ -235,7 +236,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
     {(busyPanel||selectedTarget)&&<aside aria-label="编辑窗" className="flex w-[340px] max-w-[38%] shrink-0 flex-col gap-3 overflow-hidden border-l border-line p-4 portrait:max-h-[46%] portrait:w-full portrait:max-w-none portrait:border-l-0 portrait:border-t [&>div>fieldset>section]:rounded-none [&>div>fieldset>section]:border-0 [&>div>fieldset>section]:p-0">
      <div className="flex items-center justify-between gap-2 border-b border-line pb-2">
       <button type="button" className="btn-secondary min-h-11" disabled={locked} onClick={()=>{if(leaveEditor()&&!busyPanel)setActiveZone(null)}}><ArrowLeft size={16} aria-hidden="true"/>{busyPanel?'返回关联':'收起面板'}</button>
-      <button type="button" className="btn-secondary min-h-11" aria-label="刷新触发器和计数器库" disabled={refreshing||locked} onClick={()=>void refreshLibraries()}><RefreshCw size={16} aria-hidden="true"/>{refreshing?'读取中':'刷新库'}</button>
+      <button type="button" className="btn-secondary min-h-11" aria-label="刷新告警规则和计数器库" disabled={refreshing||locked} onClick={()=>void refreshLibraries()}><RefreshCw size={16} aria-hidden="true"/>{refreshing?'读取中':'刷新库'}</button>
      </div>
      <div data-scroll-region className="min-h-0 flex-1 space-y-3 overflow-y-auto">
      {!busyPanel&&selectedTarget&&!selectedTarget.frame&&<div className="space-y-2"><label className="block text-xs font-medium text-ink-subtle" htmlFor="arming-zone-name">热区名称</label><input id="arming-zone-name" aria-label="热区名称" maxLength={128} className="form-input w-full" disabled={locked} value={nameDraft?.id===selectedTarget.id?nameDraft.value:selectedTarget.name} onChange={e=>setNameDraft({id:selectedTarget.id,value:e.target.value})} onBlur={flushName}/><p className="text-xs text-ink-faint">拖内部平移；矩形拖旋转柄旋转、角点等比缩放、边中点调整宽高。</p>{selectedTarget.noCounting&&<button className="btn-secondary" type="button" disabled={locked} onClick={()=>{if(leaveEditor())setEditZone(selectedTarget.id)}}>360° 视角调整</button>}</div>}
@@ -281,14 +282,14 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
      <p className="text-sm text-ink-subtle">以下选用将一并解除；保存布防后生效，历史记录保留。</p>
      <ul className="list-disc pl-5 text-sm">{current.assignments.filter(a=>a.zoneId===removeZone).map(a=><li key={a.id}>{triggerName(a.triggerId)} · {processorName(a.processorId)}</li>)}
       {current.counterBindings.filter(b=>b.zoneId===removeZone).map(b=><li key={b.id}>计数：{counterOf(b.counterId)?.name??'计数器'}（停止这里的计数，已有统计保留）</li>)}</ul>
-     {!current.assignments.some(a=>a.zoneId===removeZone)&&!current.counterBindings.some(b=>b.zoneId===removeZone)&&<p className="text-sm">此热区尚未选用触发器或计数器。</p>}
+     {!current.assignments.some(a=>a.zoneId===removeZone)&&!current.counterBindings.some(b=>b.zoneId===removeZone)&&<p className="text-sm">此热区尚未选用告警规则或计数器。</p>}
      <div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setRemoveZone(null)}>保留热区</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={()=>{draft.removeZone(removeZone);setRemoveZone(null);setActiveZone(null);changed()}}>确认移除热区</button></div>
     </section>
    </div>}
    {discard&&<div className="absolute inset-0 z-10 flex items-center justify-center rounded-panel bg-black/30 p-4">
     <section ref={confirmation} tabIndex={-1} role="alertdialog" aria-label="放弃布防修改" className="w-full max-w-md space-y-3 rounded-panel bg-surface p-5 shadow-modal outline-none">
      <header className="flex items-center justify-between gap-2"><h3 className="text-base font-semibold">放弃本次布防的修改？</h3><button type="button" aria-label="关闭" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover" onClick={()=>setDiscard(false)}><X size={20} aria-hidden="true"/></button></header>
-     <p className="text-sm text-ink-subtle">未保存的热区、触发器和计数器选用都会丢弃，已保存的配置不变。</p>
+     <p className="text-sm text-ink-subtle">未保存的热区、告警规则和计数器选用都会丢弃，已保存的配置不变。</p>
      <div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setDiscard(false)}>继续编辑</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={onClose}>放弃布防修改</button></div>
     </section>
    </div>}

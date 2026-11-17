@@ -94,7 +94,7 @@ export function createArmingDraft(input:ArmingSnapshotInput){
     for(const a of s.assignments){
       if(!a.id||assignmentIds.has(a.id))throw Error('选用编号重复')
       assignmentIds.add(a.id)
-      if(!a.triggerId||!a.processorId)throw Error('请选择触发器和 AI 处理器')
+      if(!a.triggerId||!a.processorId)throw Error('请选择告警规则和 AI 处理器')
       const binding=JSON.stringify([a.triggerId,a.processorId,a.zoneId])
       if(bindings.has(binding))throw Error('同一范围不能重复选用')
       bindings.add(binding)

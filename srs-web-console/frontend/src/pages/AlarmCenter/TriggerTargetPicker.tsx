@@ -35,7 +35,7 @@ export function TriggerTargetPicker({value,legacyLabels,sources,onChange}:Props)
  return <div className="space-y-4">
   <label className="block text-sm font-medium">识别模型
    <select aria-label="识别模型" className="form-input mt-1.5" value={selected??''} onChange={e=>requestModel(e.target.value as AiModelPresetKey)}>
-    {!selected&&<option value="" disabled>{value.target_model?`原模型：${value.target_model.name}`:'保留原有标签（旧触发器）'}</option>}
+    {!selected&&<option value="" disabled>{value.target_model?`原模型：${value.target_model.name}`:'保留原有标签（旧告警规则）'}</option>}
     {SELECTABLE_AI_MODEL_PRESET_KEYS.map(k=><option key={k} value={k}>{AI_MODEL_PRESETS[k].displayName}</option>)}
    </select>
   </label>

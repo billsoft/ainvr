@@ -27,7 +27,7 @@ function check(trigger:z.infer<typeof schema>){
   if(zoned&&trigger.duration_ms!==0)throw invalid('只有出现使用持续时间');
   for(const b of trigger.bindings){
     if(!zoned&&(b.zone_id!==null||b.zone_version!==null||b.direction.entry_edges.length||b.direction.exit_edges.length))throw invalid('出现按全画面判断，不使用热区和方向');
-    if(zoned&&(b.zone_id===null||b.zone_version===null))throw new AlarmConfigError('zone_required','接近、碰撞侵入和穿过需要为每个通道选择热区');
+    if(zoned&&(b.zone_id===null||b.zone_version===null))throw new AlarmConfigError('zone_required','接近、进入区域和穿过需要为每个通道选择热区');
     if((trigger.behavior==='region_approach')!==(b.approach_px!==undefined))throw invalid('接近范围只用于接近，且必须设置');
     const {entry_edges:entry,exit_edges:exit}=b.direction;
     if(new Set(entry).size!==entry.length||new Set(exit).size!==exit.length||entry.some(e=>exit.includes(e))||(trigger.behavior!=='region_traverse'&&exit.length))
@@ -38,12 +38,12 @@ export class AlarmTriggerStore {
   constructor(private pool:Pool){}
   async list(){
     const result=await this.pool.query('SELECT document,version FROM alarm_triggers ORDER BY trigger_id LIMIT 1001');
-    if(result.rows.length>1000)throw new AlarmConfigError('trigger_capacity','触发器数量超过上限',503);
+    if(result.rows.length>1000)throw new AlarmConfigError('trigger_capacity','告警规则数量超过上限',503);
     return result.rows.map(r=>({...r.document,version:r.version}));
   }
   async save(input:unknown,expected:number,actor:string,key:string,lookup:Lookup){
     const parsed=schema.safeParse(input);
-    if(!parsed.success)throw invalid('触发器参数无效');
+    if(!parsed.success)throw invalid('告警规则参数无效');
     const trigger=parsed.data;check(trigger);
     if(!Number.isInteger(expected)||expected<0||expected>=2147483647||!id.safeParse(actor).success||!id.safeParse(key).success)throw new AlarmConfigError('invalid_operation','版本或操作编号无效');
     const catalogs=await Promise.all(trigger.bindings.map(b=>lookup(b.channel_id).catch(()=>null)));
@@ -81,7 +81,7 @@ export class AlarmTriggerStore {
       }
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`alarm-trigger:${trigger.trigger_id}`]);
       const current=await client.query('SELECT version FROM alarm_triggers WHERE trigger_id=$1 FOR UPDATE',[trigger.trigger_id]);
-      if((current.rows[0]?.version??0)!==expected)throw new AlarmConfigError('version_conflict','触发器已修改，请重新载入',409);
+      if((current.rows[0]?.version??0)!==expected)throw new AlarmConfigError('version_conflict','告警规则已修改，请重新载入',409);
       const document={...trigger,bindings},version=expected+1;
       await this.write(client,trigger.trigger_id,version,document,actor);
       const response={trigger:{...document,version},saved:true,application:{state:'pending',desired_revision:await this.bump(client)}};
@@ -106,9 +106,9 @@ export class AlarmTriggerStore {
       }
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`alarm-trigger:${triggerId}`]);
       const current=(await client.query('SELECT document,version FROM alarm_triggers WHERE trigger_id=$1 FOR UPDATE',[triggerId])).rows[0];
-      if(!current)throw new AlarmConfigError('not_found','触发器不存在',404);
-      if(current.version!==expected)throw new AlarmConfigError('version_conflict','触发器已修改，请重新载入',409);
-      if(current.document.state==='archived'&&state!=='archived')throw new AlarmConfigError('archived_trigger','已归档的触发器需要重新编辑确认',409);
+      if(!current)throw new AlarmConfigError('not_found','告警规则不存在',404);
+      if(current.version!==expected)throw new AlarmConfigError('version_conflict','告警规则已修改，请重新载入',409);
+      if(current.document.state==='archived'&&state!=='archived')throw new AlarmConfigError('archived_trigger','已归档的告警规则需要重新编辑确认',409);
       const document={...current.document,state},version=expected+1;
       await this.write(client,triggerId,version,document,actor);
       const response={trigger:{...document,version},saved:true,application:{state:'pending',desired_revision:await this.bump(client)}};
@@ -131,7 +131,7 @@ export class AlarmTriggerStore {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const revision=await client.query('SELECT revision::text FROM alarm_configuration_revision WHERE singleton=TRUE');
       const rows=await client.query("SELECT document,version FROM alarm_triggers WHERE document->>'state'='enabled' ORDER BY trigger_id LIMIT 1001");
-      if(rows.rows.length>1000)throw new AlarmConfigError('trigger_capacity','触发器数量超过上限',503);
+      if(rows.rows.length>1000)throw new AlarmConfigError('trigger_capacity','告警规则数量超过上限',503);
       const rules=rows.rows.flatMap(({document:t,version})=>t.bindings.map((b:Record<string,any>)=>({
         id:`${t.trigger_id}@${b.channel_id}`,trigger_id:t.trigger_id,version,name:t.name,channel_id:b.channel_id,input_stream_id:b.input_stream_id,state:'enabled',
         labels:t.labels.map((l:{label_id:string;name?:string})=>({label_id:l.label_id,name:l.name})),...(t.group?{group:t.group}:{}),

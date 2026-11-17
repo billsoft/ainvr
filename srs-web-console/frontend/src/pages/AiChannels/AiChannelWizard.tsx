@@ -726,7 +726,7 @@ export function AiChannelWizard({
         <div className="relative w-full max-w-md rounded-panel bg-surface p-6 shadow-modal">
           <button type="button" aria-label="关闭" className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center" onClick={()=>setPendingTrackingChange(null)}><X size={18}/></button>
           <h3 className="pr-8 text-lg font-semibold">关闭目标跟踪？</h3>
-          <p className="mt-3 text-sm leading-6 text-ink-subtle">此次变更会关闭目标跟踪。已有计数器和触发器关联及历史保留；计数、跨边界侵入、穿过和持续停留暂停。持续时间为 0 的出现（含区内检出）与接近带检出仍可用。确认后只修改当前草稿，保存后生效。</p>
+          <p className="mt-3 text-sm leading-6 text-ink-subtle">此次变更会关闭目标跟踪。已有计数器和告警规则关联及历史保留；计数、跨边界侵入、穿过和持续停留暂停。持续时间为 0 的出现（含区内检出）与接近带检出仍可用。确认后只修改当前草稿，保存后生效。</p>
           <div className="mt-5 flex justify-end gap-2"><button type="button" className="btn-secondary min-h-11" autoFocus onClick={()=>setPendingTrackingChange(null)}>取消变更</button><button type="button" className="btn-primary min-h-11" onClick={()=>{setValue(pendingTrackingChange);setPendingTrackingChange(null)}}>关闭跟踪并继续</button></div>
         </div>
       </div>}

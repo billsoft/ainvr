@@ -25,7 +25,7 @@ describe('布防事务草稿',()=>{
     draft.redo();expect(draft.read().assignments).toEqual([])
     expect(draft.changeSet()).toMatchObject({expectedRevision:7,removedZoneIds:['zone-a'],removedAssignmentIds:['assignment-a']})
   })
-  it('同一触发器和处理器可用于多个热区，完全重复选用被拒绝',()=>{
+  it('同一告警规则和处理器可用于多个热区，完全重复选用被拒绝',()=>{
     const draft=createArmingDraft(initial())
     draft.addZone({...initial().zones[0]!,id:'zone-b',name:'后区',version:0})
     draft.putAssignment({...initial().assignments[0]!,id:'assignment-b',zoneId:'zone-b',version:0})

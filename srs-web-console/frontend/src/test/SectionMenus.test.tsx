@@ -6,7 +6,7 @@ import { SideDockedSection } from '@/components/layout/SideDockedSection'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { router } from '@/router'
 
-const tabs = [{ to: '/alarms', name: '告警记录' }, { to: '/alarms/rules', name: '触发规则' }]
+const tabs = [{ to: '/alarms', name: '告警记录' }, { to: '/alarms/rules', name: '告警规则' }]
 
 // A host whose measured width the test controls (jsdom has no layout).
 let width = 1600
@@ -33,7 +33,7 @@ function section(path = '/alarms') {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <SideDockedSection label="告警" tabs={tabs} sideRoute="/alarms/rules" storageKey="test.columns" middleMin={640}
-        sideTitle="触发规则" sideIcon={ScanLine} middle={<p>records here</p>} side={<p>rules here</p>} />
+        sideTitle="告警规则" sideIcon={ScanLine} middle={<p>records here</p>} side={<p>rules here</p>} />
     </MemoryRouter>,
   )
 }
@@ -55,13 +55,13 @@ it('docks the rules beside the records on a wide page, with no tabs', () => {
 
 it('folds to a labelled rail, remembers it, and opens again with one click', async () => {
   const first = section()
-  await userEvent.click(screen.getByRole('button', { name: '收起触发规则' }))
+  await userEvent.click(screen.getByRole('button', { name: '收起告警规则' }))
   expect(screen.getByText('rules here')).not.toBeVisible()
   expect(localStorage.getItem('test.columns')).toBe('closed')
   first.unmount()
   section()
-  expect(screen.getByRole('button', { name: '触发规则', pressed: false })).toBeVisible()
-  await userEvent.click(screen.getByRole('button', { name: '触发规则' }))
+  expect(screen.getByRole('button', { name: '告警规则', pressed: false })).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: '告警规则' }))
   expect(screen.getByText('rules here')).toBeVisible()
   expect(localStorage.getItem('test.columns')).toBe('open')
 })
@@ -77,7 +77,7 @@ it('falls back to two tabs on a narrow page without losing the middle', async ()
   resize(900)
   expect(screen.getByRole('navigation', { name: '告警' })).toBeVisible()
   expect(screen.getByText('records here')).toBeVisible()
-  await userEvent.click(screen.getByRole('link', { name: '触发规则' }))
+  await userEvent.click(screen.getByRole('link', { name: '告警规则' }))
   expect(screen.getByText('rules here')).toBeVisible()
   expect(screen.getByText('records here')).not.toBeVisible()
   expect(screen.getByRole('link', { name: '告警记录' })).not.toHaveAttribute('aria-current')
@@ -97,7 +97,7 @@ it('keeps the column open after a link inside it leaves the column address', asy
   render(
     <MemoryRouter initialEntries={['/alarms/rules']}>
       <SideDockedSection label="告警" tabs={tabs} sideRoute="/alarms/rules" storageKey="test.columns" middleMin={640}
-        sideTitle="触发规则" sideIcon={ScanLine} middle={<p>records here</p>} side={<Link to="/alarms">see records</Link>} />
+        sideTitle="告警规则" sideIcon={ScanLine} middle={<p>records here</p>} side={<Link to="/alarms">see records</Link>} />
     </MemoryRouter>,
   )
   await userEvent.click(screen.getByRole('link', { name: 'see records' }))

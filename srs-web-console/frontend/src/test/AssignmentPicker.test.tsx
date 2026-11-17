@@ -35,7 +35,7 @@ it('search filters large libraries without losing selected settings',()=>{
  const apply=vi.fn()
  render(<AssignmentPicker sourceId="cam" geometryRevision="g" zone={null} definitions={definitions} sources={[source]} onDirectionChange={vi.fn()} onApply={apply}/>)
  fireEvent.click(screen.getByLabelText('t1'))
- fireEvent.change(screen.getByRole('searchbox',{name:'搜索触发器'}),{target:{value:'no-match'}})
+ fireEvent.change(screen.getByRole('searchbox',{name:'搜索告警规则'}),{target:{value:'no-match'}})
  expect(screen.getByLabelText('t1')).toBeChecked()
  expect(screen.queryByLabelText('t2')).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'提交草稿'}))

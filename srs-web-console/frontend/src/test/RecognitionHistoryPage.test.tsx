@@ -464,7 +464,7 @@ describe('RecognitionHistoryPage —— 时间范围快捷按钮 + 置信度筛�
 })
 
 describe('RecognitionHistoryPage —— 时间范围弹窗（统一走"范围变化触发搜索"）', () => {
-  it('点击触发器打开弹窗，改动草稿后点确定——应用新范围、清除预设选中态、重新搜索', async () => {
+  it('点击告警规则打开弹窗，改动草稿后点确定——应用新范围、清除预设选中态、重新搜索', async () => {
     reseed([makeChannel('cam01', { name: '大门摄像头' })])
     mockGetOverview.mockResolvedValue(makeOverview())
 

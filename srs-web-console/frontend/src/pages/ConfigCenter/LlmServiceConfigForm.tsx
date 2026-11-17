@@ -76,7 +76,7 @@ export function LlmServiceConfigForm({document,onSaveBatch}:{document?:ConfigDoc
     finally{setBusy(false)}
   }
   return <section aria-label="大模型微服务配置" className="space-y-5">
-    <div><h2 className="text-base font-semibold text-ink">大模型微服务配置</h2><p className="mt-1 text-sm text-ink-subtle">为本机服务提供图片复审。触发器可选用异步 AI 审核；人工处理优先。本期不支持自由对话。</p></div>
+    <div><h2 className="text-base font-semibold text-ink">大模型微服务配置</h2><p className="mt-1 text-sm text-ink-subtle">为本机服务提供图片复审。告警规则可选用异步 AI 审核；人工处理优先。本期不支持自由对话。</p></div>
     <fieldset disabled={busy} data-unsaved={dirty?'true':undefined} className="space-y-5">
       <label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>启用并常驻加载模型</label>
       <dl className="grid gap-3 rounded-panel border border-line p-4 text-sm sm:grid-cols-2"><div><dt className="text-ink-subtle">本机调用地址</dt><dd>http://127.0.0.1:8300/v1</dd></div><div><dt className="text-ink-subtle">模型包</dt><dd><select aria-label="模型包" className="form-input" value={packageId} onChange={e=>setPackageId(e.target.value)}>{!packages.some(p=>p.id===packageId)&&<option value={packageId}>当前模型包</option>}{packages.map(p=><option key={p.id} value={p.id}>{p.title??'模型包'}</option>)}</select></dd></div></dl>
@@ -85,7 +85,7 @@ export function LlmServiceConfigForm({document,onSaveBatch}:{document?:ConfigDoc
         <label className="block text-sm">管理密钥<input className="form-input" type="password" autoComplete="new-password" value={admin} placeholder={config.admin_key?'已设置，留空保留':'至少 32 个字符'} onChange={e=>setAdmin(e.target.value)}/></label>
         <div className="mt-3 space-y-2">{callers.map((caller,index)=><div key={index} className="flex items-end gap-2"><label className="min-w-0 flex-1 text-sm">调用方<input className="form-input" value={caller.name} onChange={e=>setCallers(v=>v.map((c,i)=>i===index?{...c,name:e.target.value}:c))}/></label><label className="min-w-0 flex-[2] text-sm">推理密钥<input className="form-input" type="password" autoComplete="new-password" placeholder={caller.reference?'已设置，留空保留':'至少 32 个字符'} value={caller.key} onChange={e=>setCallers(v=>v.map((c,i)=>i===index?{...c,key:e.target.value}:c))}/></label><button type="button" className="btn-secondary min-h-11 min-w-11" aria-label={`移除调用方 ${caller.name}`} onClick={()=>setCallers(v=>v.filter((_,i)=>i!==index))}><Trash2 size={16}/></button></div>)}</div>
         <button type="button" className="btn-secondary mt-3 inline-flex items-center gap-2" disabled={callers.length>=16} onClick={()=>setCallers(v=>[...v,{name:'',key:'',reference:''}])}><Plus size={16}/>添加调用方</button>
-        <p className="mt-2 text-sm text-ink-subtle">保存后移除的调用方失去访问权限；修改密钥即轮换。试一试使用 console-try 调用方，后台告警审核使用独立的 alarm-review 调用方。审核开关、说明和阈值在触发器中配置。密钥不回显、不下发给浏览器。</p>
+        <p className="mt-2 text-sm text-ink-subtle">保存后移除的调用方失去访问权限；修改密钥即轮换。试一试使用 console-try 调用方，后台告警审核使用独立的 alarm-review 调用方。审核开关、说明和阈值在告警规则中配置。密钥不回显、不下发给浏览器。</p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{[
         ['分数校准温度',temperature,setTemperature,.05,10,.05],['排队容量',queue,setQueue,1,32,1],

@@ -8,7 +8,7 @@ const next=()=>fireEvent.click(screen.getByRole('button',{name:'下一步'}))
 it('common targets show first in Chinese; identity stays the model number and name',async()=>{
  const save=vi.fn(async(_:TriggerDefinitionInput)=>{})
  render(<TriggerDefinitionWizard id="t" labels={labels} onSave={save} onCancel={vi.fn()}/>)
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'门前人员'}});next()
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'门前人员'}});next()
  const common=screen.getByRole('group',{name:'常用目标'})
  expect(within(common).getByRole('button',{name:'人员'})).toBeVisible()
  expect(within(common).getByRole('button',{name:'汽车'})).toBeInTheDocument()

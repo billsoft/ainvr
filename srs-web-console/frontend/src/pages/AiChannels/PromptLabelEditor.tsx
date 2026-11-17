@@ -58,6 +58,6 @@ export function PromptLabelEditor({ rows, limit, error, onChange, context = 'cha
         onClick={()=>{const next=[...rows];next.splice(Math.min(removed.index,next.length),0,removed.row);onChange(next);setRemoved(null)}}>撤销删除</button>
     </div>}
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-    <p className="text-xs text-ink-faint">{context==='trigger'?'这里只定义告警监控目标，不会修改 AI 通道的识别配置。请先在对应 AI 通道配置相同标签，再关联触发器。':'更改在“保存修改”后生效，会重新载入通道；无需重编模型。删除标签不会删除已有识别记录。切换到较小模型时不会自动丢弃标签。'}</p>
+    <p className="text-xs text-ink-faint">{context==='trigger'?'这里只定义告警监控目标，不会修改 AI 通道的识别配置。请先在对应 AI 通道配置相同标签，再关联告警规则。':'更改在“保存修改”后生效，会重新载入通道；无需重编模型。删除标签不会删除已有识别记录。切换到较小模型时不会自动丢弃标签。'}</p>
   </section>
 }

@@ -50,7 +50,7 @@ it('turns an alarm into one sentence per level, naming the zone edges',()=>{
 it('shows one compact alarm row and one representative image; earlier stages stay in the detail view',async()=>{
   await open()
   const a=card(/门前禁区/)
-  for(const text of ['大门','禁区','穿过','人员从下边进入「禁区」，5 秒后从上边离开。','出现','碰撞侵入'])expect(a).toHaveTextContent(text)
+  for(const text of ['大门','禁区','穿过','人员从下边进入「禁区」，5 秒后从上边离开。','出现','进入区域'])expect(a).toHaveTextContent(text)
   expect(within(a).getAllByTestId('thumb').map(t=>t.textContent)).toEqual(['穿过:3333'])
   expect(a).toHaveClass('alarm-list-row')
   expect(card(/东围栏/)).toHaveTextContent('进行中')
@@ -97,7 +97,7 @@ it('the detail sheet shows the stages, jumps to the recording and confirms with 
   await open()
   fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'详情与录像'}))
   const sheet=await screen.findByRole('dialog',{name:'告警详情'})
-  for(const text of ['首次触发','出现','碰撞侵入','穿过','从下边进入'])expect(sheet).toHaveTextContent(text)
+  for(const text of ['首次触发','出现','进入区域','穿过','从下边进入'])expect(sheet).toHaveTextContent(text)
   const link=within(sheet).getByRole('link',{name:/查看录像/})
   const from=Date.parse('2026-10-20T02:02:05Z')-2000,to=Date.parse('2026-10-20T02:02:16Z')+15000
   expect(link).toHaveAttribute('href',`/playback/out-gate?from=${from}&to=${to}&autoplay=1`)
@@ -145,7 +145,7 @@ it('the sheet shows the evidence of the stage the user picks',async()=>{
   fireEvent.click(within(card(/门前禁区/)).getByRole('button',{name:'详情与录像'}))
   const sheet=await screen.findByRole('dialog',{name:'告警详情'})
   expect(within(sheet).getByRole('region',{name:'原帧目标截图'})).toBeInTheDocument()
-  const enter=within(sheet).getAllByRole('button').find(b=>b.getAttribute('aria-pressed')!==null&&/碰撞侵入/.test(b.textContent??''))!
+  const enter=within(sheet).getAllByRole('button').find(b=>b.getAttribute('aria-pressed')!==null&&/进入区域/.test(b.textContent??''))!
   fireEvent.click(enter);expect(enter).toHaveAttribute('aria-pressed','true')
 })
 it('unhandled alarms from before midnight stay in the default view',async()=>{
@@ -168,7 +168,7 @@ it('a representative thumbnail opens its exact stage and never acknowledges the 
  vi.mocked(alarmEventService.get).mockResolvedValue(value)
  await open();fireEvent.click(within(screen.getByRole('article')).getByTestId('thumb'))
  const sheet=await screen.findByRole('dialog',{name:'告警详情'})
- await waitFor(()=>expect(within(sheet).getAllByRole('button').find(b=>b.getAttribute('aria-pressed')==='true')).toHaveTextContent('碰撞侵入'))
+ await waitFor(()=>expect(within(sheet).getAllByRole('button').find(b=>b.getAttribute('aria-pressed')==='true')).toHaveTextContent('进入区域'))
  expect(alarmEventService.confirm).not.toHaveBeenCalled()
 })
 it('ignores an older filter response that finishes after the current filter',async()=>{

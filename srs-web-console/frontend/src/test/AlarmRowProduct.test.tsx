@@ -46,7 +46,7 @@ it('keeps handling facts for reviewed face candidates instead of calling them pe
 it('keeps legacy spatial stage history and its evidence action',()=>{
  const onOpen=vi.fn(),value={...alarm,event_kind:undefined,stages:[...alarm.stages!,{...alarm.stages![0]!,event_id:'s2',behavior:'region_enter'}]}
  render(<AlarmRow alarm={value} trigger={undefined} channelName="入口" onHandle={vi.fn()} onOpen={onOpen}/>)
- expect(screen.getByLabelText('阶段')).toHaveTextContent('经过：出现 → 碰撞侵入')
+ expect(screen.getByLabelText('阶段')).toHaveTextContent('经过：出现 → 进入区域')
  fireEvent.click(screen.getByRole('button',{name:'出现截图 e'}))
  expect(onOpen).toHaveBeenCalledWith('s')
 })

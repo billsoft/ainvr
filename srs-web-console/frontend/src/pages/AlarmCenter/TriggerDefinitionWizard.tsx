@@ -114,14 +114,14 @@ export function TriggerDefinitionWizard({id,initial,prefill,labels,onSave,onCanc
    }}>
    <button type="button" aria-label="关闭" disabled={locked} onClick={close} className="absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover"><X size={18}/></button>
    <header className="border-b border-line px-6 pb-4 pt-5">
-    <h2 id={title} className="text-base font-semibold">{initial?'编辑触发器':'新建触发器'}</h2>
+    <h2 id={title} className="text-base font-semibold">{initial?'编辑告警规则':'新建告警规则'}</h2>
     <ol aria-label="创建步骤" className="mt-3 grid grid-cols-4 gap-2 text-xs">{steps.map((s,i)=><li key={s} aria-current={step===i?'step':undefined} className={`flex items-center gap-2 py-2 ${step===i?'font-semibold text-primary-700':'text-ink-subtle'}`}><span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs ${step===i?'bg-primary text-white':'border border-line'}`}>{i+1}</span><span>{s}</span></li>)}</ol>
    </header>
    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-5">
     <h3 ref={heading} tabIndex={-1} className="mb-4 text-sm font-medium text-ink outline-none">{steps[step]}</h3>
     <fieldset disabled={locked} className="space-y-4">
     {step===0&&<>
-     <label className="block text-sm font-medium text-ink">触发器名称<input className={`${field} mt-1.5`} placeholder="例如：门前人员出现" maxLength={128} value={value.name} onChange={e=>patch({name:e.target.value})}/></label>
+     <label className="block text-sm font-medium text-ink">告警规则名称<input className={`${field} mt-1.5`} placeholder="例如：门前人员出现" maxLength={128} value={value.name} onChange={e=>patch({name:e.target.value})}/></label>
      {value.region_state?<p className="rounded-base bg-primary-50 p-3 text-sm">{regionSummary(value.region_state)}。</p>:<div role="group" aria-label="检测行为" className="grid gap-3 sm:grid-cols-2">{triggerBehaviors.map(b=><button key={b.id} type="button" aria-pressed={value.behavior===b.id}
       onClick={()=>patch({behavior:b.id})} className={`relative rounded-panel border p-4 text-left transition-colors ${value.behavior===b.id?'border-primary bg-primary-50 ring-1 ring-primary':'border-line bg-surface hover:bg-surface-hover'}`}>
       <strong className="block text-sm font-semibold text-ink">{b.name}</strong><span className="mt-1 block text-xs leading-5 text-ink-subtle">{b.help}</span>
@@ -155,15 +155,15 @@ export function TriggerDefinitionWizard({id,initial,prefill,labels,onSave,onCanc
     </>}
     {step===3&&<>
      <details open={value.schedule.mode!=='always'} className="rounded-panel border border-line"><summary className="cursor-pointer p-3 text-sm font-medium">布防时段 · {scheduleSummary(value.schedule)}</summary><div className="border-t border-line p-3"><ScheduleEditor value={value.schedule} onChange={schedule=>patch({schedule})}/></div></details>
-     {!value.alarm_enabled&&<p role="status" className="rounded-base border border-warning bg-amber-50 p-3 text-sm">这是旧版行为记录配置，保存后仍不生成告警。需要告警时请新建告警触发器；原有配置和历史保留。</p>}
-     {value.region_state&&<p className="rounded-base bg-amber-50 p-3 text-sm text-amber-900">这类告警由人工审核确认。保存后请到实时监看的布防中绑定热区。</p>}
+     {!value.alarm_enabled&&<p role="status" className="rounded-base border border-warning bg-amber-50 p-3 text-sm">这是旧版行为记录配置，保存后仍不生成告警。需要告警时请新建告警规则；原有配置和历史保留。</p>}
+     {value.region_state&&<p className="rounded-base bg-amber-50 p-3 text-sm text-amber-900">这类告警由人工审核确认。保存后请到实时监看的布防中关联到整个画面或某个热区。</p>}
      {value.alarm_enabled&&!value.region_state&&<section aria-label="AI 审核设置" className="space-y-3 rounded-panel border border-line p-3">
       <h4 className="text-sm font-medium">{value.review?.enabled?'AI 辅助审核':'人工审核'}</h4>
-      <p className="text-xs leading-5 text-ink-subtle">{value.review?.enabled?'告警先入库，后台优先审核最新的未审核告警。系统自动提供目标类别、告警行为和关键帧说明，通常无需填写提示词。':'此触发器保留人工审核设置，可在高级设置中启用 AI 审核。'}</p>
+      <p className="text-xs leading-5 text-ink-subtle">{value.review?.enabled?'告警先入库，后台优先审核最新的未审核告警。系统自动提供目标类别、告警行为和关键帧说明，通常无需填写提示词。':'此告警规则保留人工审核设置，可在高级设置中启用 AI 审核。'}</p>
       <p className="text-xs leading-5 text-ink-subtle">规则引擎判定持续时间、方向和越界，AI 核对关键帧中的指定目标。证据不足、判断不一致或服务不可用时保留未审核；人工决定优先。执行由系统配置中的审核开关和验证条件控制。</p>
       {value.review?.enabled&&<p role="note" className="rounded-base bg-warning-50 p-3 text-sm text-warning-700">勾选后由后台按系统审核策略处理。已授权自动确认时，证据完整且关键帧判断一致的告警会移入“已 AI 审核”；疑难保留人工。未启用自动策略时仅提供参考分析；自动判误报仍须通过模型验证。</p>}
       <details className="rounded-base border border-line"><summary className="cursor-pointer px-3 py-2.5 text-sm text-ink-subtle">高级审核设置（可选）</summary><div className="space-y-3 border-t border-line p-3">
-       <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={value.review?.enabled??false} onChange={e=>patch({review:e.target.checked?{...defaultTriggerReview(),...value.review,enabled:true}:value.review?{...value.review,enabled:false}:undefined})}/>此触发器使用 AI 审核</label>
+       <label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={value.review?.enabled??false} onChange={e=>patch({review:e.target.checked?{...defaultTriggerReview(),...value.review,enabled:true}:value.review?{...value.review,enabled:false}:undefined})}/>此告警规则使用 AI 审核</label>
        {value.review?.enabled&&<>
         <label className="block text-sm">补充审核要求（可选）<textarea className={`${field} mt-1 min-h-20`} maxLength={500} value={value.review.description===DEFAULT_REVIEW_DESCRIPTION?'':value.review.description} onChange={e=>patch({review:{...value.review!,description:e.target.value.trim()?e.target.value:DEFAULT_REVIEW_DESCRIPTION}})} placeholder="留空使用系统模板；仅在有额外业务要求时补充"/></label>
         <p className="text-xs leading-5 text-ink-subtle">这是系统提示词末尾的补充要求，不是完整提示词。目标类别和触发条件会自动加入，无需重复填写。</p>
@@ -173,7 +173,7 @@ export function TriggerDefinitionWizard({id,initial,prefill,labels,onSave,onCanc
       </div></details>
      </section>}
      <p className="rounded-base bg-surface-page p-3 text-sm text-ink">{value.region_state?`将会：${regionSummary(value.region_state)}`:`将会：${conditionSentence(value,actionText(value.behavior,{seconds,percent}))}时，${value.alarm_enabled?'生成告警':'保留旧版行为记录'}`}；{scheduleSummary(value.schedule)}。</p>
-     <p className="text-xs text-ink-subtle">{value.region_state&&value.state==='draft'?'先保存为草稿，不会立即告警；在实时监看的布防中绑定热区后，回到列表点“更多操作 → 启用”。':!initial?'新建后默认启用；关联到 AI 输出画面或热区并保存布防后才开始告警。':value.state==='enabled'?'当前已启用。启用和暂停可在触发器列表的“更多操作”中管理。':`当前${value.state==='draft'?'为草稿':value.state==='archived'?'已归档':'已暂停'}；保存修改不会自动启用。可在列表的“更多操作”中启用。`}</p>
+     <p className="text-xs text-ink-subtle">{value.region_state&&value.state==='draft'?'先保存为草稿，不会立即告警；在实时监看的布防中关联到整个画面或热区后，回到列表点“更多操作 → 启用”。':!initial?'新建后默认启用；关联到 AI 输出画面或热区并保存布防后才开始告警。':value.state==='enabled'?'当前已启用。启用和暂停可在告警规则列表的“更多操作”中管理。':`当前${value.state==='draft'?'为草稿':value.state==='archived'?'已归档':'已暂停'}；保存修改不会自动启用。可在列表的“更多操作”中启用。`}</p>
      {initial?.usages?.length?<section aria-label="修改影响范围" className="rounded-base border border-warning bg-amber-50 p-3 text-sm"><h4 className="font-medium">保存将更新 {initial.usages.length} 处选用</h4>
       <ul>{initial.usages.map(u=><li key={u.assignment_id}>{usageNames[u.source_id]??'来源暂不可用'} · {u.zone_name??'整个画面'} · {usageNames[u.processor_id]??'AI 通道暂不可用'}</li>)}</ul><p className="mt-2 text-sm">历史记录保留当时版本；本次修改应用后重新累计判定证据。</p></section>
       :null}
@@ -187,7 +187,7 @@ export function TriggerDefinitionWizard({id,initial,prefill,labels,onSave,onCanc
     {step>0&&<button type="button" disabled={locked} onClick={()=>{setError('');setStep(step-1)}} className="btn-secondary"><ChevronLeft size={16} aria-hidden="true"/>上一步</button>}
     <button type="button" disabled={saving} onClick={()=>void(step===3?save():next())} className="btn-primary ml-auto">{step===3?<Save size={16} aria-hidden="true"/>:<ChevronRight size={16} aria-hidden="true"/>}{saving?'保存中…':unconfirmed?'重试确认保存':step===3?'保存':'下一步'}</button>
    </footer>
-   {discard&&<div className="absolute inset-0 z-10 flex items-center justify-center rounded-panel bg-black/30 p-4"><section ref={discardPanel} tabIndex={-1} role="alertdialog" aria-label="放弃触发器修改" className="relative w-full max-w-sm space-y-3 rounded-panel bg-surface p-5 shadow-modal outline-none"><button type="button" aria-label="关闭" onClick={()=>setDiscard(false)} className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-base hover:bg-surface-hover"><X size={18}/></button><p className="pr-7 text-base font-semibold">放弃尚未保存的触发器修改？</p><div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setDiscard(false)}>继续编辑</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={onCancel}>放弃修改</button></div></section></div>}
+   {discard&&<div className="absolute inset-0 z-10 flex items-center justify-center rounded-panel bg-black/30 p-4"><section ref={discardPanel} tabIndex={-1} role="alertdialog" aria-label="放弃告警规则修改" className="relative w-full max-w-sm space-y-3 rounded-panel bg-surface p-5 shadow-modal outline-none"><button type="button" aria-label="关闭" onClick={()=>setDiscard(false)} className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-base hover:bg-surface-hover"><X size={18}/></button><p className="pr-7 text-base font-semibold">放弃尚未保存的告警规则修改？</p><div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setDiscard(false)}>继续编辑</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={onCancel}>放弃修改</button></div></section></div>}
   </div>
  </div>,document.body)
 }

@@ -42,7 +42,7 @@ it('keeps every fixed URL condition, labels the business and trigger, and never 
  expect(select).toBeDisabled();expect(select).toHaveValue('fire_smoke')
  expect(screen.queryByRole('group',{name:'空间阶段'})).not.toBeInTheDocument()
  expect(screen.getByText(/业务范围：烟雾 \/ 明火/)).toBeInTheDocument()
- await screen.findByText(/触发器 仓库烟火/)
+ await screen.findByText(/告警规则 仓库烟火/)
  expect(screen.getByText(/附加筛选：触发阶段 出现/)).toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'已人工审核'}))
  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('human',undefined,{analytics:JSON.stringify(analytics)}))

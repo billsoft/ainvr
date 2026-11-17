@@ -12,10 +12,11 @@ describe('region definition uses original JSON document and assignment compiler'
   expect(compiled?.region_state).toEqual(definition.region_state);expect(compiled?.event_kind).toBe('region_absence');
   expect(compiled?.review).toEqual({enabled:false});expect(compiled?.label_ids).toEqual(['person']);
  });
- it('unbound draft is allowed but an enabled assignment must select a real zone',()=>{
+ it('unbound draft is allowed and an enabled assignment may watch the whole picture',()=>{
   expect(parseTriggerDefinition({...definition,state:'draft'}).state).toBe('draft');
   expect(compileAssignment({...definition,state:'draft'},1,{...assignment,zone_id:null,zone_version:null},source,null,1)).toBeNull();
-  expect(()=>compileAssignment(definition,1,{...assignment,zone_id:null,zone_version:null},source,null,1)).toThrow(/热区/);
+  const whole=compileAssignment(definition,1,{...assignment,zone_id:null,zone_version:null},source,null,1);
+  expect(whole?.region_state).toEqual(definition.region_state);expect(whole?.zone_id).toBeNull();expect(whole?.points).toBeUndefined();
  });
  it('rejects missing tracking, fake labels, unsupported semantic capability and automatic review',()=>{
   expect(()=>compileAssignment(definition,1,assignment,{...source,tracking_available:false,detection_available:true},zone,1)).toThrow(/跟踪/);

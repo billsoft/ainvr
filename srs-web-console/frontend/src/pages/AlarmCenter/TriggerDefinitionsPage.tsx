@@ -2,7 +2,6 @@ import {AlarmInputNotice} from './AlarmInputNotice'
 import {triggerAvailability} from '@/features/triggerAvailability'
 import {triggerDefinitionInput} from '@/features/triggerDefaults'
 import {TriggerActionMenu,TriggerArchiveDialog} from './TriggerLifecycleControls'
-import {Plus} from 'lucide-react'
 import {useEffect,useRef,useState} from 'react'
 import {Link} from 'react-router-dom'
 import {aiChannelService} from '@/api/aiChannelService'
@@ -15,7 +14,8 @@ import {scheduleSummary} from '@/features/alarmSchedule'
 import {labelDisplay} from '@/features/labelNames'
 import type {TriggerDefinition,TriggerDefinitionInput} from '@/features/alarmDefinitions'
 import {TriggerDefinitionWizard} from './TriggerDefinitionWizard'
-import {CapabilitySceneLauncher} from '@/features/capabilityPreview/CapabilityTriggerPreview'
+import {CapabilitySceneDialog,CapabilityTriggerPreview} from '@/features/capabilityPreview/CapabilityTriggerPreview'
+import {NewRuleChooser,type NewRuleChoice} from './NewRuleChooser'
 import {regionSummary} from '@/features/capabilityPreview/regionTrigger'
 import {alarmAnalyticsService,alarmAnalyticsHref,type AlarmAnalyticsQuery} from '@/api/alarmAnalyticsService'
 import {alarmBusinessName} from '@/features/alarmBusinessKind'
@@ -29,7 +29,7 @@ function condition(t:TriggerDefinition){
  if(t.region_state)return regionSummary(t.region_state)
  if(t.behavior==='region_approach'&&!Number.isFinite(t.approach_width_percent))return '接近范围待重新确认'
  return t.behavior==='appearance'?`连续出现 ${t.duration_ms/1000} 秒`:t.behavior==='region_approach'?`外侧距离 ≤ 画面宽度的 ${t.approach_width_percent}%`:
- t.behavior==='region_enter'?'从区域外进入区域内':'从不同边进入、离开'
+ t.behavior==='region_enter'?'碰到或进入区域即告警（一出现就在区域内也算）':'从不同边进入、离开'
 }
 export default function TriggerDefinitionsPage(){
  const [rows,setRows]=useState<TriggerDefinition[]>([]),[labels,setLabels]=useState<TriggerLabel[]>([])
@@ -43,6 +43,7 @@ export default function TriggerDefinitionsPage(){
  const [business,setBusiness]=useState('')
  const [coverageComplete,setCoverageComplete]=useState(false)
  const [editor,setEditor]=useState<{id:string;initial?:TriggerDefinition;prefill?:Partial<TriggerDefinitionInput>;step?:number;save:ReturnType<typeof createDefinitionSaveSession>}|null>(null)
+ const [scene,setScene]=useState<Extract<NewRuleChoice,{kind:'scene'}>|null>(null)
  const [operation,setOperation]=useState<Operation|null>(null),[archive,setArchive]=useState<TriggerDefinition|null>(null)
  const mutationBusy=useRef(false)
  const applyResult=(result:Awaited<ReturnType<typeof alarmDefinitionService.save>>)=>{
@@ -63,7 +64,7 @@ export default function TriggerDefinitionsPage(){
  }
  useEffect(()=>{
   let alive=true;setLoading(true);setError('')
-  void alarmDefinitionService.list().then(r=>{if(alive)setRows(r.items)}).catch(()=>{if(alive)setError('触发器读取失败，请重新读取。')}).finally(()=>{if(alive)setLoading(false)})
+  void alarmDefinitionService.list().then(r=>{if(alive)setRows(r.items)}).catch(()=>{if(alive)setError('告警规则读取失败，请重新读取。')}).finally(()=>{if(alive)setLoading(false)})
   void (async()=>{
    try{
     const channels=await aiChannelService.list()
@@ -75,7 +76,7 @@ export default function TriggerDefinitionsPage(){
     setSources(results.flatMap(r=>r.status==='fulfilled'?[r.value]:[]))
     const available=results.flatMap(r=>r.status==='fulfilled'?r.value.labels.map(l=>({label_id:l.label_id,name:labelName(l)})):[])
     setLabels([...new Map(available.map(l=>[JSON.stringify(l),l])).values()])
-    setCatalogWarning(results.some(r=>r.status==='rejected')?'部分运行通道暂不可用；仍可按模型创建触发器，关联时会核对实际标签。':'')
+    setCatalogWarning(results.some(r=>r.status==='rejected')?'部分运行通道暂不可用；仍可按模型创建告警规则，关联时会核对实际标签。':'')
    }catch{if(alive)setCatalogWarning('运行通道暂不可用；仍可选择模型和手动配置开放词汇标签。')}
   })()
   const start=new Date();start.setHours(0,0,0,0);setToday(null);setCoverageComplete(false);setTodayAlarms(null)
@@ -94,14 +95,15 @@ export default function TriggerDefinitionsPage(){
  return <main className="alarm-workspace space-y-4 p-4 [@container(min-width:40rem)]:p-6">
   <AlarmInputNotice/>
   <header className="flex flex-wrap items-center gap-3">
-   <div className="min-w-0 basis-full [@container(min-width:40rem)]:flex-1 [@container(min-width:40rem)]:basis-0"><h1 className="page-title [@container(max-width:40rem)]:sr-only">触发规则</h1>
-    <p className="mt-1 text-sm text-ink-subtle">定义告警条件，再到实时监看布防；进出流量由计数器统计。</p></div>
-   <CapabilitySceneLauncher sources={sources} disabled={!!operation||!!archive||!!editor} onCreate={prefill=>setEditor({id:`trigger-${newAlarmOperationId()}`,prefill,step:2,save:createDefinitionSaveSession(0,saveDefinition)})}/>
-   <button type="button" className="btn-primary" disabled={loading||!!error||!!operation||!!archive}
-    onClick={()=>setEditor({id:`trigger-${newAlarmOperationId()}`,save:createDefinitionSaveSession(0,saveDefinition)})}><Plus size={16} aria-hidden="true"/>新建触发器</button>
-  </header><details className="text-xs text-ink-subtle"><summary className="cursor-pointer">车辆规则与车牌功能</summary><p className="py-2">车辆出现、接近、侵入、穿过与数量条件沿用现有触发器，选择车辆标签后在原布防中绑定。车牌关注名单在车辆通行后匹配，需先启用通道车牌识别并绑定车辆计数器；不替代原空间规则。<Link className="ml-2 text-primary" to="/config-center?category=vehicles">管理关注名单</Link></p></details>
-  <div className="flex flex-wrap items-center gap-2" role="group" aria-label="筛选触发器">
-   <select aria-label="触发器业务类别" className="form-input !w-auto min-h-11" value={business} onChange={e=>{setBusiness(e.target.value);setFilter('')}}><option value="">全部业务类别</option>{Array.from(new Set(['spatial',...rows.flatMap(t=>t.region_state?[t.region_state.event_kind]:[])])).map(kind=><option key={kind} value={kind}>{alarmBusinessName(kind)}</option>)}</select>
+   <div className="min-w-0 basis-full [@container(min-width:40rem)]:flex-1 [@container(min-width:40rem)]:basis-0"><h1 className="page-title [@container(max-width:40rem)]:sr-only">告警规则</h1>
+    <p className="mt-1 text-sm text-ink-subtle">先定好什么情况下报警，再到“实时监看 → 布防”关联到整个画面或某个区域。</p></div>
+   <NewRuleChooser disabled={loading||!!error||!!operation||!!archive||!!editor||!!scene} onChoose={choice=>{
+    if(choice.kind==='scene')setScene(choice)
+    else setEditor({id:`trigger-${newAlarmOperationId()}`,prefill:{behavior:choice.behavior},save:createDefinitionSaveSession(0,saveDefinition)})
+   }}/>
+  </header><details className="text-xs text-ink-subtle"><summary className="cursor-pointer">车辆规则与车牌功能</summary><p className="py-2">车辆出现、接近、侵入、穿过与数量条件沿用现有告警规则，选择车辆标签后在原布防中绑定。车牌关注名单在车辆通行后匹配，需先启用通道车牌识别并绑定车辆计数器；不替代原空间规则。<Link className="ml-2 text-primary" to="/config-center?category=vehicles">管理关注名单</Link></p></details>
+  <div className="flex flex-wrap items-center gap-2" role="group" aria-label="筛选告警规则">
+   <select aria-label="告警规则业务类别" className="form-input !w-auto min-h-11" value={business} onChange={e=>{setBusiness(e.target.value);setFilter('')}}><option value="">全部业务类别</option>{Array.from(new Set(['spatial',...rows.flatMap(t=>t.region_state?[t.region_state.event_kind]:[])])).map(kind=><option key={kind} value={kind}>{alarmBusinessName(kind)}</option>)}</select>
    {(!business||business==='spatial')&&[{id:'' as const,name:'全部'},...triggerBehaviors].map(b=><button type="button" key={b.id} aria-pressed={filter===b.id}
     onClick={()=>setFilter(b.id)} className={choice}>{b.name}</button>)}
    <label className="ml-auto flex items-center gap-2 px-2 text-sm text-ink-subtle"><input type="checkbox" checked={archived} onChange={e=>setArchived(e.target.checked)}/>查看已归档</label>
@@ -113,8 +115,8 @@ export default function TriggerDefinitionsPage(){
    {operation.error&&<><button className={button} onClick={()=>void perform(operation)}>{operation.uncertain?'重试确认操作':'重试'}</button>{!operation.uncertain&&<button className={button} onClick={()=>{setOperation(null);setRevision(n=>n+1)}}>关闭提示并重新读取</button>}</>}
   </section>}
   {application&&<p role="status" className="rounded-base border border-line bg-surface p-3 text-sm">{application.state==='applied'?'已保存并应用':'已保存，等待应用确认'}{application.reason?`：${application.reason}`:''}</p>}
-  {loading?<p role="status">正在读取触发器…</p>:!shown.length?<div className="rounded-panel border border-dashed border-line p-8 text-center">
-   <p>{archived?'没有已归档的触发器。':'还没有符合筛选的触发器。可先创建，再选用，无需提前绘制热区。'}</p><Link to="/monitor" className="mt-3 inline-flex items-center text-sm text-primary hover:underline">前往实时监看布防</Link>
+  {loading?<p role="status">正在读取告警规则…</p>:!shown.length?<div className="rounded-panel border border-dashed border-line p-8 text-center">
+   <p>{archived?'没有已归档的告警规则。':'还没有符合筛选的告警规则。可先创建，再选用，无需提前绘制热区。'}</p><Link to="/monitor" className="mt-3 inline-flex items-center text-sm text-primary hover:underline">前往实时监看布防</Link>
   </div>:<div className="grid gap-4 [@container(min-width:48rem)]:grid-cols-2">{shown.map(t=><article key={t.trigger_id} aria-label={t.name} className="flex flex-col gap-3 rounded-panel border border-line bg-surface p-4">
    <header className="flex flex-wrap items-center gap-2"><span className="rounded-full px-3 py-1 text-sm font-semibold" style={{background:levelLook[t.behavior]?.soft,color:levelLook[t.behavior]?.ink}}>{t.region_state?alarmBusinessName(t.region_state.event_kind):behaviorNames[t.behavior]}</span>
     <h2 className="min-w-0 flex-1 break-words text-base font-semibold text-ink">{t.name}</h2><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${stateLook[t.state]}`}>{states[t.state]}</span>
@@ -122,14 +124,17 @@ export default function TriggerDefinitionsPage(){
    <p className="text-sm text-ink">识别目标：{t.labels.map(l=>labelDisplay(l.name)).join('、')} · {condition(t)}</p>
    <p className="text-sm text-ink-subtle">{t.alarm_enabled?'触发后生成告警':'旧版行为记录 · 不产生告警'} · {scheduleSummary(t.schedule)}</p>
    {t.review?.enabled&&<p className="text-xs text-primary">AI 审核 · 按系统审核服务配置执行</p>}
-   {t.migration_review?.required&&<p role="status" className="rounded-base border border-warning bg-amber-50 p-3 text-sm">待重新确认：{t.migration_review.reason} 原配置与历史已保留，{t.state==='archived'?'请新建触发器并在实时监看重新选用。':'请编辑条件并在实时监看重新选用。'}</p>}
+   {t.migration_review?.required&&<p role="status" className="rounded-base border border-warning bg-amber-50 p-3 text-sm">待重新确认：{t.migration_review.reason} 原配置与历史已保留，{t.state==='archived'?'请新建告警规则并在实时监看重新选用。':'请编辑条件并在实时监看重新选用。'}</p>}
    <section aria-label="选用位置" className="rounded-base bg-surface-page p-3 text-sm">
     {t.usages?.length?<ul>{triggerAvailability(t,sources).map(u=><li key={u.assignment_id}>{usageNames[u.source_id]??'来源暂不可用'} · {u.zone_name??'整个画面'} · {usageNames[u.processor_id]??'AI 通道暂不可用'}{u.state==='missing'?<span className="ml-2 text-amber-800">目标已不可用，请重新选择目标并布防</span>:u.state==='unsupported'?<span className="ml-2 text-amber-800">此通道暂不支持该告警条件，请检查模型配置</span>:u.state==='changed'?<span className="ml-2 text-amber-800">来源版本已变化，请核对目标和布防</span>:u.state==='unknown'?<span className="ml-2 text-ink-subtle">运行状态待核验</span>:null}</li>)}</ul>:t.usages?<p>尚未绑定区域 · <Link className="text-primary underline" to="/monitor">到实时监看中布防</Link></p>:<p>选用位置待确认</p>}
    </section>
    <footer className="mt-auto flex items-center justify-between gap-3 border-t border-line pt-3"><span className="text-sm">{t.region_state ? todayAlarms===null?'今日新增告警 —（统计暂不可用）':`今日新增告警 ${todayAlarms[t.trigger_id]??0} 条（数据完整度未知）` : today===null?'今日触发 —（记录未确认）':!coverageComplete&&!today[t.trigger_id]?'今日暂无触发记录（覆盖未确认）':`今日触发 ${today[t.trigger_id]??0} 次${coverageComplete?'':'（覆盖未确认）'}`}</span>
-    {t.region_state&&todayScope&&<Link title="包含同一触发器的历史版本，与卡片数量使用同一范围" className="inline-flex min-h-11 items-center text-sm text-primary" to={alarmAnalyticsHref({...todayScope,trigger_id:t.trigger_id})}>查看今日告警</Link>}
+    {t.region_state&&todayScope&&<Link title="包含同一告警规则的历史版本，与卡片数量使用同一范围" className="inline-flex min-h-11 items-center text-sm text-primary" to={alarmAnalyticsHref({...todayScope,trigger_id:t.trigger_id})}>查看今日告警</Link>}
    </footer>
   </article>)}</div>}
+  {scene&&<CapabilitySceneDialog scene={scene.scene} title={scene.title} sources={sources} onClose={()=>setScene(null)}
+   onCreate={prefill=>{setScene(null);setEditor({id:`trigger-${newAlarmOperationId()}`,prefill,step:2,save:createDefinitionSaveSession(0,saveDefinition)})}}/>}
+  {import.meta.env.DEV&&<details className="text-xs text-ink-subtle"><summary className="flex min-h-11 cursor-pointer items-center">开发预览</summary><CapabilityTriggerPreview disabled={!!operation||!!archive||!!editor}/></details>}
   {editor&&<TriggerDefinitionWizard key={editor.id} id={editor.id} initial={editor.initial} prefill={editor.prefill} labels={labels} sources={sources} initialStep={editor.step} usageNames={usageNames}
    onCancel={()=>setEditor(null)} onSave={async input=>{
     const result=await editor.save.save(input)

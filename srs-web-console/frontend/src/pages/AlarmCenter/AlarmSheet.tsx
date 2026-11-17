@@ -60,7 +60,7 @@ export function AlarmSheet({id,intent,pendingAttempt,initialStageId,channelName,
     <div className="min-w-0 flex-1">
      <div className="flex flex-wrap items-center gap-2"><span className="rounded-full border px-2.5 py-0.5 text-xs font-semibold" style={{background:look.soft,color:look.ink,borderColor:look.color}}>{value?alarmBusinessTitle(value,behaviorNames[value.behavior]??'告警'):'告警'}</span>
       <h2 className="break-words text-base font-semibold text-ink">{intent?intent==='handled'?'确认 · ':'标记误报 · ':''}{channelName}{!watchlist&&described?.zone?` · ${described.zone}`:''}</h2></div>
-     {value&&<p className="mt-1 text-sm text-ink-subtle">{faceKind?'抓拍时间':'首次触发'} {new Date(value.occurred_at).toLocaleString('zh-CN',{hour12:false})}{face?` · 名单「${face.library_name||value.rule.name}」 v${face.library_version}`:<> · {spatial?'最近阶段':'最近记录'} {clock(value.last_seen_at)} · {watchlist?'名单':'触发器'}「{value.rule.name}」{spatial&&<> · 目标：{described?.target}</>}</>}</p>}
+     {value&&<p className="mt-1 text-sm text-ink-subtle">{faceKind?'抓拍时间':'首次触发'} {new Date(value.occurred_at).toLocaleString('zh-CN',{hour12:false})}{face?` · 名单「${face.library_name||value.rule.name}」 v${face.library_version}`:<> · {spatial?'最近阶段':'最近记录'} {clock(value.last_seen_at)} · {watchlist?'名单':'告警规则'}「{value.rule.name}」{spatial&&<> · 目标：{described?.target}</>}</>}</p>}
     </div>
     <button ref={closeRef} type="button" aria-label="关闭" disabled={busy} onClick={close} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-faint hover:bg-surface-page hover:text-ink"><X size={20} aria-hidden="true"/></button>
    </header>

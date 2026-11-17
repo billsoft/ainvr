@@ -59,7 +59,7 @@ export function LivePlayerToolbar({
           </button>
           <span className="flex-1" />
           {onPtz&&<button type="button" aria-label="摄像头云台" aria-expanded={!!ptzOpen} className={'flex min-h-11 items-center gap-1.5 rounded-base px-2.5 text-xs font-medium text-white hover:bg-white/10 '+(ptzOpen?'bg-blue-700':'')} onClick={e=>{e.stopPropagation();onPtz()}}><Move size={18} aria-hidden="true"/>云台</button>}
-          {onArming&&<button type="button" className="flex h-10 items-center gap-1.5 rounded-base px-2.5 text-xs font-medium text-white hover:bg-white/10 disabled:opacity-40" disabled={!videoEl||!canConnect} title="编辑热区，并为热区或整个画面选用触发器" onClick={e=>{e.stopPropagation();if(videoEl)onArming(videoEl)}}><ShieldCheck size={18} aria-hidden="true"/>布防</button>}
+          {onArming&&<button type="button" className="flex h-10 items-center gap-1.5 rounded-base px-2.5 text-xs font-medium text-white hover:bg-white/10 disabled:opacity-40" disabled={!videoEl||!canConnect} title="编辑热区，并为热区或整个画面选用告警规则" onClick={e=>{e.stopPropagation();if(videoEl)onArming(videoEl)}}><ShieldCheck size={18} aria-hidden="true"/>布防</button>}
           {chain.length > 1 && (
             <select
               value={selectedProtocol}

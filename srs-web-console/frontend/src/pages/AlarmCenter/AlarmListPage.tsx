@@ -251,7 +251,7 @@ export default function AlarmListPage(){
      <button type="button" onClick={clearScope} className="btn-secondary ml-3 !min-h-11">清除统计范围</button>
      {scope.kind==='valid'&&scope.analytics&&<p className="mt-2 break-words text-xs text-ink-subtle">固定统计条件：{[
       scope.analytics.audit&&({pending:'待审核',human_confirmed:'人工确认',human_false_positive:'人工判为误报',ai_reviewed:'AI 已审核',unknown:'审核主体/结论未知'}[scope.analytics.audit]),
-      scope.analytics.trigger_id&&`触发器 ${definitions.find(t=>t.trigger_id===scope.analytics?.trigger_id)?.name??triggers.find(t=>t.trigger_id===scope.analytics?.trigger_id)?.name??scope.analytics.trigger_id}`,
+      scope.analytics.trigger_id&&`告警规则 ${definitions.find(t=>t.trigger_id===scope.analytics?.trigger_id)?.name??triggers.find(t=>t.trigger_id===scope.analytics?.trigger_id)?.name??scope.analytics.trigger_id}`,
       scope.analytics.primary_type&&`${fixedBusinessKind&&fixedBusinessKind!=='spatial'?'附加筛选：触发阶段':'最高空间阶段'} ${triggerBehaviors.find(b=>b.id===scope.analytics?.primary_type)?.name??scope.analytics.primary_type}`,
       scope.analytics.weekday!==undefined&&['周一','周二','周三','周四','周五','周六','周日'][scope.analytics.weekday],
       scope.analytics.hour!==undefined&&`${scope.analytics.hour}:00—${scope.analytics.hour+1}:00`,

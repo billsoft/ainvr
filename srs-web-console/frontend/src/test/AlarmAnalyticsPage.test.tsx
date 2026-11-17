@@ -124,7 +124,7 @@ it('keeps bucket clipping and trigger IDs in drilldown; picker keeps half-open i
   fireEvent.click(screen.getByRole('button', { name: '趋势' }))
   fireEvent.change(screen.getByLabelText('告警趋势时段'), { target: { value: '0' } })
   expect(linkQuery(screen.getByRole('link', { name: '查看该时段' }))).toMatchObject({ from, to })
-  expect(linkQuery(within(screen.getByRole('table', { name: '触发器排名' })).getByRole('link', { name: /入口规则/ }))).toMatchObject({ trigger_id: 'trigger' })
+  expect(linkQuery(within(screen.getByRole('table', { name: '告警规则排名' })).getByRole('link', { name: /入口规则/ }))).toMatchObject({ trigger_id: 'trigger' })
   fireEvent.click(screen.getByLabelText('告警自选时间范围'))
   expect(screen.getByLabelText('刷新告警统计')).toBeDisabled()
   fireEvent.click(screen.getByRole('button', { name: '确认测试日期' }))

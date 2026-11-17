@@ -22,10 +22,10 @@ it('drawing shares the same picture and toolbar; Escape cancels only unfinished 
 it('a zone is chosen from the picture, its marker, or the zone list; its selections show on the picture',()=>{
  arming({base:{...base,assignments:[{assignment_id:'s',trigger_id:'t',processor_id:'ai',zone_id:'z',version:1,input_stream_id:'cam',entry_edges:[],exit_edges:[]} as never]},
   definitions:[{trigger_id:'t',name:'闯入',state:'enabled',behavior:'region_enter',labels:[]} as never]})
- expect(screen.getByRole('button',{name:'门：触发器 1，计数器 0'})).toBeInTheDocument()
+ expect(screen.getByRole('button',{name:'门：告警规则 1，计数器 0'})).toBeInTheDocument()
  fireEvent.change(screen.getByLabelText('选择热区'),{target:{value:'z'}})
  const card=screen.getByRole('region',{name:'门 的选用'})
- for(const name of ['调整 闯入 · 门','为 门 选用触发器','为 门 选用计数器'])expect(within(card).getByRole('button',{name})).toBeInTheDocument()
+ for(const name of ['调整 闯入 · 门','为 门 选用告警规则','为 门 选用计数器'])expect(within(card).getByRole('button',{name})).toBeInTheDocument()
  fireEvent.click(within(card).getByRole('button',{name:'调整 闯入 · 门'}))
  // While editing, the picture only takes taps on edges: markers go away.
  expect(screen.getByRole('complementary',{name:'编辑窗'})).toBeInTheDocument()

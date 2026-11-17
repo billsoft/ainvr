@@ -43,7 +43,8 @@ function validateRegionRule(r){
   if(r.review?.enabled===true)fail('invalid_review','Region conditions require manual review; automatic review is not supported');
   if(r.event_kind!==undefined&&r.event_kind!==s.event_kind)fail('invalid_region_state','Conflicting event_kind');
   r.event_kind=s.event_kind;
-  if(r.zone_id==null)fail('invalid_geometry','Region conditions require an explicitly bound zone');
+  // No zone means the whole picture: every observed target counts.
+  if(r.zone_id==null)return;
   identity(r.zone_id,'zone_id');if(!Number.isSafeInteger(r.zone_version)||r.zone_version<1)fail('invalid_version','zone_version');
 }
 export function validateRule(input) {

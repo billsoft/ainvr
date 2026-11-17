@@ -7,7 +7,7 @@ const next=()=>fireEvent.click(screen.getByRole('button',{name:'下一步'}))
 function open(){
  const save=vi.fn(async(_:TriggerDefinitionInput)=>{})
  render(<TriggerDefinitionWizard id="model-target" labels={[]} onSave={save} onCancel={vi.fn()}/>)
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'车辆通行'}});next()
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'车辆通行'}});next()
  return save
 }
 it('offline creation selects three vehicle classes with authoritative numeric identities',async()=>{

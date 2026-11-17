@@ -29,11 +29,11 @@ export function createTriggerSaveSession(initialVersion:number,send=alarmTrigger
  const settle=async()=>{
   if(!pending)return
   const op=pending,result=await send(op.input,op.version,op.key)
-  if(result.saved!==true||result.trigger.trigger_id!==op.input.trigger_id||result.trigger.version!==op.version+1)throw Error('触发器保存响应不匹配')
+  if(result.saved!==true||result.trigger.trigger_id!==op.input.trigger_id||result.trigger.version!==op.version+1)throw Error('告警规则保存响应不匹配')
   version=result.trigger.version;last=result;pending=undefined
  }
  return {save:async(input:TriggerInput)=>{
-  if(busy)throw Error('触发器正在保存')
+  if(busy)throw Error('告警规则正在保存')
   busy=true
   try{
    const desired=structuredClone(input),previous=pending?.input

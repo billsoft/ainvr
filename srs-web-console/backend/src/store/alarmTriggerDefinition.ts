@@ -48,7 +48,7 @@ export interface AssignmentZone {
 const fail=(code:string,message:string):never=>{throw new AlarmConfigError(code,message);};
 export function parseTriggerDefinition(input:unknown):TriggerDefinition {
   const parsed=definitionSchema.safeParse(input);
-  if(!parsed.success)return fail('invalid_trigger','触发器定义无效');
+  if(!parsed.success)return fail('invalid_trigger','告警规则定义无效');
   const d=parsed.data;
   if(d.region_state){
     const r=d.region_state;
@@ -98,20 +98,19 @@ export function compileAssignment(
 ){
   const d=parseTriggerDefinition(definition),a=parseTriggerAssignment(input);
   if(!Number.isSafeInteger(definitionVersion)||definitionVersion<1||!Number.isSafeInteger(executionVersion)||executionVersion<1)return fail('invalid_version','规则版本无效');
-  if(a.trigger_id!==d.trigger_id)return fail('trigger_changed','选用与触发器不匹配');
+  if(a.trigger_id!==d.trigger_id)return fail('trigger_changed','选用与告警规则不匹配');
   if(d.state!=='enabled')return null;
   if(source.channel_id!==a.processor_id||source.input_stream_id!==a.input_stream_id||
     source.geometry_revision!==a.geometry_revision||source.label_map_version!==a.label_map_version)return fail('source_changed','来源或模型目录已变化');
   if(!source.stream_fingerprint||!/^[a-f0-9]{64}$/.test(source.stream_fingerprint)||!source.observed_at||!Number.isFinite(Date.parse(source.observed_at)))return fail('source_unavailable','来源证据尚未确认');
   if(d.group&&!source.tracking_available)return fail('tracking_required','组合条件需要支持跟踪的通道');
   if(d.region_state){
-    if(a.zone_id===null)return fail('zone_required','区域状态必须绑定热区，不能选用到整个画面');
     if(d.region_state.operator!=='presence'&&!source.tracking_available)return fail('tracking_required','区域人数需要有效人员跟踪，检测框不能当作人数');
     if(d.region_state.operator==='presence'&&!source.region_capabilities?.some(c=>c.ready&&c.event_kind===d.region_state!.event_kind&&d.labels.every(l=>c.label_ids.includes(l.label_id))))
       return fail('capability_unavailable','通道尚未验证此安全事件的同帧观测能力，请保留草稿');
   }
   if(!source.tracking_available&&!(source.detection_available&&d.alarm_enabled&&['appearance','region_approach','region_enter'].includes(d.behavior)&&d.duration_ms===0&&!a.entry_edges.length&&!a.exit_edges.length&&!zone?.erp_wrap))
-    return fail('tracking_required','此规则需要可靠跟踪；无跟踪仅支持无持续时间、无方向的出现、碰撞侵入及接近状态。');
+    return fail('tracking_required','此规则需要可靠跟踪；无跟踪仅支持无持续时间、无方向的出现、进入区域及接近状态。');
   if(!Number.isSafeInteger(source.width)||source.width<=0||!Number.isSafeInteger(source.height)||source.height<=0)return fail('source_unavailable','原图尺寸尚未确认');
   if(d.target_model&&(!source.target_model||d.target_model.name!==source.target_model.name||d.target_model.adapter!==source.target_model.adapter||d.target_model.mode!==source.target_model.mode))return fail('model_unavailable','请选用相同模型的 AI 通道');
   if(d.labels.some(l=>!source.labels.some(s=>s.label_id===l.label_id&&(s.name||s.description||s.label_id)===l.name&&(l.description===undefined||l.description===s.description))))return fail('labels_unavailable','模型不支持所选目标，请确认目标映射');

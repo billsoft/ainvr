@@ -7,11 +7,11 @@ export type TriggerBehavior='appearance'|'region_approach'|'region_enter'|'regio
 export const triggerBehaviors:{id:TriggerBehavior;name:string;level:number;help:string;zone:boolean}[]=[
  {id:'appearance',name:'出现',level:1,zone:false,help:'目标出现在画面中，可要求连续出现满设定秒数。不需要布防区，也可限定到热区。'},
  {id:'region_approach',name:'接近',level:2,zone:true,help:'进入热区外侧的接近范围，例如坠落区边缘。'},
- {id:'region_enter',name:'碰撞侵入',level:3,zone:true,help:'检测框与热区相交或接触，例如禁区；首次就在区内也会触发。'},
+ {id:'region_enter',name:'进入区域',level:3,zone:true,help:'碰到或进入热区即告警，例如禁区；一出现就在区内也算。'},
  {id:'region_traverse',name:'穿过',level:4,zone:true,help:'从热区一条边进入、另一条边离开，即闯过布防区。'},
 ]
 /** Display names, including behaviors recorded by earlier configurations. */
-export const behaviorNames:Record<string,string>={appearance:'出现',region_approach:'接近',region_contact:'接触',region_enter:'碰撞侵入',region_traverse:'穿过',line_crossing:'越线'}
+export const behaviorNames:Record<string,string>={appearance:'出现',region_approach:'接近',region_contact:'接触',region_enter:'进入区域',region_traverse:'穿过',line_crossing:'越线'}
 export const needsZone=(behavior:TriggerBehavior)=>behavior!=='appearance'
 
 /** Edge indexes of the zone polygon; empty means any direction. */

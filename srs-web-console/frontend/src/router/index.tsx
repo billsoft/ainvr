@@ -30,7 +30,7 @@ export const router = createBrowserRouter([
       { index: true, element: <Navigate to="/monitor" replace /> },
       { path: 'dashboard', element: <DashboardPage /> },
       { path: 'smart-search', element: <SmartSearchRedirect />, errorElement: <RouteErrorBoundary /> },
-      // 告警、统计分析：中间主内容 + 右侧栏（触发规则/计数器）。子路由只表示“右栏要打开”，页面本身常驻。
+      // 告警、统计分析：中间主内容 + 右侧栏（告警规则/计数器）。子路由只表示“右栏要打开”，页面本身常驻。
       {
         path: 'alarms',
         element: <AlarmSection />,

@@ -86,7 +86,7 @@ export function presetRange(preset: RangePreset, now: Date = new Date()): { from
   return { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(now) }
 }
 
-/** 范围展示触发器用的短格式（不带秒）："09-17 16:25"——页面上那个按钮
+/** 范围展示告警规则用的短格式（不带秒）："09-17 16:25"——页面上那个按钮
  * 只是给个大概范围的一瞥，秒级精度加进去只会变吵，真要看多精确进弹窗
  * 底部摘要看 formatRangeFull。 */
 export function formatRangeShort(d: Date): string {

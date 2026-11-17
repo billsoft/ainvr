@@ -111,7 +111,7 @@ export function alarmAnalyticsCsv(result: AlarmAnalyticsResult, query: AlarmAnal
     ...(query.event_kind === 'spatial' ? [['空间行为最高阶段', '告警数'], ...result.types.map(row => [row.id, row.total])] : []),
     ['趋势起点', '趋势终点（不含）', '告警数'], ...result.trend.map(row => [row.from, row.to, row.total]),
     ['通道', '热区', '名称', '涉及告警', '其中待审核', '人工已审核', '人工判为误报'], ...result.zones.map(row => [row.channel_id, row.zone_id, row.name, row.total, row.pending, row.human_reviewed, row.human_false_positive]),
-    ['触发器', '名称', '涉及告警', '其中待审核', '人工已审核', '人工判为误报', '执行规则版本'], ...result.triggers.map(row => [row.trigger_id, row.name, row.total, row.pending, row.human_reviewed, row.human_false_positive, row.rule_versions.join(' / ')]),
+    ['告警规则', '名称', '涉及告警', '其中待审核', '人工已审核', '人工判为误报', '执行规则版本'], ...result.triggers.map(row => [row.trigger_id, row.name, row.total, row.pending, row.human_reviewed, row.human_false_positive, row.rule_versions.join(' / ')]),
     ['星期（周一=0）', '小时', '告警数'], ...result.week.flatMap((hours, day) => hours.map((count, hour) => [day, hour, count])),
     ['发生至首次人工审核（毫秒，含采集入库延迟）', '中位数', 'P90', '有效样本', '未知'], ['', result.quality.wait.median_ms, result.quality.wait.p90_ms, result.quality.wait.samples, result.quality.wait.unknown],
     ['人工误报占比（非模型准确率）', result.quality.false_positive_ratio, '人工明确结论样本', result.quality.human_reviewed],

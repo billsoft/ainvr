@@ -46,7 +46,7 @@ it('布防里为热区选用计数器：点画面上的边设置计数线，保�
  fireEvent.click(screen.getByRole('button',{name:'选择热区 门口'}))
  fireEvent.click(screen.getByRole('button',{name:'为 门口 选用计数器'}))
  expect(screen.queryByRole('region',{name:'门口 的选用'})).not.toBeInTheDocument()
- expect(screen.queryByRole('button',{name:'为 门口 选用触发器'})).not.toBeInTheDocument()
+ expect(screen.queryByRole('button',{name:'为 门口 选用告警规则'})).not.toBeInTheDocument()
  expect(screen.queryByLabelText('热区名称')).not.toBeInTheDocument()
  expect(screen.getByText('先点击下方计数器选用，再在画面上选择计数边。')).toBeInTheDocument()
  expect(screen.queryByRole('button',{name:'设置计数线：边 2'})).not.toBeInTheDocument()
@@ -61,7 +61,7 @@ it('布防里为热区选用计数器：点画面上的边设置计数线，保�
  expect(screen.getByRole('heading',{name:'已关联计数器 1'})).toBeInTheDocument()
  expect(screen.getByRole('button',{name:'调整计数线 客流 · 门口'})).toHaveTextContent('已关联')
  expect(screen.getByLabelText('热区名称')).toHaveValue('门口')
- expect(screen.getByRole('button',{name:'为 门口 选用触发器'})).toBeInTheDocument()
+ expect(screen.getByRole('button',{name:'为 门口 选用告警规则'})).toBeInTheDocument()
  expect(send).not.toHaveBeenCalled()
 
 
@@ -209,7 +209,7 @@ it('从参数库读回的计数线字段顺序不同，不算改动：未修改�
  const stored:ArmingDocument={...base,counter_bindings:[{binding_id:'flow-1',counter_id:'visitors',input_stream_id:'cam',processor_id:'ai',zone_id:'z',zone_version:1,geometry_revision:'g:1000x500',label_map_version:'lm',direction:{edge:'b',kind:'line',in_side:'inward'} as never}]}
  render(<ArmingModal sourceId="cam" sourceName="大门" base={stored} reference={{url:'image',width:1000,height:500,geometryRevision:'g:1000x500',capturedAt:'now'}}
   definitions={[]} sources={[source]} counters={[counter]} send={vi.fn()} onClose={vi.fn()} onSaved={vi.fn()}/>)
- fireEvent.click(screen.getByRole('button',{name:'门口：触发器 0，计数器 1'}))
+ fireEvent.click(screen.getByRole('button',{name:'门口：告警规则 0，计数器 1'}))
  fireEvent.click(screen.getByRole('button',{name:'调整计数线 客流 · 门口'}))
  expect(screen.queryByRole('group',{name:'以前的记录'})).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'从左向右'}))

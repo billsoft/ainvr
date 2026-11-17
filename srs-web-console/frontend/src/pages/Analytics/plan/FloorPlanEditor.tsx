@@ -155,7 +155,7 @@ export function FloorPlanEditor({ context = 'flow', zones, counters, counts, cou
               <label key={k} className="flex flex-col gap-0.5 text-xs text-ink-subtle">{label}<input type="number" aria-label={label} value={Math.round(placement[k])} className={field} onChange={e => { const v = Number(e.target.value); if (Number.isFinite(v)) setPl({ [k]: v }) }} /></label>)}</div>
             <button type="button" className="btn-secondary !px-2.5 !py-1 text-xs" onClick={() => editPlan(p => unplaceZone(p, zone.key))}>从本平面图移除</button>
           </> : <button type="button" className="btn-primary !px-2.5 !py-1 text-xs" onClick={() => editPlan(p => placeZone(p, zones, zone.key))}>加入本平面图</button>}
-          <p className="rounded-base border border-line bg-surface-page p-2 text-xs text-ink-subtle">{context === 'flow' ? '名称、形状和关联的计数器在布防里改。' : '热区名称、检测形状和关联触发器在布防里改；这里仅保存展示位置。'}</p>
+          <p className="rounded-base border border-line bg-surface-page p-2 text-xs text-ink-subtle">{context === 'flow' ? '名称、形状和关联的计数器在布防里改。' : '热区名称、检测形状和关联告警规则在布防里改；这里仅保存展示位置。'}</p>
           <Link to="/monitor" className="btn-secondary !px-2.5 !py-1 text-xs">在布防中修改形状和名称</Link>
           <p className="text-[11px] text-ink-faint">到实时监看，点对应通道的“布防”。</p>
         </section> : shape ? <section aria-label="图形属性" className="space-y-2">

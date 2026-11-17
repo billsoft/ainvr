@@ -159,7 +159,7 @@ test('adding region rules does not change legacy counter events, coverage or per
   }
 });
 test('invalid or contradictory region contracts fail closed',()=>{
-  for(const change of [{behavior:'region_enter'},{counter_id:'c'},{alarm_enabled:false},{duration_ms:1000},{zone_id:null},
+  for(const change of [{behavior:'region_enter'},{counter_id:'c'},{alarm_enabled:false},{duration_ms:1000},
     {review:{enabled:true}},{region_state:{...base.region_state,duration_ms:0}},
     {region_state:{...base.region_state,max_gap_ms:5001}},{region_state:{...base.region_state,threshold:0}},
     {region_state:{...base.region_state,operator:'presence'}},{region_state:{...base.region_state,unexpected:true}}]){
@@ -175,4 +175,16 @@ test('removed labels invalidate pending region evidence; restoring a compatible 
  const restored={model:{label_map_version:'restored',compatible_label_versions:[{version:'lm',label_ids:['person']}]}};
  s.step(frame(4,2000,{patch:restored}));assert.equal(s.events.length,0);
  s.step(frame(5,3000,{patch:restored}));assert.equal(s.events.length,1);
+});
+
+test('a region condition bound to the whole picture counts targets anywhere in the frame',()=>{
+  const whole={...base,zone_id:null,zone_version:null};delete whole.points;
+  const checked=validateRule(whole);assert.equal(checked.zone_id,null);assert.equal(checked.points,undefined);
+  const corner={trackPatch:{bbox:{x:10,y:10,w:20,h:50}}};
+  const zoned=scenario(),anywhere=scenario(whole);
+  for(const [i,ms] of [[1,0],[2,500],[3,1000],[4,1500]].map(x=>x)){zoned.step(frame(i,ms,{count:1,...corner}));anywhere.step(frame(i,ms,{count:1,...corner}));}
+  assert.equal(zoned.events.length,1,'outside the zone the zone is empty');
+  assert.equal(anywhere.events.length,0,'the person is in the picture');
+  const empty=scenario(whole);for(const [i,ms] of [[1,0],[2,500],[3,1000]])empty.step(frame(i,ms));
+  assert.equal(empty.events.length,1);assert.equal(empty.events[0].event_kind,'region_absence');
 });

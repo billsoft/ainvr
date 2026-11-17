@@ -11,9 +11,9 @@ function open(extra={}){
 const next=()=>fireEvent.click(screen.getByRole('button',{name:'下一步'}))
 it('四步弹窗独立创建，无通道、目标搜索或复制入口',async()=>{
  const {save}=open()
- expect(screen.getByRole('dialog',{name:'新建触发器'})).toBeInTheDocument()
+ expect(screen.getByRole('dialog',{name:'新建告警规则'})).toBeInTheDocument()
  expect(screen.queryByRole('searchbox')).not.toBeInTheDocument()
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'人员出现'}})
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'人员出现'}})
  next();fireEvent.click(screen.getByRole('button',{name:'人员'}))
  expect(within(screen.getByRole('region',{name:'已选目标'})).getByRole('button',{name:'移除目标 人员'})).toBeInTheDocument()
  next();fireEvent.change(screen.getByLabelText('连续出现（秒）'),{target:{value:'2.5'}})
@@ -26,7 +26,7 @@ it('四步弹窗独立创建，无通道、目标搜索或复制入口',async()=
 })
 it('接近按百分比设置，取消草稿不保存',()=>{
  const {save,cancel}=open()
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'危险区'}})
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'危险区'}})
  fireEvent.click(screen.getByRole('button',{name:/^接近/}))
  next();fireEvent.click(screen.getByRole('button',{name:'人员'}));next()
  expect(screen.getByLabelText('接近距离（画面宽度 %）')).toBeInTheDocument()
@@ -50,18 +50,18 @@ it('共享定义编辑展示影响范围且保存失败不丢草稿',async()=>{
 
 it('selected targets can be removed and Escape protects dirty drafts',()=>{
  const {save,cancel}=open()
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'测试'}});next()
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'测试'}});next()
  fireEvent.click(screen.getByRole('button',{name:'人员'}))
  fireEvent.click(screen.getByRole('button',{name:'移除目标 人员'}))
  expect(screen.getByText('点击下方类别选择，可多选')).toBeInTheDocument()
  fireEvent.keyDown(screen.getByRole('dialog'),{key:'Escape'})
- expect(screen.getByRole('alertdialog',{name:'放弃触发器修改'})).toBeInTheDocument();expect(cancel).not.toHaveBeenCalled()
+ expect(screen.getByRole('alertdialog',{name:'放弃告警规则修改'})).toBeInTheDocument();expect(cancel).not.toHaveBeenCalled()
  fireEvent.click(screen.getByRole('button',{name:'继续编辑'}));expect(save).not.toHaveBeenCalled()
 })
 
 it('top right close uses the same discard flow and never saves',()=>{
  const {save,cancel}=open()
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'未保存'}})
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'未保存'}})
  fireEvent.click(screen.getByRole('button',{name:'关闭'}))
  expect(cancel).not.toHaveBeenCalled();expect(save).not.toHaveBeenCalled()
  fireEvent.click(screen.getByRole('button',{name:'放弃修改'}));expect(cancel).toHaveBeenCalledOnce()
@@ -70,7 +70,7 @@ it('top right close uses the same discard flow and never saves',()=>{
 
 it('new alarms use enabled/all-day/review defaults, hiding usage and lifecycle choices',async()=>{
  const {save}=open()
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'默认告警'}})
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'默认告警'}})
  next();fireEvent.click(screen.getByRole('button',{name:'人员'}));next();next()
  expect(screen.queryByRole('group',{name:'用途'})).not.toBeInTheDocument()
  expect(screen.queryByLabelText('保存后状态')).not.toBeInTheDocument()
@@ -83,7 +83,7 @@ it('new alarms use enabled/all-day/review defaults, hiding usage and lifecycle c
 })
 it('optional supplementary instructions preserve the current prompt default when cleared',async()=>{
  const {save}=open()
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'补充审核'}})
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'补充审核'}})
  next();fireEvent.click(screen.getByRole('button',{name:'人员'}));next();next()
  fireEvent.click(screen.getByText('高级审核设置（可选）'))
  const input=screen.getByLabelText('补充审核要求（可选）')
@@ -106,7 +106,7 @@ it('editing paused legacy recording rules never silently enables alarms or AI re
 
 it('a single label with a count of 3 saves a count condition with a 1 s miss tolerance',async()=>{
  const {save}=open()
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'三人同框'}})
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'三人同框'}})
  next();fireEvent.click(screen.getByRole('button',{name:'人员'}));next()
  expect(screen.queryByLabelText('类别关系')).not.toBeInTheDocument()
  expect(screen.queryByLabelText(/容许漏检/)).not.toBeInTheDocument()
@@ -119,7 +119,7 @@ it('a single label with a count of 3 saves a count condition with a 1 s miss tol
 })
 it('two labels default to OR with one target: an ordinary single-target trigger',async()=>{
  const {save}=open()
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'人或车'}})
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'人或车'}})
  next();fireEvent.click(screen.getByRole('button',{name:'人员'}));fireEvent.click(screen.getByRole('button',{name:'汽车'}));next()
  expect(screen.getByLabelText('类别关系')).toHaveValue('any')
  expect(screen.getByLabelText('至少几个目标')).toHaveValue(1)
@@ -129,8 +129,8 @@ it('two labels default to OR with one target: an ordinary single-target trigger'
 })
 it('AND requires every label at the same time, at least one of each',async()=>{
  const {save}=open()
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'人和车'}})
- fireEvent.click(screen.getByRole('button',{name:/^碰撞侵入/}))
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'人和车'}})
+ fireEvent.click(screen.getByRole('button',{name:/^进入区域/}))
  next();fireEvent.click(screen.getByRole('button',{name:'人员'}));fireEvent.click(screen.getByRole('button',{name:'汽车'}));next()
  fireEvent.change(screen.getByLabelText('类别关系'),{target:{value:'all'}})
  // At least one of each category: the count cannot be below the number of categories.
@@ -144,7 +144,7 @@ it('AND requires every label at the same time, at least one of each',async()=>{
 })
 it('passing through uses a completion window, 3 s by default',()=>{
  open()
- fireEvent.change(screen.getByLabelText('触发器名称'),{target:{value:'两人闯过'}})
+ fireEvent.change(screen.getByLabelText('告警规则名称'),{target:{value:'两人闯过'}})
  fireEvent.click(screen.getByRole('button',{name:/^穿过/}))
  next();fireEvent.click(screen.getByRole('button',{name:'人员'}));next()
  fireEvent.change(screen.getByLabelText('至少几个目标'),{target:{value:'2'}})
