@@ -54,6 +54,21 @@ describe('stream health: interruptions are visible, not silent', () => {
     expect(monitor.snapshot().problems).toEqual([]);
   });
 
+  it('a channel retrying (error ↔ starting) is one interruption until it actually runs', async () => {
+    const { monitor, log, state, advance } = setup([{ id: 'ai-1', name: '后门', state: 'error' }], []);
+    await monitor.poll(); advance(31000); await monitor.poll();
+    for (const s of ['starting', 'error', 'starting', 'error']) {
+      state.ai = [{ id: 'ai-1', name: '后门', state: s }];
+      advance(10000); await monitor.poll();
+    }
+    expect(monitor.snapshot().problems).toHaveLength(1);
+    expect(log).toHaveBeenCalledTimes(1);
+    state.ai = [{ id: 'ai-1', name: '后门', state: 'running' }];
+    advance(10000); await monitor.poll();
+    expect(monitor.snapshot().problems).toEqual([]);
+    expect(log).toHaveBeenLastCalledWith('INFO', expect.stringMatching(/后门.*恢复.*1 分 21 秒/));
+  });
+
   it('when a service cannot be read the state is unknown, not healthy', async () => {
     const log = vi.fn();
     const monitor = createStreamHealthMonitor({ readAi: async () => { throw Error('down'); }, readRecorder: async () => [], log });

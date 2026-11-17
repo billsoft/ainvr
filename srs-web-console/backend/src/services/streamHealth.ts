@@ -13,12 +13,13 @@ export interface StreamProblem {
 }
 export interface StreamHealthSnapshot { known: boolean; checkedAt: number | null; problems: StreamProblem[] }
 
-/** AI states that mean "meant to run but not producing results". Stopped or idle channels were turned off. */
-const AI_INTERRUPTED = new Set(['reconnecting', 'error', 'failed']);
+/** AI states that mean "meant to run but not producing results". Stopped or idle channels were
+ * turned off. A channel retrying cycles error ↔ starting; only running ends the interruption. */
+const AI_INTERRUPTED = new Set(['reconnecting', 'error', 'failed', 'starting']);
 /** Recorder states that are not a blind spot: writing, or not meant to record now. */
 const RECORDING_FINE = new Set(['recording', 'disabled']);
 
-const AI_TEXT: Record<string, string> = { reconnecting: '识别中断，正在反复重连', error: '识别出错已停止', failed: '识别出错已停止' };
+const AI_TEXT: Record<string, string> = { reconnecting: '识别中断，正在反复重连', error: '识别出错，正在重试', failed: '识别出错，正在重试', starting: '识别未能启动，正在重试' };
 
 export function formatGap(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
