@@ -21,7 +21,7 @@ describe('AppLayout 全局布局', () => {
     render(<RouterProvider router={router} />)
     const nav = screen.getByRole('navigation', { name: '主导航' })
     expect(nav).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /仪表盘/ })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /性能监测/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /AI 通道/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /接入管理/ })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /实时监看/ })).toBeInTheDocument()

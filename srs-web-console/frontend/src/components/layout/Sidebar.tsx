@@ -11,14 +11,14 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { to: '/dashboard', label: '仪表盘', icon: Gauge },
-  { to: '/ai-channels', label: 'AI 通道', icon: ScanFace },
-  { to: '/channels', label: '接入管理', icon: Video },
+  { to: '/analytics', label: '统计分析', icon: ChartColumn },
+  { to: '/alarms', label: '告警', icon: Bell },
   { to: '/monitor', label: '实时监看', icon: MonitorPlay },
   { to: '/playback', label: '录像回放', icon: Clapperboard },
   { to: '/recognition-history', label: '识别历史', icon: History },
-  { to: '/alarms', label: '告警', icon: Bell },
-  { to: '/analytics', label: '统计分析', icon: ChartColumn },
+  { to: '/channels', label: '接入管理', icon: Video },
+  { to: '/ai-channels', label: 'AI 通道', icon: ScanFace },
+  { to: '/dashboard', label: '性能监测', icon: Gauge },
   { to: '/config-center', label: '系统配置', icon: Layers },
   { to: '/about', label: '关于', icon: Info },
 ]

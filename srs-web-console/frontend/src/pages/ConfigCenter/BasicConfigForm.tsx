@@ -129,7 +129,7 @@ export function BasicConfigForm({ backendDoc, onSavePartial, onBusyChange }: Pro
           </Field>
         </div>
         {softWarn && <p className="text-xs text-danger-600">软上限应小于硬上限，请调整后再保存</p>}
-        <Field label="状态刷新间隔（毫秒）" hint="仪表盘概览和关于页的刷新间隔；历史曲线、日志与通道列表按各自周期刷新">
+        <Field label="状态刷新间隔（毫秒）" hint="性能监测概览和关于页的刷新间隔；历史曲线、日志与通道列表按各自周期刷新">
           <input type="number" min={1000} max={60000} step={1000} value={pollMs}
             onChange={(e) => { setPollMs(e.target.value); setDirty(true) }} className={inputCls} />
         </Field>
