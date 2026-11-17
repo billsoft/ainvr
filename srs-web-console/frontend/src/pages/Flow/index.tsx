@@ -13,16 +13,21 @@ import {ClearFlowDialog,type ClearScope} from './ClearFlowDialog'
 import {CounterDialog} from './CounterDialog'
 import {periodSlots} from './FlowChart'
 import {CounterStatistics} from './CounterStatistics'
+import {CounterLocations} from './CounterLocations'
 import {RecordsDrawer} from './RecordsDrawer'
 import {formatRangeLabel} from './counterText'
 import {DateTimeRangePicker} from '@/components/ui/DateTimeRangePicker'
 import {toDatetimeLocalValue} from '@/utils/timeRange'
 import {rangeOf,validateCustomRange,type Preset,type CustomRange} from './flowRange'
+import {useAnalyticsLink} from '../Analytics/analyticsLinkContext'
 
 const presets:{id:Exclude<Preset,'custom'>;name:string}[]=[{id:'today',name:'今天'},{id:'yesterday',name:'昨天'},{id:'7d',name:'近 7 天'},{id:'30d',name:'近 30 天'}]
 const choice='btn-secondary aria-pressed:border-primary aria-pressed:bg-primary-50 aria-pressed:text-primary'
 /** One page: each counter is one card with its numbers and its management actions. */
-export default function FlowPage(){
+export default function FlowPage({variant='full'}:{variant?:'full'|'manage'}={}){
+ const link=useAnalyticsLink(),sel=link.selection
+ // Beside the analysis this page only manages counters: its numbers come from the analysis's own query (one range, no polling here).
+ const statsOn=variant==='full'
  const [counters,setCounters]=useState<Counter[]|null>(null),[loadError,setLoadError]=useState('')
  const [names,setNames]=useState<Record<string,string>>({}),[labels,setLabels]=useState<{label_id:string;name:string}[]>([])
  const [preset,setPreset]=useState<Preset>('today'),[results,setResults]=useState<CounterResult[]|null>(null),[previous,setPrevious]=useState<Record<string,{in:number;out?:number}>>({})
@@ -56,6 +61,7 @@ export default function FlowPage(){
   return()=>{alive=false}
  },[])
  const query=useCallback(async(silent=false)=>{
+  if(!statsOn)return
   // Only the newest request may show its numbers: a slower earlier one is dropped.
   querying.current=true
   const id=++latest.current,range=rangeOf(preset,new Date(),custom);window_.current=range
@@ -74,13 +80,13 @@ export default function FlowPage(){
    setResults(now.items);setUpdated(new Date())
   }catch(e){if(id!==latest.current)return;setResults(null);setPrevious({});setQueryError(e instanceof Error?e.message:'统计读取失败')}
   finally{if(id===latest.current){setLoading(false);querying.current=false}}
- },[preset,custom])
+ },[preset,custom,statsOn])
  useEffect(()=>{void query()},[query,revision])
  // Live periods refresh themselves; past periods stay still.
- useEffect(()=>{if(preset==='yesterday'||preset==='custom')return;const t=setInterval(()=>{if(!document.hidden)void query(true)},30000);return()=>clearInterval(t)},[preset,query])
+ useEffect(()=>{if(!statsOn||preset==='yesterday'||preset==='custom')return;const t=setInterval(()=>{if(!document.hidden)void query(true)},30000);return()=>clearInterval(t)},[preset,query,statsOn])
  // Today's totals are cheap and independent from the slower trend/history query.
  useEffect(()=>{
-  if(preset!=='today')return
+  if(!statsOn||preset!=='today')return
   let stopped=false,timer:ReturnType<typeof setTimeout>
   const tick=async()=>{
    if(stopped)return
@@ -101,12 +107,12 @@ export default function FlowPage(){
   const visible=()=>{if(!document.hidden){clearTimeout(timer);void tick()}}
   timer=setTimeout(()=>void tick(),2000);document.addEventListener('visibilitychange',visible)
   return()=>{stopped=true;clearTimeout(timer);document.removeEventListener('visibilitychange',visible)}
- },[preset,revision])
+ },[preset,revision,statsOn])
  const zoneName=(z:{source_id:string;zone_name:string|null})=>`${names[z.source_id]??`画面（${z.source_id.slice(0,8)}）`} · ${z.zone_name??'已移除的热区'}`
  const byId=useMemo(()=>new Map((results??[]).map(r=>[r.counter.counter_id,r])),[results])
  const range=window_.current
  const slots=useMemo(()=>periodSlots(range.from,range.to,range.bucket),[range,results])
- const reload=(message:string)=>{setEditing(null);setRemoving(null);setNotice(message);setRevision(n=>n+1)}
+ const reload=(message:string)=>{setEditing(null);setRemoving(null);setNotice(message);setRevision(n=>n+1);link.bump()}
  const setState=async(c:Counter,state:Counter['state'])=>{
   setBusy(c.counter_id);setCardError(e=>({...e,[c.counter_id]:''}))
   try{await createCounterSaveSession(c.version).save({counter_id:c.counter_id,name:c.name,labels:c.labels,method:c.method,outputs:c.outputs,names:c.names,occupancy:c.occupancy,max_gap_ms:c.max_gap_ms,state})
@@ -127,11 +133,17 @@ export default function FlowPage(){
   if(!selected.length)return
   setClearing({counterId:c.counter_id,counterName:c.name,label:bindingId?zoneName(selected[0]!):`全部 ${selected.length} 个统计位置（含已取消关联）`,bindingIds:selected.map(z=>z.binding_id),from:currentRange.from.toISOString(),to:to.toISOString()})
  }
+ const clearAt=(c:Counter,r:CounterResult,bindingId:string,span:{from:string;to:string})=>{
+  const to=new Date(Math.min(Date.parse(span.to),Date.now()))
+  const z=r.zones.find(x=>x.binding_id===bindingId)
+  if(!z||to.getTime()<=Date.parse(span.from))return
+  setClearing({counterId:c.counter_id,counterName:c.name,label:zoneName(z),bindingIds:[bindingId],from:span.from,to:to.toISOString()})
+ }
  const list=counters??[]
  return <main className="alarm-workspace space-y-4 p-4 md:p-6">
   <AlarmInputNotice/>
   <header className="flex flex-wrap items-center gap-3">
-   <div className="min-w-0 flex-1"><h1 className="page-title">流量统计</h1><p className="mt-1 text-sm text-ink-subtle">统计经过计数线的目标数量。计数器在这里定义，在实时监看的布防中选用到热区。</p></div>
+   <div className="min-w-0 basis-full [@container(min-width:40rem)]:flex-1 [@container(min-width:40rem)]:basis-0"><h1 className="page-title [@container(max-width:40rem)]:sr-only">计数统计</h1><p className="mt-1 text-sm text-ink-subtle">统计经过计数线的目标数量。计数器在这里定义，在实时监看的布防中选用到热区。</p></div>
    <button type="button" className="btn-primary" onClick={()=>setEditing('new')}><Plus size={16} aria-hidden="true"/>新建计数器</button>
   </header>
   {notice&&<p role="status" className="rounded-base border border-line bg-surface p-3 text-sm">{notice}</p>}
@@ -143,15 +155,16 @@ export default function FlowPage(){
    <div className="rounded-panel border border-line p-4"><p className="text-sm font-semibold text-ink">2. 选用到热区</p><p className="mt-1 text-sm text-ink-subtle">在实时监看点“布防”，选中热区后点“选用计数器”，在画面上设置计数线。</p><Link to="/monitor" className="btn-secondary mt-3"><MapPin size={16} aria-hidden="true"/>前往实时监看</Link></div>
    <div className="rounded-panel border border-line p-4"><p className="text-sm font-semibold text-ink">3. 查看结果</p><p className="mt-1 text-sm text-ink-subtle">这里自动显示今天的进出数量和分时趋势，实时画面上也会显示计数线和今日数字。</p></div>
   </section>}
+  {!!list.length&&variant==='manage'&&sel&&<p className="text-xs text-ink-subtle">数量按“数据分析”里选的时段：{sel.range.label}。在那里切换时间。</p>}
   {!!list.length&&<>
-   <div className="flex flex-wrap items-center gap-2">
+   {statsOn&&<div className="flex flex-wrap items-center gap-2">
     <div role="group" aria-label="时间范围" className="flex flex-wrap gap-2">{presets.map(p=><button key={p.id} type="button" aria-pressed={preset===p.id} className={choice} onClick={()=>setPreset(p.id)}>{p.name}</button>)}</div>
     <button type="button" aria-label="自选时间范围" aria-pressed={preset==='custom'} className={`${choice} min-h-11`} onClick={()=>{const r=rangeOf(preset,new Date(),custom);setPickerRange({from:toDatetimeLocalValue(r.from),to:toDatetimeLocalValue(new Date(r.to.getTime()-(['custom','yesterday'].includes(preset)?1000:0)))})}}><CalendarClock size={16} aria-hidden="true"/>{preset==='custom'?'自选范围':'自选时间'}</button>
     <span className="ml-auto flex items-center gap-2 text-xs text-ink-subtle">{updated&&<>{formatRangeLabel(range.from,range.to)} · {preset==='today'?'计数约 2 秒更新，趋势每 30 秒刷新 · ':preset==='yesterday'||preset==='custom'?'':'每 30 秒刷新 · '}更新于 {updated.toLocaleTimeString('zh-CN')}</>}
      <button type="button" className="btn-secondary px-2.5" aria-label="立即刷新" disabled={loading} onClick={()=>void query()}><RefreshCw size={16} aria-hidden="true" className={loading?'animate-spin':''}/></button></span>
-   </div>
-   {preset==='custom'&&custom&&<p className="text-sm text-ink-subtle" aria-label="当前自选时间范围">{custom.from.toLocaleString('zh-CN',{hour12:false})} — {custom.to.toLocaleString('zh-CN',{hour12:false})}<span className="ml-2 text-xs text-ink-faint">按当前设备时区 · 固定范围，点击刷新重新查询</span></p>}
-   {queryError&&<p role="alert" className="rounded-base border border-danger bg-danger-50 p-3 text-sm text-danger-700">{queryError}。<button type="button" className="btn-secondary ml-2" onClick={()=>void query()}>重试</button></p>}
+   </div>}
+   {statsOn&&preset==='custom'&&custom&&<p className="text-sm text-ink-subtle" aria-label="当前自选时间范围">{custom.from.toLocaleString('zh-CN',{hour12:false})} — {custom.to.toLocaleString('zh-CN',{hour12:false})}<span className="ml-2 text-xs text-ink-faint">按当前设备时区 · 固定范围，点击刷新重新查询</span></p>}
+   {statsOn&&queryError&&<p role="alert" className="rounded-base border border-danger bg-danger-50 p-3 text-sm text-danger-700">{queryError}。<button type="button" className="btn-secondary ml-2" onClick={()=>void query()}>重试</button></p>}
    <div className="grid gap-4">{list.map(c=>{
     const error=cardError[c.counter_id]
     if(c.deleting)return <article key={c.counter_id} aria-label={c.name} className="ui-panel flex flex-col gap-3 border-warning bg-amber-50 p-4">
@@ -168,6 +181,7 @@ export default function FlowPage(){
        <h2 className="flex flex-wrap items-center gap-2 text-base font-semibold text-ink">{c.name}{c.state==='paused'&&<span className="rounded-full bg-surface-page px-2.5 py-0.5 text-xs font-normal text-ink-subtle">已暂停</span>}</h2>
        <p className="mt-1 text-xs text-ink-subtle">{methodNames[c.method]} · {c.labels.map(l=>labelDisplay(l.name)).join('、')} · {c.outputs==='both'?`${c.names.in} / ${c.names.out}`:`只计“${c.names.in}”`}</p>
       </div>
+      {sel&&<label className="flex min-h-11 items-center gap-2 text-sm text-ink" title={sel.canSelect(c.counter_id)?undefined:'口径与已选计数器不同，或当前统计对象不包含它'}><input type="checkbox" className="h-4 w-4 accent-primary" checked={sel.ids.includes(c.counter_id)} disabled={!sel.canSelect(c.counter_id)} onChange={()=>sel.toggle(c.counter_id)}/>纳入分析</label>}
       <div className="flex flex-wrap gap-2">
        {r&&r.zones.length>0&&<button type="button" className="btn-secondary min-h-11" onClick={()=>openClear(c,r)}><Eraser size={16} aria-hidden="true"/>清理本期数据</button>}
        <button type="button" className="btn-secondary" disabled={busy===c.counter_id} onClick={()=>setEditing(c)}><Pencil size={16} aria-hidden="true"/>编辑</button>
@@ -176,7 +190,10 @@ export default function FlowPage(){
       </div>
      </header>
      {error&&<p role="alert" className="text-sm text-danger-700">{error}</p>}
-     {r&&zones.length?<CounterStatistics counter={c} result={r} previous={prev} comparison={range.compare} bucket={range.bucket} slots={slots} zoneName={zoneName} onClear={bindingId=>openClear(c,r,bindingId)} onRecords={(output,bindingId)=>{const currentRange=rangeOf(preset,new Date(),custom);setRecords({result:r,output,bindingId,from:currentRange.from.toISOString(),to:currentRange.to.toISOString()})}}/>
+     {variant==='manage'?(sel?<CounterLocations counter={c} sel={sel} zoneName={zoneName} onClear={bindingId=>{const mine=sel.items?.find(i=>i.counter.counter_id===c.counter_id);if(mine)clearAt(c,mine,bindingId,sel.range)}}/>
+      :c.bindings.length?<p className="text-xs text-ink-subtle">已选用 {c.bindings.length} 个统计位置。</p>
+      :<div className="rounded-base border border-dashed border-line p-4 text-sm text-ink-subtle">还没有选用到热区，暂不计数。<Link to="/monitor" className="ml-1 text-primary hover:underline">去实时监看布防</Link></div>)
+      :statsOn&&r&&zones.length?<CounterStatistics counter={c} result={r} previous={prev} comparison={range.compare} bucket={range.bucket} slots={slots} zoneName={zoneName} onClear={bindingId=>openClear(c,r,bindingId)} onRecords={(output,bindingId)=>{const currentRange=rangeOf(preset,new Date(),custom);setRecords({result:r,output,bindingId,from:currentRange.from.toISOString(),to:currentRange.to.toISOString()})}}/>
       :!r&&zones.length?<p role="status" className="py-6 text-center text-sm text-ink-subtle">{loading?'正在读取各热区统计…':'统计暂不可用，请重试。'}</p>
       :<div className="rounded-base border border-dashed border-line p-4 text-sm text-ink-subtle">{c.bindings.length?'所选时段没有计数位置，可切换时间范围查看。':<>还没有选用到热区，暂不计数。<Link to="/monitor" className="ml-1 text-primary hover:underline">去实时监看布防</Link></>}</div>}
     </article>})}</div>

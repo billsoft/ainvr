@@ -135,7 +135,7 @@ function PreviewDialog({ initial, onClose, onKeep, mode = 'design', sources = []
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4 sm:p-6">
           <section aria-label={mode === 'create' ? '场景启用步骤' : '设计预览边界'} className="rounded-base border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
             <strong>{mode === 'create' ? '保存后还需两步才会告警' : '设计预览 · 未接入真实规则 · 未启用'}</strong>
-            <p className="mt-1">{mode === 'create' ? '① 在实时监看的布防中把它绑定到热区；② 回到告警触发列表启用。建议先观察一段时间再正式使用。' : '仅创建本次页面内存草稿；刷新或离开页面即丢失。不请求真实能力、不调用保存接口、不写入存储、不生成告警。'}</p>
+            <p className="mt-1">{mode === 'create' ? '① 在实时监看的布防中把它绑定到热区；② 回到“告警 → 触发规则”启用。建议先观察一段时间再正式使用。' : '仅创建本次页面内存草稿；刷新或离开页面即丢失。不请求真实能力、不调用保存接口、不写入存储、不生成告警。'}</p>
             {mode === 'design' && <p className="mt-1">阈值为起始建议，需现场验证；缺少实际标签或已验证能力时不能继续创建。</p>}
           </section>
           <p className="text-xs text-ink-subtle">{mode === 'create' ? '切换场景会重置下方条件。' : '切换模板会重置示例条件与模拟。'}</p>

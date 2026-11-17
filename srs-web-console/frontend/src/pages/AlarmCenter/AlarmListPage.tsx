@@ -227,25 +227,25 @@ export default function AlarmListPage(){
  const counts=new Map<string,number>();for(const r of rows)counts.set(r.channel_id,(counts.get(r.channel_id)??0)+1)
  const open=rows.find(r=>r.alarm_id===detail?.id)
  const maxToday=Math.max(1,...triggerBehaviors.map(b=>today?.[b.id]??0))
- return <div className="flex h-full min-h-0 flex-col gap-0 bg-surface-page md:flex-row">
-  <nav aria-label="告警通道" className="flex shrink-0 flex-col border-line bg-surface md:w-56 md:border-r">
-   <div className="px-5 pb-2 pt-5"><h1 className="page-title">告警列表</h1>
+ return <div className="flex h-full min-h-0 flex-col gap-0 bg-surface-page [@container(min-width:56rem)]:flex-row">
+  <nav aria-label="告警通道" className="flex shrink-0 flex-col border-line bg-surface [@container(min-width:56rem)]:w-56 [@container(min-width:56rem)]:border-r">
+   <div className="px-5 pb-2 pt-5"><h1 className="page-title">告警记录</h1>
     <p className="mt-1.5 text-sm text-ink-subtle"><span className={`text-base font-semibold ${status==='pending'?'text-danger-700':'text-primary-600'}`}>{rows.length}{cursor?'+':''}</span> 条{status==='pending'?'未审核':status==='ai'?'已 AI 审核':status==='human'?'已人工审核':'告警'}（已加载）</p></div>
-   <div className="flex gap-1 overflow-x-auto p-3 md:flex-col">{[{id:'',name:'全部通道'},...channels].map(c=><button key={c.id||'all'} type="button" aria-pressed={scope.kind==='none'&&channel===c.id} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择通道':undefined} onClick={()=>setChannel(c.id)}
+   <div className="flex gap-1 overflow-x-auto p-3 [@container(min-width:56rem)]:flex-col">{[{id:'',name:'全部通道'},...channels].map(c=><button key={c.id||'all'} type="button" aria-pressed={scope.kind==='none'&&channel===c.id} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择通道':undefined} onClick={()=>setChannel(c.id)}
     className={`flex !min-h-11 shrink-0 items-center justify-between gap-2 rounded-base px-3 py-2 text-left text-sm ${scope.kind==='none'&&channel===c.id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle hover:bg-surface-hover'}`}>
     <span className="truncate">{c.name}</span><span className="text-sm text-ink-subtle">{c.id?counts.get(c.id)??'':rows.length||''}</span></button>)}</div>
-   <aside aria-label="今日空间行为概况" className="mx-3 mb-3 mt-auto hidden rounded-panel border border-line p-3 md:block"><h2 className="mb-1 text-sm font-semibold">今天空间行为记录</h2>
+   <aside aria-label="今日空间行为概况" className="mx-3 mb-3 mt-auto hidden rounded-panel border border-line p-3 [@container(min-width:56rem)]:block"><h2 className="mb-1 text-sm font-semibold">今天空间行为记录</h2>
     <p className="mb-3 text-xs text-ink-subtle">全通道 · 今日已记录量，不随列表筛选变化；不含烟火、区域业务及名单告警。</p>
     <div className="space-y-2">{[...triggerBehaviors].reverse().map(b=>{const count=todayState==='ready'?(today?.[b.id]??(todayComplete?0:null)):null;return <div key={b.id}><div className="flex justify-between text-sm"><span>{b.name}</span><span className="tabular-nums">{count??'—'}</span></div>
      {count!==null&&<div className="mt-1 h-1.5 rounded bg-slate-100"><div className="h-1.5 rounded" style={{width:`${Math.round(count/maxToday*100)}%`,background:levelLook[b.id]!.color}}/></div>}</div>})}</div>
     <p className="mt-2 text-xs text-ink-subtle">{todayState==='loading'?'正在读取统计…':todayState==='failed'?'统计暂不可用':!todayComplete?'采集覆盖不完整或未知；— 表示无可用计数，不代表零。':'采集覆盖完整。'}</p>
    </aside>
-   <p className="hidden border-t border-line p-4 text-sm leading-relaxed text-ink-subtle md:block">同一规则的持续风险合并告警，条件稳定解除后重新布防；穿越按独立通过事件判断。</p>
+   <p className="hidden border-t border-line p-4 text-sm leading-relaxed text-ink-subtle [@container(min-width:56rem)]:block">同一规则的持续风险合并告警，条件稳定解除后重新布防；穿越按独立通过事件判断。</p>
   </nav>
   <main className="alarm-workspace flex min-w-0 flex-1 flex-col" style={{containerType:'inline-size'}}>
    <AlarmInputNotice/>
    <PtzProtectionNotice/>
-   <div className="space-y-3 px-4 pb-3 pt-4 md:px-6">
+   <div className="space-y-3 px-4 pb-3 pt-4 [@container(min-width:40rem)]:px-6">
     {scope.kind!=='none'&&<div role={scope.kind==='invalid'?'alert':'status'} className="rounded-panel border border-line bg-surface p-3 text-sm">
     {scope.kind==='valid'?<>统计范围：<span title={`${scope.from} — ${scope.to}`}>{scopeTime(scope.from,scope.analytics?.timezone)} — {scopeTime(scope.to,scope.analytics?.timezone)}</span>（结束不含），{scope.locations.length?`${scope.locations.length} 个位置`:'全部位置（含未关联）'}。业务范围：{fixedBusinessKind?alarmBusinessName(fixedBusinessKind):'全部业务类型'}。{scope.analytics?'沿用统计条件，下方筛选仅缩小范围。':'通道和时间已固定，可按处理状态、结论和空间阶段继续筛选。'}</>:<>统计范围无效或不完整，无法读取告警。请返回统计页重新打开，或清除范围。</>}
      <button type="button" onClick={clearScope} className="btn-secondary ml-3 !min-h-11">清除统计范围</button>
@@ -283,7 +283,7 @@ export default function AlarmListPage(){
      {!automaticReview&&reference&&<p className="mt-2">全局 AI 参考分析：{reference.active?'后台运行中':'后台未运行'} · 已分析 {reference.counts.completed??0} · 分析中 {reference.counts.running??0} · 待分析 {(reference.counts.waiting??0)+(reference.counts.queued??0)} · 无法分析 {reference.counts.failed??0}。优先分析最新未审核告警；模型待验证，参考分数不改变审核结论。这些计数不是当前筛选结果。</p>}
     </details>
    </div>
-   <div ref={scroll} onPointerDownCapture={()=>{interaction.current=Date.now()}} onKeyDownCapture={()=>{interaction.current=Date.now()}} aria-busy={busy} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 md:px-6">
+   <div ref={scroll} onPointerDownCapture={()=>{interaction.current=Date.now()}} onKeyDownCapture={()=>{interaction.current=Date.now()}} aria-busy={busy} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 [@container(min-width:40rem)]:px-6">
     {error&&<p role="alert">告警读取失败，请重试当前筛选。<button className="btn-secondary ml-2" onClick={()=>void load()}>重试</button></p>}
     {loaded&&!rows.length&&<p className="py-10 text-center text-ink-subtle">{cursor?'本批已处理完，可继续加载更早的未审核告警。':'当前筛选下没有告警。'}</p>}
     {!!rows.length&&<div aria-label="告警记录" className="shrink-0 overflow-hidden rounded-panel border border-line bg-surface">{groups.map(([key,items])=>{const content=items.map(a=><div key={a.alarm_id} data-alarm-id={a.alarm_id}><AlarmRow alarm={a} trigger={triggerOf(a)} channelName={channelName(a.channel_id)} onOpen={stageId=>setDetail({id:a.alarm_id,stageId})} onHandle={intent=>setDetail({id:a.alarm_id,intent})}/></div>);return items.length===1?<div key={key}>{content}</div>:<details key={key} open className="border-b border-line"><summary className="min-h-11 cursor-pointer bg-surface-subtle px-3 py-2 text-sm">{channelName(items[0]!.channel_id)} · 同一区域一分钟内 {items.length} 条告警（分别审核）</summary>{content}</details>})}</div>}

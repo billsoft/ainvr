@@ -76,7 +76,7 @@ export function CounterBindingEditor({sourceId,geometryRevision,zone,counters,so
    {!available.length&&<p className="text-sm text-ink-subtle">{counters.length?'计数器都已选用到这个热区。':'还没有计数器。'}</p>}
   </div>
   {choosing&&available.length>0&&!available.some(c=>(!method||c.method===method)&&`${c.name} ${c.labels.map(l=>labelDisplay(l.name)).join(' ')}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))&&<p role="status" className="text-sm text-ink-subtle">没有匹配的计数器，请调整搜索条件。</p>}
-  {choosing&&<a href="/flow-statistics" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1.5 text-sm text-ink-subtle hover:text-primary"><ExternalLink size={14} aria-hidden="true"/>管理计数器</a>}
+  {choosing&&<a href="/analytics/counters" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1.5 text-sm text-ink-subtle hover:text-primary"><ExternalLink size={14} aria-hidden="true"/>管理计数器</a>}
   {counter&&!initial&&<button type="button" className="btn-secondary min-h-11" onClick={change}>更换计数器</button>}
   {counter&&<>
    {(compatible.length>1||(!!processorId&&!effective))&&<label className="block text-sm font-medium text-ink">AI 处理器<select className="form-input mt-1.5" value={effective?.channel_id??''} onChange={e=>setProcessorId(e.target.value)}>

@@ -109,7 +109,7 @@ export function FloorPlanEditor({ context = 'flow', zones, counters, counts, cou
       </div>
     </header>
     {(notice || error) && <p role={error ? 'alert' : 'status'} className={`px-4 py-1.5 text-sm ${error ? 'bg-danger-50 text-danger-700' : 'bg-amber-50 text-ink'}`}>{error || notice}</p>}
-    <div className={`grid min-h-0 flex-1 gap-3 p-3 ${preview ? 'lg:grid-cols-1' : 'lg:grid-cols-[18rem_minmax(0,1fr)_16rem]'}`}>
+    <div className={`grid min-h-0 flex-1 gap-3 p-3 ${preview ? '[@container(min-width:44rem)]:grid-cols-1' : '[@container(min-width:44rem)]:grid-cols-[18rem_minmax(0,1fr)_16rem]'}`}>
       {!preview && <aside className="ui-panel flex min-h-0 flex-col gap-2 overflow-hidden p-3">
         {context === 'flow' ? <div role="group" aria-label="列表方式" className="flex gap-1">{([['counter', '按计数器'], ['zone', '按热区']] as const).map(([id, name]) => <button key={id} type="button" aria-pressed={mode === id} className={seg} onClick={() => setMode(id)}>{name}</button>)}</div> : <h3 className="text-sm font-semibold">告警位置</h3>}
         <nav aria-label="热区列表" className="min-h-0 flex-1 overflow-auto">

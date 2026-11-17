@@ -18,6 +18,8 @@ import type { HeatVariant } from './RegionHeatPanel'
 import { zoneKey, type MapReading, type ZoneInfo } from './plan/planModel'
 import { AnalyticsSubjectSwitch } from './AnalyticsSubjectSwitch'
 import AlarmAnalyticsPage from './AlarmAnalyticsPage'
+import { useAnalyticsLink } from './analyticsLinkContext'
+import { formatRangeLabel } from '@/pages/Flow/counterText'
 
 const button = 'btn-secondary !min-h-7 !px-2.5 !py-1 text-xs aria-pressed:border-primary aria-pressed:bg-primary-50 aria-pressed:text-primary [@media(pointer:coarse)]:!min-h-11'
 const tabs = [['overview','总览'],['flow','客流'],['heat','热区'],['week','规律']] as const
@@ -54,6 +56,7 @@ export default function AnalyticsPage() {
   return params.get('subject')==='alarms'?<AlarmAnalyticsPage/>:<FlowAnalyticsPage key={params.get('subject')==='vehicles'?'vehicles':'flow'}/>
 }
 function FlowAnalyticsPage() {
+  const link=useAnalyticsLink()
   const [params,setParams]=useSearchParams()
   const vehicles=params.get('subject')==='vehicles'
   const tab=tabs.find(t=>t[0]===params.get('tab'))?.[0] ?? 'overview'
@@ -106,7 +109,7 @@ function FlowAnalyticsPage() {
       initialized.current=true
     }).catch(e=>{if(live)setConfigError(e instanceof Error?e.message:'计数器读取失败')})
     return()=>{live=false}
-  },[revision])
+  },[revision,link.reload])
   useEffect(()=>{if(!counters)return;setParams(old=>{const next=new URLSearchParams(old);next.set('counters',JSON.stringify(counterIds));next.set('bindings',JSON.stringify(bindings));next.set('compare',compare?'1':'0');if(custom){next.set('from',custom.from.toISOString());next.set('to',new Date(custom.to.getTime()+1000).toISOString())}else{next.delete('from');next.delete('to')}return next.toString()===old.toString()?old:next},{replace:true})},[counters,counterIds,bindings,compare,custom,setParams])
   useEffect(()=>{if(mapEditing||drawer||picker||observationActive)return;const timer=setInterval(()=>{if(!document.hidden){setNow(new Date())}},60000);return()=>clearInterval(timer)},[mapEditing,drawer,picker,observationActive])
   useEffect(()=>{
@@ -135,6 +138,13 @@ function FlowAnalyticsPage() {
     return()=>{live=false}
   },[locations,query.from,query.to,alarmScopeValid,revision])
   const selectCounter=(c:Counter)=>{if(counterIds.includes(c.counter_id)){setCounterIds(old=>old.filter(id=>id!==c.counter_id));setBindings(old=>old.filter(id=>!c.bindings.some(b=>b.binding_id===id)))}else if(counterIds.length<50){setCounterIds(old=>[...old,c.counter_id]);setBindings(old=>[...old,...c.bindings.filter(b=>b.active).map(b=>b.binding_id)])}}
+  const canSelectCounter=(id:string)=>{const c=(counters??[]).find(x=>x.counter_id===id);if(!c)return false;if(counterIds.includes(id))return true;return counterIds.length<50&&(!selectedCounters.length||signature(c)===signature(selectedCounters[0]!))}
+  const toggleCounter=(id:string)=>{const c=(counters??[]).find(x=>x.counter_id===id);if(c)selectCounter(c)}
+  const publish=link.publish
+  const openRecords=(counterId:string,bindingId:string,output:'in'|'out')=>{const r=rows.find(x=>x.result.counter.counter_id===counterId&&x.zone.binding_id===bindingId);if(r)records(r,output)}
+  const rangeText=formatRangeLabel(range.from,range.to)
+  useEffect(()=>{if(counters)publish({ids:counterIds,canSelect:canSelectCounter,toggle:toggleCounter,counters,bindings,toggleBinding,items:current?.items??null,range:{from:query.from,to:query.to,label:rangeText},openRecords})},[counters,counterIds,bindings,current,rangeText])
+  useEffect(()=>()=>publish(null),[publish])
   const toggleBinding=(id:string)=>setBindings(old=>old.includes(id)?old.filter(x=>x!==id):[...old,id])
   const inn=totalsOf(rows,'in'),out=totalsOf(rows,'out')
   const grid=weekPattern(weekly.length===selected.length?weekly:[],window4.from,window4.to)
@@ -197,7 +207,7 @@ function FlowAnalyticsPage() {
   const rankMax=Math.max(1,...rank.map(r=>totalsOf([r],'in')??0))
   useEffect(()=>{setSlotIndex(null);setRecordBinding('')},[query.from,query.to,selected])
   const selectedRecordRow=rows.find(r=>r.result.counter.counter_id+':'+r.zone.binding_id===recordBinding)
-  const trendPanel = <section className={`ui-panel flex min-w-0 flex-col gap-1 overflow-auto p-3 ${tab === 'overview' ? 'min-h-[14rem] lg:min-h-0' : 'min-h-[16rem] lg:min-h-0'}`} aria-label="客流趋势">
+  const trendPanel = <section className={`ui-panel flex min-w-0 flex-col gap-1 overflow-auto p-3 ${tab === 'overview' ? 'min-h-[14rem] [@container(min-width:44rem)]:min-h-0' : 'min-h-[16rem] [@container(min-width:44rem)]:min-h-0'}`} aria-label="客流趋势">
     <header className="flex flex-wrap items-center gap-2">
       <h2 className="text-sm font-semibold text-ink">{vehicles?'车流趋势':'客流趋势'}</h2>
       {tab === 'overview' ? <button type="button" className={button + ' ml-auto'} onClick={() => setParam('tab', 'flow')}>{vehicles?'查看车流':'查看客流'}</button> : <div className="ml-auto flex gap-1" role="group" aria-label="视图">
@@ -232,12 +242,12 @@ function FlowAnalyticsPage() {
   const peakDescription = peak ? `${peakComplete ? '本期高峰' : '已记录峰值'}在 ${new Date(peak.slot.from).toLocaleString('zh-CN')}，${names.in} ${fmt(peak.in)} ${unit}${peakComplete ? '' : '；覆盖不足或未知，无法确定实际高峰'}。` : '没有可用的已记录峰值。'
   const alarmDescription = alarmError ? '告警统计不可用：' + alarmError : alarm ? `按告警去重；另有 ${alarm.association?.unassociated ?? '未知'} 条未关联位置（未计入总数）` : '正在读取告警统计'
   const cutoff = new Date(query.to).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
-  return <main className="alarm-workspace flex min-h-0 min-w-0 flex-col gap-2 overflow-auto lg:h-full">
+  return <main className="alarm-workspace flex min-h-0 min-w-0 flex-col gap-2 overflow-auto [@container(min-width:44rem)]:h-full">
     {vehicles&&<p className="shrink-0 text-xs text-ink-subtle">真实车辆计数 · 读牌结果不影响通行计数；仅纳入车辆类别及兼容历史的计数器。热区告警仍为该位置全部类别告警。</p>}
     <header aria-label="统计筛选与操作" className="flex shrink-0 flex-wrap items-center gap-2">
       <h1 className="text-lg font-semibold leading-7 text-ink">统计分析</h1>
       <AnalyticsSubjectSwitch locations={locations} disabled={counters===null&&!configError}/>
-      <details className="relative">
+      {!(link.columnOpen && link.selection) && <details className="relative">
         <summary className={button + ' cursor-pointer list-none [&::-webkit-details-marker]:hidden'}>计数器 {counterIds.length}/{counters?.length ?? 0}<ChevronDown size={14} aria-hidden="true" /></summary>
         <div className="ui-panel absolute left-0 top-full z-30 mt-1 max-h-72 w-72 overflow-auto p-1.5 shadow-lg">
           <p className="px-2 py-1 text-[11px] text-ink-subtle">仅合并目标、方法和方向口径一致的计数器；最多 50 个。</p>
@@ -249,8 +259,8 @@ function FlowAnalyticsPage() {
             </label>
           })}
         </div>
-      </details>
-      <details className="relative">
+      </details>}
+      {!(link.columnOpen && link.selection) && <details className="relative">
         <summary className={button + ' cursor-pointer list-none [&::-webkit-details-marker]:hidden'}>统计位置 {bindings.length}<ChevronDown size={14} aria-hidden="true" /></summary>
         <div className="ui-panel absolute left-0 top-full z-30 mt-1 max-h-72 w-72 overflow-auto p-1.5 shadow-lg">{selectedCounters.flatMap(c => c.bindings.map(b =>
           <label key={c.counter_id + ':' + b.binding_id} className="flex min-h-9 cursor-pointer items-center gap-2 rounded-base px-2 text-sm text-ink hover:bg-surface-hover [@media(pointer:coarse)]:min-h-11">
@@ -258,7 +268,7 @@ function FlowAnalyticsPage() {
             <span className="truncate" title={c.name + ' · ' + (b.zone_name || b.zone_id)}>{c.name} · {b.zone_name || b.zone_id}{!b.active ? '（已解绑/历史）' : ''}</span>
           </label>))}
         </div>
-      </details>
+      </details>}
       <div role="group" aria-label="时间范围" className="flex gap-1">
         {presets.map(([id, name]) => <button key={id} type="button" className={button} aria-pressed={!custom && preset === id} onClick={() => { setCustom(null); setNow(new Date()); setParam('range', id) }}>{name}</button>)}
         <button type="button" aria-label="自选时间范围" aria-pressed={!!custom} className={button} onClick={() => setPicker({ from: toDatetimeLocalValue(range.from), to: toDatetimeLocalValue(new Date(range.to.getTime() - 1000)) })}><CalendarClock size={14} aria-hidden="true" />自选</button>
@@ -273,9 +283,9 @@ function FlowAnalyticsPage() {
     {configError && <p role="alert" className="rounded-base border border-danger bg-danger-50 px-3 py-1 text-xs text-danger-700">{configError}</p>}
     {error && <p role="alert" className="rounded-base border border-danger bg-danger-50 px-3 py-1 text-xs text-danger-700">统计读取失败：{error}</p>}
     {loading && <p role="status" className="py-3 text-center text-sm text-ink-subtle">正在读取统计…</p>}
-    {!counterIds.length && counters && !configError && <p className="py-3 text-center text-sm text-ink-subtle">请选择计数器；如尚未配置，请先在流量统计中创建。</p>}
+    {!counterIds.length && counters && !configError && <p className="py-3 text-center text-sm text-ink-subtle">请选择计数器；如尚未配置，请先在“计数统计”栏创建。</p>}
     {counterIds.length > 0 && !bindings.length && <p className="py-3 text-center text-sm text-ink-subtle">请选择至少一个统计位置。</p>}
-    {vehicles&&counters?.length===0&&!configError&&<section className="ui-panel space-y-2 p-5 text-center"><h2 className="text-sm font-semibold">还没有独立的车辆计数器</h2><p className="text-xs text-ink-subtle">先选车辆标签创建计数器，再绑定原有布防区。混合人车或历史标签无法确认的计数器不纳入车辆分析。</p><Link className="btn-secondary text-xs" to="/flow-statistics">配置车辆计数器</Link></section>}
+    {vehicles&&counters?.length===0&&!configError&&<section className="ui-panel space-y-2 p-5 text-center"><h2 className="text-sm font-semibold">还没有独立的车辆计数器</h2><p className="text-xs text-ink-subtle">先选车辆标签创建计数器，再绑定原有布防区。混合人车或历史标签无法确认的计数器不纳入车辆分析。</p><Link className="btn-secondary text-xs" to="/analytics/counters">配置车辆计数器</Link></section>}
     <nav role="tablist" aria-label="统计视图" className="flex shrink-0 items-stretch gap-1 border-b border-line">
       {tabs.map(([id, name]) => <button key={id} id={`analytics-tab-${id}`} type="button" role="tab" aria-controls="analytics-panel" aria-selected={tab === id}
         className={`-mb-px shrink-0 border-b-2 px-4 py-1.5 text-sm [@media(pointer:coarse)]:min-h-11 ${tab === id ? 'border-primary font-medium text-primary' : 'border-transparent text-ink-subtle hover:text-ink'}`}
@@ -287,7 +297,7 @@ function FlowAnalyticsPage() {
       </p>}
     </nav>
     {dataReady && <>
-      {(tab === 'overview' || tab === 'flow') && <section aria-label="概览" className="grid shrink-0 grid-cols-2 gap-2 lg:grid-cols-4">
+      {(tab === 'overview' || tab === 'flow') && <section aria-label="概览" className="grid shrink-0 grid-cols-2 gap-2 [@container(min-width:44rem)]:grid-cols-4">
         <Kpi label={"已记录"+names.in} value={`${fmt(inn)} ${unit}`}>
           {compare && <span title={inComparison} aria-label={inComparison} className="min-w-0 truncate text-[11px] text-ink-faint">{validInComparison ? inComparison : '对比不足'}</span>}
         </Kpi>
@@ -302,18 +312,18 @@ function FlowAnalyticsPage() {
         </Kpi>
       </section>}
       {previousError && compare && <p role="alert" className="text-xs text-danger-700">对比期读取失败：{previousError}</p>}
-      <div id="analytics-panel" role="tabpanel" aria-labelledby={`analytics-tab-${tab}`} className={`min-w-0 flex-1 ${tab === 'overview' ? 'lg:min-h-[27rem]' : 'min-h-0'}`}>
-        {tab === 'overview' && <div className="grid gap-2 lg:h-full lg:grid-cols-[minmax(16rem,3fr)_minmax(0,7fr)] lg:grid-rows-[minmax(0,1fr)]">
-          <div className="grid min-h-0 min-w-0 gap-2 lg:overflow-y-auto lg:grid-rows-[minmax(10rem,1fr)_minmax(12rem,0.85fr)_auto]">{trendPanel}{weekPanel}{coveragePreview}</div>
+      <div id="analytics-panel" role="tabpanel" aria-labelledby={`analytics-tab-${tab}`} className={`min-w-0 flex-1 ${tab === 'overview' ? '[@container(min-width:44rem)]:min-h-[27rem]' : 'min-h-0'}`}>
+        {tab === 'overview' && <div className="grid gap-2 [@container(min-width:44rem)]:h-full [@container(min-width:44rem)]:grid-cols-[minmax(16rem,3fr)_minmax(0,7fr)] [@container(min-width:44rem)]:grid-rows-[minmax(0,1fr)]">
+          <div className="grid min-h-0 min-w-0 gap-2 [@container(min-width:44rem)]:overflow-y-auto [@container(min-width:44rem)]:grid-rows-[minmax(10rem,1fr)_minmax(12rem,0.85fr)_auto]">{trendPanel}{weekPanel}{coveragePreview}</div>
           {heatPanel}
         </div>}
-        {tab === 'flow' && <div className="grid gap-2 lg:h-full lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-          {trendPanel}<div className="grid min-h-0 min-w-0 gap-2 lg:grid-rows-[minmax(0,1fr)_minmax(0,1fr)]">{table}{coverage}</div>
+        {tab === 'flow' && <div className="grid gap-2 [@container(min-width:44rem)]:h-full [@container(min-width:44rem)]:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          {trendPanel}<div className="grid min-h-0 min-w-0 gap-2 [@container(min-width:44rem)]:grid-rows-[minmax(0,1fr)_minmax(0,1fr)]">{table}{coverage}</div>
         </div>}
-        {tab === 'heat' && <div className="grid gap-2 lg:h-full lg:grid-cols-2 lg:grid-rows-[minmax(0,1fr)]">
+        {tab === 'heat' && <div className="grid gap-2 [@container(min-width:44rem)]:h-full [@container(min-width:44rem)]:grid-cols-2 [@container(min-width:44rem)]:grid-rows-[minmax(0,1fr)]">
           {heatPanel}<DwellPanel locations={dwellLocations} from={query.from} to={query.to} bucket={range.bucket} labels={dwellLabels} labelNames={Object.fromEntries((selectedCounters[0]?.labels ?? []).map(l => [l.label_id, l.name]))} onActiveChange={setObservationActive} activeZone={activeZone} onSelectZone={setActiveZone} revision={revision} onVariantChange={receiveHeat} />
         </div>}
-        {tab === 'week' && <div className="grid gap-2 lg:h-full lg:grid-rows-[minmax(0,1fr)]">{weekPanel}</div>}
+        {tab === 'week' && <div className="grid gap-2 [@container(min-width:44rem)]:h-full [@container(min-width:44rem)]:grid-rows-[minmax(0,1fr)]">{weekPanel}</div>}
       </div>
       <details aria-label="统计说明" className="relative shrink-0 text-[11px] text-ink-faint">
         <summary className="flex cursor-pointer list-none items-center gap-1 [&::-webkit-details-marker]:hidden"><ChevronDown size={12} aria-hidden="true" /><span>统计说明</span><span className="ml-auto" title={new Date(query.to).toLocaleString('zh-CN')}>截至 {cutoff} · {Intl.DateTimeFormat().resolvedOptions().timeZone}</span></summary>

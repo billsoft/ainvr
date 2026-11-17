@@ -104,7 +104,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
       onDragEnd={e => props.onChangeShape?.(s.id, { x: Math.round(e.target.x()), y: Math.round(e.target.y()) })} />
   }
 
-  return <div ref={box} className="relative flex min-h-[14rem] flex-1 items-center justify-center lg:min-h-0 overflow-hidden rounded-base border border-line bg-white">
+  return <div ref={box} className="relative flex min-h-[14rem] flex-1 items-center justify-center [@container(min-width:44rem)]:min-h-0 overflow-hidden rounded-base border border-line bg-white">
     <Stage ref={stage} width={viewport.w * scale} height={viewport.h * scale} scaleX={scale} scaleY={scale} offsetX={viewport.x} offsetY={viewport.y} onMouseDown={down} onTouchStart={down} onMouseMove={move} onTouchMove={move} onMouseUp={up} onTouchEnd={up}>
       <Layer>
         <Rect name="plan-bg" width={PLAN_W} height={PLAN_H} fill="#ffffff" />

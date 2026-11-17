@@ -77,7 +77,7 @@ export function PlanPanel({ zones, counters, readings, period, loading, error, c
   const legend = counter ? `${counter.name} · ${outputName} · 单位：${unit}` : '未选择计数器'
   const displayedValues = Object.keys(plan?.placements ?? {}).filter(key => zones.some(z => z.key === key)).map(key => shown[key]).filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
   const displayedMax = displayedValues.length ? Math.max(...displayedValues) : null
-  return <section className="ui-panel flex min-h-[22rem] min-w-0 flex-col gap-2 p-3 lg:min-h-0" aria-label="热区分布">
+  return <section className="ui-panel flex min-h-[22rem] min-w-0 flex-col gap-2 p-3 [@container(min-width:44rem)]:min-h-0" aria-label="热区分布">
     <header className="flex flex-wrap items-center gap-2">
       <h2 className="text-sm font-semibold text-ink">热区分布</h2><DataTag kind="live" />
       {sourceHeat&&<select aria-label="地图数据图层" className="form-input !w-auto !py-1 text-xs" value={layerMode} onChange={e=>setLayerMode(e.target.value as 'count'|'source')}><option value="source">画面热度嵌图</option><option value="count">通行计数示意</option></select>}
@@ -105,7 +105,7 @@ export function PlanPanel({ zones, counters, readings, period, loading, error, c
     {loading ? <p role="status" className="py-10 text-center text-sm text-ink-subtle">正在读取热区…</p>
       : !zones.length && !Object.keys(plan?.placements ?? {}).length ? <p className="py-10 text-center text-sm text-ink-subtle">还没有热区。到实时监看的布防里画热区，再选用计数器，这里就会显示。</p>
       : <div className="flex min-h-0 flex-1 flex-col gap-1">
-        <div className="flex min-h-[12rem] min-w-0 flex-1 flex-col gap-1 lg:min-h-0">
+        <div className="flex min-h-[12rem] min-w-0 flex-1 flex-col gap-1 [@container(min-width:44rem)]:min-h-0">
           <PlanCanvas annotations={showLabels?annotations:undefined} plan={plan} zones={zones} heat={realHeat?undefined:heat} sourceHeat={realHeat} heatMin={cold / 100} selectedKey={selected} readOnly onSelectZone={setSelected} />
           {selected && <div aria-label="热区读数" aria-live="polite" className="max-h-28 overflow-auto text-xs text-ink">
             {picked ? <><p>{picked.name} · 各计数器独立读数</p><ul>{pickedReadings.map((r, i) => <li key={r.counterId + ':' + r.bindingId} title={`统计位置：${r.bindingId}`}>

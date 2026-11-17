@@ -1,12 +1,11 @@
 import { SmartSearchRedirect } from '@/pages/Search/SmartSearchRedirect'
-import FlowPage from '@/pages/Flow'
-import AnalyticsPage from '@/pages/Analytics'
 import { Navigate, createBrowserRouter } from 'react-router-dom'
+import { MovedTo } from '@/components/layout/MovedTo'
+import { AlarmSection } from '@/pages/AlarmCenter/AlarmSection'
+import { AnalyticsSection } from '@/pages/Analytics/AnalyticsSection'
 import { AppLayout } from '@/components/layout/AppLayout'
 import ChannelsPage from '@/pages/Channels'
 import ChannelDetailPage from '@/pages/Channels/ChannelDetail'
-import AlarmTriggersPage from '@/pages/AlarmCenter/TriggerDefinitionsPage'
-import AlarmListPage from '@/pages/AlarmCenter/AlarmListPage'
 import MonitorPage from '@/pages/Monitor'
 import PlaybackPage from '@/pages/Playback'
 import ConfigCenterPage from '@/pages/ConfigCenter'
@@ -31,10 +30,21 @@ export const router = createBrowserRouter([
       { index: true, element: <Navigate to="/monitor" replace /> },
       { path: 'dashboard', element: <DashboardPage /> },
       { path: 'smart-search', element: <SmartSearchRedirect />, errorElement: <RouteErrorBoundary /> },
-      { path: 'alarm-analysis', element: <AlarmTriggersPage />, errorElement: <RouteErrorBoundary /> },
-      { path: 'alarms', element: <AlarmListPage />, errorElement: <RouteErrorBoundary /> },
-      { path: 'flow-statistics', element: <FlowPage />, errorElement: <RouteErrorBoundary /> },
-      { path: 'analytics', element: <AnalyticsPage />, errorElement: <RouteErrorBoundary /> },
+      // 告警、统计分析：中间主内容 + 右侧栏（触发规则/计数器）。子路由只表示“右栏要打开”，页面本身常驻。
+      {
+        path: 'alarms',
+        element: <AlarmSection />,
+        errorElement: <RouteErrorBoundary />,
+        children: [{ index: true, element: null }, { path: 'rules', element: null }],
+      },
+      { path: 'alarm-analysis', element: <MovedTo to="/alarms/rules" /> },
+      {
+        path: 'analytics',
+        element: <AnalyticsSection />,
+        errorElement: <RouteErrorBoundary />,
+        children: [{ index: true, element: null }, { path: 'counters', element: null }],
+      },
+      { path: 'flow-statistics', element: <MovedTo to="/analytics/counters" /> },
       { path: 'behavior-statistics', element: <Navigate to="/alarms" replace />, errorElement: <RouteErrorBoundary /> },
       { path: 'channels', element: <ChannelsPage /> },
       { path: 'channels/:id', element: <ChannelDetailPage /> },

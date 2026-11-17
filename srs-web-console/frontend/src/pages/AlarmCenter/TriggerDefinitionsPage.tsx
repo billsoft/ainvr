@@ -91,10 +91,10 @@ export default function TriggerDefinitionsPage(){
   return()=>{alive=false}
  },[revision])
  const shown=rows.filter(t=>(archived?t.state==='archived':t.state!=='archived')&&(!business||(t.region_state?.event_kind??'spatial')===business)&&(!filter||!t.region_state&&t.behavior===filter))
- return <main className="alarm-workspace space-y-4 p-4 md:p-6">
+ return <main className="alarm-workspace space-y-4 p-4 [@container(min-width:40rem)]:p-6">
   <AlarmInputNotice/>
   <header className="flex flex-wrap items-center gap-3">
-   <div className="min-w-0 flex-1"><h1 className="page-title">告警触发</h1>
+   <div className="min-w-0 basis-full [@container(min-width:40rem)]:flex-1 [@container(min-width:40rem)]:basis-0"><h1 className="page-title [@container(max-width:40rem)]:sr-only">触发规则</h1>
     <p className="mt-1 text-sm text-ink-subtle">定义告警条件，再到实时监看布防；进出流量由计数器统计。</p></div>
    <CapabilitySceneLauncher sources={sources} disabled={!!operation||!!archive||!!editor} onCreate={prefill=>setEditor({id:`trigger-${newAlarmOperationId()}`,prefill,step:2,save:createDefinitionSaveSession(0,saveDefinition)})}/>
    <button type="button" className="btn-primary" disabled={loading||!!error||!!operation||!!archive}
@@ -115,7 +115,7 @@ export default function TriggerDefinitionsPage(){
   {application&&<p role="status" className="rounded-base border border-line bg-surface p-3 text-sm">{application.state==='applied'?'已保存并应用':'已保存，等待应用确认'}{application.reason?`：${application.reason}`:''}</p>}
   {loading?<p role="status">正在读取触发器…</p>:!shown.length?<div className="rounded-panel border border-dashed border-line p-8 text-center">
    <p>{archived?'没有已归档的触发器。':'还没有符合筛选的触发器。可先创建，再选用，无需提前绘制热区。'}</p><Link to="/monitor" className="mt-3 inline-flex items-center text-sm text-primary hover:underline">前往实时监看布防</Link>
-  </div>:<div className="grid gap-4 lg:grid-cols-2">{shown.map(t=><article key={t.trigger_id} aria-label={t.name} className="flex flex-col gap-3 rounded-panel border border-line bg-surface p-4">
+  </div>:<div className="grid gap-4 [@container(min-width:48rem)]:grid-cols-2">{shown.map(t=><article key={t.trigger_id} aria-label={t.name} className="flex flex-col gap-3 rounded-panel border border-line bg-surface p-4">
    <header className="flex flex-wrap items-center gap-2"><span className="rounded-full px-3 py-1 text-sm font-semibold" style={{background:levelLook[t.behavior]?.soft,color:levelLook[t.behavior]?.ink}}>{t.region_state?alarmBusinessName(t.region_state.event_kind):behaviorNames[t.behavior]}</span>
     <h2 className="min-w-0 flex-1 break-words text-base font-semibold text-ink">{t.name}</h2><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${stateLook[t.state]}`}>{states[t.state]}</span>
     {t.state!=='archived'&&<TriggerActionMenu trigger={t} disabled={loading||!!operation||!!archive||!!editor} onEdit={()=>setEditor({id:t.trigger_id,initial:t,save:createDefinitionSaveSession(t.version,saveDefinition)})} onState={state=>beginState(t,state)} onArchive={()=>setArchive(t)}/>}</header>

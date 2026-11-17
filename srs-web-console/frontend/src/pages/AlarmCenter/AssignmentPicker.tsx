@@ -45,8 +45,8 @@ export function AssignmentPicker(props:Props){
    <input aria-label={t.name} className="h-5 w-5 shrink-0 accent-primary" type="checkbox" checked={ids.includes(t.trigger_id)} onChange={e=>{setActiveId(e.target.checked?t.trigger_id:ids.find(id=>id!==t.trigger_id)??'');if(e.target.checked)setHandles(h=>({...h,[t.trigger_id]:{current:null}}));setIds(e.target.checked?[...ids,t.trigger_id]:ids.filter(id=>id!==t.trigger_id));setError('')}}/>
    <span className="min-w-0 flex-1"><strong className="block text-sm font-semibold">{t.name}{t.state!=='enabled'?'（未启用）':''}</strong><span className="mt-0.5 block text-xs text-ink-subtle">{behaviorNames[t.behavior]??t.behavior}</span></span><AssociationChoiceAction selected={ids.includes(t.trigger_id)}/>
   </label>)}</div>
-  {!available.length&&<p role="status">没有适合此范围的触发器。请先在告警触发页创建，再返回关联。</p>}
-  <a href="/alarm-analysis" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1.5 text-ink-subtle hover:text-primary"><ExternalLink size={14} aria-hidden="true"/>管理触发器</a>
+  {!available.length&&<p role="status">没有适合此范围的触发器。请先在“告警 → 触发规则”创建，再返回关联。</p>}
+  <a href="/alarms/rules" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1.5 text-ink-subtle hover:text-primary"><ExternalLink size={14} aria-hidden="true"/>管理触发器</a>
   {ids.map(id=>{const t=available.find(t=>t.trigger_id===id);if(!t)return <p key={id} role="alert">已选触发器不可用，请取消勾选或撤销本处修改。</p>;return <div key={id} onFocusCapture={()=>setActiveId(id)} onPointerDownCapture={()=>setActiveId(id)} className="border-t border-line pt-3">
    <AssignmentEditor sourceId={props.sourceId} geometryRevision={props.geometryRevision} zone={props.zone} definitions={[t]} sources={props.sources} defaultTriggerId={id}
     previewActive={activeId===id} workspace={handles[id]!} approachEdit={props.approachEdit} onApproachChange={props.onApproachChange} onDirectionChange={props.onDirectionChange}

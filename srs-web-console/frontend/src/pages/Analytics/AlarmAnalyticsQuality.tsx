@@ -9,7 +9,7 @@ const linkClass = 'inline-flex min-h-7 [@media(pointer:coarse)]:min-h-11 items-c
 
 export function QualityKpis({ result, query }: { result: AlarmAnalyticsResult; query: AlarmAnalyticsQuery }) {
   const q = result.quality
-  return <div className="grid grid-cols-2 gap-2 lg:grid-cols-4" aria-label="审核质量关键指标">
+  return <div className="grid grid-cols-2 gap-2 [@container(min-width:44rem)]:grid-cols-4" aria-label="审核质量关键指标">
     <section className="ui-panel min-w-0 px-3 py-2" aria-label="人工明确结论">
       <h2 className="text-xs text-ink-subtle">人工明确结论</h2>
       <p className="mt-1 text-xl font-semibold tabular-nums text-ink">{count(q.human_reviewed)}<span className="ml-1 text-xs font-normal text-ink-subtle">/ {count(result.total)} 条</span></p>
@@ -41,7 +41,7 @@ export default function AlarmAnalyticsQuality({ result, query, ranking }: { resu
     { label: '待审核', n: result.pending, audit: 'pending' as const, color: 'bg-amber-400' },
     { label: '审核主体/结论未知', n: result.unknown_review, audit: 'unknown' as const, color: 'bg-slate-300' },
   ]
-  return <div className="grid min-w-0 items-start gap-3 lg:grid-cols-[minmax(0,.9fr)_minmax(0,1.1fr)]">
+  return <div className="grid min-w-0 items-start gap-3 [@container(min-width:44rem)]:grid-cols-[minmax(0,.9fr)_minmax(0,1.1fr)]">
     <div className="ui-panel min-w-0 p-3">
       <section aria-label="审核主体分布">
         <header className="mb-1 flex flex-wrap items-baseline justify-between gap-x-2"><h2 className="text-sm font-semibold text-ink">审核主体分布</h2><span className="text-xs text-ink-subtle">分母：全部告警 {count(result.total)} 条</span></header>
