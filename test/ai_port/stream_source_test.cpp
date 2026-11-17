@@ -176,6 +176,19 @@ TEST(StreamSource,FullCompressedTapStopIsBoundedAndOldSinkReferenceIsSafe){
   EXPECT_FALSE(ReadPacket(old.value,0).has_value());
   RecordProperty("stop_from_full_tap_ms",elapsed);
 }
+// A stalled publisher (SRS slow, output reconnecting, recorder backpressure) must
+// never stop AI decoding: the forward path sheds whole GOPs, the AI keeps its frames.
+TEST(StreamSource,StalledPublisherNeverStopsAiDecode){
+  StreamSource source(Env("AINVR_SOURCE_LONG"),"publisher-stalled",true);
+  source.Start();ElementRef sink{source.GetEsSinkRef()};ASSERT_NE(sink.value,nullptr);
+  auto deadline=Clock::now()+std::chrono::seconds(20);int pulled=0;
+  while(source.IsRunning()&&Clock::now()<deadline)if(source.PullFrameRef(50))++pulled;
+  auto stats=source.GetStats();const auto shed=source.GetAuShed();
+  EXPECT_TRUE(stats.eof)<<"AI decode stopped behind a full forward queue";
+  EXPECT_GE(stats.decoded,200);EXPECT_GT(pulled,0);EXPECT_GT(shed,0);
+  ASSERT_FALSE(stats.error)<<stats.error.value_or("");
+  source.Stop();RecordProperty("forward_au_shed",shed);
+}
 TEST(StreamSource,Live4KStopAndRestartKeepDetachedFramesAndGeneration){
   StreamSource source(Env("AINVR_SOURCE_LIVE"),"live-read-only",false,3000);
   std::shared_ptr<FrameRef> held;std::vector<uint8_t> pixels;int observed=0;

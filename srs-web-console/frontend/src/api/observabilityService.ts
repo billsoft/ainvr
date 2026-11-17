@@ -2,6 +2,8 @@ import { request } from './httpClient'
 export interface MemoryBudget {scope:'encoded_packet_buffer_reservations'|'recording_gop_buffer'|'container';budget_bytes:number;reserved_bytes?:number;retiring_bytes?:number;rejected?:number;active_channels?:number;active_channel_limit?:number}
 export interface ServiceMetric { id:string; state:string; healthy?:boolean; cpuPercent:number|null; memoryBytes:number|null; connections:number|null; restarts?:number; oomKilled?:boolean; detail?:string; logPolicy?:Record<string,string>; memoryBudget?:MemoryBudget }
 export interface Snapshot { ts:number; sampleSeconds:number; host:{cpuPercent:number|null;memoryBytes:number;memoryTotalBytes:number;gpuPercent:number|null;bpuPercent?:number|null;bpuMemoryBytes?:number|null;ionMemoryBytes?:number|null;ionMemoryTotalBytes?:number|null;cores:number;swapBytes:number;diskUsedBytes?:number;diskTotalBytes?:number;temperatureC?:number|null;network?:{name:string;rxBytesPerSecond:number|null;txBytesPerSecond:number|null}[]};services:ServiceMetric[] }
+export interface StreamProblem {kind:'ai'|'recording';id:string;name:string;since:number;detail:string}
+export interface StreamHealth {known:boolean;checkedAt:number|null;problems:StreamProblem[]}
 export interface LogSettings {fileMiB:number;files:number;historyHours:number;level:string;repeatSeconds:number}
 export interface LogEntry {ts:number;source:string;level:string;module:string;category:string;message:string;count:number}
 export interface Summary {snapshot:Snapshot|null;settings:LogSettings;sources:string[];applyError:string|null}
@@ -13,6 +15,8 @@ async function get<T>(path:string,init?:RequestInit):Promise<T> {
 }
 export const observabilityService={
   summary:()=>get<Summary>('summary'),
+  // 通道级中断（AI 反复重连、计划内录像未写入）：监控里的盲区，必须看得见
+  streamHealth:async()=>(await request<{code:number;data:StreamHealth}>('/stream-health',{signal:AbortSignal.timeout(15000)})).data,
   history:(hours:number)=>get<{items:Snapshot[]}>(`history?hours=${hours}`),
   logs:(query:URLSearchParams)=>get<LogResult>(`logs?${query}`),
   settings:(data:LogSettings)=>get<{applied:boolean}>('settings',{method:'PUT',body:JSON.stringify(data)}),

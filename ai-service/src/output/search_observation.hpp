@@ -9,7 +9,7 @@ namespace ai_service::output {
 // Why the scheduler had to break observation continuity. Diagnostics only.
 enum class SearchObservationGapReason : size_t {
   Cadence, Reset, ExpiredQueuedFrame, ArchiveSkip, FullFrameDrop, LateDeadline,
-  NoFrameDeadlineMiss, InferenceError, Count };
+  NoFrameDeadlineMiss, InferenceError, ArchiveUnavailable, Count };
 inline constexpr const char* SearchObservationGapReasonName(SearchObservationGapReason r) noexcept {
   switch(r){
     case SearchObservationGapReason::Cadence:return "cadence_changed";
@@ -20,6 +20,7 @@ inline constexpr const char* SearchObservationGapReasonName(SearchObservationGap
     case SearchObservationGapReason::LateDeadline:return "late_whole_slot";
     case SearchObservationGapReason::NoFrameDeadlineMiss:return "no_frame_deadline_miss";
     case SearchObservationGapReason::InferenceError:return "inference_error";
+    case SearchObservationGapReason::ArchiveUnavailable:return "archive_unavailable";
     default:return "unknown";}
 }
 // Process-wide monotonic counters (all channels): gaps by reason, plus dispatched slots.

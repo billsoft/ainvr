@@ -3,9 +3,11 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"os/exec"
 	"regexp"
@@ -46,7 +48,9 @@ func BridgeArgs(c BridgeConfig, lease MediaLease, app, stream, audioCodec string
 		}
 		// FLV preserves decode/presentation timestamps for B-frame video. RTP
 		// timestamps alone cannot always recover both without video decoding.
-		args = []string{"-hide_banner", "-nostdin", "-loglevel", "error", "-rw_timeout", "10000000", "-i", strings.TrimRight(c.HTTPBase, "/") + "/rtp/" + lease.Stream + ".live.flv", "-map", "0:v:0", "-c:v", "copy"}
+		// The gateway reads the FLV itself and feeds it on stdin with a
+		// continuous clock (see CopyContinuousFLV); ffmpeg only remuxes.
+		args = []string{"-hide_banner", "-loglevel", "error", "-f", "flv", "-i", "pipe:0", "-map", "0:v:0", "-c:v", "copy"}
 	}
 	warning := ""
 	switch strings.ToLower(audioCodec) {
@@ -77,6 +81,18 @@ func BridgeArgs(c BridgeConfig, lease MediaLease, app, stream, audioCodec string
 	args = append(args, "-flvflags", "no_duration_filesize", "-f", "flv", strings.TrimRight(c.RTMPBase, "/")+"/"+app+"/"+stream)
 	return args, warning, nil
 }
+
+// BridgeSourceURL is the FLV the gateway reads for an HTTP media origin.
+func BridgeSourceURL(c BridgeConfig, lease MediaLease) string {
+	if c.HTTPBase == "" {
+		return ""
+	}
+	return strings.TrimRight(c.HTTPBase, "/") + "/rtp/" + lease.Stream + ".live.flv"
+}
+
+// bridgeIdle is how long the media origin may send nothing before the bridge
+// ends and the supervisor re-establishes the stream.
+var bridgeIdle = 10 * time.Second
 
 type Bridge struct {
 	cmd  *exec.Cmd
@@ -110,7 +126,8 @@ func StartBridge(ctx context.Context, c BridgeConfig, lease MediaLease, app, str
 	if c.FFmpeg == "" || !strings.HasPrefix(c.FFmpeg, "/") {
 		return nil, "", errors.New("absolute FFmpeg executable required")
 	}
-	cmd := exec.CommandContext(ctx, c.FFmpeg, args...)
+	runCtx, stopRun := context.WithCancel(ctx)
+	cmd := exec.CommandContext(runCtx, c.FFmpeg, args...)
 	// No media bytes or URLs in ordinary logs. A bounded structured error is
 	// exposed by the supervisor; output pipes cannot deadlock the process.
 	cmd.Stdout = io.Discard
@@ -119,11 +136,30 @@ func StartBridge(ctx context.Context, c BridgeConfig, lease MediaLease, app, str
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 3 * time.Second
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	var feed *io.PipeWriter
+	if source := BridgeSourceURL(c, lease); source != "" {
+		var pipe *io.PipeReader
+		pipe, feed = io.Pipe()
+		cmd.Stdin = pipe
+	}
 	if e := cmd.Start(); e != nil {
+		stopRun()
 		return nil, "", errors.New("bridge failed to start")
+	}
+	if feed != nil {
+		go func() {
+			err := feedContinuousFLV(runCtx, BridgeSourceURL(c, lease), feed, stream)
+			if err != nil && runCtx.Err() == nil {
+				slog.Warn("media bridge source ended", "stream", stream, "error", err.Error())
+			}
+			_ = feed.CloseWithError(err)
+			// The relay must not outlive its source; ending it lets the supervisor recover.
+			stopRun()
+		}()
 	}
 	b := &Bridge{cmd: cmd, done: make(chan error, 1)}
 	go func() {
+		defer stopRun()
 		err := cmd.Wait()
 		if err != nil && ctx.Err() == nil {
 			slog.Warn("media bridge exited", "diagnostic", diagnostics.diagnostic())
@@ -134,3 +170,21 @@ func StartBridge(ctx context.Context, c BridgeConfig, lease MediaLease, app, str
 	return b, warning, nil
 }
 func (b *Bridge) Done() <-chan error { return b.done }
+
+func feedContinuousFLV(ctx context.Context, source string, dst io.Writer, stream string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return errors.New("media origin unreachable")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("media origin status %d", resp.StatusCode)
+	}
+	return CopyContinuousFLV(ctx, resp.Body, dst, bridgeIdle, func(j TimestampJump) {
+		slog.Warn("media timestamps discontinuous; kept continuous", "stream", stream, "from_ms", j.From, "to_ms", j.To, "count", j.Count)
+	})
+}

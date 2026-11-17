@@ -279,6 +279,7 @@ void ReusedChannelWorker::Start() {
     dropped_count_ = 0;
     sampled_skip_count_ = 0;
     archive_backpressure_skip_count_ = 0;
+    archive_unavailable_skip_count_ = 0;
     overload_drop_count_ = 0;
     last_infer_s_ = 0.0;
     consecutive_errors_ = 0;
@@ -425,6 +426,8 @@ nlohmann::json ReusedChannelWorker::GetStats() const {
         {"dropped_count", dropped_count_},
         {"sampled_skip_count", sampled_skip_count_},
         {"archive_backpressure_skip_count", archive_backpressure_skip_count_},
+        {"archive_unavailable", archive_gate_.bypassing()},
+        {"archive_unavailable_skip_count", archive_unavailable_skip_count_},
         {"skip_classification", "heuristic; use archive_admission_wait for measured blocking"},
         {"overload_drop_count", overload_drop_count_},
         {"source_fps", std::round(source_fps * 100.0) / 100.0},
@@ -894,6 +897,7 @@ void ReusedChannelWorker::InferLoop() {
     }
 
     int64_t before_archive_wait = -1;
+    bool archive_bypass = archive_gate_.bypassing();
     if (queued_frame && queued_result.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
       dispatch_due=false;
     if (dispatch_due && snapshot_sink_ && cfg->snapshot.enabled) {
@@ -902,12 +906,26 @@ void ReusedChannelWorker::InferLoop() {
         if (latest_frame_) before_archive_wait = latest_frame_->seq;
       }
       utils::Timer archive_wait_timer;
-      snapshot_sink_->WaitForCapacity([this] {
+      // Slow storage is waited for (lower AI rate, nothing discarded). Storage that
+      // accepts nothing within the gate's bound is unavailable: keep recognizing and
+      // alarming, do not store, and record the stretch as a gap.
+      const bool capacity = snapshot_sink_->WaitForCapacityFor([this] {
         return stop_event_.load() || !LicenseAllowed();
-      });
+      }, archive_gate_.WaitBudget());
+      const double waited_ms = archive_wait_timer.ElapsedMs();
       { std::lock_guard<std::mutex> lock(stats_mutex_);
-        stats_archive_admission_wait_.Add(archive_wait_timer.ElapsedMs()); }
+        stats_archive_admission_wait_.Add(waited_ms); }
       if (stop_event_.load() || !LicenseAllowed()) continue;
+      switch (archive_gate_.Report(capacity, waited_ms / 1000.0, NowMono())) {
+        case ArchiveAdmissionGate::Step::EnterBypass:
+          log::Error(kLogModule, "[" + channel_id_ + "] 识别记录存储超过 10 秒无法写入：继续识别和告警，期间画面不入库并记为识别记录缺口");
+          archive_bypass = true; break;
+        case ArchiveAdmissionGate::Step::Skip: archive_bypass = true; break;
+        case ArchiveAdmissionGate::Step::Recovered:
+          AI_LOG(kWarning, kLogModule, "[" << channel_id_ << "] 识别记录存储已恢复，未入库时长 " << archive_gate_.last_gap_seconds() << " 秒");
+          archive_bypass = false; break;
+        case ArchiveAdmissionGate::Step::Archive: archive_bypass = false; break;
+      }
     }
     int skipped = 0;
     bool expired_observation=false;
@@ -915,6 +933,11 @@ void ReusedChannelWorker::InferLoop() {
     if(expired_observation)observations.Slip(output::SearchObservationGapReason::ExpiredQueuedFrame);
     if (frame.has_value()) {
       frame->search_sampling_token = search_sampling_source_ ? search_sampling_source_->Token() : 0;
+      frame->archive_bypass = archive_bypass && snapshot_sink_ && cfg->snapshot.enabled;
+      if (frame->archive_bypass) {
+        observations.Slip(output::SearchObservationGapReason::ArchiveUnavailable);
+        std::lock_guard<std::mutex> lock(stats_mutex_); ++archive_unavailable_skip_count_;
+      }
       const int64_t archive_skipped = ArchiveAdmissionSkips(before_archive_wait, frame->seq, skipped);
       if(archive_skipped>0)observations.Slip(output::SearchObservationGapReason::ArchiveSkip);
       else if(interval<=0&&skipped>0)observations.Gap(output::SearchObservationGapReason::FullFrameDrop);
@@ -1353,7 +1376,7 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
   // stopping, epoch change, no journal) can never be acknowledged by a consumer.
   if(evidence_receipt.valid()&&!observation_published)output::SharedReviewFrameCache().Abandon(evidence_identity,evidence_receipt);
 
-  if (snapshot_sink_ && LicenseAllowed()) {
+  if (snapshot_sink_ && LicenseAllowed() && !frame.archive_bypass) {
     utils::Timer snapshot_timer;
     double snapshot_elapsed_ms = -1;
     ScopedTimingObservation snapshot_observation([&](double ms) {
@@ -1373,7 +1396,9 @@ void ReusedChannelWorker::InferOneFrame(CapturedFrame frame, ainvr::BpuImageResu
       const auto rgba=snapshot_converter_->RunNv12Rgba(frame.ref->nv12.pixels,frame.width,frame.height,t);
       host.create(region.height,region.width,CV_8UC4);
       for(int y=0;y<region.height;++y)std::memcpy(host.ptr(y),rgba.data()+size_t(y)*region.width*4,size_t(region.width)*4);
-    }, [this] { return stop_event_.load()||!LicenseAllowed(); },
+    }, [this, give_up = NowMono() + 10.0] {
+      // Storage dying mid-offer must not hold inference: unqueued crops go to local pending.
+      return stop_event_.load() || !LicenseAllowed() || NowMono() > give_up; },
     [owned=frame.ref,snapshot_tag](const cv::Rect& region, cv::Mat& host) {
       const auto& source=owned->nv12;
       if(region.x<0||region.y<0||region.width<=0||region.height<=0||

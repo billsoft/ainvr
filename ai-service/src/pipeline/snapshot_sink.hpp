@@ -15,6 +15,9 @@ class SnapshotSink {
   virtual ~SnapshotSink() = default;
   // Wait before selecting the next source frame, without retaining a decoder surface.
   virtual void WaitForCapacity(const std::function<bool()>&) {}
+  // Bounded form: true once capacity is available (or archiving is off),
+  // false if storage accepted nothing for max_seconds.
+  virtual bool WaitForCapacityFor(const std::function<bool()>&, double /*max_seconds*/) { return true; }
   virtual void ReserveForFrame(cv::Size) {}
   // snapshot_cfg 由调用方(ChannelWorker::InferOneFrame)每帧从当前生效
   // 配置里现取现传——热更新(§1.2 SNAPSHOT_HOT_SUBFIELDS)因此天然对

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { observabilityService, type Summary } from '@/api/observabilityService'
+import { observabilityService, type StreamHealth, type Summary } from '@/api/observabilityService'
 import { useBranding } from '@/store/branding'
 import { Activity, Video } from 'lucide-react'
 import { AlarmPendingIndicator } from './AlarmPendingIndicator'
@@ -17,6 +17,7 @@ export function Topbar({ children }: TopbarProps) {
   const branding = useBranding()
   const [summary, setSummary] = useState<Summary | null>(null)
   const [failed, setFailed] = useState(false)
+  const [streams, setStreams] = useState<StreamHealth | null>(null)
   useEffect(() => {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout>
@@ -24,6 +25,8 @@ export function Topbar({ children }: TopbarProps) {
       if (!document.hidden) {
         try { const data = await observabilityService.summary(); if (!cancelled) { setSummary(data); setFailed(false) } }
         catch { if (!cancelled) setFailed(true) }
+        try { const data = await observabilityService.streamHealth(); if (!cancelled) setStreams(data) }
+        catch { if (!cancelled) setStreams(null) }
       }
       if (!cancelled) timer = setTimeout(poll, 10000)
     }
@@ -35,10 +38,16 @@ export function Topbar({ children }: TopbarProps) {
   const unhealthy = services.filter(service => service.healthy === false)
   const unknown = !snapshot || !services.length || failed || Date.now() - snapshot.ts > 45000
   const healthy = services.filter(service => service.healthy).length
-  const label = unknown ? '系统状态未知' : unhealthy.length ? `${unhealthy.length} 项异常` : `${healthy}/${services.length} 服务正常`
-  const detail = unknown ? '运行状态暂不可用，点击查看运行与日志中心' : unhealthy.length
+  // A channel that stopped producing pictures is a blind spot even when every service is "up".
+  const interrupted = streams?.known ? streams.problems : []
+  const minutes = (since: number) => { const m = Math.max(0, Math.round((Date.now() - since) / 60000)); return m >= 60 ? `${Math.floor(m / 60)} 小时 ${m % 60} 分` : `${m} 分` }
+  const label = interrupted.length ? `${interrupted.length} 路中断` : unknown ? '系统状态未知' : unhealthy.length ? `${unhealthy.length} 项异常` : `${healthy}/${services.length} 服务正常`
+  const detail = interrupted.length
+    ? `正在中断：${interrupted.map(p => `${p.name}（${p.detail}，已 ${minutes(p.since)}）`).join('；')}`
+    : unknown ? '运行状态暂不可用，点击查看运行与日志中心' : unhealthy.length
     ? `需检查：${unhealthy.map(service => service.id).join('、')}`
     : '核心服务运行正常，点击查看详情'
+  const bad = interrupted.length > 0 || (!unknown && unhealthy.length > 0)
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-line bg-surface px-4 sm:px-5">
@@ -60,8 +69,8 @@ export function Topbar({ children }: TopbarProps) {
       <Link
         to="/dashboard"
         className={`ml-3 flex shrink-0 items-center gap-2 rounded-full px-3 py-1.5 text-xs ${
-          unknown ? 'bg-surface-page text-ink-subtle' : unhealthy.length
-            ? 'bg-danger-50 text-danger-700'
+          bad ? 'bg-danger-50 text-danger-700' : unknown
+            ? 'bg-surface-page text-ink-subtle'
             : 'bg-success-50 text-success-700'
         }`}
         data-testid="system-status"

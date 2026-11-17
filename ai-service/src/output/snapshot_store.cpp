@@ -1,4 +1,5 @@
 #include "snapshot_internal.hpp"
+#include <limits>
 #include "face_enhancer.hpp"
 #include "exposure.hpp"
 #include "snapshot_jpeg.hpp"
@@ -85,15 +86,27 @@ void SnapshotStore::ClearArchiveFault(const std::string& stage) {
 }
 
 void SnapshotStore::WaitForCapacity(const std::function<bool()>& cancelled) {
+  WaitForCapacityFor(cancelled, std::numeric_limits<double>::infinity());
+}
+
+bool SnapshotStore::WaitForCapacityFor(const std::function<bool()>& cancelled, double max_seconds) {
   const auto epoch = capture_epoch_.load();
   auto& captures = Captures();
+  const auto start = std::chrono::steady_clock::now();
+  const auto expired = [&] {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() >= max_seconds;
+  };
+  // A zero budget is a poll: one capacity check, no waiting.
+  const auto slice = std::chrono::milliseconds(max_seconds > 0 ? 100 : 0);
+  bool available = true;
   while (capture_enabled_.load() && capture_epoch_.load() == epoch &&
          !stop_event_.load() && !cancelled()) {
     {
       std::unique_lock<std::mutex> lock(queue_mutex_);
       if (queue_.size() >= queue_maxsize_) {
         backpressured_.store(true);
-        queue_cond_.wait_for(lock, std::chrono::milliseconds(100));
+        if (expired()) { available = false; break; }
+        queue_cond_.wait_for(lock, slice);
         continue;
       }
     }
@@ -103,9 +116,11 @@ void SnapshotStore::WaitForCapacity(const std::function<bool()>& cancelled) {
     std::unique_lock<std::mutex> lock(captures.mutex);
     if (captured_frames_->load() < 2) break;
     backpressured_.store(true);
-    captures.changed.wait_for(lock, std::chrono::milliseconds(100));
+    if (expired()) { available = false; break; }
+    captures.changed.wait_for(lock, slice);
   }
   backpressured_.store(false);
+  return available;
 }
 
 void SnapshotStore::ReserveForFrame(cv::Size size) {

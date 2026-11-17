@@ -34,12 +34,21 @@ def audio_policy(codec):
     return ['-an'], 'unsupported_audio_codec' if codec else 'no_audio', False
 
 
+RELAY_ONLY_OPTIONS = ('-dts_error_threshold',)
+
+
 def probe(args, fd, timeout=15):
     """The source and its credentials are already in a private inherited memfd."""
     tool = os.environ.get('INGEST_FFPROBE', '/opt/ainvr/ffmpeg-8.1.2/bin/ffprobe')
     begin = args.index('-f')
     end = args.index('-map')
-    command = [tool, '-v', 'error', *args[begin:end], '-show_entries',
+    inputs = list(args[begin:end])
+    # Relay-only ffmpeg options (timestamp bridging) are not ffprobe options.
+    for option in RELAY_ONLY_OPTIONS:
+        if option in inputs:
+            i = inputs.index(option)
+            del inputs[i:i + 2]
+    command = [tool, '-v', 'error', *inputs, '-show_entries',
                'stream=codec_type,codec_name,width,height', '-of', 'json']
     proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, pass_fds=(fd,), start_new_session=True)

@@ -64,6 +64,15 @@ def validate_source(value, resolve=False, allowed_cidrs=None):
     return value
 
 
+# A copying relay freezes every later frame at the last timestamp when a camera
+# resets its clock mid-session (encoder restart, bitrate change); SRS then stops
+# serving RTMP readers (AI, recording) while the stream still looks published.
+# Treat input jumps beyond 3 s as discontinuities that ffmpeg bridges with its
+# predicted next timestamp. Normal 32-bit RTP wraps are already unwrapped by
+# the RTSP demuxer; this covers resets. Verified against the shipped build.
+TIMESTAMP_BRIDGE = ('-dts_error_threshold', '3')
+
+
 def command(c):
     source = validate_source(c['source'])
     if not IDENTIFIER.fullmatch(c['app']) or not IDENTIFIER.fullmatch(c['stream']):
@@ -76,7 +85,7 @@ def command(c):
             '-hide_banner', '-nostdin', '-loglevel', 'error', '-nostats',
             '-progress', 'pipe:1', '-rtsp_transport', transport,
             '-rw_timeout', str(timeout * 1000000), '-timeout', str(timeout * 1000000),
-            '-i', source, '-map', '0:v:0', '-an', '-c:v', 'copy',
+            *TIMESTAMP_BRIDGE, '-i', source, '-map', '0:v:0', '-an', '-c:v', 'copy',
             '-f', 'flv', 'rtmp://127.0.0.1:1935/' + c['app'] + '/' + c['stream']]
 
 
@@ -93,7 +102,7 @@ def private_input(c, fd):
     # concat's default H.264 Annex-B conversion would mismatch AVCC extradata
     # in the FLV output. Preserve packet framing for the destination muxer.
     args[start:end] = ['-f', 'concat', '-safe', '0', '-auto_convert', '0', '-protocol_whitelist',
-                       'file,rtsp,tcp,udp,rtp', '-i', f'/proc/self/fd/{fd}']
+                       'file,rtsp,tcp,udp,rtp', *TIMESTAMP_BRIDGE, '-i', f'/proc/self/fd/{fd}']
     return args, manifest.encode()
 
 

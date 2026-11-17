@@ -14,6 +14,8 @@ namespace ai_service::stream {
 class GopAwareShedder {
  public:
   bool Decide(bool is_keyframe,int64_t queue_level,int64_t queue_max);
+  /** Drop the rest of the current GOP from the forward path (forward queue stayed full). */
+  void ShedGop();
   bool shedding()const{return shedding_;}
   int64_t shed_count()const{return shed_count_;}
  private:

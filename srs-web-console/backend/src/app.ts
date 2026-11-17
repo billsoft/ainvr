@@ -93,6 +93,7 @@ import { PullModeAdapter } from './store/adapter.js';
 import { SrsConfigAdapter } from './store/srsAdapter.js';
 import { restoreLocalConfig } from './store/restoreLocalConfig.js';
 import { observabilityRoutes } from './routes/observability.js';
+import { createStreamHealthMonitor } from './services/streamHealth.js';
 import { networkRoutes } from './routes/network.js';
 import { systemTimeRoutes } from './routes/systemTime.js';
 import { operationalLog } from './services/operationalLog.js';
@@ -759,6 +760,40 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     });
     await instance.register(diagOverlayRoutes);
     await instance.register(observabilityRoutes, { pgStore });
+    {
+      // Interruptions (AI stuck reconnecting, scheduled recording not writing) are
+      // blind spots: show them while they last and log when they start and end.
+      const read = async (url: string, headers: Record<string, string>) => {
+        const response = await fetch(url, { headers: { accept: 'application/json', ...headers }, signal: AbortSignal.timeout(5000) });
+        if (!response.ok) throw Error(`status ${response.status}`);
+        return response.json() as Promise<unknown>;
+      };
+      const streamHealth = createStreamHealthMonitor({
+        readAi: async () => {
+          const settings = await settingsStore.read();
+          const base = (settings.aiService?.baseUrl || aiServiceBaseUrl).replace(/\/+$/, '');
+          const key = await resolveAiApiKey(settings, pgStore);
+          const body = await read(`${base}/api/v1/channels`, key ? { 'x-api-key': key } : {}) as { channels?: { id: string; name?: string; state?: string }[] };
+          if (!Array.isArray(body.channels)) throw Error('unexpected AI channel list');
+          return body.channels.map(c => ({ id: String(c.id), name: String(c.name || c.id), state: String(c.state ?? '') }));
+        },
+        readRecorder: async () => {
+          const token = [...serviceTokens].find(([, service]) => service === 'recorder')?.[0];
+          if (!token) throw Error('recorder token unavailable');
+          const base = ((await settingsStore.read()).recorderService?.baseUrl || recorderServiceBaseUrl).replace(/\/+$/, '');
+          const rows = await read(`${base}/v1/recorder/channels`, { 'x-service-token': token });
+          if (!Array.isArray(rows)) throw Error('unexpected recorder channel list');
+          return rows.map((c: Record<string, unknown>) => ({ id: String(c.id), name: String(c.name || c.id),
+            scheduleEnabled: c.scheduleEnabled === true, scheduleHours: Array.isArray(c.scheduleHours) ? c.scheduleHours.map(Number) : [],
+            recordingState: String(c.recordingState ?? ''), recordingDetail: typeof c.recordingDetail === 'string' ? c.recordingDetail : undefined }));
+        },
+        log: (level, message) => operationalLog(level, 'stream-health', message),
+      });
+      const timer = setInterval(() => void streamHealth.poll(), 10000); timer.unref();
+      instance.addHook('onClose', async () => clearInterval(timer));
+      void streamHealth.poll();
+      instance.get('/stream-health', async () => ({ code: 0, data: streamHealth.snapshot() }));
+    }
     await instance.register(networkRoutes);
     await instance.register(storageRoutes);
     await instance.register(systemTimeRoutes);

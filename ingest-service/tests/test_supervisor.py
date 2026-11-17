@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import sys
 import unittest
 
 spec = importlib.util.spec_from_file_location('ingest', pathlib.Path(__file__).parents[1] / 'main.py')
@@ -79,6 +80,36 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn('/proc/self/fd/12', args)
         self.assertIn(b"cam'\\''era", manifest)
         self.assertIn(b'option rtsp_transport tcp', manifest)
+
+    def test_relay_bridges_camera_timestamp_jumps(self):
+        # A copying relay freezes every frame after a camera resets its clock
+        # mid-session and SRS stops serving AI and recording. Input jumps beyond
+        # 3 s must become discontinuities ffmpeg bridges from its own prediction.
+        c = dict(source='rtsp://192.168.1.1/cam', app='live', stream='a')
+        for args in (ingest.command(c), ingest.private_input(c, 12)[0]):
+            i = args.index('-dts_error_threshold')
+            self.assertEqual(args[i + 1], '3')
+            self.assertLess(i, args.index('-i'))
+
+    def test_audio_probe_does_not_receive_relay_only_options(self):
+        c = dict(source='rtsp://192.168.1.1/cam', app='live', stream='a')
+        args = ingest.private_input(c, 12)[0]
+        seen = []
+
+        class Proc:
+            def __init__(self, command, **kw):
+                seen.append(command)
+                raise OSError('stop after capture')
+
+        original = sys.modules["media_policy"].subprocess.Popen
+        sys.modules["media_policy"].subprocess.Popen = Proc
+        try:
+            with self.assertRaises(OSError):
+                sys.modules["media_policy"].probe(args, 12, timeout=1)
+        finally:
+            sys.modules["media_policy"].subprocess.Popen = original
+        self.assertNotIn('-dts_error_threshold', seen[0])
+        self.assertIn('/proc/self/fd/12', seen[0])
 
 
 if __name__ == '__main__':

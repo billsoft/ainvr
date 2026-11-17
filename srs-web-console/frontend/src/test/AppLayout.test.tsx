@@ -10,7 +10,7 @@ vi.mock('@/api/brandingService', () => ({ brandingService: { get: vi.fn().mockRe
   tagline: '', copyrightHolder: '', copyrightStartYear: null, contactName: '', contactPhone: '',
 }) } }))
 
-vi.mock('@/api/observabilityService', () => ({ observabilityService: { summary: vi.fn().mockResolvedValue({
+vi.mock('@/api/observabilityService', () => ({ observabilityService: { streamHealth: vi.fn().mockResolvedValue({ known: true, checkedAt: 0, problems: [] }), summary: vi.fn().mockResolvedValue({
   snapshot: { ts: Date.now(), services: [
     { id: 'backend', healthy: true }, { id: 'srs', healthy: true }, { id: 'ai-service', healthy: true }, { id: 'recorder', healthy: true },
   ] }, settings: {}, sources: [], applyError: null,

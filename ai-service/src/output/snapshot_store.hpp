@@ -122,6 +122,7 @@ class SnapshotStore : public pipeline::SnapshotSink {
   // 有检测结果的帧才生效——期间 trim 和概览里的 max_count 都还是旧值。
   void UpdateConfig(const config::SnapshotConfig& cfg);
   void WaitForCapacity(const std::function<bool()>& cancelled) override;
+  bool WaitForCapacityFor(const std::function<bool()>& cancelled, double max_seconds) override;
   void ReserveForFrame(cv::Size size) override;
 
   // ---- 管理 API(同步调用,control_server 负责扔线程池,这里不关心) ----

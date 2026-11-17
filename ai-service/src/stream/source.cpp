@@ -11,6 +11,11 @@
 #include <stdexcept>
 
 namespace ai_service::stream {
+namespace {
+// Longest a keyframe waits for forward space before the GOP is shed from the forward path.
+constexpr auto kForwardWait=std::chrono::milliseconds(1000);
+}
+void GopAwareShedder::ShedGop(){shedding_=true;shed_count_++;}
 bool GopAwareShedder::Decide(bool is_keyframe,int64_t queue_level,int64_t queue_max) {
   if(is_keyframe){shedding_=false;return false;}
   if(shedding_){shed_count_++;return true;}
@@ -212,7 +217,12 @@ void StreamSource::Pump(){
         // Preserve the original GOP policy. Keyframes wait for bounded space;
         // non-key overload drops continue until the next keyframe, never mid-GOP resume.
         if(!shedder->Decide(packet->key_frame,q.full?64:0,64)){
+          // A keyframe may wait briefly for forward space, never indefinitely: a stalled
+          // publisher must not stop AI decoding. Past the bound the whole GOP is shed
+          // from the forward path only (resumes at the next keyframe, never mid-GOP).
+          const auto feed_deadline=Clock::now()+kForwardWait;
           while(!stop_&&!tap->FeedAt(*packet,stamp)){
+            if(Clock::now()>=feed_deadline){shedder->ShedGop();break;}
             receive(0);std::this_thread::sleep_for(std::chrono::milliseconds(2));
           }
         }

@@ -44,6 +44,7 @@
 #include "../stream/source.hpp"
 #include "../utils/timing.hpp"
 #include "timing_observation.hpp"
+#include "archive_admission_gate.hpp"
 
 namespace ai_service::pipeline {
 
@@ -142,6 +143,7 @@ class ReusedChannelWorker : public ChannelWorker {
     int64_t duration_ns = 0;
     uint64_t search_sampling_token = 0; // Frozen before BPU dispatch, including pipelined frames.
     std::optional<output::SearchObservationTicket> search_observation;
+    bool archive_bypass = false;  // storage unavailable: recognized, not stored, recorded as a gap
     double captured_mono = 0.0;
     double captured_wall = 0.0;
     int width = 0, height = 0;
@@ -271,6 +273,9 @@ class ReusedChannelWorker : public ChannelWorker {
   int64_t dropped_count_ = 0;  // = sampled_skip_count_ + overload_drop_count_ + archive_backpressure_skip_count_,兼容旧前端
   int64_t sampled_skip_count_ = 0;
   int64_t archive_backpressure_skip_count_ = 0;
+  // Storage that accepts nothing for this long is unavailable, not slow.
+  ArchiveAdmissionGate archive_gate_{10.0};
+  int64_t archive_unavailable_skip_count_ = 0;
   int64_t overload_drop_count_ = 0;
   double last_infer_s_ = 0.0;  // 上一帧推理耗时,判定跳帧是否算力所致;stats_mutex_ 保护
   int64_t frame_count_ = 0;

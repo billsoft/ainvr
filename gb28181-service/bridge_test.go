@@ -1,8 +1,14 @@
 package gateway
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBridgeCopyAndAudioPolicy(t *testing.T) {
@@ -45,8 +51,11 @@ func TestHTTPBridgePreservesMediaTimestamps(t *testing.T) {
 		t.Fatal("AAC media component alias rejected")
 	}
 	value := strings.Join(args, " ")
-	if !strings.Contains(value, "http://127.0.0.1:8097/rtp/gb_test.live.flv") || !strings.Contains(value, "-c:v copy") || !strings.Contains(value, "-c:a copy") {
+	if BridgeSourceURL(c, MediaLease{Stream: "gb_test"}) != "http://127.0.0.1:8097/rtp/gb_test.live.flv" || !strings.Contains(value, "-f flv -i pipe:0") || !strings.Contains(value, "-c:v copy") || !strings.Contains(value, "-c:a copy") {
 		t.Fatal("invalid HTTP FLV copy bridge")
+	}
+	if strings.Contains(value, "http://") {
+		t.Fatal("relay must read the gateway's continuous feed, not the origin directly")
 	}
 	if strings.Contains(value, "-rtsp_transport") || strings.Contains(value, "-fflags") {
 		t.Fatal("timestamp regeneration applied to FLV")
@@ -73,10 +82,58 @@ func TestUnsupportedAudioDoesNotDelayVideoInputAnalysis(t *testing.T) {
 	if input < 0 || !strings.Contains(joined[:input], "-analyzeduration 1000000 -probesize 1048576 -an") {
 		t.Fatal("unsupported source audio can consume an unbounded live analysis window")
 	}
-	if !strings.Contains(joined, "http://127.0.0.1:8097/rtp/gb_test.live.flv") || strings.Contains(joined, "-rtsp_transport") || strings.Contains(joined, "-fflags") {
+	if !strings.Contains(joined, "-f flv") || !strings.Contains(joined, "-i pipe:0") || strings.Contains(joined, "-rtsp_transport") || strings.Contains(joined, "-fflags") {
 		t.Fatal("fallback discarded the timestamp-preserving video path")
 	}
 	if !strings.Contains(joined[input:], "-c:v copy -an") {
 		t.Fatal("unsupported audio reached the output or video was transcoded")
+	}
+}
+
+// End to end through StartBridge: an origin whose clock wraps reaches the relay
+// continuous, and the relay ends (for the supervisor to recover) when the origin stops.
+func TestHTTPBridgeFeedsRelayAContinuousClock(t *testing.T) {
+	stream := flvHeader()
+	stream = append(stream, flvTag(9, 0, avcHeader)...)
+	for i, v := range []uint32{47721700, 47721740, 47721780, 0, 40, 80} {
+		stream = append(stream, flvTag(9, v, avcFrame(i == 0, 0, byte(i)))...)
+	}
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rtp/gb_wrap.live.flv" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(stream)
+	}))
+	defer origin.Close()
+	dir := t.TempDir()
+	received := filepath.Join(dir, "relay-input.flv")
+	relay := filepath.Join(dir, "relay")
+	if err := os.WriteFile(relay, []byte("#!/bin/sh\ncat > "+received+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c := BridgeConfig{FFmpeg: relay, HTTPBase: origin.URL, RTSPBase: "rtsp://127.0.0.1:8556", RTMPBase: "rtmp://127.0.0.1:1935"}
+	b, _, err := StartBridge(context.Background(), c, MediaLease{Stream: "gb_wrap"}, "live", "fixed", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-b.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("relay outlived its finished origin")
+	}
+	data, err := os.ReadFile(received)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tags := parseTags(t, data)
+	want := []uint32{0, 47721700, 47721740, 47721780, 47721820, 47721860, 47721900}
+	if len(tags) != len(want) {
+		t.Fatalf("relay received %d tags, want %d", len(tags), len(want))
+	}
+	for i, tag := range tags {
+		if tag.ts != want[i] {
+			t.Fatalf("tag %d: ts %d, want %d", i, tag.ts, want[i])
+		}
 	}
 }
