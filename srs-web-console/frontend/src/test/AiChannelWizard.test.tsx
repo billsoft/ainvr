@@ -101,6 +101,12 @@ function makeChannel(overrides: Partial<AiChannel['config']> = {}): AiChannel {
 async function selectSourceAndNext(user: ReturnType<typeof userEvent.setup>, channelId = 'ch-main') {
   await user.selectOptions(screen.getByTestId('wizard-stream-select'), channelId)
   await user.click(screen.getByRole('button', { name: '下一步 →' }))
+  // 新建通道不再自带模型：补上原来的默认模型，其余用例照旧；停在第①步（校验未过）时不用补
+  const picker = screen.queryByLabelText('待添加模型')
+  if (picker) {
+    await user.selectOptions(picker, 'yolo26x')
+    await user.click(screen.getByRole('button', { name: '添加模型' }))
+  }
 }
 
 describe('AiChannelWizard', () => {
@@ -870,4 +876,32 @@ it('a slow-model apply awaiting tracking confirmation does not announce success;
  await user.click(screen.getByRole('button', { name: /^配置 / }))
  expect(screen.getByTestId('wizard-model-select')).toHaveValue('yolo26m')
  expect(props.onSubmit).not.toHaveBeenCalled()
+})
+
+describe('创建向导：自动 ID、至少一个模型', () => {
+  it('进来就带着自动生成的通道 ID（合法、可改）', () => {
+    render(<AiChannelWizard {...baseProps()} />)
+    const field = screen.getByTestId('wizard-id') as HTMLInputElement
+    expect(field.value).toMatch(/^[a-zA-Z0-9_-]{1,32}$/)
+    expect(field).not.toBeDisabled()
+  })
+
+  it('不预先带模型：已添加 0 / 4，不添加就点下一步会提示，添加后才能继续', async () => {
+    const user = userEvent.setup()
+    render(<AiChannelWizard {...baseProps()} />)
+    await user.selectOptions(screen.getByTestId('wizard-stream-select'), 'ch-main')
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
+    const region = screen.getByRole('region', { name: '识别模型列表' })
+    expect(within(region).getByRole('heading', { name: /已添加的模型.*0 \/ 4/ })).toBeInTheDocument()
+    expect(within(region).getByRole('heading', { name: /待添加的模型/ })).toBeInTheDocument()
+    expect(within(region).getByText(/还没有添加模型/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
+    expect(await screen.findByText('请至少添加一个识别模型')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '识别模型列表' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '添加模型' }))
+    expect(within(screen.getByRole('region', { name: '识别模型列表' })).getByRole('heading', { name: /已添加的模型.*1 \/ 4/ })).toBeInTheDocument()
+    expect(screen.queryByText('请至少添加一个识别模型')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '下一步 →' }))
+    expect(screen.queryByRole('region', { name: '识别模型列表' })).not.toBeInTheDocument()
+  })
 })

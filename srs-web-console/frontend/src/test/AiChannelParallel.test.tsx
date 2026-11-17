@@ -107,6 +107,9 @@ function props(overrides: Partial<ComponentProps<typeof AiChannelWizard>> = {}) 
 async function toOutputStep(user: ReturnType<typeof userEvent.setup>, source = 'ch-cam2') {
   await user.selectOptions(screen.getByTestId('wizard-stream-select'), source)
   await user.click(screen.getByRole('button', { name: '下一步 →' }))
+  // 新建通道不再自带模型：先添加原来的默认模型
+  await user.selectOptions(screen.getByLabelText('待添加模型'), 'yolo26x')
+  await user.click(screen.getByRole('button', { name: '添加模型' }))
   await user.click(screen.getByRole('button', { name: '下一步 →' }))
   await user.click(screen.getByRole('button', { name: '下一步 →' }))
 }

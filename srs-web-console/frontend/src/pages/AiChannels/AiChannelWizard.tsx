@@ -11,6 +11,7 @@ import {
   DEFAULT_WIZARD_VALUE, aiServiceRtmpBase, findOutputConflict, fromChannel,
   generateChannelId,
   toCreatePatch, toUpdatePatch, validateStep1, validateStep2, validateStep3, validateVisibleAnalytics, validatePublishRequiresRtmp,
+  validateModelsChosen, resultBufferWarning,
   type AiWizardFormValue, type FieldErrors,
 } from '@/features/aiChannelForm'
 import { type AiChannel, type AiChannelCreatePatch, type AiChannelUpdatePatch, type AiStreamOption } from '@/types/aiChannel'
@@ -210,7 +211,7 @@ export function AiChannelWizard({
       setErrors({})
       setSubmitError(null)
     } else if (open && mode === 'create') {
-      const base: AiWizardFormValue = { ...DEFAULT_WIZARD_VALUE, publishEnabled: true }
+      const base: AiWizardFormValue = { ...DEFAULT_WIZARD_VALUE, modelsChosen: false, publishEnabled: true }
       // 如果传了 lockedSource，预填源流 URL 和默认名称
       if (lockedSource) {
         base.streamUrl = lockedSource.url
@@ -220,6 +221,13 @@ export function AiChannelWizard({
           base.id = generateChannelId(parsed.stream)
           base.name = `${lockedSource.displayLabel}_AI输出`
         }
+      }
+      // 通道 ID 进来就填好（可改）：人只需要维护名称。不与已有通道重名。
+      if (!base.id) {
+        const taken = new Set(aiChannels.map((c) => c.id))
+        let id = generateChannelId('ai')
+        while (taken.has(id)) id = generateChannelId('ai')
+        base.id = id
       }
       draftBaseline.current=draftSignature(base)
       setValue(base)
@@ -288,7 +296,7 @@ export function AiChannelWizard({
       setErrors(e)
       if (Object.keys(e).length > 0) return
     } else if (step === 1) {
-      const e = validateStep2(value)
+      const e = { ...validateStep2(value), ...validateModelsChosen(value) }
       const modelErrors=validateStep3(value)
       for(const key of ['confThreshold','iouThreshold','maxDetections'] as const)if(modelErrors[key])e[key]=modelErrors[key]
       setErrors(e)
@@ -303,7 +311,7 @@ export function AiChannelWizard({
   }
 
   async function handleSubmit() {
-    const e = { ...validateStep2(value), ...validateStep3(value) }
+    const e = { ...validateStep2(value), ...validateStep3(value), ...validateModelsChosen(value) }
     if (e.analysisPipeline || e.prompts || e.inferenceFps || e.description || e.labelId || e.labelName) setStep(1)
     if (e.analytics) setStep(2)
     if(e.confThreshold||e.iouThreshold||e.maxDetections)setStep(1)
@@ -380,7 +388,7 @@ export function AiChannelWizard({
                   value={value.id}
                   disabled={mode === 'edit'}
                   onChange={(e) => set('id', e.target.value)}
-                  placeholder="从流名自动生成，可改"
+                  placeholder="自动生成，可改"
                   className={`mt-1.5 ${inputCls} disabled:bg-surface-page disabled:text-ink-faint`}
                   data-testid="wizard-id"
                 />
@@ -597,6 +605,7 @@ export function AiChannelWizard({
                     className={`mt-1.5 ${inputCls}`}
                   />
                   {errors.resultBufferMaxFrames && <p className="mt-1 text-xs text-danger">{errors.resultBufferMaxFrames}</p>}
+                  {!errors.resultBufferMaxFrames && resultBufferWarning(value) && <p role="status" className="mt-1 text-xs text-warning-700">{resultBufferWarning(value)}</p>}
                 </div>
               </div>
 

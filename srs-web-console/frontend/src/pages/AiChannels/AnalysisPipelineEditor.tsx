@@ -14,7 +14,9 @@ export function AnalysisPipelineEditor({ value, onChange, error }: {
   const [editing, setEditing] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState('')
   const dragging = useRef<string | null>(null)
-  const nodes = wizardModelList(value)
+  // 新建通道时不预先带模型：未明确添加之前列表为空，第一次添加会成为通道的主模型。
+  const emptyStart = value.modelsChosen === false
+  const nodes = emptyStart ? [] : wizardModelList(value)
   const available: AiModelPresetKey[] = availableModelPresetKeys(nodes.map(n => n.model), allowSameCapability).filter(k => k !== 'locateanything-3b')
   const selected = available.includes(choice) ? choice : available[0]
   const used = nodes.reduce((sum, n) => sum + n.postprocess.max_detections, 0)
@@ -38,8 +40,9 @@ export function AnalysisPipelineEditor({ value, onChange, error }: {
     setEditing(null); setAnnouncement(accepted === false ? '请确认通道跟踪设置变更' : '模型参数已应用到通道草稿，保存通道后生效')
   }
   return <section aria-label="识别模型列表" className="space-y-3">
-    <div><h3 className="text-sm font-semibold text-ink">识别模型 <span className="ml-1 font-normal text-ink-subtle">{nodes.length} / 4</span></h3>
+    <div><h3 className="text-sm font-semibold text-ink">已添加的模型 <span className="ml-1 font-normal text-ink-subtle">{nodes.length} / 4</span></h3>
       <p className="mt-1 text-xs text-ink-subtle">添加后使用默认参数，需要调整时点击“配置”。</p></div>
+    {emptyStart && <p className="rounded-panel border border-dashed border-line bg-page p-3 text-sm text-ink-subtle">还没有添加模型。请在下方“待添加的模型”里选择一个并点“添加模型”，至少添加一个才能继续。</p>}
     <ol className="space-y-2">{nodes.map((node, index) => {
       const key = modelPresetKey(node.model)
       const title = key ? AI_MODEL_PRESETS[key].displayName : node.model.name
@@ -69,12 +72,15 @@ export function AnalysisPipelineEditor({ value, onChange, error }: {
       </li>
     })}</ol>
     {nodes.length < 4 && selected && value.modelPreset !== 'locateanything-3b' && <div className="rounded-panel border border-dashed border-line bg-page p-3">
+      <h3 className="mb-2 text-sm font-semibold text-ink">待添加的模型</h3>
       <div className="flex flex-wrap gap-2"><select aria-label="待添加模型" value={selected} onChange={e => setChoice(e.target.value as AiModelPresetKey)} className="min-h-11 min-w-0 flex-1 rounded-base border border-line bg-surface px-3 text-sm">
         {modelPresetGroups(available).map(group => <optgroup key={group.id} label={group.label}>{group.keys.map(k => <option key={k} value={k}>{modelPresetOptionLabel(k)}</option>)}</optgroup>)}
       </select><button type="button" disabled={remaining < 1} className="min-h-11 rounded-base bg-primary px-4 text-sm text-white disabled:opacity-40" onClick={() => {
         const built = buildModelAndPreprocess(selected, { ...value, modelPreset: selected, prompts: [{ description: '', label_id: 'target', label_name: '' }] })
         const id = 'model-' + Array.from(crypto.getRandomValues(new Uint32Array(2)), n => n.toString(16).padStart(8, '0')).join('')
-        update([...nodes, { id, ...built, postprocess: { conf_threshold: .25, iou_threshold: .45, max_detections: Math.min(300, remaining) } }])
+        const added = { ...built, postprocess: { conf_threshold: .25, iou_threshold: .45, max_detections: Math.min(300, remaining) } }
+        if (emptyStart) onChange({ ...updateWizardModelList(value, [{ id: 'primary', ...added }]), modelsChosen: true })
+        else update([...nodes, { id, ...added }])
         setAnnouncement(isOpenVocabularyPreset(selected) ? '模型已添加，请点击配置填写识别目标' : '模型已添加，使用默认参数')
       }}>添加模型</button></div>
       {remaining < 1 && <p role="status" className="mt-2 text-xs text-warning-700">检测数总额度已用完，请先在已有模型的配置中降低最大检测数。</p>}

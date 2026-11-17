@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_WIZARD_VALUE, applyModelPreset, fromChannel, generateChannelId, buildModelAndPreprocess, wizardModelList, updateWizardModelList,
   needsIouThreshold, toCreatePatch, toUpdatePatch, validatePublishRequiresRtmp,
-  validateStep1, validateStep2, validateStep3,
+  validateStep1, validateStep2, validateStep3, validateModelsChosen, resultBufferWarning,
   type AiWizardFormValue,
 } from '@/features/aiChannelForm'
 import type { AiChannel } from '@/types/aiChannel'
@@ -166,6 +166,12 @@ describe('模型预设原子性（D6）', () => {
   it('applyModelPreset 切换预设只改 modelPreset 字段本身', () => {
     const v = applyModelPreset(DEFAULT_WIZARD_VALUE, 'scrfd')
     expect(v.modelPreset).toBe('scrfd')
+  })
+
+  it('界面内部标记 modelsChosen 不会进入提交给 AI 服务的数据', () => {
+    const v = { ...DEFAULT_WIZARD_VALUE, id: 'cam01', streamUrl: 'rtmp://x/live/y', modelsChosen: true }
+    expect(JSON.stringify(toCreatePatch(v))).not.toContain('modelsChosen')
+    expect(JSON.stringify(toUpdatePatch(v, null))).not.toContain('modelsChosen')
   })
 
   it('toCreatePatch: yolo26m 预设产出正确的 adapter + 归一化参数', () => {
@@ -388,4 +394,22 @@ it('sort-only edits retain deployed paths; removing the imported model atomicall
  expect(sortPatch.model).toBeUndefined();expect(sortPatch.preprocess).toBeUndefined();expect(sortPatch.analysis_pipeline?.order).toEqual(['face','primary'])
  v=updateWizardModelList(v,[face]);const patch=toUpdatePatch(v,original)
  expect(patch.model).toMatchObject({adapter:'yoloface_bpu',path:face.model.path});expect(patch.postprocess?.conf_threshold).toBe(.42);expect(patch.analysis_pipeline).toMatchObject({root_id:'face',order:['face'],nodes:[]})
+})
+
+describe('新建通道的默认值与提醒', () => {
+  it('结果缓冲默认 5 帧', () => {
+    expect(DEFAULT_WIZARD_VALUE.resultBufferMaxFrames).toBe(5)
+  })
+  it('没添加模型就不能继续；添加后（或编辑已有通道）放行', () => {
+    expect(validateModelsChosen({ ...DEFAULT_WIZARD_VALUE, modelsChosen: false }).analysisPipeline).toBe('请至少添加一个识别模型')
+    expect(validateModelsChosen({ ...DEFAULT_WIZARD_VALUE, modelsChosen: true })).toEqual({})
+    // 编辑已有通道、历史数据等没有设置该标记，视为已添加
+    expect(validateModelsChosen(DEFAULT_WIZARD_VALUE)).toEqual({})
+  })
+  it('缓冲帧数超过推理帧率时给出提示，不超过或帧率跟随源流时不提示', () => {
+    expect(resultBufferWarning({ ...DEFAULT_WIZARD_VALUE, inferenceFps: 5, resultBufferMaxFrames: 5 })).toBeNull()
+    expect(resultBufferWarning({ ...DEFAULT_WIZARD_VALUE, inferenceFps: 5, resultBufferMaxFrames: 30 })).toMatch(/30 帧.*推理帧率 5/)
+    expect(resultBufferWarning({ ...DEFAULT_WIZARD_VALUE, inferenceFps: 0, resultBufferMaxFrames: 30 })).toBeNull()
+    expect(resultBufferWarning({ ...DEFAULT_WIZARD_VALUE, modelPreset: 'locateanything-3b', inferenceFps: 1 / 120, resultBufferMaxFrames: 30 })).toBeNull()
+  })
 })

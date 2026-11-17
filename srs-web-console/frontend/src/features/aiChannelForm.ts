@@ -45,6 +45,8 @@ export interface AiWizardFormValue {
   iouThreshold: number
   maxDetections: number
   resultBufferMaxFrames: number
+  /** 向导的“新建”入口显式设为 false：不预先带模型，须明确添加至少一个；其余情况（编辑、历史数据、未设置）视为已添加 */
+  modelsChosen?: boolean
   publishEnabled: boolean
   /** 空串 = 用 ai-service 默认派生名 rtmp://{rtmp_base}/live/{id}-ai */
   publishTargetUrl: string
@@ -65,7 +67,7 @@ export const DEFAULT_WIZARD_VALUE: AiWizardFormValue = {
   confThreshold: 0.25,
   iouThreshold: 0.45,
   maxDetections: 300,
-  resultBufferMaxFrames: 30,
+  resultBufferMaxFrames: 5,
   publishEnabled: false,
   publishTargetUrl: '',
   publishFlvFormat: 'codec12',
@@ -152,6 +154,20 @@ export function validateStep1(v: AiWizardFormValue, isCreate: boolean): FieldErr
     errors.streamUrl = '源流地址必须以 rtmp:// / http:// / https:// 开头'
   }
   return errors
+}
+
+/** 新建通道不再默认带一个模型：必须明确添加至少一个才能继续。 */
+export function validateModelsChosen(v: AiWizardFormValue): FieldErrors {
+  return v.modelsChosen === false ? { analysisPipeline: '请至少添加一个识别模型' } : {}
+}
+
+/** 结果缓冲保存最近 N 帧的识别结果；超过推理帧率意味着保留了一秒以上的结果，给出提示但不阻止。 */
+export function resultBufferWarning(v: AiWizardFormValue): string | null {
+  const fps = v.inferenceFps
+  const frames = v.resultBufferMaxFrames
+  // 0 表示跟随源流（帧率未知）；慢速开放词汇模型的数值是采集间隔，不是帧率
+  if (v.modelPreset === 'locateanything-3b' || !(fps > 0) || !Number.isInteger(frames) || frames <= fps) return null
+  return `缓冲 ${frames} 帧高于推理帧率 ${fps}（约 ${(frames / fps).toFixed(1)} 秒的识别结果），通常没有必要，还会多占内存。`
 }
 
 /** 第②步：模型与推理——数值范围校验，此前这两步完全没有前端校验，
