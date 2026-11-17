@@ -10,12 +10,30 @@ import { request } from '@/api/httpClient'
  * - required && !token：显示登录表单
  * - 其余情况：直接放行渲染子树
  */
+const MEDIA_RENEW_MS = 30 * 60_000
+
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const { required, token, checkStatus } = useAuthStore()
 
   useEffect(() => {
     void checkStatus()
   }, [checkStatus])
+
+  // A console left open on a monitor wall must keep its live-video cookie alive for years:
+  // renew it every 30 minutes and whenever the page comes back to the foreground.
+  useEffect(() => {
+    const renew = () => {
+      const state = useAuthStore.getState()
+      if (document.hidden || state.required === null || (state.required && !state.token)) return
+      void state.renewMedia()
+    }
+    const timer = setInterval(renew, MEDIA_RENEW_MS)
+    document.addEventListener('visibilitychange', renew)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', renew)
+    }
+  }, [])
 
   if (required === null) {
     return (

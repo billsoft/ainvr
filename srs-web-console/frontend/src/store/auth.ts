@@ -11,6 +11,8 @@ interface AuthState {
   checkStatus: () => Promise<void>
   login: (password: string, remember?: boolean) => Promise<boolean>
   handleUnauthorized: () => void
+  /** Renews the cookie that authorises live video. It lasts 12 hours, so an open console must refresh it. */
+  renewMedia: () => Promise<void>
   logout: () => void
 }
 
@@ -53,6 +55,10 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch {
       return false
     }
+  },
+
+  async renewMedia() {
+    try { await request('/auth/media-session', { method: 'POST' }) } catch { /* the next renewal tries again */ }
   },
 
   handleUnauthorized() {

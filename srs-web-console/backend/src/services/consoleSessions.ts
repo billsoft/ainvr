@@ -39,6 +39,8 @@ export class RememberedDevices {
     const key=digest(secret),device=this.devices.find(d=>field==='token'?d.token===key:d.media===key||d.previous_media===key);
     if(!device)return;
     if(device.expires<=this.wall()||device.password!==digest(password)){this.devices=this.devices.filter(d=>d!==device);this.save();return;}
+    // Remembered devices slide too, but are only rewritten to disk at most once a day.
+    if(device.expires-this.wall()<REMEMBER_MS-86400_000){device.expires=this.wall()+REMEMBER_MS;this.save();}
     return device;
   }
   rotateMedia(token: string, media: string) {
@@ -69,7 +71,8 @@ export class ConsoleSessions {
   get(hash: string, token: unknown): Session | undefined {
     if(typeof token!=='string' || token.length!==64)return;
     const s=this.sessions.get(token);
-    if(s && s.hash===hash && s.expires>this.now())return s;
+    // Every use renews the lifetime: a console left open on a monitor wall stays signed in; only idleness expires it.
+    if(s && s.hash===hash && s.expires>this.now()){s.expires=this.now()+this.ttlMs;return s;}
     if(s)this.sessions.delete(token);
     if(!this.devices?.find(token,hash))return;
     // Restore a remembered device with a fresh media secret (the old one is only a digest).

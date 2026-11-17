@@ -28,7 +28,7 @@ it('a remembered device survives a backend restart; an ordinary session does not
     expect(fs.statSync(path.join(f.dir,'remembered-devices.json')).mode&0o077).toBe(0);
   }finally{f.cleanup();}
 });
-it('remembered devices expire after 30 days and end on password change or logout',()=>{
+it('remembered devices expire after 30 idle days and end on password change or logout',()=>{
   const f=fixture();
   try{
     const sessions=new ConsoleSessions(undefined,undefined,f.devices());
@@ -36,7 +36,9 @@ it('remembered devices expire after 30 days and end on password change or logout
     f.advance(29*DAY);
     expect(new ConsoleSessions(undefined,undefined,f.devices()).get('hash',a.token)).toBeTruthy();
     f.advance(2*DAY);
-    expect(new ConsoleSessions(undefined,undefined,f.devices()).get('hash',a.token)).toBeUndefined();
+    // Using a remembered device renewed it; the one nobody used has now been idle for 31 days.
+    expect(new ConsoleSessions(undefined,undefined,f.devices()).get('hash',a.token)).toBeTruthy();
+    expect(new ConsoleSessions(undefined,undefined,f.devices()).get('hash',b.token)).toBeUndefined();
     const again=new ConsoleSessions(undefined,undefined,f.devices());
     const c=again.create('hash',{remember:true}),d=again.create('hash',{remember:true});
     again.revoke(c.token);
@@ -60,4 +62,13 @@ it('login accepts an explicit remember choice and the device stays signed in aft
     expect((await app.inject({url:'/api/channels',headers:{'x-console-token':token}})).statusCode).toBe(401);
     await app.close();
   }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+it('a session that is used keeps living; only idleness expires it',()=>{
+  let now=0;
+  const sessions=new ConsoleSessions(()=>now,10*3600_000);
+  const {token}=sessions.create('hash');
+  for(let i=0;i<5;i++){now+=6*3600_000;expect(sessions.get('hash',token)).toBeTruthy();}
+  now+=11*3600_000;
+  expect(sessions.get('hash',token)).toBeUndefined();
 });

@@ -316,6 +316,11 @@ export async function attachWebRTC(
         }),
         signal: ctrl.signal,
       })
+      if (res.status === 401) {
+        // The live-video cookie expired: renew it so the next automatic retry is accepted.
+        void import('@/store/auth').then(({ useAuthStore }) => useAuthStore.getState().renewMedia())
+        throw new Error('视频凭据已过期，正在续期')
+      }
       const data = (await res.json()) as { code: number; sdp?: string }
       if (data.code !== 0 || !data.sdp) {
         throw new Error(`WebRTC API 错误 code=${data.code}`)
