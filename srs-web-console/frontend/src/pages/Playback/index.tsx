@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { CalendarClock, ChevronDown, ChevronRight, CircleAlert, Folder, FolderOpen, Play, Search } from 'lucide-react'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import SearchPage from '@/pages/Search'
+import type { SearchChannel, SearchScope } from '@/api/searchService'
+import { CalendarClock, CircleAlert, PanelLeft, PanelLeftClose, Search, X } from 'lucide-react'
 import { recordingService } from '@/api/recordingService'
 import { Toaster } from '@/components/ui/Toaster'
 import { toast } from '@/store/toast'
 import { formatBytes, formatDuration } from '@/utils/format'
-import { DAY_MS, dateKey, startOfDay, retentionLabel } from '@/utils/recording'
+import { findSegmentAt, retentionLabel } from '@/utils/recording'
 import type { RecorderChannel, RecorderStats, RecordingSegment } from '@/types/recording'
 import { RecordingTimeline } from './RecordingTimeline'
-import { RecordingPlayer } from './RecordingPlayer'
+import { RecordingPlayer, type PlayerControl, type PlayerTransport } from './RecordingPlayer'
 import { ChannelScheduleDialog } from './ChannelScheduleDialog'
 import { initialRange, rangeFromQuery, resolvePlayback, seiMarks, type PlaybackRange } from './model'
 import { useRangeRecordings } from './useRangeRecordings'
-import { smartSearchHref } from '@/features/searchNavigation'
+import { useDockedColumns } from './useDockedColumns'
+import { CurrentFileBar } from './CurrentFileBar'
 
 function usageColor(pct: number) { return pct >= 90 ? 'bg-danger' : pct >= 70 ? 'bg-warning' : 'bg-success' }
 function storageLabel(kind?: string) { return kind === 'smb' ? 'NAS' : '本机磁盘' }
@@ -27,9 +30,28 @@ export default function PlaybackPage() {
   const [channels, setChannels] = useState<RecorderChannel[]>([])
   const [search, setSearch] = useState('')
   const [scheduleOpen, setScheduleOpen] = useState(false)
-  const [expandedChannelId, setExpandedChannelId] = useState<string | null>(null)
-  const [expandedDates, setExpandedDates] = useState<Record<string, Set<string>>>({})
   const [range, setRange] = useState<PlaybackRange>(() => rangeFromQuery(searchParams) ?? initialRange())
+  // Smart search sits beside the player. It is created the first time it is opened and then only hidden,
+  // so its query, results and selection survive while results are played one after another.
+  const entryScope = (): SearchScope | null => channelId
+    ? { channel_ids: [channelId], from: new Date(range.from).toISOString(), to: new Date(range.to).toISOString() } : null
+  const [searchEntry, setSearchEntry] = useState<SearchScope | null>(null)
+  const [searchMounted, setSearchMounted] = useState(false)
+  // The channels to search are ticked in the channel list on the left, not in a second list inside the panel.
+  const [searchChannels, setSearchChannels] = useState<SearchChannel[]>([])
+  const [searchSelected, setSearchSelected] = useState<string[]>([])
+  // Search hits shown on the timeline of the channel they were recorded on.
+  const [hits, setHits] = useState<{ channelId: string; at: number }[]>([])
+  // Three docked columns like an editor with a side assistant: channels | playback | search.
+  const { hostRef, stacked, showLeft, showRight: showSearch, toggleLeft, toggleRight: toggleSearch, closeRight: closeSearch } =
+    useDockedColumns({ searchRequested: searchParams.get('search') === '1' })
+  // The panel is created the first time its column is shown, with the channel and window open at that moment.
+  useEffect(() => {
+    if (!showSearch || searchMounted) return
+    setSearchEntry(entryScope()); setSearchSelected(channelId ? [channelId] : []); setSearchMounted(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSearch, searchMounted])
+  const searchableIds = new Set(searchChannels.map(c => c.id))
   const catalogue = useRangeRecordings(channelId, range.from, range.to)
   const scope = `${channelId}:${range.from}:${range.to}`
   const currentScope = useRef(scope); currentScope.current = scope
@@ -49,21 +71,18 @@ export default function PlaybackPage() {
   const [checking, setChecking] = useState(false)
   const [retry, setRetry] = useState(0)
   const recoveredRequest = useRef<number | null>(null)
-  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({})
   const selectedChannel = channels.find(c => c.id === channelId) ?? null
   const rangeSegments = catalogue.segments
   const aiMarks = useMemo(() => seiMarks(rangeSegments), [rangeSegments])
   const currentSegment = playing?.scope === scope ? rangeSegments.find(s => s.id === playing.segmentId) ?? null : null
+  const [previewTs, setPreviewTs] = useState<number | null>(null)
   const playbackUrl = currentSegment ? recordingService.playUrl(currentSegment.id) : null
+  // Dragging: the file under the dragged pointer. Otherwise the file the player has loaded, which is where the
+  // pointer is (files have seams and a click in a gap loads the nearest one, so a lookup by time would flicker).
+  const playhead = cursorScope === scope ? playheadTs : null
+  const pointerSegment = previewTs != null ? findSegmentAt(rangeSegments, previewTs)
+    : currentSegment ?? (playhead != null ? findSegmentAt(rangeSegments, playhead) : null)
   const filteredChannels = channels.filter(c => c.name.toLowerCase().includes(search.trim().toLowerCase()))
-  const loadedDays = useMemo(() => {
-    const days: Record<string, RecordingSegment[]> = {}
-    for (const segment of rangeSegments) {
-      const key = `${channelId}__${dateKey(Math.max(range.from, segment.startTs))}`
-      ;(days[key] ??= []).push(segment)
-    }
-    return days
-  }, [rangeSegments, range.from, channelId])
   // 读不到的段：全部读不到时整块换成原因说明（一排点不动的灰条目会让人以为
   // "有录像却看不了"）；部分读不到时保留可播的段并说明灰色的是什么。
   const unplayableCount = rangeSegments.filter(s => !s.playable).length
@@ -89,14 +108,24 @@ export default function PlaybackPage() {
     if (searchParams.get('schedule') === '1' && healthState !== 'loading') setScheduleOpen(true)
   }, [searchParams, healthState])
   useEffect(() => {
-    if (!channelId && channels[0]) navigate(`/playback/${channels[0].id}`, { replace: true })
-  }, [channelId, channels, navigate])
+    if (!channelId && channels[0]) navigate(`/playback/${channels[0].id}${searchParams.toString() ? `?${searchParams}` : ''}`, { replace: true })
+  }, [channelId, channels, navigate, searchParams])
+  // A link followed while this page is open (a search result on another channel or day) moves the
+  // window too; the range is otherwise only read from the address once, at mount.
+  const appliedQuery = useRef(`${channelId}|${searchParams.get('from')}|${searchParams.get('to')}`)
+  useEffect(() => {
+    const key = `${channelId}|${searchParams.get('from')}|${searchParams.get('to')}`
+    if (key === appliedQuery.current) return
+    appliedQuery.current = key
+    const next = rangeFromQuery(searchParams)
+    if (next && (next.from !== range.from || next.to !== range.to)) setRange(next)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId, searchParams])
   useEffect(() => {
     prepareAbort.current?.abort()
     setPendingPosition(null)
     ++selectionRequest.current
-    setPlaying(null); setPlayheadTs(null); setCursorScope(null); setChecking(false); setPlayNotice('')
-    setExpandedChannelId(channelId ?? null); setExpandedDates({}); setVisibleCounts({})
+    setPlaying(null); setPlayheadTs(null); setCursorScope(null); setChecking(false); setPlayNotice(''); setPreviewTs(null)
   }, [scope, channelId])
   useEffect(() => {
     if (!playing) return
@@ -106,17 +135,9 @@ export default function PlaybackPage() {
     return () => window.clearInterval(timer)
   }, [playing?.segmentId])
 
-  function toggleChannel(id: string) {
+  // The list holds channels only; the time to watch is chosen on the timeline.
+  function selectChannel(id: string) {
     if (id !== channelId) navigate(`/playback/${id}`)
-    else setExpandedChannelId(value => value === id ? null : id)
-  }
-  function toggleDate(id: string, day: string) {
-    setExpandedDates(previous => {
-      const all = Object.keys(loadedDays).filter(key => key.startsWith(id + '__')).map(key => key.slice(id.length + 2))
-      const days = new Set(previous[id] ?? all)
-      if (days.has(day)) days.delete(day); else days.add(day)
-      return { ...previous, [id]: days }
-    })
   }
   function removeUnavailable(id: string) {
     catalogue.remove(id)
@@ -140,9 +161,6 @@ export default function PlaybackPage() {
       if (!sameSegment) await recordingService.preparePlayback(segment.id, controller.signal)
       if (request !== selectionRequest.current || currentScope.current !== requestedScope) return
       setPlaying({ channelId: id, segmentId: segment.id, offsetMs: target - segment.startTs, request, scope })
-      const key = dateKey(Math.max(range.from, segment.startTs))
-      setExpandedDates(previous => ({ ...previous, [id]: new Set([...(previous[id] ?? Object.keys(loadedDays).map(k => k.split('__')[1]!)), key]) }))
-      setExpandedChannelId(id)
     } catch (error) {
       if (request !== selectionRequest.current || currentScope.current !== requestedScope) return
       const status = (error as { status?: number }).status
@@ -159,17 +177,52 @@ export default function PlaybackPage() {
     if (target) void playSegment(channelId, target.segment, target.offsetMs, Math.max(range.from, Math.min(range.to - 1, ts)))
     else { prepareAbort.current?.abort(); ++selectionRequest.current; setChecking(false); setPendingPosition(null); setCursorScope(scope); setPlayheadTs(ts); setPlayNotice('所选时间范围内没有可播放录像。') }
   }
+  // Opening a channel starts its recording: the first playable one in the window, where the timeline
+  // pointer sits. Once per channel and window, so a refresh never restarts it and a failed start is
+  // not retried in a loop; the play button starts it again at the pointer.
+  // The timeline carries the same transport as the player: one play state, one speed, one pair of
+  // previous/next buttons, so neither place keeps its own copy.
+  const playerControl = useRef<PlayerControl | null>(null)
+  const [transport, setTransport] = useState<PlayerTransport>({ playing: false, speed: 1, hasSegment: false })
+  const autoStarted = useRef<string | null>(null)
+  function startAtPointer() {
+    if (!channelId) return
+    const target = resolvePlayback(rangeSegments, playheadTs ?? range.from, range)
+    if (target) void playSegment(channelId, target.segment, target.offsetMs)
+    else setPlayNotice('所选时间范围内没有可播放录像。')
+  }
+  useEffect(() => {
+    if (!channelId || catalogue.loading || catalogue.error || playing || checking) return
+    if (searchParams.get('autoplay') === '1' && rangeFromQuery(searchParams)) return
+    if (autoStarted.current === scope || !rangeSegments.some(s => s.playable)) return
+    autoStarted.current = scope
+    startAtPointer()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, channelId, catalogue.loading, catalogue.error, rangeSegments, playing, checking])
   const linkedPlayback = useRef<string | null>(null)
   useEffect(() => {
     if(searchParams.get('autoplay')!=='1'||!rangeFromQuery(searchParams)||!channelId||catalogue.loading||catalogue.error)return
     if(linkedPlayback.current===scope)return
     linkedPlayback.current=scope
-    const target=resolvePlayback(rangeSegments,range.from,range)
+    autoStarted.current=scope
+    const at=Number(searchParams.get('at'))
+    const target=resolvePlayback(rangeSegments,Number.isFinite(at)&&at>0?at:range.from,range)
     if(target)void playSegment(channelId,target.segment,target.offsetMs)
     else setPlayNotice('所选时间范围内没有可播放录像，请检查该通道的录像配置或等待录像文件完成。')
+    // The link has been followed: drop its one-shot parameters so a later window change starts normally.
+    const rest = new URLSearchParams(searchParams); rest.delete('autoplay'); rest.delete('at'); setSearchParams(rest, { replace: true })
     // Only initialize a linked replay once; refresh must not interrupt manual seeking.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[scope,channelId,catalogue.loading,catalogue.error,rangeSegments,searchParams])
+  /** Plays a search result: seek in place on the open channel when its time is in the window, otherwise
+   *  follow the result's own recording (channel and, if needed, a window of an hour either side). */
+  function openEvidence(targetChannel: string, at: number) {
+    const inRange = at >= range.from && at < range.to
+    if (targetChannel === channelId && inRange) { seekTo(at); return }
+    const from = inRange ? range.from : Math.max(0, at - 3_600_000)
+    const to = inRange ? range.to : Math.min(Date.now(), at + 3_600_000)
+    navigate(`/playback/${encodeURIComponent(targetChannel)}?${new URLSearchParams({ from: String(from), to: String(to), at: String(at), autoplay: '1' })}`)
+  }
   function jump(dir: 1 | -1) {
     if (!currentSegment || !channelId) return
     const index = rangeSegments.findIndex(segment => segment.id === currentSegment.id)
@@ -215,9 +268,6 @@ export default function PlaybackPage() {
     // 段对象随每次刷新重建，不能把段对象本身放进依赖（否则永远判定不到缺失）
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playing, scope, currentSegment, catalogue.loading, catalogue.error])
-  useEffect(() => {
-    if (playing?.segmentId) Array.from(document.querySelectorAll('[data-testid]')).find(el => el.getAttribute('data-testid') === `segment-row-${playing.segmentId}`)?.scrollIntoView?.({ block: 'nearest' })
-  }, [playing?.segmentId])
   function handleChangeRange(from: number, to: number, preset: string | null = null) {
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) { toast.error('请选择有效的起止时间'); return }
     setRange({ from, to, preset })
@@ -228,17 +278,28 @@ export default function PlaybackPage() {
 
   return (
     <section
+      ref={hostRef}
       aria-labelledby="playback-title"
-      className="flex h-full min-h-0 flex-col gap-4 overflow-hidden md:flex-row"
+      className={`flex h-full min-h-0 gap-4 overflow-hidden ${stacked ? 'flex-col overflow-y-auto' : 'flex-row'}`}
     >
       {/* 列表与播放器各自滚动，页面边距由统一布局提供。 */}
       <Toaster />
 
-      {/* ============ 左栏：通道树（内部滚动）============ */}
-      <aside className="flex max-h-64 shrink-0 flex-col overflow-hidden rounded-panel border border-line bg-surface md:max-h-none md:w-64 xl:w-72">
+      {/* ============ 左栏：通道列表（只列通道；看哪个时间在下面的时间轴上选）============ */}
+      {!showLeft && (
+        <div className={`flex shrink-0 rounded-panel border border-line bg-surface ${stacked ? 'min-h-11 w-full items-center px-2' : 'w-11 items-start justify-center pt-2'}`}>
+          <button type="button" aria-label="通道列表" aria-pressed={false} title="展开通道列表" onClick={toggleLeft}
+            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-page hover:text-primary"><PanelLeft size={18} /></button>
+        </div>
+      )}
+      <aside hidden={!showLeft} aria-label="通道列表" className={`flex shrink-0 flex-col overflow-hidden rounded-panel border border-line bg-surface [&[hidden]]:hidden ${stacked ? 'max-h-[45vh] w-full' : 'w-64'}`}>
         {/* 头部统计 */}
         <div className="border-b border-line p-3">
-          <h1 id="playback-title" className="page-title">录像回放</h1>
+          <div className="flex items-center justify-between gap-2">
+            <h1 id="playback-title" className="page-title">录像回放</h1>
+            <button type="button" aria-label="收起通道列表" title="收起通道列表" onClick={toggleLeft}
+              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-page hover:text-primary"><PanelLeftClose size={18} /></button>
+          </div>
           <div className="mt-2 flex items-baseline gap-1.5">
             <span className="text-xl font-bold text-ink">
               {formatDuration(stats ? stats.todayDurationMs / 1000 : 0)}
@@ -289,6 +350,12 @@ export default function PlaybackPage() {
           </div>
         </div>
 
+        {showSearch && searchChannels.length > 0 && <div role="group" aria-label="搜索范围" className="flex flex-wrap items-center gap-1.5 border-b border-line px-2 py-1.5 text-xs text-ink-subtle">
+          <span className="mr-auto">搜索范围 {searchSelected.length} 个</span>
+          <button type="button" className="min-h-9 [@media(pointer:coarse)]:min-h-11 rounded-base border border-line px-2 hover:border-primary hover:text-primary" onClick={() => setSearchSelected(searchChannels.slice(0, 100).map(c => c.id))}>全部 AI</button>
+          <button type="button" className="min-h-9 [@media(pointer:coarse)]:min-h-11 rounded-base border border-line px-2 hover:border-primary hover:text-primary disabled:opacity-40" disabled={!searchSelected.length} onClick={() => setSearchSelected([])}>清除</button>
+        </div>}
+
         {/* 通道树（内部滚动） */}
         <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
           {healthState === 'loading' ? (
@@ -299,26 +366,26 @@ export default function PlaybackPage() {
             <ul className="flex flex-col gap-0.5">
               {filteredChannels.map((c) => {
                 const active = c.id === channelId
-                const expanded = expandedChannelId === c.id
                 const keep = retentionLabel(c.oldestSegmentTs)
-                const chExpandedDates = expandedDates[c.id] ?? new Set(Object.keys(loadedDays).filter(key => key.startsWith(c.id + '__')).map(key => key.slice(c.id.length + 2)))
 
                 return (
                   <li key={c.id}>
                     {/* 通道行 */}
+                    <div className="flex items-center">
+                    {showSearch && searchableIds.has(c.id) && <label className="flex min-h-11 min-w-9 shrink-0 cursor-pointer items-center justify-center" title="加入智能搜索范围">
+                      <input type="checkbox" aria-label={`搜索范围：${c.name}`} checked={searchSelected.includes(c.id)}
+                        onChange={e => setSearchSelected(ids => e.target.checked ? ids.length < 100 ? [...new Set([...ids, c.id])] : ids : ids.filter(id => id !== c.id))} />
+                    </label>}
                     <button
                       type="button"
-                      onClick={() => toggleChannel(c.id)}
+                      onClick={() => selectChannel(c.id)}
                       className={[
-                        'flex w-full items-center gap-2 rounded-base px-2 py-2 text-left text-sm transition-colors',
+                        'flex min-w-0 flex-1 items-center gap-2 rounded-base px-2 py-2 text-left text-sm transition-colors',
                         active
                           ? 'bg-primary-50 text-primary'
                           : 'text-ink-subtle hover:bg-surface-page hover:text-ink',
                       ].join(' ')}
                     >
-                      {expanded
-                        ? <ChevronDown size={14} className="shrink-0 text-ink-faint" />
-                        : <ChevronRight size={14} className="shrink-0 text-ink-faint" />}
                       <span
                         className={[
                           'h-2 w-2 shrink-0 rounded-full',
@@ -336,129 +403,8 @@ export default function PlaybackPage() {
                         <span className="shrink-0 text-[11px] text-ink-faint">{keep}</span>
                       )}
                     </button>
+                    </div>
 
-                    {/* 展开内容：日期分组 */}
-                    {expanded && (
-                      <div className="ml-3 mt-0.5 border-l border-line pl-2">
-                        {(() => {
-                          // Only dates containing files in the selected range.
-                          const dayKeys = new Set<string>()
-                          // 已加载的日期
-                          for (const key of Object.keys(loadedDays)) {
-                            if (key.startsWith(`${c.id}__`)) {
-                              dayKeys.add(key.slice(c.id.length + 2))
-                            }
-                          }
-
-                          const sortedDays = Array.from(dayKeys).sort().reverse()
-                          if (!sortedDays.length) return <p className="p-2 text-xs text-ink-faint">{catalogue.loading ? '正在加载录像…' : catalogue.error ? '录像列表暂不可用' : '所选时间范围内没有录像'}</p>
-                          if (c.id === channelId && allUnplayable) return (
-                            <div data-testid="storage-unavailable-panel" className="m-1 rounded-base border border-warning/40 bg-amber-50 p-2.5 text-xs leading-relaxed text-amber-800">
-                              <div className="flex items-center gap-1.5 font-medium"><CircleAlert size={13} className="shrink-0" />录像暂时无法播放</div>
-                              <p className="mt-1">原因：{unplayableReason}</p>
-                              <p className="mt-1 text-amber-700/80">所选范围内 {rangeSegments.length} 段录像仍保存在存储上，存储恢复后自动可播，无需操作。</p>
-                            </div>
-                          )
-                          const note = c.id === channelId && unplayableCount > 0 ? (
-                            <p data-testid="unplayable-segments-note" className="mx-1 mb-1 rounded bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-800">
-                              {unplayableCount} 段录像所在存储暂时无法访问，已置灰：{unplayableReason}
-                            </p>
-                          ) : null
-
-                          return <>{note}{sortedDays.map((dk) => {
-                            const cacheKey = `${c.id}__${dk}`
-                            const segs = loadedDays[cacheKey]
-                            const isExpanded = chExpandedDates.has(dk)
-                            const isLoading = catalogue.loading
-                            const todayD = new Date(`${dk}T00:00`)
-                            const diffDays = Math.round((startOfDay(Date.now()) - todayD.getTime()) / DAY_MS)
-                            let label = `${todayD.getFullYear()}/${todayD.getMonth() + 1}/${todayD.getDate()}`
-                            if (diffDays === 0) label = '今天'
-                            else if (diffDays === 1) label = '昨天'
-
-                            return (
-                              <div key={dk} className="mb-0.5">
-                                {/* 日期行 */}
-                                <button
-                                  type="button"
-                                  onClick={() => toggleDate(c.id, dk)}
-                                  className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-ink-subtle hover:bg-surface-page"
-                                >
-                                  {isExpanded
-                                    ? <ChevronDown size={12} className="text-ink-faint" />
-                                    : <ChevronRight size={12} className="text-ink-faint" />}
-                                  {isExpanded
-                                    ? <FolderOpen size={13} className="text-primary/70" />
-                                    : <Folder size={13} className="text-ink-faint" />}
-                                  <span className="flex-1 truncate">{label}</span>
-                                  {segs ? (
-                                    <span className="text-[11px] text-ink-faint">
-                                      {segs.length}段
-                                    </span>
-                                  ) : isLoading ? (
-                                    <span className="text-[11px] text-ink-faint">加载中…</span>
-                                  ) : null}
-                                </button>
-
-                                {/* 分段列表 */}
-                                {isExpanded && segs && (
-                                  <ul className="ml-3 mt-0.5 flex flex-col gap-0.5 border-l border-line pl-2">
-                                    {[...segs]
-                                      .sort((a, b) => b.startTs - a.startTs)
-                                      .slice(0, Math.max(visibleCounts[cacheKey] ?? 100, [...segs].sort((a, b) => b.startTs - a.startTs).findIndex(s => s.id === playing?.segmentId) + 1))
-                                      .map((seg) => {
-                                        const isCurrent = currentSegment?.id === seg.id
-                                        return (
-                                          <li key={seg.id}>
-                                            <button
-                                              type="button"
-                                              disabled={!seg.playable}
-                                              title={seg.playable ? undefined : unplayableReason}
-                                              onClick={() => playSegment(c.id, seg)}
-                                              data-testid={`segment-row-${seg.id}`}
-                                              aria-current={isCurrent ? 'true' : undefined}
-                                              className={[
-                                                'flex w-full items-center gap-2 rounded px-2 py-1 text-left transition-colors',
-                                                isCurrent
-                                                  ? 'bg-primary-50 text-primary'
-                                                  : seg.playable
-                                                    ? 'text-ink-subtle hover:bg-surface-page hover:text-ink'
-                                                    : 'cursor-not-allowed opacity-50',
-                                              ].join(' ')}
-                                            >
-                                              <Play
-                                                size={10}
-                                                className={isCurrent ? 'text-primary' : 'text-ink-faint'}
-                                              />
-                                              <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
-                                                {seg.startTs
-                                                  ? new Date(seg.startTs).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 8)
-                                                  : '--:--:--'}
-                                                {' – '}
-                                                {seg.endTs
-                                                  ? new Date(seg.endTs).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 8)
-                                                  : '--:--:--'}
-                                              </span>
-                                              <span className="shrink-0 text-[10px] text-ink-faint">
-                                                {Math.round(seg.durationMs / 1000)}s
-                                              </span>
-                                            </button>
-                                          </li>
-                                        )
-                                      })}
-                                    {segs.length > (visibleCounts[cacheKey] ?? 100) && (
-                                      <li className="px-2 py-1 text-center text-[11px] text-ink-faint">
-                                        <button onClick={() => setVisibleCounts(prev => ({ ...prev, [cacheKey]: (prev[cacheKey] ?? 100) + 100 }))}>显示更多录像（共 {segs.length} 段）</button>
-                                      </li>
-                                    )}
-                                  </ul>
-                                )}
-                              </div>
-                            )
-                          })}</>
-                        })()}
-                      </div>
-                    )}
                   </li>
                 )
               })}
@@ -493,8 +439,7 @@ export default function PlaybackPage() {
       />
 
       {/* ============ 右主区（播放器 + 时间轴）============ */}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
-        {smartSearchHref(channelId, range.from, range.to) && <Link className="inline-flex min-h-11 items-center gap-2 self-start rounded-base border border-line px-3 text-sm" to={smartSearchHref(channelId, range.from, range.to)!}><Search size={16} />搜索所选摄像头与时间</Link>}
+      <div className={`flex min-w-0 flex-col gap-3 ${stacked ? 'flex-none' : 'min-h-0 flex-1 overflow-hidden'}`}>
         {(playNotice || checking || catalogue.loading || catalogue.error) && <div role="status" className="rounded-base border border-line bg-surface px-4 py-2 text-sm">
           {checking ? '正在加载所选位置的录像…' : catalogue.error || (catalogue.loading ? '正在加载所选时间范围…' : playNotice)}
         </div>}
@@ -508,6 +453,21 @@ export default function PlaybackPage() {
           </div>
         )}
 
+        {selectedChannel && allUnplayable && (
+          <div data-testid="storage-unavailable-panel" className="rounded-base border border-warning/40 bg-amber-50 p-2.5 text-xs leading-relaxed text-amber-800">
+            <div className="flex items-center gap-1.5 font-medium"><CircleAlert size={13} className="shrink-0" />录像暂时无法播放</div>
+            <p className="mt-1">原因：{unplayableReason}</p>
+            <p className="mt-1 text-amber-700/80">所选范围内 {rangeSegments.length} 段录像仍保存在存储上，存储恢复后自动可播，无需操作。</p>
+          </div>
+        )}
+        {selectedChannel && !allUnplayable && unplayableCount > 0 && (
+          <p data-testid="unplayable-segments-note" className="rounded bg-amber-50 px-2 py-1 text-[11px] leading-snug text-amber-800">
+            {unplayableCount} 段录像所在存储暂时无法访问，时间轴上已置灰：{unplayableReason}
+          </p>
+        )}
+        {selectedChannel && !catalogue.loading && !catalogue.error && rangeSegments.length === 0 && (
+          <p role="status" className="text-xs text-ink-faint">所选时间范围内没有录像</p>
+        )}
         {!selectedChannel ? (
           <div className="flex h-full items-center justify-center rounded-panel border border-dashed border-line bg-surface text-sm text-ink-faint">
             选择左侧通道查看录像回放
@@ -554,10 +514,19 @@ export default function PlaybackPage() {
                   }}
                   onNext={() => { if (playing?.request === selectionRequest.current) jump(1) }}
                   onSeek={seekTo}
+                  onStart={rangeSegments.some(s => s.playable) ? startAtPointer : undefined}
+                  controlRef={playerControl}
+                  onTransport={setTransport}
                   onError={() => { void playbackFailed() }}
                   onRetry={() => { recoveredRequest.current = null; void playbackFailed() }}
                 />
               </div>
+            </div>
+
+            {/* 指针所在的录像文件：时间范围、大小，并可下载 */}
+            <div className="shrink-0">
+              <CurrentFileBar segment={pointerSegment} pointerSet={previewTs != null || playhead != null} playingId={currentSegment?.id ?? null}
+                downloadUrl={pointerSegment ? recordingService.downloadUrl(pointerSegment.id) : null} unplayableReason={unplayableReason} />
             </div>
 
             {/* 时间轴（含范围选择，合并为一个组件） */}
@@ -568,8 +537,18 @@ export default function PlaybackPage() {
                 segments={rangeSegments}
                 playheadTs={cursorScope === scope ? playheadTs : null}
                 aiMarks={aiMarks}
+                hits={hits.filter(h => h.channelId === channelId).map(h => h.at)}
+                onPreview={setPreviewTs}
                 drops={catalogue.drops}
                 onSeek={seekTo}
+                transport={{
+                  ...transport,
+                  canStart: rangeSegments.some(s => s.playable),
+                  onToggle: () => { if (transport.hasSegment) playerControl.current?.toggle(); else startAtPointer() },
+                  onSpeed: speed => playerControl.current?.setSpeed(speed),
+                  onPrev: () => jump(-1),
+                  onNext: () => jump(1),
+                }}
                 onChangeRange={handleChangeRange}
               />
             </div>
@@ -577,7 +556,27 @@ export default function PlaybackPage() {
         )}
       </div>
 
-
+      {/* ============ 右栏：智能搜索（结果在中间播放器里播放）============ */}
+      {!showSearch && (
+        <div className={`flex shrink-0 rounded-panel border border-line bg-surface ${stacked ? 'min-h-11 w-full items-center px-2' : 'w-11 items-start justify-center pt-2'}`}>
+          <button type="button" aria-label="智能搜索" aria-pressed={false} title="展开智能搜索" onClick={toggleSearch}
+            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-page hover:text-primary"><Search size={18} /></button>
+        </div>
+      )}
+      {searchMounted && (
+        <aside aria-label="智能搜索" hidden={!showSearch}
+          className={`flex shrink-0 flex-col overflow-hidden rounded-panel border border-line bg-surface p-3 [&[hidden]]:hidden ${stacked ? 'max-h-[60vh] w-full' : 'w-80'}`}>
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="font-semibold text-ink">智能搜索</h2>
+            <button type="button" aria-label="收起智能搜索" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-base hover:bg-surface-page" onClick={closeSearch}><X size={18} /></button>
+          </div>
+          <div className="min-h-0 flex-1">
+            <SearchPage variant="side" entryScope={searchEntry} onPlay={openEvidence}
+              selected={searchSelected} onSelectedChange={setSearchSelected} onChannels={setSearchChannels}
+              listVisible={showLeft} onResults={setHits} />
+          </div>
+        </aside>
+      )}
     </section>
   )
 }

@@ -12,6 +12,9 @@ import { RecordingDetectionOverlay } from './RecordingDetectionOverlay'
 const SKIP_SECONDS = 10
 
 /** 标题透明层需要的通道元信息（由页面传入，播放器只管渲染） */
+/** What the timeline needs to show and drive of the player. */
+export interface PlayerTransport { playing: boolean; speed: number; hasSegment: boolean }
+export interface PlayerControl { toggle(): void; setSpeed(speed: number): void }
 export interface PlayerChannelMeta {
   kind?: RecorderChannelKind
   recording?: boolean
@@ -27,6 +30,11 @@ export interface PlayerChannelMeta {
 
 interface Props {
   initiallyMuted?: boolean
+  /** Lets the timeline drive this player's play/pause and speed, so one set of controls serves both. */
+  controlRef?: { current: PlayerControl | null }
+  onTransport?: (state: PlayerTransport) => void
+  /** Starts the recording at the timeline pointer when nothing is loaded. */
+  onStart?: () => void
   channelName: string
   /** 顶部透明标题层的通道元信息（编解码/分辨率/录制状态等） */
   channelMeta?: PlayerChannelMeta
@@ -63,7 +71,7 @@ interface Props {
  *  - 跨段衔接由页面控制（换 src），这里只管单段
  */
 export function RecordingPlayer({
-  channelName, channelMeta, segment, offsetMs, playUrl, downloadUrl, initiallyMuted = false,
+  channelName, channelMeta, segment, offsetMs, playUrl, downloadUrl, initiallyMuted = false, onStart, controlRef, onTransport,
   isToday, onJumpNow, onTimeUpdate, onNext, onSeek, seekVersion, onError, onRetry, playbackRange, checking = false, errorMessage, requestedTs,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -504,6 +512,12 @@ export function RecordingPlayer({
   const hoverPct = hoverTime != null && duration > 0 ? (hoverTime / duration) * 100 : null
 
 
+  useEffect(() => {
+    if (controlRef) controlRef.current = { toggle: () => { if (playing) userPause(); else userPlay() }, setSpeed }
+  })
+  const hasSegment = !!segment
+  useEffect(() => { onTransport?.({ playing, speed, hasSegment }) }, [playing, speed, hasSegment]) // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div
       ref={wrapperRef}
@@ -676,6 +690,7 @@ export function RecordingPlayer({
           setShowDetections={setShowDetections}
           userPause={userPause}
           userPlay={userPlay}
+          onStart={onStart}
           snapshot={snapshot}
           volume={volume}
         />

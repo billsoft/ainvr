@@ -39,33 +39,13 @@ it('queries older-than-14-day recordings and refreshes opened days', async () =>
   await waitFor(() => expect(queries.mock.calls.length).toBeGreaterThan(before))
 })
 
-it('refreshes a cached day even after its tree row is collapsed', async () => {
-  const queries = vi.spyOn(recordingService, 'listSegments')
-  const router = createMemoryRouter([{ path: '/playback/:channelId', element: <PlaybackPage /> }],
-    { initialEntries: ['/playback/demo-detect'] })
-  render(<RouterProvider router={router} />)
-  await screen.findAllByTestId(/^segment-row-/)
-  fireEvent.click(screen.getByRole('button', { name: /^今天/ }))
-  const yesterday = screen.queryByRole('button', { name: /^昨天/ })
-  if (yesterday) fireEvent.click(yesterday)
-  expect(screen.queryAllByTestId(/^segment-row-/)).toHaveLength(0)
-  const before = queries.mock.calls.length
-  await act(async () => { vi.advanceTimersByTime(5_000) })
-  await waitFor(() => expect(queries.mock.calls.length).toBeGreaterThan(before))
-})
-
 it('removes a confirmed missing file without starting the video', async () => {
+  vi.spyOn(recordingService, 'preparePlayback').mockRejectedValueOnce(Object.assign(new Error('gone'), { status: 410 }))
   const router = createMemoryRouter([{ path: '/playback/:channelId', element: <PlaybackPage /> }],
     { initialEntries: ['/playback/demo-detect'] })
   render(<RouterProvider router={router} />)
-  const rows = await screen.findAllByTestId(/^segment-row-/)
-  const row = rows[0]!
-  const testId = row.getAttribute('data-testid')!
-  vi.spyOn(recordingService, 'preparePlayback').mockRejectedValueOnce(Object.assign(new Error('gone'), { status: 410 }))
-  vi.spyOn(recordingService, 'listSegments').mockResolvedValue([])
-  fireEvent.click(row)
+  // Opening the channel starts its first recording; the confirmed-missing file is dropped, not played.
   expect(await screen.findByText(/这段录像已被删除或循环覆盖/)).toBeInTheDocument()
-  await waitFor(() => expect(screen.queryByTestId(testId)).not.toBeInTheDocument())
   expect(document.querySelector('video')).toBeNull()
 })
 
@@ -114,17 +94,20 @@ it('moves the cursor before preflight completes and cancels obsolete selections'
   const prepare = vi.spyOn(recordingService, 'preparePlayback').mockImplementation(() => new Promise<void>(resolve => resolves.push(resolve)))
   const router=createMemoryRouter([{path:'/playback/:channelId',element:<PlaybackPage/>}], {initialEntries:[`/playback/demo-detect?from=${from}&to=${to}`]})
   render(<RouterProvider router={router}/>)
-  await screen.findByTestId('segment-row-pending')
-  fireEvent.click(screen.getByText('seek A'))
+  // Opening the channel starts its recording (preflight 0); each later seek supersedes the previous one.
+  await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1))
+  // The timeline appears once the channel list has loaded, which can be after the first start.
+  fireEvent.click(await screen.findByText('seek A'))
+  expect(prepare.mock.calls[0]![1]!.aborted).toBe(true)
   expect(screen.getByTestId('cursor')).toHaveTextContent(String(Date.now()-3500000))
   expect(screen.getByTestId('recording-player-seek-veil')).toHaveTextContent('正在加载')
   fireEvent.click(screen.getByText('seek B'))
-  expect(prepare.mock.calls[0]![1]!.aborted).toBe(true)
-  await act(async () => { resolves[0]!() })
+  expect(prepare.mock.calls[1]![1]!.aborted).toBe(true)
+  await act(async () => { resolves[0]!(); resolves[1]!() })
   expect(document.querySelector('video')).toBeNull()
   expect(screen.getByTestId('cursor')).toHaveTextContent(String(Date.now()-3400000))
-  await act(async () => { resolves[1]!() })
+  await act(async () => { resolves[2]!() })
   expect(document.querySelector('video')).not.toBeNull()
   fireEvent.click(screen.getByText('seek A'))
-  expect(prepare).toHaveBeenCalledTimes(2)
+  expect(prepare).toHaveBeenCalledTimes(3)
 })

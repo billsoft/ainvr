@@ -13,3 +13,7 @@ export function searchEntryScope(params: URLSearchParams): SearchScope | null {
   if (!smartSearchHref(channel, from, to)) return null
   return { channel_ids: [channel!], from: new Date(from).toISOString(), to: new Date(to).toISOString() }
 }
+/** Smart search lives beside the recording player: open that channel and window with the panel shown. */
+export function searchInPlaybackHref(channel: string | null | undefined, from: number, to: number) {
+  return smartSearchHref(channel, from, to) && `/playback/${encodeURIComponent(channel!)}?${new URLSearchParams({ from: String(from), to: String(to), search: '1' })}`
+}

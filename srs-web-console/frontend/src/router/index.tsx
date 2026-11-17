@@ -1,4 +1,4 @@
-import SearchPage from '@/pages/Search'
+import { SmartSearchRedirect } from '@/pages/Search/SmartSearchRedirect'
 import FlowPage from '@/pages/Flow'
 import AnalyticsPage from '@/pages/Analytics'
 import { Navigate, createBrowserRouter } from 'react-router-dom'
@@ -30,7 +30,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/monitor" replace /> },
       { path: 'dashboard', element: <DashboardPage /> },
-      { path: 'smart-search', element: <SearchPage />, errorElement: <RouteErrorBoundary /> },
+      { path: 'smart-search', element: <SmartSearchRedirect />, errorElement: <RouteErrorBoundary /> },
       { path: 'alarm-analysis', element: <AlarmTriggersPage />, errorElement: <RouteErrorBoundary /> },
       { path: 'alarms', element: <AlarmListPage />, errorElement: <RouteErrorBoundary /> },
       { path: 'flow-statistics', element: <FlowPage />, errorElement: <RouteErrorBoundary /> },

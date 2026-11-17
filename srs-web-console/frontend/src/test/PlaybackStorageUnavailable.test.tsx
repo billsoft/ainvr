@@ -36,7 +36,6 @@ it('replaces the list with an explanation when no segment is readable', async ()
   expect(panel).toHaveTextContent('录像暂时无法播放')
   expect(panel).toHaveTextContent('NAS 自动恢复失败（第 3 次）')
   expect(panel).toHaveTextContent(/段录像仍保存在存储上/)
-  expect(screen.queryAllByTestId(/^segment-row-/)).toHaveLength(0)
 })
 
 it('keeps readable segments and explains the greyed-out ones', async () => {
@@ -45,12 +44,12 @@ it('keeps readable segments and explains the greyed-out ones', async () => {
   const note = await screen.findByTestId('unplayable-segments-note')
   expect(note).toHaveTextContent(/段录像所在存储暂时无法访问/)
   expect(screen.queryByTestId('storage-unavailable-panel')).toBeNull()
-  expect((await screen.findAllByTestId(/^segment-row-/)).length).toBeGreaterThan(0)
 })
 
 it('shows neither panel nor note when every segment is playable', async () => {
   renderPage()
-  await screen.findAllByTestId(/^segment-row-/)
+  // Everything is playable, so the first recording starts and is named under the timeline.
+  await screen.findByTestId('current-file-bar')
   await waitFor(() => expect(screen.queryByText('正在加载录像…')).toBeNull())
   expect(screen.queryByTestId('storage-unavailable-panel')).toBeNull()
   expect(screen.queryByTestId('unplayable-segments-note')).toBeNull()

@@ -34,9 +34,9 @@ async function renderAndPlayFirstSegment() {
   const router = createMemoryRouter([{ path: '/playback/:channelId', element: <PlaybackPage /> }],
     { initialEntries: ['/playback/demo-detect'] })
   render(<RouterProvider router={router} />)
-  const row = (await screen.findAllByTestId(/^segment-row-/))[0]!
-  fireEvent.click(row)
+  // Opening the channel starts its first recording by itself.
   const video = await screen.findByTestId('recording-player')
+  await waitFor(() => expect(video.querySelector('video')).not.toBeNull())
   const v = video.querySelector('video') as HTMLVideoElement
   Object.defineProperty(v, 'readyState', { configurable: true, value: 4 })
   await act(async () => {

@@ -39,6 +39,8 @@ interface Props {
   setShowDetections: Dispatch<SetStateAction<boolean>>
   userPause: () => void
   userPlay: () => void
+  /** Nothing is loaded yet: start the recording at the timeline pointer. */
+  onStart?: () => void
   snapshot: () => void
   volume: number
 }
@@ -75,6 +77,7 @@ export function RecordingToolbar({
   setShowDetections,
   userPause,
   userPlay,
+  onStart,
   snapshot,
   volume,
 }: Props) {
@@ -135,10 +138,11 @@ export function RecordingToolbar({
           <button
             type="button"
             onClick={() => {
-              if (playing) userPause()
+              if (!segment) onStart?.()
+              else if (playing) userPause()
               else userPlay()
             }}
-            disabled={!segment}
+            disabled={!segment && !onStart}
             className="rounded-base p-2 transition-colors hover:bg-white/10 disabled:opacity-30"
             title={playing ? '暂停 (空格)' : '播放 (空格)'}
             aria-label={playing ? '暂停' : '播放'}

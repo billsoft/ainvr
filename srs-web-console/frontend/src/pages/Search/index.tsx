@@ -1,12 +1,12 @@
 import { aiReferenceEnabled } from './aiReference'
 import { useEffect, useRef, useState } from 'react'
-import { CalendarClock, ImagePlus, Search, RefreshCw, SlidersHorizontal } from 'lucide-react'
+import { CalendarClock, ImagePlus, ListChecks, Search, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { requestBlob } from '@/api/httpClient'
 import { blobToBase64, encodeReference, loadReference, referenceAccept, releaseReference, ReferenceImageError, type ReferenceCrop, type SearchReference } from '@/features/searchReference'
 import { ReferenceImageStrip, ReferenceThumbnail } from './ReferenceImageStrip'
 import { ReferenceCropDialog } from './ReferenceCropDialog'
-import type { SearchQueryKind, SearchResult, SearchFrame } from '@/api/searchService'
+import type { SearchQueryKind, SearchResult, SearchFrame, SearchScope } from '@/api/searchService'
 import { searchImagePath } from '@/api/searchService'
 import { searchEntryScope } from '@/features/searchNavigation'
 import { SearchCoveragePanel } from './SearchCoveragePanel'
@@ -30,10 +30,25 @@ function coverageAfter(current: SearchPageResult['coverage'], next: SearchPageRe
   if (current === 'partial' || next === 'partial') return 'partial'
   return current === 'unknown' || next === 'unknown' ? 'unknown' : 'sampled'
 }
-export default function SearchPage() {
+/** `page`: the stand-alone screen. `side`: the panel beside the recording player, where a result plays in the
+ *  player instead of opening a new page, and the channel scope is one compact line. */
+export default function SearchPage({ variant = 'page', entryScope = null, onPlay, selected: selectedProp, onSelectedChange, onChannels, listVisible = true, onResults }: {
+  variant?: 'page' | 'side'
+  entryScope?: SearchScope | null
+  onPlay?: (channelId: string, at: number) => void
+  /** Beside the player the channels to search are ticked in the player's channel list, which owns the selection. */
+  selected?: string[]
+  onSelectedChange?: (ids: string[]) => void
+  /** Reports the searchable channels so that list can offer a tick box on exactly those. */
+  onChannels?: (channels: SearchChannel[]) => void
+  /** False when the channel list is folded away: the panel then offers its own compact channel picker. */
+  listVisible?: boolean
+  /** The playable hits of the current search, for marking them on the player's timeline. */
+  onResults?: (hits: { channelId: string; at: number }[]) => void
+} = {}) {
   const [mode, setMode] = useState<'text' | 'face'>('text')
   const [entryParams, setEntryParams] = useSearchParams()
-  const [inherited] = useState(() => searchEntryScope(entryParams))
+  const [inherited] = useState(() => entryScope ?? (variant === 'page' ? searchEntryScope(entryParams) : null))
   const [inheritedVisible, setInheritedVisible] = useState(!!inherited)
   const [query, setQuery] = useState('')
   const [reference, setReference] = useState<SearchReference | null>(null)
@@ -89,7 +104,16 @@ export default function SearchPage() {
     }
   }, [])
   const [filter, setFilter] = useState('')
-  const [selected, setSelected] = useState<string[]>(inherited?.channel_ids ?? [])
+  const [selectedInner, setSelectedInner] = useState<string[]>(inherited?.channel_ids ?? [])
+  const controlled = variant === 'side' && selectedProp !== undefined
+  const selected = controlled ? selectedProp! : selectedInner
+  const selectedNow = useRef(selected)
+  useEffect(() => { selectedNow.current = selected })
+  const setSelected = (update: string[] | ((ids: string[]) => string[])) => {
+    const next = typeof update === 'function' ? update(selectedNow.current) : update
+    selectedNow.current = next
+    if (controlled) onSelectedChange?.(next); else setSelectedInner(next)
+  }
   const defaultSelectionApplied = useRef(!!inherited)
   const [channels, setChannels] = useState<SearchChannel[]>([])
   const [status, setStatus] = useState<SearchStatus | null>(null)
@@ -110,11 +134,15 @@ export default function SearchPage() {
     Promise.all([searchService.status(abort.signal), searchService.channels(abort.signal)])
       .then(([next, sources]) => {
         if (abort.signal.aborted) return
-        setStatus(next); setChannels(sources.items)
+        setStatus(next); setChannels(sources.items); onChannels?.(sources.items)
         // First load without an inherited selection: all AI outputs (the page limit is 100 per search). Later reloads only prune.
         const apply = !defaultSelectionApplied.current
         defaultSelectionApplied.current = true
-        setSelected(ids => apply ? sources.items.slice(0, 100).map(c => c.id) : ids.filter(id => sources.items.some(c => c.id === id)))
+        setSelected(ids => {
+          const kept = ids.filter(id => sources.items.some(c => c.id === id))
+          // Beside the player the open channel may be an input camera, which has no AI output to search: use all.
+          return apply || (variant === 'side' && !kept.length) ? sources.items.slice(0, 100).map(c => c.id) : kept
+        })
       })
       .catch(e => { if (!abort.signal.aborted) { setStatus(null); setError(e instanceof Error ? e.message : '读取搜索状态失败') } })
       .finally(() => { if (!abort.signal.aborted) setLoading(false) })
@@ -309,9 +337,11 @@ export default function SearchPage() {
     : status?.reason === 'service_unavailable' ? '搜索服务暂不可用，请检查服务运行状态后重新尝试。'
     : '搜索模型与索引尚未就绪。条件可先设置，尚不能搜索录像。')
   const changedSinceSearch = !!data && criteriaKey !== submittedCriteria
-  return <section aria-label="智能搜索" className="search-workspace flex h-full min-h-0 flex-col gap-4 md:flex-row">
-    {mode === 'text' && <aside aria-label="搜索通道" className="flex max-h-72 shrink-0 flex-col rounded-panel border border-line bg-surface md:max-h-none md:w-56 xl:w-60">
-      <div className="mb-3 border-b border-line p-3"><h1 className="page-title">智能搜索</h1><p className="mt-2 text-xs text-ink-subtle">选择 AI 输出，查找录像证据</p></div>
+  useEffect(() => {
+    onResults?.(data ? data.items.filter(i => i.recording.state === 'available' && i.recording.channel_id).map(i => ({ channelId: i.recording.channel_id!, at: Date.parse(i.started_at) })) : [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
+  const pickerBody = <>
       <fieldset disabled={loading || !!error} className="flex min-h-0 flex-1 flex-col px-2 pb-3"
         aria-describedby={currentListExceedsLimit || selectionAtLimit ? 'search-source-limit' : undefined}>
         <legend className="mb-2 px-1 text-xs text-ink-faint">AI 输出 · 已选 {selected.length} / 100</legend>
@@ -339,6 +369,11 @@ export default function SearchPage() {
           : !visible.length && <p className="text-sm text-ink-subtle">{channels.length ? '没有匹配的摄像头' : '暂无可搜索的 AI 输出通道，请先配置 AI 通道。'}</p>}
       </fieldset>
       <p className="border-t border-line p-3 text-xs leading-relaxed text-ink-faint">支持跨通道多选。修改通道或条件后，点击搜索应用。</p>
+  </>
+  return <section aria-label={variant === 'page' ? '智能搜索' : '搜索内容'} className={variant === 'page' ? 'search-workspace flex h-full min-h-0 flex-col gap-4 md:flex-row' : 'search-workspace flex h-full min-h-0 flex-col gap-3'}>
+    {mode === 'text' && variant === 'page' && <aside aria-label="搜索通道" className="flex max-h-72 shrink-0 flex-col rounded-panel border border-line bg-surface md:max-h-none md:w-56 xl:w-60">
+      <div className="mb-3 border-b border-line p-3"><h1 className="page-title">智能搜索</h1><p className="mt-2 text-xs text-ink-subtle">选择 AI 输出，查找录像证据</p></div>
+      {pickerBody}
     </aside>}
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
     <nav aria-label="搜索方式" className="flex shrink-0 gap-1 border-b border-line">
@@ -369,27 +404,32 @@ export default function SearchPage() {
       className={`min-w-0 space-y-3 rounded-lg ${dropping ? 'outline-dashed outline-2 outline-offset-4 outline-primary' : ''}`} aria-label="搜索条件">
       <input ref={fileInput} type="file" accept={referenceAccept} className="sr-only" tabIndex={-1} aria-hidden="true" data-testid="search-reference-file"
         onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void addPicture(file, 'upload') }} />
-      {inheritedVisible && <p className="text-sm text-ink-subtle">已继承入口的摄像头与时间；无权或不可搜索的摄像头不会被选中。<button type="button" className={`${button} ml-2`} onClick={() => {
-        const now = new Date(); setSelected([]); setRange({ from: toDatetimeLocalValue(new Date(now.getTime() - 86400000)), to: toDatetimeLocalValue(now) }); setInheritedVisible(false); setEntryParams({}, { replace: true })
+      {inheritedVisible && variant === 'page' && <p className="text-sm text-ink-subtle">已继承入口的摄像头与时间；无权或不可搜索的摄像头不会被选中。<button type="button" className={`${button} ml-2`} onClick={() => {
+        const now = new Date(); setSelected([]); setRange({ from: toDatetimeLocalValue(new Date(now.getTime() - 86400000)), to: toDatetimeLocalValue(now) }); setInheritedVisible(false); if (variant === 'page') setEntryParams({}, { replace: true })
       }}>清除继承范围</button></p>}
-      <div className="flex flex-col gap-2 sm:flex-row">
-      <div className="relative min-w-0 flex-1"><Search size={18} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-2 text-ink-faint" />
-      <label className="sr-only" htmlFor="search-description">想找什么？</label>
+      <div className={variant === 'side' ? 'flex flex-col gap-2' : 'flex flex-col gap-2 sm:flex-row'}>
+      <div className="relative min-w-0 flex-1">{variant === 'page' && <Search size={18} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-2 text-ink-faint" />}
+      <label className={variant === 'side' ? 'mb-1 block text-sm font-medium text-ink' : 'sr-only'} htmlFor="search-description">想找什么？</label>
       <input ref={descriptionInput} id="search-description" value={query} onChange={e => {
         setQuery(e.target.value)
         if (descriptionError) { setDescriptionError(false); setQueryError('') }
       }} maxLength={256} aria-invalid={descriptionError || undefined}
         aria-describedby={`search-description-hint${descriptionError ? ' search-query-error' : ''}`}
         onKeyDown={e => { if (e.key === 'Enter' && (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) e.preventDefault() }}
-        placeholder={reference ? '补充描述（可选），例如：有人背着这个包' : '描述衣着、颜色或物品，也可以添加图片'} className="min-h-9 [@media(pointer:coarse)]:min-h-11 w-full min-w-0 rounded-base border border-line bg-surface pl-9 pr-3 py-1.5 text-sm text-ink outline-none transition focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary/10" />
+        placeholder={reference ? '补充描述（可选），例如：有人背着这个包' : variant === 'side' ? '描述要找的人或物，例如：背黑色双肩包的人' : '描述衣着、颜色或物品，也可以添加图片'} className={`${variant === 'side' ? 'min-h-12 border-2 py-2 pl-3 text-base' : 'min-h-9 [@media(pointer:coarse)]:min-h-11 border py-1.5 pl-9 text-sm'} w-full min-w-0 rounded-base border-line bg-surface pr-3 text-ink outline-none transition focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary/10`} />
       </div>
-      <div className="flex shrink-0 gap-2">
+      <div className={variant === 'side' ? 'flex gap-2' : 'flex shrink-0 gap-2'}>
         {!reference && <button type="button" className={`${button} inline-flex items-center gap-1.5`} disabled={referenceBusy || searching} onClick={() => fileInput.current?.click()}
           aria-describedby="search-reference-hint"><ImagePlus size={16} aria-hidden="true" />{referenceBusy ? '正在读取…' : '添加图片'}</button>}
-        <button type="submit" disabled={(minimumApplies && !validMinimum) || loading || !status?.ready || !validRange || !hasClue || referenceBusy || !selected.length || selected.length > 100 || searching} className="inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 items-center gap-2 rounded-base bg-primary px-4 py-1.5 text-sm text-white transition-colors hover:bg-primary/90 disabled:opacity-50"><Search size={18} />{searching ? '正在搜索…' : '搜索录像'}</button>
+        <button type="submit" disabled={(minimumApplies && !validMinimum) || loading || !status?.ready || !validRange || !hasClue || referenceBusy || !selected.length || selected.length > 100 || searching} className={`inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 items-center gap-2 rounded-base bg-primary px-4 py-1.5 text-sm text-white transition-colors hover:bg-primary/90 disabled:opacity-50 ${variant === 'side' ? 'min-h-11 flex-1 justify-center' : ''}`}><Search size={18} />{searching ? '正在搜索…' : '搜索录像'}</button>
         {searching && <button type="button" className={button} onClick={stop}>取消搜索</button>}
       </div>
       </div>
+      {variant === 'side' && listVisible && <p aria-label="搜索范围" className="flex items-start gap-1.5 text-xs text-ink-subtle"><ListChecks size={14} aria-hidden="true" className="mt-0.5 shrink-0" /><span>范围：{selected.length ? `左侧列表中勾选的 ${selected.length} 个 AI 通道` : '请在左侧通道列表中勾选要搜索的 AI 通道'}</span></p>}
+      {variant === 'side' && !listVisible && <details aria-label="搜索范围" className="group shrink-0 rounded-base border border-line bg-surface">
+      <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-2 px-3 text-sm text-ink-subtle"><span>范围：{selected.length ? `已选 ${selected.length} 个 AI 通道` : '尚未选择 AI 通道'}</span><span className="text-xs text-ink-faint group-open:rotate-180">⌄</span></summary>
+      <div className="flex max-h-72 flex-col border-t border-line pt-2">{pickerBody}</div>
+    </details>}
       <span id="search-reference-hint" className="sr-only">选择一张 JPEG 或 PNG 图片，也可以直接粘贴或拖入图片</span>
       {reference && <ReferenceImageStrip reference={reference} disabled={searching || referenceBusy}
         onCrop={() => setCropping(true)} onReplace={() => fileInput.current?.click()}
@@ -449,7 +489,7 @@ export default function SearchPage() {
             <span className="ml-2">{data.scope.channel_ids.length} 个摄像头 · {formatRangeFull(new Date(data.scope.from))} — {formatRangeFull(new Date(Date.parse(data.scope.to) - 1))}</span></p></div>}
     </div>
       <SearchCoveragePanel key={`coverage-${data.search_id}`} scope={data.scope} channels={channels} onDenied={setAccessError} />
-      <SearchResults key={data.search_id} data={data} queryKind={submittedKind} moreLoading={moreLoading} readOnlyReason={accessError} onAccessDenied={setAccessError} onMore={() => void more()}
+      <SearchResults key={data.search_id} data={data} compact={variant === 'side'} onPlay={onPlay} queryKind={submittedKind} moreLoading={moreLoading} readOnlyReason={accessError} onAccessDenied={setAccessError} onMore={() => void more()}
         onUseImage={searching ? undefined : (item, frame) => void useResultPicture(item, frame)} pictureBusy={referenceBusy}
         onUpdate={item => setData(old => old && old.search_id === data.search_id ? { ...old, items: old.items.map(i => i.id === item.id ? { ...i, feedback: item.feedback } : i) } : old)} /></>}
     {picker && <DateTimeRangePicker open from={range.from} to={range.to} onClose={() => setPicker(false)}

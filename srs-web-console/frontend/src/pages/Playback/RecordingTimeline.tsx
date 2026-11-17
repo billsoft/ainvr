@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { CalendarClock } from 'lucide-react'
+import { CalendarClock, Pause, Play, SkipBack, SkipForward } from 'lucide-react'
 import {
   dateKey, formatClockAt, intersectMarksWithBlocks, mergeContiguous, recordingDisplayBlocks,
   PLAYBACK_RANGE_PRESETS, subtractRangeUnit,
@@ -16,15 +16,21 @@ interface Props {
   segments: RecordingSegment[]
   playheadTs: number | null
   aiMarks?: { start: number; end: number }[]
+  /** Times of the search hits recorded on this channel. */
+  hits?: number[]
+  /** Called with the pointer's time while it is dragged, and null when it is released. */
+  onPreview?(ts: number | null): void
   /** 存储写入不足时按完整画面组丢弃的区间（琥珀色） */
   drops?: RecordingDrop[]
+  /** The player's own controls, shared here so the track needs no second set of state. */
+  transport?: { playing: boolean; speed: number; hasSegment: boolean; canStart: boolean; onToggle(): void; onSpeed(speed: number): void; onPrev(): void; onNext(): void }
   onSeek(ts: number): void
   onChangeRange(from: number, to: number, preset: string | null): void
 }
 function pad2(n: number) { return String(n).padStart(2, '0') }
 
 /** Controlled range, read-only coverage, explicit drag preview. */
-export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], drops = [], selectedPreset = null, onSeek, onChangeRange }: Props) {
+export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], hits = [], onPreview, drops = [], selectedPreset = null, transport, onSeek, onChangeRange }: Props) {
   const trackRef = useRef<HTMLDivElement>(null)
   // 拖拽中的预览播放头（仅视觉跟随，抬起时才真正 seek）
   const [dragTs, setDragTs] = useState<number | null>(null)
@@ -89,17 +95,21 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
     pointerIdRef.current = e.pointerId
     const ts = tsFromPointer(e.clientX)
     setDragTs(ts)
+    onPreview?.(ts)
   }
 
   function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
     if (pointerIdRef.current !== e.pointerId) return
-    setDragTs(tsFromPointer(e.clientX))
+    const ts = tsFromPointer(e.clientX)
+    setDragTs(ts)
+    onPreview?.(ts)
   }
 
   function handlePointerUp(e: React.PointerEvent<HTMLDivElement>) {
     if (pointerIdRef.current !== e.pointerId) return
     const ts = tsFromPointer(e.clientX)
     setDragTs(null)
+    onPreview?.(null)
     pointerIdRef.current = null
     try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId) } catch { /* noop */ }
     onSeek(ts)
@@ -136,7 +146,7 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
-          onPointerCancel={() => { setDragTs(null); pointerIdRef.current = null }}
+          onPointerCancel={() => { setDragTs(null); onPreview?.(null); pointerIdRef.current = null }}
           tabIndex={0}
           onKeyDown={e => {
             if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return
@@ -191,6 +201,13 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
             viewBox="0 0 100 24" preserveAspectRatio="none">
             <path d={seiPath} fill="currentColor" fillOpacity={0.4} />
           </svg>}
+
+          {/* Search hits: a small marker at each hit's time, above the coverage bars. */}
+          {hits.filter(t => t >= win.from && t < win.to).map((t, i) => (
+            <div key={`hit-${i}`} data-testid="timeline-hit-mark" aria-hidden
+              className="pointer-events-none absolute top-1 h-3 w-1.5 -translate-x-1/2 rounded-sm bg-primary"
+              style={{ left: `${pct(t)}%` }} title={`搜索命中 ${new Date(t).toLocaleString('zh-CN', { hour12: false })}`} />
+          ))}
 
           {/* 当前时刻线（窗口覆盖现在时） */}
           {showNowLine && (
@@ -273,8 +290,18 @@ export function RecordingTimeline({ win, segments, playheadTs, aiMarks = [], dro
           控件，改一处两边都跟着变。 */}
       <div className="mt-1 flex gap-3 text-[10px] text-ink-faint">
         <span title="旧录像起点仅精确到秒，未标记丢弃的小于1秒接缝按连续显示；实际播放仍按文件定位。" className="inline-flex items-center gap-1.5"><span aria-hidden className="h-2 w-3 rounded-sm bg-success/70" />可播放录像</span><span className="inline-flex items-center gap-1.5"><span aria-hidden className="h-2 w-3 rounded-sm bg-danger/40" />识别信息（SEI）</span>
+        {hits.length > 0 && <span className="inline-flex items-center gap-1.5"><span aria-hidden className="h-2 w-1.5 rounded-sm bg-primary" />搜索命中</span>}
         {drops.length > 0 && <span className="text-amber-700">琥珀：未保存录像（悬停查看原因）</span>}
       </div>
+      {transport && <div role="group" aria-label="时间轴回放控制" className="mt-2.5 flex flex-wrap items-center gap-1.5">
+        <button type="button" aria-label="上一段录像" title="上一段" disabled={!transport.hasSegment} onClick={transport.onPrev} className="inline-flex min-h-9 min-w-9 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11 items-center justify-center rounded-base border border-line text-ink-subtle hover:border-primary hover:text-primary disabled:opacity-40"><SkipBack size={15} aria-hidden /></button>
+        <button type="button" aria-label={transport.playing ? '从时间轴暂停' : '从时间轴播放'} title={transport.playing ? '暂停' : '播放'} disabled={!transport.hasSegment && !transport.canStart} onClick={transport.onToggle} className="inline-flex min-h-9 min-w-9 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11 items-center justify-center rounded-base border border-primary bg-primary-50 text-primary disabled:opacity-40">{transport.playing ? <Pause size={15} aria-hidden /> : <Play size={15} aria-hidden />}</button>
+        <button type="button" aria-label="下一段录像" title="下一段" disabled={!transport.hasSegment} onClick={transport.onNext} className="inline-flex min-h-9 min-w-9 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11 items-center justify-center rounded-base border border-line text-ink-subtle hover:border-primary hover:text-primary disabled:opacity-40"><SkipForward size={15} aria-hidden /></button>
+        <div role="group" aria-label="播放倍速" className="ml-1 flex gap-1">
+          {[0.5, 1, 2, 4, 8].map(v => <button key={v} type="button" aria-pressed={transport.speed === v} disabled={!transport.hasSegment} onClick={() => transport.onSpeed(v)}
+            className={`min-h-9 [@media(pointer:coarse)]:min-h-11 rounded-base border px-2 text-xs ${transport.speed === v ? 'border-primary bg-primary-50 text-primary' : 'border-line text-ink-subtle hover:border-primary hover:text-primary'} disabled:opacity-40`}>{v}×</button>)}
+        </div>
+      </div>}
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <button
           type="button"

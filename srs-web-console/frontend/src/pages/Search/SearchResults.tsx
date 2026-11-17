@@ -3,7 +3,7 @@ import { Camera, ChevronLeft, ChevronRight, ImageUp, Play, ThumbsDown, ThumbsUp,
 import { Link } from 'react-router-dom'
 import { SearchEvidenceImage } from './SearchEvidenceImage'
 import { searchImagePath, searchService, type SearchFrame, type SearchPageResult, type SearchQueryKind, type SearchResult } from '@/api/searchService'
-import { evidencePlaybackHref } from '@/features/playbackNavigation'
+import { EVIDENCE_PRE_ROLL_MS, evidencePlaybackHref } from '@/features/playbackNavigation'
 import { aiReferenceEnabled } from './aiReference'
 
 const action = 'inline-flex min-h-11 items-center justify-center gap-2 rounded-base border border-line px-3 text-sm hover:bg-primary-50 disabled:opacity-50'
@@ -46,8 +46,12 @@ export function SearchSimilarity({ value, kind = 'text' }: { value?: number; kin
 }
 const frameLabels = { match: '命中时刻', before: '较早采样', after: '较晚采样', context: '其他关键时刻' }
 function stamp(value: string) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
-export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyReason, onAccessDenied, queryKind = 'text', onUseImage, pictureBusy }: {
+export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyReason, onAccessDenied, queryKind = 'text', onUseImage, pictureBusy, onPlay, compact = false }: {
   data: SearchPageResult
+  /** Beside the player: opening a candidate plays its recording there instead of in a new page. */
+  onPlay?: (channelId: string, at: number) => void
+  /** One narrow column: single-column list and a small detail picture. */
+  compact?: boolean
   queryKind?: SearchQueryKind
   /** Puts this evidence picture into the search conditions; the page does not search until asked. */
   onUseImage?: (item: SearchResult, frame: SearchFrame) => void
@@ -84,7 +88,15 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
   }, [selectedId])
   // A new query owns a separate panel; old feedback must never update it.
   useEffect(() => () => { pending.current++ }, [])
-  function open(id: string) { focus.current = cards.current.get(id) ?? null; setSelectedId(id); setFrameId(null) }
+  function play(item: SearchResult) {
+    if (!onPlay || readOnlyReason || item.recording.state !== 'available' || !item.recording.channel_id) return
+    onPlay(item.recording.channel_id, Date.parse(item.started_at) - EVIDENCE_PRE_ROLL_MS)
+  }
+  function open(id: string) {
+    focus.current = cards.current.get(id) ?? null; setSelectedId(id); setFrameId(null)
+    const item = items.find(i => i.id === id)
+    if (item) play(item)
+  }
   function close() { setSelectedId(null); setFrameId(null); setError(null); focus.current?.focus() }
   function adjacent(direction: -1 | 1) {
     const item = items[selectedIndex + direction]
@@ -109,7 +121,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
   const coverage = data.coverage === 'sampled'
     ? '所选范围已有采样索引；采样不能证明每个瞬间均被分析。'
     : data.coverage === 'partial' ? '所选范围有未分析或缺失时段，结果可能不完整。' : '覆盖情况暂未确认，未找到不代表事件没有发生。'
-  const replay = selected?.recording.state === 'available'
+  const replay = !onPlay && selected?.recording.state === 'available'
     ? evidencePlaybackHref(selected.recording.channel_id, selected.started_at, selected.ended_at) : null
   return <section aria-label="搜索结果" className="min-w-0 space-y-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -140,8 +152,8 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
       <button type="button" className={`${action} ml-2`} onClick={() => open(error.id)}>返回该候选重试</button>
     </div>}
     {readOnlyReason && <p role="status" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{readOnlyReason}</p>}
-    <div className={selected ? 'grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]' : ''}>
-      <div className={`grid min-w-0 items-start gap-3 ${selected ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3'}`}>
+    <div className={selected && !compact ? 'grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]' : compact ? 'space-y-3' : ''}>
+      <div className={`grid min-w-0 items-start gap-3 ${compact ? 'grid-cols-1' : selected ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3'}`}>
         {items.map((item, n) => {
           const cover = item.frames.find(f => f.role === 'match') ?? item.frames[0]!
           return <button type="button" key={item.id} aria-label={`查看第 ${n + 1} 条候选：${item.channel_name}`}
@@ -162,7 +174,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
           </button>
         })}
       </div>
-      {selected && frame && <aside ref={panel} tabIndex={-1} aria-label="候选详情" className="order-first min-w-0 space-y-3 rounded-xl border border-line bg-surface p-4 outline-none focus-visible:ring-2 focus-visible:ring-primary xl:sticky xl:top-0 xl:order-last xl:max-h-[calc(100dvh-6rem)] xl:overflow-y-auto xl:overscroll-contain"
+      {selected && frame && <aside ref={panel} tabIndex={-1} aria-label="候选详情" className={`order-first min-w-0 space-y-3 rounded-xl border border-line bg-surface p-4 outline-none focus-visible:ring-2 focus-visible:ring-primary ${compact ? '' : 'xl:sticky xl:top-0 xl:order-last xl:max-h-[calc(100dvh-6rem)] xl:overflow-y-auto xl:overscroll-contain'}`}
         onKeyDown={e => {
           if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || (e.target instanceof HTMLElement && e.target.closest('input, textarea, select, [contenteditable="true"], [role="slider"]'))) return
           if (e.key === 'Escape') { e.stopPropagation(); close() }
@@ -185,13 +197,13 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
           <button type="button" className={action} disabled={selectedIndex >= data.items.length - 1} onClick={() => adjacent(1)}>下一条<ChevronRight size={16} /></button>
         </div>
         {readOnlyReason ? <p className="rounded-base bg-surface-page p-4 text-sm text-ink-subtle">证据暂不可访问，请重新搜索。</p> : <SearchEvidenceImage bbox={selected.kind === 'object' ? frame.bbox : undefined} key={frame.id} path={searchImagePath(data.search_id, selected.id, frame.id)} alt={`${frameLabels[frame.role]} ${stamp(frame.captured_at)}`}
-          className="aspect-video w-full overflow-hidden rounded-lg bg-slate-950" />}
+          className={`aspect-video w-full overflow-hidden rounded-lg bg-slate-950 ${compact ? 'max-h-44' : ''}`} />}
         <div className="flex flex-wrap items-center justify-between gap-1"><p className="text-xs tabular-nums text-ink-subtle">{frameLabels[frame.role]} · {stamp(frame.captured_at)}</p><SearchSimilarity value={selected.similarity} kind={queryKind} /></div>
-        {readOnlyReason ? null : replay ? <Link to={replay} target="_blank" rel="noopener noreferrer" className={`${action} w-full border-primary bg-primary text-white hover:bg-primary`}><Play size={17} />播放前后录像</Link>
+        {readOnlyReason ? null : onPlay && selected.recording.state === 'available' ? null : replay ? <Link to={replay} target="_blank" rel="noopener noreferrer" className={`${action} w-full border-primary bg-primary text-white hover:bg-primary`}><Play size={17} />播放前后录像</Link>
           : <p role="status" className="rounded-base bg-surface-page p-3 text-sm text-ink-subtle">{selected.recording.state === 'pending' ? '录像状态待确认；仍可查看保存的证据图片。' : '对应录像不可用，仍可查看保存的证据图片。'}</p>}
         {!readOnlyReason && onUseImage && <button type="button" className={`${action} w-full`} disabled={pictureBusy} onClick={() => onUseImage(selected, frame)}
           aria-describedby="search-use-image-hint"><ImageUp size={17} aria-hidden="true" />{pictureBusy ? '正在带入图片…' : '用此图查找'}</button>}
-        {!readOnlyReason && onUseImage && <p id="search-use-image-hint" className="-mt-1 text-xs text-ink-subtle">把当前这张图片带入搜索条件{selected.kind === 'object' && frame.bbox ? '，并预先框选检测到的目标' : ''}；可调整选区后再点击“搜索录像”。</p>}
+        {!readOnlyReason && onUseImage && <p id="search-use-image-hint" className="-mt-1 text-xs text-ink-subtle">以这张图片为参考，再搜一次，找出其它相似的出现时刻{selected.kind === 'object' && frame.bbox ? '（已预先框选检测到的目标）' : ''}；可调整选区后点击“搜索录像”。</p>}
         <div className="flex flex-wrap items-center gap-2 border-b border-line pb-3"><span className="mr-auto text-xs text-ink-subtle">人工反馈</span><button type="button" className={`${action} ${selected.feedback === 'relevant' ? 'border-primary bg-primary-50 text-primary' : ''}`} disabled={!!savingId || !!readOnlyReason} aria-pressed={selected.feedback === 'relevant'} onClick={() => void feedback(true)}><ThumbsUp size={16} />相关</button>
           <button type="button" className={`${action} ${selected.feedback === 'irrelevant' ? 'border-primary bg-primary-50 text-primary' : ''}`} disabled={!!savingId || !!readOnlyReason} aria-pressed={selected.feedback === 'irrelevant'} onClick={() => void feedback(false)}><ThumbsDown size={16} />不相关</button></div>
         {savingId && <p role="status" className="text-xs text-ink-subtle">{savingId === selectedId ? '正在保存反馈…' : '正在保存另一条候选的反馈，请稍候。'}</p>}
