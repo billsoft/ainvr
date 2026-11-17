@@ -243,3 +243,33 @@ it('出向没有采集数据时也禁止显示两向增长率',async()=>{
  expect(screen.getByText(/对比数据不足/)).toBeInTheDocument()
  expect(screen.queryByText(/比昨日/)).not.toBeInTheDocument()
 })
+
+it('选用计数器是“先选后配”两态：选定后列表收起，只剩所选计数器和它的设置，可点“更换”回到列表',async()=>{
+ const boarding:Counter={...counter,counter_id:'boarding',name:'登船',bindings:[]}
+ render(<ArmingModal sourceId="cam" sourceName="大门" base={base} reference={{url:'image',width:1000,height:500,geometryRevision:'g:1000x500',capturedAt:'now'}}
+  definitions={[]} sources={[source]} counters={[{...counter,bindings:[]},boarding]} send={vi.fn()} onClose={vi.fn()} onSaved={vi.fn()}/>)
+ fireEvent.click(screen.getByRole('button',{name:'选择热区 门口'}))
+ fireEvent.click(screen.getByRole('button',{name:'为 门口 选用计数器'}))
+ // 选择态：搜索、筛选、全部计数器都在
+ expect(screen.getByLabelText('搜索计数器')).toBeInTheDocument()
+ expect(screen.getByRole('radio',{name:/客流/})).toBeInTheDocument()
+ expect(screen.getByRole('radio',{name:/登船/})).toBeInTheDocument()
+ expect(screen.queryByRole('button',{name:'更换计数器'})).not.toBeInTheDocument()
+ fireEvent.click(screen.getByRole('radio',{name:/客流/}))
+ // 配置态：别的计数器、搜索、管理入口都不再出现，设置紧跟所选计数器
+ expect(screen.getByRole('radio',{name:/客流/})).toHaveAttribute('aria-checked','true')
+ expect(screen.queryByRole('radio',{name:/登船/})).not.toBeInTheDocument()
+ expect(screen.queryByLabelText('搜索计数器')).not.toBeInTheDocument()
+ expect(screen.queryByLabelText('计数方式筛选')).not.toBeInTheDocument()
+ expect(screen.queryByRole('link',{name:/管理计数器/})).not.toBeInTheDocument()
+ expect(screen.getByText(/计数方式：越过一条线/)).toBeInTheDocument()
+ // 更换：回到选择态，并放下已选的计数边
+ fireEvent.click(screen.getByRole('button',{name:'更换计数器'}))
+ expect(screen.getByRole('radio',{name:/客流/})).toHaveAttribute('aria-checked','false')
+ expect(screen.getByRole('radio',{name:/登船/})).toBeInTheDocument()
+ expect(screen.queryByText(/计数方式：越过一条线/)).not.toBeInTheDocument()
+ expect(screen.queryByRole('button',{name:'设置计数线：边 2'})).not.toBeInTheDocument()
+ fireEvent.click(screen.getByRole('radio',{name:/登船/}))
+ expect(screen.getByRole('radio',{name:/登船/})).toHaveAttribute('aria-checked','true')
+ expect(screen.queryByRole('radio',{name:/客流/})).not.toBeInTheDocument()
+})

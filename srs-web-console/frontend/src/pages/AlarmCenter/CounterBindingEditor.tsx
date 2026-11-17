@@ -45,6 +45,11 @@ export function CounterBindingEditor({sourceId,geometryRevision,zone,counters,so
  // Recorded passages belong to the edge(s) they crossed: only a direction flip can be recounted.
  const recountable=!!initial&&!!direction&&lineChanged&&recountAllowed(initial.direction,direction)
  const choose=(c:Counter)=>{setCounterId(c.counter_id);onPick(pickFrom(c.method,initial?.counterId===c.counter_id&&!initial.needsConfirmation?initial.direction:undefined))}
+ // Back to choosing: nothing of the abandoned counter may stay behind (processor, edges, or a pending apply).
+ const change=()=>{setCounterId('');setProcessorId('');setRecount(false);setError('');onPick(null)}
+ // Two states: choosing a counter, then configuring only that one. Editing an existing binding is the second state from the start.
+ const fixedId=initial?.counterId??(counter?counterId:'')
+ const choosing=!initial&&!counter
  const apply=()=>{
   if(!counter||!effective||!direction){setError('请选择兼容的计数器、处理器并完成方向设置。');return false}
   try{onApply({id:initial?.id??generatedId.current,counterId:counter.counter_id,processorId:effective.channel_id,zoneId:zone.id,direction,needsConfirmation:false,...(recountable&&recount?{reclassifyHistory:true}:{})},effective.label_map_version);return true}catch(e){setError(e instanceof Error?e.message:'不能加入草稿');return false}
@@ -55,13 +60,13 @@ export function CounterBindingEditor({sourceId,geometryRevision,zone,counters,so
   <header className="flex items-center gap-2"><h3 className="min-w-0 flex-1 text-sm font-semibold text-ink">{zone.name} · 选用计数器</h3></header>
   {initial?.needsConfirmation&&<p role="alert" className="rounded-base border border-warning bg-amber-50 p-3 text-sm">热区的边已变化，请在画面上重新设置计数线。</p>}
   {!counter&&<p role="status" className="text-sm leading-6 text-ink-subtle">先点击下方计数器选用，再在画面上选择计数边。</p>}
-  {!initial&&<div className="space-y-2">
+  {choosing&&<div className="space-y-2">
    <input type="search" aria-label="搜索计数器" placeholder="搜索名称或目标类别" className="form-input !min-h-11 w-full" value={query} onChange={e=>setQuery(e.target.value)}/>
    <select aria-label="计数方式筛选" className="form-input !min-h-11 w-full" value={method} onChange={e=>setMethod(e.target.value)}><option value="">全部计数方式</option>{Object.entries(methodNames).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select>
-   <p className="text-xs text-ink-subtle">可选 {available.length} 个 · 已选项始终保留。每个热区独立计数。</p>
+   <p className="text-xs text-ink-subtle">可选 {available.length} 个。每个热区独立计数。</p>
   </div>}
   <div role="radiogroup" aria-label="计数器" className="space-y-2">
-   {(initial?available.filter(c=>c.counter_id===initial.counterId):available.filter(c=>c.counter_id===counterId||((!method||c.method===method)&&`${c.name} ${c.labels.map(l=>labelDisplay(l.name)).join(' ')}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())))).map(c=><button key={c.counter_id} type="button" role="radio" aria-checked={counterId===c.counter_id} disabled={!!initial}
+   {(fixedId?available.filter(c=>c.counter_id===fixedId):available.filter(c=>(!method||c.method===method)&&`${c.name} ${c.labels.map(l=>labelDisplay(l.name)).join(' ')}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))).map(c=><button key={c.counter_id} type="button" role="radio" aria-checked={counterId===c.counter_id} disabled={!!fixedId}
     onClick={()=>choose(c)} className={`${associationChoiceClass(counterId===c.counter_id)} disabled:cursor-default`}>
     <span className="min-w-0 flex-1"><strong className="block break-words text-sm font-semibold text-ink">{c.name}{c.state==='paused'?'（已暂停）':''}</strong>
     <span className="mt-1 block text-xs leading-5 text-ink-subtle">{methodNames[c.method]} · {c.labels.map(l=>labelDisplay(l.name)).join('、')} · {c.outputs==='both'?`${c.names.in}/${c.names.out}`:c.names.in}</span></span>
@@ -70,8 +75,9 @@ export function CounterBindingEditor({sourceId,geometryRevision,zone,counters,so
    </button>)}
    {!available.length&&<p className="text-sm text-ink-subtle">{counters.length?'计数器都已选用到这个热区。':'还没有计数器。'}</p>}
   </div>
-  {!initial&&available.length>0&&!available.some(c=>c.counter_id===counterId||((!method||c.method===method)&&`${c.name} ${c.labels.map(l=>labelDisplay(l.name)).join(' ')}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())))&&<p role="status" className="text-sm text-ink-subtle">没有匹配的计数器，请调整搜索条件。</p>}
-  {!initial&&<a href="/flow-statistics" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1.5 text-sm text-ink-subtle hover:text-primary"><ExternalLink size={14} aria-hidden="true"/>管理计数器</a>}
+  {choosing&&available.length>0&&!available.some(c=>(!method||c.method===method)&&`${c.name} ${c.labels.map(l=>labelDisplay(l.name)).join(' ')}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))&&<p role="status" className="text-sm text-ink-subtle">没有匹配的计数器，请调整搜索条件。</p>}
+  {choosing&&<a href="/flow-statistics" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1.5 text-sm text-ink-subtle hover:text-primary"><ExternalLink size={14} aria-hidden="true"/>管理计数器</a>}
+  {counter&&!initial&&<button type="button" className="btn-secondary min-h-11" onClick={change}>更换计数器</button>}
   {counter&&<>
    {(compatible.length>1||(!!processorId&&!effective))&&<label className="block text-sm font-medium text-ink">AI 处理器<select className="form-input mt-1.5" value={effective?.channel_id??''} onChange={e=>setProcessorId(e.target.value)}>
     <option value="">请选择 AI 处理器</option>{compatible.map(s=><option key={s.channel_id} value={s.channel_id}>{s.channel_name}</option>)}</select></label>}
