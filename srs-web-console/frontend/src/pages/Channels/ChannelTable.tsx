@@ -8,9 +8,15 @@ import { UPSTREAM_LABEL, type ChannelWithStatus } from '@/types/channel'
 import { useAiChannelsStore } from '@/store/aiChannels'
 import { parseStreamPath } from '@/utils/channelMatching'
 import { formatCodec, isH265 } from '@/utils/codec'
+import type { DeviceLine } from './useChannelDeviceInfo'
+
+const deviceTone: Record<DeviceLine['tone'], string> = {
+  ok: 'text-success-700', warn: 'text-amber-800', danger: 'text-danger-700', muted: 'text-ink-faint',
+}
 
 interface Props {
   gbInputIds?: string[]
+  deviceInfo?: Record<string, DeviceLine>
   rows: ChannelWithStatus[]
   pipeline: Record<string, ChannelPipelineStatus>
   host: string
@@ -38,7 +44,7 @@ function PipelineBadge({ value }: { value: PipelineState }) {
 }
 
 /** 通道列表表格（DEV_PLAN 4.1 列设计） */
-export function ChannelTable({ gbInputIds=[], rows, pipeline, onPreview, onCopyPush, onEdit, onDelete }: Props) {
+export function ChannelTable({ gbInputIds=[], deviceInfo, rows, pipeline, onPreview, onCopyPush, onEdit, onDelete }: Props) {
   const { channels: aiChannels } = useAiChannelsStore()
 
   // 构建 AI 输出流的 app/stream → AI 通道 ID 映射
@@ -118,6 +124,11 @@ export function ChannelTable({ gbInputIds=[], rows, pipeline, onPreview, onCopyP
                   <div className="mt-0.5 font-mono text-xs text-ink-faint">
                     {ch.upstream.app}/{ch.upstream.stream}
                   </div>
+                  {deviceInfo?.[ch.id] && (
+                    <div className={`mt-0.5 text-xs ${deviceTone[deviceInfo[ch.id]!.tone]}`} data-testid={`device-line-${ch.id}`}>
+                      {deviceInfo[ch.id]!.text}
+                    </div>
+                  )}
                 </td>
                 <td className="px-4 py-3">
                   <ProtocolTag label={ch.onvif?'ONVIF':gbInputIds.includes(ch.id)?'GB/T 28181':UPSTREAM_LABEL[ch.upstream.protocol]} />

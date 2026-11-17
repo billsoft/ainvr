@@ -1,7 +1,6 @@
-import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react'
+import {act,cleanup,fireEvent,render,screen,waitFor} from '@testing-library/react'
 import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {request} from '@/api/httpClient'
-import {GBDeviceManager} from '@/pages/ConfigCenter/GBDeviceManager'
 import {GBConfigForm} from '@/pages/ConfigCenter/GBConfigForm'
 import {GBSourceFields} from '@/pages/Channels/GBSourceFields'
 vi.mock('@/api/httpClient',()=>({request:vi.fn()}))
@@ -27,40 +26,8 @@ beforeEach(()=>{
 afterEach(()=>{cleanup();vi.restoreAllMocks()})
 const writes=()=>vi.mocked(request).mock.calls.filter(([,o])=>o?.method)
 
-it('lists every device with its registration state, address and channel count',async()=>{
- render(<GBDeviceManager/>)
- const row=(await screen.findByText(/大厅 NVR/)).closest('li')!
- await within(row).findByText('在线')
- expect(within(row).getByText(/地址 192\.168\.100\.61 .* 协议 2022 · 已接入 12 路/)).toBeInTheDocument()
- const back=screen.getByText(/后门/).closest('li')!
- expect(within(back).getByText(/注册密码不正确/)).toBeInTheDocument()
-})
-
-it('turns a mistyped device number into a one-step registration',async()=>{
- render(<GBDeviceManager/>)
- expect(await screen.findByText(new RegExp(`${typo} · 来自 192\\.168\\.100\\.77`))).toBeInTheDocument()
- fireEvent.click(screen.getByRole('button',{name:'登记此编号'}))
- expect(screen.getByLabelText('设备国标编号（20 位）')).toHaveValue(typo)
- fireEvent.change(screen.getByLabelText('设备名称'),{target:{value:'侧门'}})
- fireEvent.change(screen.getByLabelText('注册密码'),{target:{value:'camera-pass-1'}})
- fireEvent.click(screen.getByRole('button',{name:'保存设备'}))
- await waitFor(()=>expect(writes()).toHaveLength(1))
- expect(JSON.parse(writes()[0]![1]!.body as string)).toMatchObject({expectedRevision:3,device:{id:typo,name:'侧门',enabled:true,password:'camera-pass-1'}})
-})
-
-it('disables without touching the password and deletes only after confirmation',async()=>{
- render(<GBDeviceManager/>)
- const row=(await screen.findByText(/后门/)).closest('li')!
- fireEvent.click(within(row).getByRole('button',{name:'停用'}))
- await waitFor(()=>expect(writes()).toHaveLength(1))
- const disable=JSON.parse(writes()[0]![1]!.body as string)
- expect(disable.device).toMatchObject({id:cam,enabled:false});expect(disable.device).not.toHaveProperty('password')
- fireEvent.click(within(row).getByRole('button',{name:'删除'}))
- expect(writes()).toHaveLength(1)
- fireEvent.click(within(row).getByRole('button',{name:'确认删除'}))
- await waitFor(()=>expect(writes()).toHaveLength(2))
- expect(writes()[1]![0]).toBe(`/gb28181/devices/${cam}`);expect(writes()[1]![1]!.method).toBe('DELETE')
-})
+// Device list, one-step registration of a mistyped number, disable and delete now live in the
+// wizard and on the channel rows: see GBWizardPlatform, GBWizardDeviceDelete and ChannelDeviceInfo tests.
 
 it('states the board limit and fills this host\'s address instead of loopback',async()=>{
  render(<GBConfigForm/>)
@@ -75,9 +42,11 @@ it('states the board limit and fills this host\'s address instead of loopback',a
 })
 
 it('pages a large NVR catalog and selects all addable channels at once',async()=>{
- render(<GBSourceFields onDraft={()=>{}} onDirty={()=>{}} onBusy={()=>{}}/>)
- await screen.findByRole('option',{name:`大厅 NVR · ${nvr}`})
- fireEvent.change(screen.getByLabelText('国标设备'),{target:{value:nvr}})
+ let draft:{saveRegistration:()=>Promise<boolean>}|undefined
+ render(<GBSourceFields onDraft={d=>{draft=d}} onDirty={()=>{}} onBusy={()=>{}}/>)
+ // The NVR's number is already registered, so typing it is how this page comes to show its catalogue.
+ fireEvent.change(await screen.findByLabelText('设备国标编号（20 位）'),{target:{value:nvr}})
+ await act(async()=>{await draft!.saveRegistration()})
  expect(await screen.findByText('目录共 450 项，仅显示前 200 项，请输入名称或编号筛选。')).toBeInTheDocument()
  expect(screen.getAllByRole('radio')).toHaveLength(200)
  fireEvent.change(screen.getByLabelText('搜索视频目录'),{target:{value:'通道44'}})

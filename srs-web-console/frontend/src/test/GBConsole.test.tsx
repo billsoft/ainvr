@@ -1,4 +1,4 @@
-import {cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react'
+import {act,cleanup,fireEvent,render,screen,waitFor,within} from '@testing-library/react'
 import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {request} from '@/api/httpClient'
 import {GBSourceFields} from '@/pages/Channels/GBSourceFields'
@@ -18,12 +18,11 @@ beforeEach(()=>{
 afterEach(()=>{cleanup();vi.restoreAllMocks()})
 it('active device form protects close and Escape without saving discarded drafts',async()=>{
  const confirm=vi.spyOn(window,'confirm')
- render(<GBSourceFields onDraft={()=>{}} onDirty={()=>{}} onBusy={()=>{}}/>)
- await screen.findByRole('option',{name:`测试设备 · ${id}`})
- fireEvent.click(screen.getByRole('button',{name:'登记新设备'}))
+ render(<GBSourceFields binding={{input_id:'in-1',device_id:id,channel_id:channel}} onDraft={()=>{}} onDirty={()=>{}} onBusy={()=>{}}/>)
+ fireEvent.click(await screen.findByRole('button',{name:'编辑设备注册信息'}))
  fireEvent.click(screen.getByRole('button',{name:'关闭设备注册信息'}))
  expect(confirm).not.toHaveBeenCalled()
- fireEvent.click(screen.getByRole('button',{name:'登记新设备'}))
+ fireEvent.click(screen.getByRole('button',{name:'编辑设备注册信息'}))
  fireEvent.change(screen.getByLabelText('设备名称'),{target:{value:'草稿'}})
  fireEvent.keyDown(screen.getByRole('region',{name:'设备注册信息'}),{key:'Escape'})
  expect(screen.getByLabelText('设备名称')).toHaveValue('草稿')
@@ -40,13 +39,12 @@ it('active device form protects close and Escape without saving discarded drafts
  expect(vi.mocked(request).mock.calls.some(([,o])=>o?.method==='POST')).toBe(false)
 })
 it('active wizard saves registration only and preserves a blank password',async()=>{
- render(<GBSourceFields onDraft={()=>{}} onDirty={()=>{}} onBusy={()=>{}}/>)
- await screen.findByRole('option',{name:`测试设备 · ${id}`})
- fireEvent.change(screen.getByLabelText('国标设备'),{target:{value:id}})
- await waitFor(()=>expect(screen.getByLabelText('国标设备')).not.toBeDisabled())
- fireEvent.click(screen.getByRole('button',{name:'编辑设备注册信息'}))
+ let draft:{saveRegistration:()=>Promise<boolean>}|undefined
+ render(<GBSourceFields binding={{input_id:'in-1',device_id:id,channel_id:channel}} onDraft={d=>{draft=d}} onDirty={()=>{}} onBusy={()=>{}}/>)
+ fireEvent.click(await screen.findByRole('button',{name:'编辑设备注册信息'}))
  fireEvent.change(screen.getByLabelText('设备名称'),{target:{value:'新名称'}})
- fireEvent.click(screen.getByRole('button',{name:'保存注册信息'}))
+ // The wizard's "next" calls this; the form itself has no save button.
+ await act(async()=>{await draft!.saveRegistration()})
  await waitFor(()=>expect(vi.mocked(request).mock.calls.some(([p,o])=>p==='/gb28181/devices'&&o?.method==='POST')).toBe(true))
  const writes=vi.mocked(request).mock.calls.filter(([,o])=>o?.method==='POST')
  expect(writes).toHaveLength(1)
@@ -70,9 +68,9 @@ it('configuration marks unsaved edits and sends no empty replacement credential'
 it('shows selected compatibility separately from the device declaration',async()=>{
  const original=vi.mocked(request).getMockImplementation()!
  vi.mocked(request).mockImplementation(async(path,options)=>path==='/gb28181/status'?{state:'ready',devices:[{id,registered:true,version:{profile:'2016',confirmed:true,peer:'2022'}}]} as never:original(path,options))
- render(<GBSourceFields onDraft={()=>{}} onDirty={()=>{}} onBusy={()=>{}}/>)
- await screen.findByRole('option',{name:`测试设备 · ${id}`})
- fireEvent.change(screen.getByLabelText('国标设备'),{target:{value:id}})
+ render(<GBSourceFields binding={{input_id:'in-1',device_id:id,channel_id:channel}} onDraft={()=>{}} onDirty={()=>{}} onBusy={()=>{}}/>)
  expect(await screen.findByText('当前兼容配置：2016 · 设备声明：2022')).toBeInTheDocument()
+ // The general explanation lives with the version setting, in the device's registration form.
+ fireEvent.click(screen.getByRole('button',{name:'编辑设备注册信息'}))
  expect(screen.getByText(/不代表通过完整标准认证/)).toBeInTheDocument()
 })

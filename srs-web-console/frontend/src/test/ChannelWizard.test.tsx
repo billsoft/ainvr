@@ -37,7 +37,8 @@ describe('ChannelWizard 三步向导', () => {
     // step 1
     await user.type(screen.getByTestId('wizard-name'), '测试摄像头')
     await user.click(screen.getByTestId('wizard-next'))
-    // step 2
+    // step 2: the stream name is already derived from the channel name; replacing it is optional
+    await user.clear(screen.getByTestId('wizard-stream'))
     await user.type(screen.getByTestId('wizard-stream'), 'test_cam_01')
     await user.click(screen.getByTestId('wizard-next'))
     // step 3：默认 webrtc+flv+hls+rtmp 已选（webrtc 优先，延迟最低），提交
@@ -108,9 +109,12 @@ describe('ChannelWizard 三步向导', () => {
       await vi.waitFor(() => expect(button).not.toBeDisabled())
       await user.click(button)
       await user.type(screen.getByTestId('wizard-name'), '相机')
-      await user.type(screen.getByTestId('wizard-rtsp'), 'rtsp://camera/live')
+      // Like GB and ONVIF: step 1 is name and protocol only; the camera's address comes in step 2.
+      expect(screen.queryByTestId('wizard-rtsp')).toBeNull()
       await user.click(screen.getByTestId('wizard-next'))
-      await user.type(screen.getByTestId('wizard-stream'), 'camera_rtsp')
+      await user.type(screen.getByTestId('wizard-rtsp'), 'rtsp://camera/live')
+      // The internal stream name is filled in from the channel name; nothing to type.
+      expect((screen.getByTestId('wizard-stream') as HTMLInputElement).value).not.toBe('')
       await user.click(screen.getByTestId('wizard-next'))
       await user.click(screen.getByTestId('wizard-submit'))
       expect(onSubmit.mock.calls[0]?.[0].upstream).toMatchObject({ protocol: 'rtsp', rtspTransport: 'tcp', inputEnabled: true })

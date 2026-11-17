@@ -33,18 +33,21 @@ describe('validateStep1 基本信息', () => {
     expect(validateStep1({ ...valid, name: '长'.repeat(51) }).name).toBeTruthy()
     expect(validateStep1({ ...valid, name: '长'.repeat(50) }).name).toBeUndefined()
   })
-  it('RTSP 来源必须填合法 rtsp 地址', () => {
+  it('第一步只要名称：RTSP 地址属于第二步接入参数', () => {
+    expect(validateStep1({ ...valid, sourceType: 'rtsp' as const, rtspUrl: '' }).rtspUrl).toBeUndefined()
+  })
+  it('RTSP 来源在第二步必须填合法 rtsp 地址', () => {
     const rtsp = { ...valid, sourceType: 'rtsp' as const, rtspUrl: '' }
-    expect(validateStep1(rtsp).rtspUrl).toBeTruthy()
+    expect(validateStep2(rtsp).rtspUrl).toBeTruthy()
     expect(
-      validateStep1({ ...rtsp, rtspUrl: 'rtsp://192.168.1.50:554/stream1' }).rtspUrl,
+      validateStep2({ ...rtsp, rtspUrl: 'rtsp://192.168.1.50:554/stream1' }).rtspUrl,
     ).toBeUndefined()
     expect(
-      validateStep1({ ...rtsp, rtspUrl: 'http://not-rtsp/path' }).rtspUrl,
+      validateStep2({ ...rtsp, rtspUrl: 'http://not-rtsp/path' }).rtspUrl,
     ).toBeTruthy()
   })
   it('直推来源不校验 rtspUrl', () => {
-    expect(validateStep1({ ...valid, rtspUrl: '垃圾数据' }).rtspUrl).toBeUndefined()
+    expect(validateStep2({ ...valid, rtspUrl: '垃圾数据' }).rtspUrl).toBeUndefined()
   })
 })
 

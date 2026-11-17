@@ -53,13 +53,14 @@ export interface OnvifSettingsResponse {
   tokenSet: boolean
 }
 const messages: Record<string, string> = {
-  device_already_configured: '此设备已经配置，请选择已有设备',
+  device_already_configured: '这台摄像头已经配置过，请在接入管理的通道列表里编辑它',
   redirect_not_allowed: '设备返回了重定向地址，请直接填写正确的设备服务地址',
   onvif_disabled: '请先在系统配置中启用 ONVIF 接入',
   control_service_unavailable: 'ONVIF 服务暂不可用，请检查系统配置',
-  authentication_failed: '摄像头认证失败，请检查专用账号、密码和设备时间',
+  authentication_failed: '摄像头认证失败：请检查账号、密码和设备时间；不少摄像头需要在设备上单独创建 ONVIF 用户，并打开 ONVIF 开关',
   address_not_allowed: '摄像头地址不在允许访问的网段内，请检查系统配置',
   device_unreachable: '无法连接摄像头，请检查地址、网络与 ONVIF 开关',
+  device_fault: '摄像头的 ONVIF 服务没有正常响应。请确认摄像头已开启 ONVIF（大华在“基础服务”里）后重试',
   profile_not_found: '原视频源或码流已不存在，请重新读取并明确选择',
   device_configuration_changed: '设备配置已更新，请重新读取码流',
   version_conflict: '配置已被修改，请重新读取后保存',
@@ -105,6 +106,8 @@ export const onvifService = {
     call<{ revision: number }>('/settings', body, 'PUT'),
   device: (id: string) => call<OnvifDevice>(`/devices/${encodeURIComponent(id)}`),
   devices: () => call<{ items: OnvifDevice[] }>('/devices'),
+  removeDevice: (id: string, expectedVersion: number) =>
+    call<{ removed: boolean }>(`/devices/${encodeURIComponent(id)}`, { expectedVersion }, 'DELETE'),
   saveDevice: (body: {
     id?: string
     expectedVersion?: number

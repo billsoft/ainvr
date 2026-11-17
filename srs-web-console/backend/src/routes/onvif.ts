@@ -56,6 +56,13 @@ export async function onvifRoutes(
   app.post('/onvif/devices', (req) =>
     opts.store!.saveDevice(deviceSchema.parse(req.body), actors.get(req)!),
   );
+  app.delete('/onvif/devices/:id', (req) =>
+    opts.manager!.removeDevice(
+      id.parse((req.params as any).id),
+      z.object({ expectedVersion: z.number().int().positive() }).strict().parse(req.body).expectedVersion,
+      actors.get(req)!,
+    ),
+  );
   app.post('/onvif/devices/:id/probe', (req) =>
     opts.manager!.probe(id.parse((req.params as any).id)),
   );

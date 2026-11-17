@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {PtzCameraFields,type CameraPtzDraft,type PtzSourceSelector} from './PtzCameraFields'
 import {toast} from '@/store/toast'
 import type {GBBinding} from './gbTypes'
 import {GBSourceFields,type GBSourceDraft} from './GBSourceFields'
 import {OnvifSourceFields} from './OnvifSourceFields'
+import {PasswordInput} from '@/components/ui/PasswordInput'
 import {onvifService,type OnvifBinding} from '@/api/onvifService'
 import {request} from '@/api/httpClient'
 import { ingestService, type IngestCapabilities } from '@/api/ingestService'
@@ -66,6 +67,8 @@ export function ChannelWizard({
   onOnvifSaved,
 }: Props) {
   const {requestDiscard,dialog:discardDialog}=useDiscardConfirmation(open)
+  const onvifConnect=useRef<(()=>Promise<OnvifBinding|null>)|null>(null)
+  const onvifCleanup=useRef<(()=>Promise<void>)|null>(null)
   const [onvifMode,setOnvifMode]=useState(false)
   const [onvifDraft,setOnvifDraft]=useState<OnvifBinding|null>(null)
   const [onvifDirty,setOnvifDirty]=useState(false)
@@ -81,6 +84,16 @@ export function ChannelWizard({
   const [errors, setErrors] = useState<FieldErrors>({})
   const [step3Error, setStep3Error] = useState<string | null>(null)
   const [capabilities, setCapabilities] = useState<IngestCapabilities | null>(null)
+  // Armed once the device registration is saved. The page then keeps watching: as soon as the
+  // device registers and its catalogue has exactly one free channel (chosen automatically, not by
+  // the person), the wizard moves on by itself. Leaving this step disarms it.
+  const [gbAdvance, setGbAdvance] = useState(false)
+  useEffect(() => {
+    if (step !== 1) { if (gbAdvance) setGbAdvance(false); return }
+    if (!gbAdvance || !gbMode || !gbDraft?.ready || gbDraft.registrationDirty || !gbDraft.channelId || !gbDraft.autoChannel) return
+    setGbAdvance(false)
+    setStep(2)
+  }, [gbAdvance, step, gbMode, gbDraft])
 
   useEffect(() => {
     if (!open) return
@@ -111,7 +124,9 @@ export function ChannelWizard({
 
   const baseline=mode==='edit'&&initial?{...fromChannel(initial),...(gbBinding?.channel_config?{name:gbBinding.channel_config.name,description:gbBinding.channel_config.description,protocols:gbBinding.channel_config.protocols,primary:gbBinding.channel_config.primary}:{})}:DEFAULT_WIZARD_VALUE
   const dirty=Object.keys(ptzDraft).length>0||onvifMode!==!!initial?.onvif||onvifDirty||gbMode!==!!gbBinding||gbDirty||JSON.stringify(value)!==JSON.stringify(baseline)
-  function close(){if(submitting||gbBusy||onvifBusy||saving)return;requestDiscard(dirty,'尚未保存的通道修改将被放弃；已保存的设备信息会保留。',onClose)}
+  // A camera registered only for this wizard is taken back when the wizard is abandoned or the protocol changes.
+  function dropCreated(){void gbDraft?.discardCreated();void onvifCleanup.current?.()}
+  function close(){if(submitting||gbBusy||onvifBusy||saving)return;requestDiscard(dirty,'尚未完成的通道配置将被放弃。',()=>{dropCreated();onClose()})}
   useEffect(()=>{if(!open)return;const previous=document.activeElement as HTMLElement|null;return()=>previous?.focus()},[open])
   if (!open) return null
 
@@ -119,16 +134,31 @@ export function ChannelWizard({
   const set = <K extends keyof WizardFormValue>(key: K, v: WizardFormValue[K]) =>
     setValue((prev) => ({ ...prev, [key]: v }))
 
-  function handleNext() {
+  async function handleNext() {
+    // "Next" applies whatever is open on this page, so no sub-form needs its own save button.
+    // The device must register before it can offer a video catalogue, so the page stays after saving.
+    if (step === 1 && gbMode && gbDraft?.registrationDirty) {
+      setStep3Error(null)
+      if (await gbDraft.saveRegistration()) setGbAdvance(true)
+      return
+    }
     if (step === 0) {
       const e = validateStep1(gbMode||onvifMode?{...value,sourceType:'push'}:value)
       setErrors(e)
       if (Object.keys(e).length > 0) return
+      // The internal stream name needs no decision: derive it from the channel name.
+      if (mode === 'create' && !gbMode && !onvifMode && !value.stream.trim()) set('stream', generateStreamName(value.name))
     }
     if (step === 1 && gbMode) {
       const error=validateGB();setStep3Error(error);if(error)return
     }
-    if (step === 1 && onvifMode && !onvifDraft) {setStep3Error('请读取设备并选择画面和码流');return}
+    if (step === 1 && onvifMode && !onvifDraft) {
+      // Connect and read the streams as part of "next"; stay only when a real choice is left.
+      setStep3Error(null)
+      const binding = await onvifConnect.current?.()
+      if (!binding) return
+      setOnvifDraft(binding)
+    }
     if (step === 1 && !gbMode && !onvifMode) {
       const e = validateStep2(value)
       setErrors(e)
@@ -140,8 +170,7 @@ export function ChannelWizard({
 
   function validateGB(){
     if(!gbDraft?.ready)return '国标配置尚未读取成功，请重新读取后重试'
-    if(gbDraft.registrationDirty)return '请先保存或取消设备注册信息的修改'
-    if(!gbDraft.deviceId||(gbDraft.batch?!gbDraft.channels.length:!gbDraft.channelId))return '请选择国标设备和视频目录通道'
+    if(!gbDraft.deviceId||(gbDraft.batch?!gbDraft.channels.length:!gbDraft.channelId))return '请先登记这台摄像头，并选择要接入的画面'
     return null
   }
   async function handleSubmit() {
@@ -291,7 +320,7 @@ export function ChannelWizard({
                       aria-pressed={!gbMode&&!onvifMode&&value.sourceType===v}
                       type="button"
                       disabled={!!gbBinding || !!initial?.onvif || (v === 'rtsp' && !capabilities?.rtsp.enabled)}
-                      onClick={() => requestDiscard(gbDirty||onvifDirty,'更换协议将放弃设备接入参数草稿。',()=>{setOnvifMode(false);setOnvifDirty(false);setOnvifDraft(null);setGbMode(false);setGbDirty(false);setGbDraft(null);set('sourceType', v)})}
+                      onClick={() => requestDiscard(gbDirty||onvifDirty,'更换协议将放弃设备接入参数草稿。',()=>{dropCreated();setOnvifMode(false);setOnvifDirty(false);setOnvifDraft(null);setGbMode(false);setGbDirty(false);setGbDraft(null);set('sourceType', v)})}
                       className={[
                         'flex-1 rounded-base border px-3 py-2.5 text-sm transition-colors',
                         !gbMode && !onvifMode && value.sourceType === v
@@ -302,13 +331,17 @@ export function ChannelWizard({
                       {label}
                     </button>
                   ))}
-                  <button type="button" disabled={mode==='edit'&&!initial?.onvif} onClick={()=>requestDiscard(gbDirty,'更换协议将放弃国标参数草稿。',()=>{setOnvifMode(true);setGbMode(false);setGbDirty(false)})} aria-pressed={onvifMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${onvifMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>ONVIF 摄像头 / NVR</button>
-                  <button type="button" disabled={mode==='edit'&&!gbBinding} onClick={()=>requestDiscard(onvifDirty,'更换协议将放弃 ONVIF 参数草稿。',()=>{setOnvifMode(false);setOnvifDirty(false);setGbMode(true)})} aria-pressed={gbMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${gbMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>GB/T 28181 摄像头 / NVR</button>
+                  <button type="button" disabled={mode==='edit'&&!initial?.onvif} onClick={()=>requestDiscard(gbDirty,'更换协议将放弃国标参数草稿。',()=>{dropCreated();setOnvifMode(true);setGbMode(false);setGbDirty(false)})} aria-pressed={onvifMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${onvifMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>ONVIF 摄像头 / NVR</button>
+                  <button type="button" disabled={mode==='edit'&&!gbBinding} onClick={()=>requestDiscard(onvifDirty,'更换协议将放弃 ONVIF 参数草稿。',()=>{dropCreated();setOnvifMode(false);setOnvifDirty(false);setGbMode(true)})} aria-pressed={gbMode} className={`min-h-11 rounded-base border px-3 py-2.5 text-sm disabled:opacity-40 ${gbMode?'border-primary bg-primary-100 font-medium text-primary-600':'border-line text-ink-subtle hover:border-primary-200'}`}>GB/T 28181 摄像头 / NVR</button>
                 </div>
                 {mode==='edit'&&!gbBinding&&<p className="mt-1 text-xs text-ink-faint">国标设备请通过新建通道接入，现有视频源的录像和 AI 关联会保留。</p>}
                 {gbBinding&&<p className="mt-1 text-sm text-primary">来源：GB/T 28181；内部发布地址由网关管理。</p>}
               </div>
-              {value.sourceType === 'rtsp' && !gbMode && !onvifMode && (
+            </div>
+          )}
+          {/* Camera access parameters belong to step 2 for every protocol, like GB and ONVIF. */}
+          {step === 1 && value.sourceType === 'rtsp' && !gbMode && !onvifMode && (
+            <div className="mb-4 flex flex-col gap-4">
                 <div>
                   <label className="text-sm font-medium text-ink">
                     RTSP 源地址 <span className="text-danger">*</span>
@@ -329,16 +362,19 @@ export function ChannelWizard({
                   <label className="mt-3 block text-sm">相机用户名</label>
                   <input className={inputCls} autoComplete="off" value={value.inputUsername ?? ''} onChange={e => set('inputUsername', e.target.value)} />
                   <label className="mt-3 block text-sm">相机密码（编辑时留空保留原值）</label>
-                  <input type="password" className={inputCls} autoComplete="new-password" value={value.inputPassword ?? ''} onChange={e => set('inputPassword', e.target.value)} />
+                  <PasswordInput aria-label="相机密码" className={inputCls} autoComplete="new-password" value={value.inputPassword ?? ''} onChange={e => set('inputPassword', e.target.value)} />
                   <label className="mt-3 block text-sm">相机传输方式</label>
                   <select className={inputCls} value={value.rtspTransport ?? 'tcp'} onChange={e => set('rtspTransport', e.target.value as 'tcp' | 'udp')}>
                     <option value="tcp">TCP（推荐）</option><option value="udp">UDP</option>
                   </select>
                   <label className="mt-3 block text-sm">音频<select className={inputCls} value={value.inputAudioMode ?? 'off'} onChange={e => set('inputAudioMode', e.target.value as 'off' | 'auto')}><option value="off">仅视频</option><option value="auto">自动接入音频</option></select></label>
                   <p className="mt-1 text-xs text-ink-subtle">AAC 保持原音频；G.711／G.726 在配额内转换。不支持音频时继续接入视频并提示原因。</p>
-                  <label className="mt-3 flex gap-2 text-sm"><input type="checkbox" checked={value.inputEnabled ?? true} onChange={e => set('inputEnabled', e.target.checked)} />启用输入（关闭后录像和识别等待源）</label>
+                  <label className="mt-3 flex gap-2 text-sm"><input type="checkbox" checked={value.inputEnabled ?? true} onChange={e => set('inputEnabled', e.target.checked)} />启用此通道（关闭后录像和 AI 等待视频源）</label>
                 </div>
-              )}
+            </div>
+          )}
+          {step === 0 && (
+            <div className="flex flex-col gap-4">
               {value.sourceType === 'push' && !gbMode && !onvifMode && !gbBinding && (
                 <div>
                   <label className="text-sm font-medium text-ink">上行协议</label>
@@ -365,8 +401,8 @@ export function ChannelWizard({
             </div>
           )}
 
-          {gbMode&&<div hidden={step!==1}><GBSourceFields binding={gbBinding} onDraft={setGbDraft} onDirty={setGbDirty} onBusy={setGbBusy}/>{step===1&&step3Error&&<p role="alert" className="mt-2 text-sm text-danger">{step3Error}</p>}</div>}
-          {onvifMode&&<div hidden={step!==1}><OnvifSourceFields initial={initial?.onvif} onDraft={setOnvifDraft} onDirty={setOnvifDirty} onBusy={setOnvifBusy}/><label className="mt-4 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={value.inputEnabled??true} onChange={e=>set('inputEnabled',e.target.checked)}/>启用此输入通道</label>{step===1&&step3Error&&<p role="alert" className="mt-2 text-sm text-danger">{step3Error}</p>}</div>}
+          {gbMode&&<div hidden={step!==1}><GBSourceFields binding={gbBinding} defaultName={value.name.trim()} onDraft={setGbDraft} onDirty={setGbDirty} onBusy={setGbBusy}/>{step===1&&step3Error&&<p role="alert" className="mt-2 text-sm text-danger">{step3Error}</p>}</div>}
+          {onvifMode&&<div hidden={step!==1}><OnvifSourceFields initial={initial?.onvif} defaultName={value.name.trim()} onDraft={setOnvifDraft} onDirty={setOnvifDirty} onBusy={setOnvifBusy} onPrepare={fn=>{onvifConnect.current=fn}} onCleanup={fn=>{onvifCleanup.current=fn}}/><label className="mt-4 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={value.inputEnabled??true} onChange={e=>set('inputEnabled',e.target.checked)}/>启用此通道（关闭后录像和 AI 等待视频源）</label>{step===1&&step3Error&&<p role="alert" className="mt-2 text-sm text-danger">{step3Error}</p>}</div>}
           {(onvifMode||gbMode)&&<div hidden={step!==1}><PtzCameraFields sources={ptzSources} onDraft={setPtzDraft}/></div>}
           {step === 1 && !gbMode && !onvifMode && (
             <div className="flex flex-col gap-4">
@@ -406,7 +442,7 @@ export function ChannelWizard({
                 </div>
                 {errors.stream && <p className="mt-1 text-xs text-danger">{errors.stream}</p>}
                 <p className="mt-1 text-xs text-ink-faint">
-                  {gbBinding?'国标网关自动发布，设备无需填写此 RTMP 地址。':`摄像头/OBS 将推流到 rtmp://主机:1935/${value.app}/${value.stream || '流名'}`}
+                  {gbBinding?'国标网关自动发布，设备无需填写此 RTMP 地址。':value.sourceType==='rtsp'?'系统内部的发布地址，已按通道名自动生成，一般无需修改。':`摄像头/OBS 将推流到 rtmp://主机:1935/${value.app}/${value.stream || '流名'}`}
                 </p>
               </div>
             </div>

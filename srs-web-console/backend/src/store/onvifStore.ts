@@ -169,6 +169,21 @@ export class OnvifStore {
       return { id, version: Number(old?.version ?? 0) + 1 };
     });
   }
+  /** Removes a device that no channel uses, together with its stored password. */
+  async removeDevice(id: string, expectedVersion: number, actor: string) {
+    return this.transaction(async (c) => {
+      await c.query('SELECT revision FROM onvif_settings WHERE singleton FOR UPDATE');
+      const old = (
+        await c.query('SELECT version FROM onvif_devices WHERE device_id=$1 FOR UPDATE', [id])
+      ).rows[0];
+      if (!old) throw new OnvifError('device_not_found', 404);
+      if (Number(old.version) !== expectedVersion) throw new OnvifError('version_conflict', 409);
+      await c.query('DELETE FROM onvif_devices WHERE device_id=$1', [id]);
+      await c.query('DELETE FROM config_secrets WHERE key_path=$1', [`onvif/device/${id}`]);
+      await this.audit(c, actor, 'onvif-device-remove', Number(old.version), 0);
+      return { removed: true };
+    });
+  }
   async recordProbe(id: string, version: number, capabilities: unknown, error: string | null) {
     await this.pg.pool.query(
       'UPDATE onvif_devices SET capabilities=COALESCE($3,capabilities),last_error=$4,last_probe_at=now() WHERE device_id=$1 AND version=$2',

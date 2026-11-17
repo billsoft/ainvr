@@ -1,6 +1,5 @@
 import {useEffect,useState} from 'react'
 import {PtzGlobalSettings} from './PtzGlobalSettings'
-import {GBDeviceManager} from './GBDeviceManager'
 import {request} from '@/api/httpClient'
 
 type Settings={enabled:boolean;gatewayUrl:string;serverId:string;realm:string;listenIp:string;sipPort:number;advertiseIp:string;mediaAdvertiseIp:string;mediaPortStart:number;mediaPortEnd:number;capacity:number;heartbeatTimeoutSec:number}
@@ -37,5 +36,5 @@ export function GBConfigForm(){
    <p className="text-sm text-ink-subtle">支持 2016／2022 摄像头和 NVR 的实时视频、录像、AI 识别与云台控制；不含语音对讲、读取设备端录像和向上级平台级联。各厂商真机兼容性及持续运行验证尚未完成。</p>
    <button className="min-h-11 rounded-base bg-primary px-4 text-white hover:bg-primary-600" onClick={()=>void save()}>{busy?'保存中…':'保存国标配置'}</button>
   </fieldset>}
- </section><GBDeviceManager/><PtzGlobalSettings/></>
+ </section><p className="mt-4 text-sm text-ink-subtle">每台摄像头或 NVR 的登记、密码、启停和删除，在 <a className="text-primary underline" href="/channels">接入管理</a> 的新建或编辑通道向导中完成；此处只设置整个国标网关共用的参数。</p><PtzGlobalSettings/></>
 }

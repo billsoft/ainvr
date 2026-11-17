@@ -7,6 +7,7 @@ import { CopyButton } from '@/components/common/CopyButton'
 import { EmptyState } from '@/components/common/EmptyState'
 import { SkeletonRow } from '@/components/ui/Skeleton'
 import { ChannelWizard } from './ChannelWizard'
+import { useChannelDeviceInfo } from './useChannelDeviceInfo'
 import { ChannelTable, type ChannelPipelineStatus, type PipelineState } from './ChannelTable'
 import { recordingBadge } from './recordingBadge'
 import { ConfirmDialog } from '@/components/modals/ConfirmDialog'
@@ -60,6 +61,7 @@ export default function ChannelsPage() {
   const refreshGB=useCallback(async()=>{try{const r=await request<{items:GBBinding[]}>('/gb28181/bindings');setGbBindings(r.items);setGbError('')}catch{setGbError('国标来源信息暂不可用，普通通道仍可编辑；国标通道请重试后编辑')}} ,[])
   useEffect(()=>{void refreshGB()},[refreshGB])
   useEffect(()=>{if(!gbRefresh)return;let runs=0;const timer=setInterval(()=>{void refreshGB();void fetchChannels();if(++runs>=10)clearInterval(timer)},2000);return()=>clearInterval(timer)},[gbRefresh,refreshGB,fetchChannels])
+  const deviceInfo=useChannelDeviceInfo(channels,gbBindings,gbRefresh)
   const [page, setPage] = useState(1)
   const [wizardOpen, setWizardOpen] = useState(false)
   const [editing, setEditing] = useState<ChannelWithStatus | null>(null)
@@ -286,6 +288,7 @@ export default function ChannelsPage() {
             <ChannelTable
               rows={pageRows}
               gbInputIds={gbBindings.map(b=>b.input_id)}
+              deviceInfo={deviceInfo}
               pipeline={pipeline}
               host={host}
               onPreview={(ch) => navigate(`/channels/${ch.id}`)}

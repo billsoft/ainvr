@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { PasswordInput } from '@/components/ui/PasswordInput'
 import { Link } from 'react-router-dom'
 import {
   onvifService,
@@ -8,13 +9,37 @@ import {
 } from '@/api/onvifService'
 
 const input = 'mt-1 min-h-11 w-full rounded-base border border-line bg-surface px-3 py-2 text-sm'
+const INGESTIBLE = ['H264', 'H265', 'HEVC']
+/** The stream to take without asking: the largest one the platform can actually ingest. */
+const mainProfile = (list: OnvifProfile[]) =>
+  list
+    .filter((p) => INGESTIBLE.includes(p.videoCodec))
+    .sort((x, y) => y.width * y.height - x.width * x.height)[0]
+/** A bare IP or host is the common thing to type; every camera answers at the standard path. */
+function deviceServiceUrl(text: string) {
+  const raw = text.trim()
+  try {
+    const u = new URL(raw.includes('://') ? raw : `http://${raw}`)
+    if (u.pathname === '/' || u.pathname === '') u.pathname = '/onvif/device_service'
+    return u.toString()
+  } catch {
+    return raw
+  }
+}
 interface Props {
   initial?: OnvifBinding
+  /** The channel name entered in step 1; the device is named after it so nothing is typed twice. */
+  defaultName?: string
   onDraft: (value: OnvifBinding | null) => void
   onBusy: (busy: boolean) => void
   onDirty: (dirty: boolean) => void
+  /** Hands the wizard the "connect and read" step to run when the person clicks next. */
+  onPrepare?: (connect: () => Promise<OnvifBinding | null>) => void
+  /** Hands the wizard the way to take back a device this wizard registered, for when it is abandoned. */
+  onCleanup?: (discard: () => Promise<void>) => void
 }
-export function OnvifSourceFields({ initial, onDraft, onBusy, onDirty }: Props) {
+export function OnvifSourceFields({ initial, defaultName = '', onDraft, onBusy, onDirty, onPrepare, onCleanup }: Props) {
+  const createdRef = useRef('')
   const [devices, setDevices] = useState<OnvifDevice[]>([]),
     [selected, setSelected] = useState(initial?.deviceId ?? '')
   const [profiles, setProfiles] = useState<OnvifProfile[]>([]),
@@ -35,7 +60,6 @@ export function OnvifSourceFields({ initial, onDraft, onBusy, onDirty }: Props) 
     [iface, setIface] = useState(''),
     [candidates, setCandidates] = useState<{ url: string; epr: string }[]>([])
   const [globallyEnabled, setGloballyEnabled] = useState<boolean | null>(null)
-  const [deviceQuery, setDeviceQuery] = useState('')
   const [sourceQuery, setSourceQuery] = useState('')
   const device = devices.find((d) => d.id === selected)
   useEffect(() => {
@@ -94,24 +118,6 @@ export function OnvifSourceFields({ initial, onDraft, onBusy, onDirty }: Props) 
       onBusy(false)
     }
   }
-  function choose(id: string) {
-    void action(async () => {
-      setSelected(id)
-      setEdit(false)
-      setMessage('')
-      setSourceQuery('')
-      setSource('')
-      setProfile('')
-      setProfiles([])
-      setVersion(0)
-      onDirty(true)
-      if (id) {
-        const detail = await onvifService.device(id)
-        setProfiles(detail.capabilities?.profiles ?? [])
-        setVersion(detail.version)
-      }
-    })
-  }
   function editDevice() {
     if (device) {
       setName(device.name)
@@ -138,12 +144,115 @@ export function OnvifSourceFields({ initial, onDraft, onBusy, onDirty }: Props) 
       `已读取 ${result.capabilities.manufacturer} ${result.capabilities.model} · ${result.capabilities.profiles.length} 个码流`,
     )
     setDevices((await onvifService.devices()).items)
+    return result
   }
+  /** What "next" does on this page: connect, read the streams and settle every choice that has
+   *  only one sensible answer. Returns the binding when nothing is left to choose, else null. */
+  async function connect(): Promise<OnvifBinding | null> {
+    if (busy) return null
+    setError('')
+    const editing = !device || edit
+    if (editing && !url.trim()) {
+      setError('请填写设备服务地址')
+      return null
+    }
+    setBusy(true)
+    onBusy(true)
+    try {
+      let id = device?.id ?? ''
+      if (editing) {
+        const fullUrl = deviceServiceUrl(url)
+        // An address that is already registered is that device: reuse it instead of failing as a duplicate.
+        const target = device ?? devices.find((d) => d.url === fullUrl)
+        let host = url.trim()
+        try {
+          host = new URL(fullUrl).hostname
+        } catch {
+          /* keep the raw text as the name */
+        }
+        if (!device && target && !username.trim() && !password) {
+          // Already registered and nothing new typed: use it as it is. Writing would blank its
+          // account for every channel that shares it.
+          id = target.id
+          setSelected(id)
+          setVersion(target.version)
+          setEdit(false)
+        } else {
+          const saved = await onvifService.saveDevice({
+            ...(target ? { id: target.id, expectedVersion: target.version } : {}),
+            name: name.trim() || target?.name || defaultName || host,
+            url: fullUrl,
+            username: username.trim() || target?.username || '',
+            certificateSHA256: pin || target?.certificateSHA256 || '',
+            ...(password || !target ? { password } : {}),
+            ...(epr ? { epr } : {}),
+          })
+          id = saved.id
+          if (!target) createdRef.current = saved.id
+          setSelected(id)
+          setVersion(saved.version)
+          setPassword('')
+          setEdit(false)
+          // The new device must be in the list before anything can fail below.
+          setDevices((await onvifService.devices()).items)
+        }
+      }
+      const result = await probe(id)
+      const list = result.capabilities.profiles
+      const pictures = [...new Set(list.map((p) => p.videoSource))]
+      const pictureNow = pictures.includes(source) ? source : pictures.length === 1 ? pictures[0]! : ''
+      if (!pictureNow) {
+        setMessage('已读取到多个画面，请选择要接入的画面。')
+        return null
+      }
+      const mine = list.filter((p) => p.videoSource === pictureNow)
+      const chosen = mine.find((p) => p.service + ':' + p.token === profile) ?? mainProfile(mine)
+      if (!chosen) return null
+      setSource(pictureNow)
+      setProfile(chosen.service + ':' + chosen.token)
+      return {
+        deviceId: id,
+        deviceVersion: result.version,
+        videoSource: chosen.videoSource,
+        service: chosen.service,
+        profileToken: chosen.token,
+      }
+    } catch (e) {
+      setError((e as Error).message)
+      return null
+    } finally {
+      setBusy(false)
+      onBusy(false)
+    }
+  }
+  useEffect(() => {
+    onPrepare?.(connect)
+    onCleanup?.(async () => {
+      const id = createdRef.current
+      if (!id) return
+      createdRef.current = ''
+      try {
+        await onvifService.removeDevice(id, (await onvifService.device(id)).version)
+      } catch {
+        /* Used by a channel or already gone: nothing to undo. */
+      }
+    })
+  })
   const sources = [...new Set(profiles.map((p) => p.videoSource))]
+  // Defaults that need no decision. A picture is never guessed when the device has several
+  // (an NVR); a stream within the chosen picture defaults to the largest, the main stream.
+  useEffect(() => {
+    if (!source && sources.length === 1) setSource(sources[0]!)
+  }, [sources.join('|'), source]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!source || profile) return
+    const main = mainProfile(profiles.filter((p) => p.videoSource === source))
+    if (main) setProfile(main.service + ':' + main.token)
+  }, [source, profile, profiles])
   return (
     <fieldset disabled={busy} className="space-y-4">
       <div className="rounded-base border border-primary/20 bg-primary/5 p-3 text-sm text-ink">
-        选择设备、画面和码流。保存后持续接入音视频，关闭监看页面不会停止录像或识别。
+        填写摄像头的地址和账号，点“下一步”自动连接并读取画面和码流。保存后持续接入音视频，关闭监看页面不会停止录像或识别。
       </div>
       {globallyEnabled === false && (
         <p className="rounded-base border border-line bg-surface-muted p-3 text-sm text-ink-subtle">
@@ -162,43 +271,19 @@ export function OnvifSourceFields({ initial, onDraft, onBusy, onDirty }: Props) 
           {message}
         </p>
       )}
-      {devices.length > 8 && (
-        <label className="block text-sm">
-          查找设备
-          <input
-            className={input}
-            value={deviceQuery}
-            onChange={(e) => setDeviceQuery(e.target.value)}
-            placeholder="设备名称、型号或地址"
-          />
-        </label>
+      {/* This wizard configures one camera. Other cameras are edited from the channel list. */}
+      {device && (
+        <p className="text-sm">
+          当前摄像头：<strong>{device.name}</strong>
+          {device.capabilities?.model ? ` · ${device.capabilities.model}` : ''}
+        </p>
       )}
-      <label className="block text-sm font-medium">
-        摄像头 / NVR
-        <select
-          aria-label="ONVIF 设备"
-          value={selected}
-          onChange={(e) => choose(e.target.value)}
-          className={input}
-        >
-          <option value="">添加新设备</option>
-          {selected&&!device&&<option value={selected}>原设备不可用，请重新选择</option>}
-          {devices
-            .filter(
-              (d) =>
-                d.id === selected ||
-                `${d.name} ${d.model ?? ''} ${d.url}`
-                  .toLowerCase()
-                  .includes(deviceQuery.trim().toLowerCase()),
-            )
-            .map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name} · {d.model || d.url}
-              </option>
-            ))}
-        </select>
-      </label>
-      {!selected && (
+      {selected && !device && (
+        <p role="alert" className="text-sm text-amber-700">
+          原摄像头已不存在，请重新填写它的地址和账号。
+        </p>
+      )}
+      {!device && (
         <details className="rounded-base border border-line p-3">
           <summary className="cursor-pointer text-sm">在局域网发现摄像头</summary>
           <div className="mt-3 flex gap-2">
@@ -253,20 +338,22 @@ export function OnvifSourceFields({ initial, onDraft, onBusy, onDirty }: Props) 
           </div>
         </details>
       )}
-      {(!selected || edit) && (
+      {(!device || edit) && (
         <div
           className="space-y-3 rounded-base border border-line bg-surface-page p-3"
           onChange={() => onDirty(true)}
         >
-          <label className="block text-sm">
-            设备名称
-            <input
-              aria-label="ONVIF 设备名称"
-              className={input}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </label>
+          {selected && (
+            <label className="block text-sm">
+              设备名称
+              <input
+                aria-label="ONVIF 设备名称"
+                className={input}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
+            </label>
+          )}
           <label className="block text-sm">
             设备服务地址
             <input
@@ -289,8 +376,7 @@ export function OnvifSourceFields({ initial, onDraft, onBusy, onDirty }: Props) 
             </label>
             <label className="text-sm">
               密码{selected ? '（留空保留）' : ''}
-              <input
-                type="password"
+              <PasswordInput
                 className={input}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -316,40 +402,14 @@ export function OnvifSourceFields({ initial, onDraft, onBusy, onDirty }: Props) 
           {selected && (
             <p className="text-xs text-amber-700">修改设备地址或凭据会影响所有选用此设备的通道。</p>
           )}
-          <button
-            type="button"
-            className="btn-primary min-h-11"
-            disabled={!name.trim() || !url.trim()}
-            onClick={() =>
-              void action(async () => {
-                const result = await onvifService.saveDevice({
-                  ...(selected ? { id: selected, expectedVersion: device?.version } : {}),
-                  name: name.trim(),
-                  url: url.trim(),
-                  username,
-                  certificateSHA256: pin,
-                  ...(password || !selected ? { password } : {}),
-                  ...(epr ? { epr } : {}),
-                })
-                setSelected(result.id)
-                setVersion(result.version)
-                setPassword('')
-                setEdit(false)
-                setMessage('设备已保存；取消通道向导仍会保留此设备配置。')
-                await probe(result.id)
-              })
-            }
-          >
-            保存设备并读取码流
-          </button>
         </div>
       )}
-      {selected && !edit && (
+      {device && !edit && (
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
             className="btn-secondary min-h-11"
-            onClick={() => void action(() => probe(selected))}
+            onClick={() => void action(async () => void (await probe(selected)))}
           >
             重新读取码流
           </button>
@@ -420,7 +480,7 @@ export function OnvifSourceFields({ initial, onDraft, onBusy, onDirty }: Props) 
                   <option
                     key={p.service + ':' + p.token}
                     value={p.service + ':' + p.token}
-                    disabled={!['H264', 'H265', 'HEVC'].includes(p.videoCodec)}
+                    disabled={!INGESTIBLE.includes(p.videoCodec)}
                   >
                     {p.name || p.token} · {p.videoCodec} · {p.width}×{p.height} ·{' '}
                     {p.fps > 0 ? `最高 ${p.fps} FPS` : '帧率未提供'} · {p.audioCodec || '无音频'} ·{' '}

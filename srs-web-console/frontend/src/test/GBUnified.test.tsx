@@ -7,11 +7,12 @@ import {GBSourceFields} from '@/pages/Channels/GBSourceFields'
 import {mockChannels} from '@/mock/channels'
 vi.mock('@/api/httpClient',()=>({request:vi.fn()}))
 const device='34020000001320000001',channel='34020000001320000002'
-let mapped=false
-beforeEach(()=>{mapped=false;vi.mocked(request).mockReset().mockImplementation(async(path,options)=>{
+let mapped=false,second=false
+beforeEach(()=>{mapped=false;second=false;vi.mocked(request).mockReset().mockImplementation(async(path,options)=>{
  if(path==='/ptz/camera-configurations'){const {sources}=JSON.parse(options!.body as string);return {items:sources.map((s:any)=>({key:`gb28181:${s.deviceId}/${s.channelId}`,revision:0,settings:{enabled:true,panTilt:null,zoom:null,presets:null}}))} as never}
  if(options?.method)return {revision:8} as never
- const items=[{id:channel,document:{name:'门口画面'},available:true,enabled:false,transport:'tcp-passive',...(mapped?{input_id:mockChannels[0]!.id}:{})}]
+ const items=[{id:channel,document:{name:'门口画面'},available:true,enabled:false,transport:'tcp-passive',...(mapped?{input_id:mockChannels[0]!.id}:{})},
+  ...(second?[{id:channel+'9',document:{name:'侧门画面'},available:true,enabled:false,transport:'tcp-passive'}]:[])]
  if(path.startsWith('/gb28181/channel-options'))return {revision:7,devices:[{id:device,name:'门口设备',version:'2016',enabled:true}],items:path.includes('?')?items:[]} as never
  if(path.endsWith('/channels'))return {items} as never
  return {state:'disabled',devices:[],inputs:[]} as never
@@ -21,23 +22,25 @@ async function choose(){
  fireEvent.change(screen.getByTestId('wizard-name'),{target:{value:'自定义入口'}})
  fireEvent.click(screen.getByRole('button',{name:'GB/T 28181 摄像头 / NVR'}))
  fireEvent.click(screen.getByTestId('wizard-next'))
- await screen.findByRole('option',{name:`门口设备 · ${device}`})
- fireEvent.change(screen.getByLabelText('国标设备'),{target:{value:device}})
- fireEvent.click(await screen.findByRole('radio'))
+ // This page is the registration form of this camera; one click on next saves it.
+ fireEvent.change(await screen.findByLabelText('设备国标编号（20 位）'),{target:{value:device}})
+ fireEvent.change(screen.getByLabelText('注册密码'),{target:{value:'password-1'}})
+ fireEvent.click(screen.getByTestId('wizard-next'))
+ // With one free channel the wizard carries on by itself; with several it waits for a choice.
+ if(second)await screen.findByLabelText('批量接入 NVR 视频通道')
+ else await screen.findByTestId('wizard-primary')
 }
 it('saves metadata, playback and source once at the end of the common wizard',async()=>{
  const saved=vi.fn(),submit=vi.fn()
  render(<MemoryRouter><ChannelWizard open mode="create" onClose={()=>{}} onSubmit={submit} onGBSaved={saved}/></MemoryRouter>)
  await choose()
- fireEvent.change(screen.getByLabelText('媒体传输方式'),{target:{value:'udp'}})
- expect(vi.mocked(request).mock.calls.some(([p,o])=>o?.method==='POST'&&p!=='/ptz/camera-configurations')).toBe(false)
- fireEvent.click(screen.getByTestId('wizard-next'))
+ expect(vi.mocked(request).mock.calls.some(([p,o])=>o?.method==='POST'&&p==='/gb28181/channel-config')).toBe(false)
  fireEvent.change(screen.getByTestId('wizard-primary'),{target:{value:'hls'}})
  fireEvent.click(screen.getByTestId('wizard-submit'))
  await waitFor(()=>expect(saved).toHaveBeenCalledOnce())
  expect(submit).not.toHaveBeenCalled()
  const body=JSON.parse(vi.mocked(request).mock.calls.find(([p])=>p==='/gb28181/channel-config')![1]!.body as string)
- expect(body).toMatchObject({expectedRevision:7,deviceId:device,channelId:channel,transport:'udp',config:{name:'自定义入口',primary:'hls'}})
+ expect(body).toMatchObject({expectedRevision:7,deviceId:device,channelId:channel,transport:'tcp-passive',config:{name:'自定义入口',primary:'hls'}})
 })
 it('mapped edit preserves disabled input and all metadata in a single save',async()=>{
  mapped=true;const saved=vi.fn()
@@ -45,7 +48,7 @@ it('mapped edit preserves disabled input and all metadata in a single save',asyn
  fireEvent.change(screen.getByTestId('wizard-name'),{target:{value:'修改名称'}})
  fireEvent.click(screen.getByTestId('wizard-next'))
  await screen.findByRole('radio')
- expect(screen.getByLabelText('国标设备')).toBeDisabled()
+ expect(screen.getByText(/当前摄像头/)).toBeInTheDocument()
  fireEvent.change(screen.getByLabelText('媒体传输方式'),{target:{value:'tcp-active'}})
  fireEvent.click(screen.getByTestId('wizard-next'))
  fireEvent.click(screen.getByTestId('wizard-submit'))
@@ -78,12 +81,12 @@ it('cancelled GB draft never binds and Escape respects dirty confirmation',async
  fireEvent.click(screen.getByRole('button',{name:'放弃修改'}))
  expect(close).toHaveBeenCalledOnce()
  expect(confirm).not.toHaveBeenCalled()
- expect(vi.mocked(request).mock.calls.some(([p,o])=>o?.method==='POST'&&p!=='/ptz/camera-configurations')).toBe(false)
+ expect(vi.mocked(request).mock.calls.some(([p,o])=>o?.method==='POST'&&p==='/gb28181/channel-config')).toBe(false)
 })
 it('failed final save retains draft and does not report success',async()=>{
  const saved=vi.fn()
  render(<MemoryRouter><ChannelWizard open mode="create" onClose={()=>{}} onSubmit={()=>{}} onGBSaved={saved}/></MemoryRouter>)
- await choose();fireEvent.click(screen.getByTestId('wizard-next'))
+ await choose()
  vi.mocked(request).mockRejectedValueOnce(new Error('配置已更新，请重新读取'))
  fireEvent.click(screen.getByTestId('wizard-submit'))
  await screen.findByText('配置已更新，请重新读取')
@@ -91,6 +94,7 @@ it('failed final save retains draft and does not report success',async()=>{
 })
 
 it('batch NVR selection uses the same final save with channel-specific names',async()=>{
+ second=true
  const saved=vi.fn()
  render(<MemoryRouter><ChannelWizard open mode="create" onClose={()=>{}} onSubmit={()=>{}} onGBSaved={saved}/></MemoryRouter>)
  await choose()

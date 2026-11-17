@@ -52,15 +52,15 @@ export function validateStep1(v: WizardFormValue): FieldErrors {
   const errors: FieldErrors = {}
   if (!v.name.trim()) errors.name = '请输入通道名称'
   else if (v.name.trim().length > 50) errors.name = '名称不能超过 50 字'
-  if (v.sourceType === 'rtsp' && !validRtsp(v.rtspUrl.trim())) {
-    errors.rtspUrl = '请输入合法的 RTSP 地址（rtsp://host[:port]/path）'
-  }
   return errors
 }
 
 /** 步骤 2：推流配置 */
 export function validateStep2(v: WizardFormValue): FieldErrors {
   const errors: FieldErrors = {}
+  if (v.sourceType === 'rtsp' && !validRtsp(v.rtspUrl.trim())) {
+    errors.rtspUrl = '请输入合法的 RTSP 地址（rtsp://host[:port]/path）'
+  }
   if (!STREAM_RE.test(v.app)) {
     errors.app = '应用名只能包含字母、数字、下划线、短横线'
   }

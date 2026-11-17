@@ -116,6 +116,17 @@ describe.skipIf(!configPath)('ONVIF isolated PostgreSQL', () => {
       const restarted = new OnvifStore(pg);
       expect((await restarted.device(first.id)).record.version).toBe(2);
       expect((await service.getChannel(created.id))?.onvif?.videoSource).toBe('source-a');
+      // A device nobody uses can be removed, with its stored password; a stale version cannot.
+      const spare = await restarted.saveDevice(
+        { name: 'Spare', url: 'http://192.0.2.99/device', username: 'u', password: 'spare-secret-pw', certificateSHA256: '' },
+        'test',
+      );
+      await expect(restarted.removeDevice(spare.id, 9, 'test')).rejects.toMatchObject({ statusCode: 409 });
+      await restarted.removeDevice(spare.id, spare.version, 'test');
+      expect((await restarted.devices()).some((d: any) => d.id === spare.id)).toBe(false);
+      expect(
+        (await pg.pool.query('SELECT 1 FROM config_secrets WHERE key_path=$1', [`onvif/device/${spare.id}`])).rowCount,
+      ).toBe(0);
     } finally {
       await pg.pool.end();
       await rm(temp, { recursive: true, force: true });

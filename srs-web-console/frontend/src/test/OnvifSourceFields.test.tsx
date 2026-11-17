@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { OnvifSourceFields } from '@/pages/Channels/OnvifSourceFields'
 import { onvifService } from '@/api/onvifService'
 vi.mock('@/api/onvifService', () => ({
-  onvifService: { devices: vi.fn(), device: vi.fn(), settings: vi.fn(), probe: vi.fn() },
+  onvifService: { devices: vi.fn(), device: vi.fn(), settings: vi.fn(), probe: vi.fn(), saveDevice: vi.fn() },
 }))
 afterEach(() => {
   cleanup()
@@ -68,13 +68,29 @@ describe('ONVIF source choice', () => {
       },
     })
     const draft = vi.fn()
+    let connect: (() => Promise<unknown>) | undefined
     render(
       <MemoryRouter>
-        <OnvifSourceFields onDraft={draft} onDirty={() => {}} onBusy={() => {}} />
+        <OnvifSourceFields
+          onDraft={draft}
+          onDirty={() => {}}
+          onBusy={() => {}}
+          onPrepare={(fn) => {
+            connect = fn
+          }}
+        />
       </MemoryRouter>,
     )
-    await screen.findByRole('option', { name: /NVR/ })
-    fireEvent.change(screen.getByLabelText('ONVIF 设备'), { target: { value: 'device-a' } })
+    // The address belongs to a device that is already known: it is reused, not rejected as a duplicate.
+    fireEvent.change(await screen.findByLabelText('ONVIF 服务地址'), { target: { value: 'http://camera/device' } })
+    await new Promise((r) => setTimeout(r, 50))
+    const known = (await onvifService.devices()).items[0]!
+    vi.mocked(onvifService.saveDevice).mockResolvedValue({ id: 'device-a', version: 1 } as never)
+    vi.mocked(onvifService.probe).mockResolvedValue({ version: 1, capabilities: known.capabilities! } as never)
+    await waitFor(() => expect(connect).toBeDefined())
+    expect(await connect!()).toBeNull()
+    // Nothing new was typed, so the shared device record is not written at all.
+    expect(onvifService.saveDevice).not.toHaveBeenCalled()
     await waitFor(() => expect(screen.getByLabelText('ONVIF 视频源')).toBeTruthy())
     expect(draft).toHaveBeenLastCalledWith(null)
     fireEvent.change(screen.getByLabelText('ONVIF 视频源'), { target: { value: 'source-a' } })
@@ -179,28 +195,22 @@ it('keeps the selected device and physical source visible when searching a large
     </MemoryRouter>,
   )
   await waitFor(() => expect(draft).toHaveBeenLastCalledWith(binding))
-  fireEvent.change(screen.getByPlaceholderText('设备名称、型号或地址'), {
-    target: { value: 'not-a-match' },
-  })
   fireEvent.change(screen.getByPlaceholderText('视频源标识或码流名称'), {
     target: { value: 'Camera 8' },
   })
-  expect((screen.getByLabelText('ONVIF 设备') as HTMLSelectElement).value).toBe('device-a')
+  expect(screen.getByText(/当前摄像头/)).toHaveTextContent('NVR 0')
   expect((screen.getByLabelText('ONVIF 视频源') as HTMLSelectElement).value).toBe('source-a')
   expect(draft).toHaveBeenLastCalledWith(binding)
 })
 
-it('keeps the catalogue usable when the original restored device no longer exists',async()=>{
- const device={id:'replacement',name:'Replacement NVR',url:'http://replacement/device',username:'operator',version:1,certificateSHA256:'',credentialSet:true};
+it('says so when the original camera no longer exists and asks for its address again',async()=>{
+ const device={id:'other',name:'Other NVR',url:'http://other/device',username:'operator',version:1,certificateSHA256:'',credentialSet:true};
  vi.mocked(onvifService.devices).mockResolvedValue({items:[device]});
- vi.mocked(onvifService.device).mockImplementation(async(id)=>{if(id==='device-a')throw new Error('原设备不存在');return {...device,capabilities:{manufacturer:'Test',model:'NVR',firmware:'1',serial:'s',clockVerified:true,clockOffsetSeconds:0,profiles:[profile],warnings:[]}}});
+ vi.mocked(onvifService.device).mockImplementation(async()=>{throw new Error('原设备不存在')});
  vi.mocked(onvifService.settings).mockResolvedValue({revision:1,tokenSet:true,settings:{enabled:true,serviceUrl:'http://127.0.0.1:8150',allowedCIDRs:['192.0.2.0/24'],interfaces:[],timeoutSeconds:3}});
  const draft=vi.fn();render(<MemoryRouter><OnvifSourceFields initial={binding} onDraft={draft} onDirty={()=>{}} onBusy={()=>{}} /></MemoryRouter>);
- await screen.findByRole('option',{name:/Replacement NVR/});
+ expect(await screen.findByText('原摄像头已不存在，请重新填写它的地址和账号。')).toBeInTheDocument();
+ expect(screen.getByLabelText('ONVIF 服务地址')).toBeInTheDocument();
+ expect(screen.queryByLabelText('ONVIF 设备')).toBeNull();
  expect(draft).toHaveBeenLastCalledWith(null);
- fireEvent.change(screen.getByLabelText('ONVIF 设备'),{target:{value:'replacement'}});
- await waitFor(()=>expect(screen.getByLabelText('ONVIF 视频源')).toBeTruthy());
- fireEvent.change(screen.getByLabelText('ONVIF 视频源'),{target:{value:'source-a'}});
- fireEvent.change(screen.getByLabelText('ONVIF 码流'),{target:{value:'media2:main'}});
- await waitFor(()=>expect(draft).toHaveBeenLastCalledWith({...binding,deviceId:'replacement'}));
 });

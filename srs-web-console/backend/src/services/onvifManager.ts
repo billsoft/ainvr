@@ -151,6 +151,12 @@ export class OnvifManager {
       appliedRevision: revision,
     };
   }
+  /** A device still used by a channel cannot be removed. */
+  async removeDevice(deviceId: string, expectedVersion: number, actor: string) {
+    if ((await this.channels.listChannels()).some((c) => c.onvif?.deviceId === deviceId))
+      throw new OnvifError('device_in_use', 409);
+    return this.store.removeDevice(deviceId, expectedVersion, actor);
+  }
   async probe(deviceId: string) {
     await this.apply();
     const { record, device } = await this.store.device(deviceId);
