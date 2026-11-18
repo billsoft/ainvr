@@ -237,6 +237,40 @@ function attachScriptTransformTap(
 function hasScriptTransform(): boolean {
   return typeof (window as unknown as { RTCRtpScriptTransform?: unknown }).RTCRtpScriptTransform === 'function'
 }
+/** 加密握手（DTLS）没落定时，最多再等多久才真正关闭连接 */
+export const SETTLE_CLOSE_MS = 4000
+
+/**
+ * 关闭连接，但不在加密握手进行中关。
+ *
+ * Chrome（190 实测 Chrome 156）：服务器已应答、ICE 已连上、而 DTLS 握手还没完成（connectionState 仍是
+ * new/connecting）时关闭的连接，浏览器常常永远不释放（同一时机直接关 126 个留下 24 个，过多久都不放），
+ * 而每个都占着整页约 500 个的连接名额。播放器在建连途中被切走或卸载时正好落在这个时机。
+ * 等握手落定（连上、失败或超时）再关，同样时机 126 个全部回收。没进入握手的连接（服务器未应答）
+ * 和已经落定的连接立即关。
+ */
+function closeWhenSettled(pc: MinimalPC, negotiated: boolean): void {
+  const settling = () => pc.connectionState === 'new' || pc.connectionState === 'connecting'
+  const closeNow = () => {
+    clearTimeout(timer)
+    pc.onconnectionstatechange = null
+    try {
+      pc.close()
+    } catch {
+      /* already closed */
+    }
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  if (!negotiated || !settling()) {
+    closeNow()
+    return
+  }
+  pc.onconnectionstatechange = () => {
+    if (!settling()) closeNow()
+  }
+  timer = setTimeout(closeNow, SETTLE_CLOSE_MS)
+}
+
 /** Chrome 的 createEncodedStreams 是否可用——必须建连前知道（要在构造 PC 时声明） */
 function hasInsertableStreams(): boolean {
   const R = (window as unknown as { RTCRtpReceiver?: { prototype?: object } }).RTCRtpReceiver
@@ -275,22 +309,21 @@ export async function attachWebRTC(
     opts.onEncodedPipelineError?.(reason)
   }
   let disposeTap: (() => void) | null = null
+  /** 已把服务器应答交给浏览器：从这一刻起连接可能处在加密握手中（见 closeWhenSettled） */
+  let negotiated = false
   const handle: WebRtcHandle = {
     close() {
+      if (closed) return
       closed = true
       disposeTap?.()
       disposeTap = null
-      try {
-        pc.close()
-      } catch {
-        /* already closed */
-      }
       // Nothing may keep a closed connection reachable: the browser counts it against the page's allowance
       // until it can free it (see playerRecovery).
       pc.ontrack = null
       pc.onconnectionstatechange = null
       pc.oniceconnectionstatechange = null
       video.srcObject = null
+      closeWhenSettled(pc, negotiated)
     },
     getStats: () => pc.getStats(),
     get encodedFramesSupported() {
@@ -362,6 +395,7 @@ export async function attachWebRTC(
         disposeTap = attachEncodedFrameTap(videoTrans, opts.onEncodedVideoFrame, reportPipelineError)
         encodedFramesSupported = disposeTap !== null
       }
+      negotiated = true
       await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp })
     } finally {
       clearTimeout(fetchTimer)
