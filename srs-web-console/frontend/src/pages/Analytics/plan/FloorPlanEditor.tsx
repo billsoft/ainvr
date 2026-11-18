@@ -86,7 +86,7 @@ export function FloorPlanEditor({ context = 'flow', zones, counters, counts, cou
       className={`flex min-h-9 w-full flex-col items-start rounded-base px-2 py-1 text-left text-sm hover:bg-surface-hover [@media(pointer:coarse)]:min-h-11 ${selectedKey === z.key ? 'bg-primary-50 text-primary' : 'text-ink'}`}>
       <span className="flex w-full items-center gap-2"><span className="truncate">{z.name}</span>
         {counted(z) !== undefined && <span className="ml-auto text-xs tabular-nums text-ink-subtle">{counted(z)!.toLocaleString('zh-CN')}</span>}</span>
-      <span className="text-[11px] text-ink-faint">{isPlaced(plan, z.key) ? '在本平面图' : '不在本平面图'}{showCounters && ` · ${z.counters.length ? z.counters.map(c => c.name).join('、') : '未关联计数器'}`}</span>
+      <span className="text-[11px] text-ink-faint">{isPlaced(plan, z.key) ? '在本平面图' : '不在本平面图'}{showCounters && ` · ${z.counters.length ? z.counters.map(c => c.name).join('、') : '未关联统计'}`}</span>
     </button></li>
 
   return <><div ref={dialog} tabIndex={-1} role="dialog" aria-modal="true" aria-label="平面图编辑" aria-busy={saving} inert={saving} className="fixed inset-0 z-50 flex flex-col bg-surface-page">
@@ -111,7 +111,7 @@ export function FloorPlanEditor({ context = 'flow', zones, counters, counts, cou
     {(notice || error) && <p role={error ? 'alert' : 'status'} className={`px-4 py-1.5 text-sm ${error ? 'bg-danger-50 text-danger-700' : 'bg-amber-50 text-ink'}`}>{error || notice}</p>}
     <div className={`grid min-h-0 flex-1 gap-3 p-3 ${preview ? '[@container(min-width:44rem)]:grid-cols-1' : '[@container(min-width:44rem)]:grid-cols-[18rem_minmax(0,1fr)_16rem]'}`}>
       {!preview && <aside className="ui-panel flex min-h-0 flex-col gap-2 overflow-hidden p-3">
-        {context === 'flow' ? <div role="group" aria-label="列表方式" className="flex gap-1">{([['counter', '按计数器'], ['zone', '按热区']] as const).map(([id, name]) => <button key={id} type="button" aria-pressed={mode === id} className={seg} onClick={() => setMode(id)}>{name}</button>)}</div> : <h3 className="text-sm font-semibold">告警位置</h3>}
+        {context === 'flow' ? <div role="group" aria-label="列表方式" className="flex gap-1">{([['counter', '按统计'], ['zone', '按热区']] as const).map(([id, name]) => <button key={id} type="button" aria-pressed={mode === id} className={seg} onClick={() => setMode(id)}>{name}</button>)}</div> : <h3 className="text-sm font-semibold">告警位置</h3>}
         <nav aria-label="热区列表" className="min-h-0 flex-1 overflow-auto">
           {!zones.length && <p className="p-2 text-sm text-ink-subtle">还没有热区。先到实时监看的布防里画热区。</p>}
           {mode === 'counter' ? groups.map(g => <section key={g.id ?? 'loose'} className="mb-2"><h3 className="px-2 py-1 text-xs font-semibold text-ink-subtle">{g.name}</h3>
@@ -148,14 +148,14 @@ export function FloorPlanEditor({ context = 'flow', zones, counters, counts, cou
       {!preview && <aside className="ui-panel min-h-0 space-y-3 overflow-auto p-3 text-sm">
         {zone ? <section aria-label="热区属性" className="space-y-2">
           <h3 className="text-sm font-semibold text-ink">{zone.name}</h3>
-          {context === 'flow' && <p className="text-xs text-ink-subtle">所属计数器：{zone.counters.length ? zone.counters.map(c => c.name).join('、') : '未关联'}</p>}
+          {context === 'flow' && <p className="text-xs text-ink-subtle">所属统计：{zone.counters.length ? zone.counters.map(c => c.name).join('、') : '未关联'}</p>}
           <p className="text-xs text-ink-subtle">出现在 {plansOfZone(draft, zone.key).length} 张平面图</p>
           {placement ? <>
             <div className="grid grid-cols-2 gap-2">{([['x', 'X 位置'], ['y', 'Y 位置'], ['w', '宽度'], ['h', '高度']] as const).map(([k, label]) =>
               <label key={k} className="flex flex-col gap-0.5 text-xs text-ink-subtle">{label}<input type="number" aria-label={label} value={Math.round(placement[k])} className={field} onChange={e => { const v = Number(e.target.value); if (Number.isFinite(v)) setPl({ [k]: v }) }} /></label>)}</div>
             <button type="button" className="btn-secondary !px-2.5 !py-1 text-xs" onClick={() => editPlan(p => unplaceZone(p, zone.key))}>从本平面图移除</button>
           </> : <button type="button" className="btn-primary !px-2.5 !py-1 text-xs" onClick={() => editPlan(p => placeZone(p, zones, zone.key))}>加入本平面图</button>}
-          <p className="rounded-base border border-line bg-surface-page p-2 text-xs text-ink-subtle">{context === 'flow' ? '名称、形状和关联的计数器在布防里改。' : '热区名称、检测形状和关联告警规则在布防里改；这里仅保存展示位置。'}</p>
+          <p className="rounded-base border border-line bg-surface-page p-2 text-xs text-ink-subtle">{context === 'flow' ? '名称、形状和关联的统计在布防里改。' : '热区名称、检测形状和关联告警规则在布防里改；这里仅保存展示位置。'}</p>
           <Link to="/monitor" className="btn-secondary !px-2.5 !py-1 text-xs">在布防中修改形状和名称</Link>
           <p className="text-[11px] text-ink-faint">到实时监看，点对应通道的“布防”。</p>
         </section> : shape ? <section aria-label="图形属性" className="space-y-2">

@@ -41,7 +41,53 @@ it('uses configured direction names across cards and does not invent an unused e
  render(<MemoryRouter><AnalyticsPage/></MemoryRouter>)
  expect(await screen.findByRole('group',{name:'已记录上船'})).toBeInTheDocument()
  expect(screen.queryByRole('group',{name:'已记录离开'})).not.toBeInTheDocument()
- expect(within(screen.getByLabelText('概览')).getByRole('group',{name:'统计方向'})).toHaveTextContent('单向计数')
+ // A one-way count has no exit or net figure; the slot goes to the hourly rate instead of a placeholder.
+ expect(within(screen.getByLabelText('概览')).queryByRole('group',{name:'统计方向'})).toBeNull()
+ expect(within(screen.getByLabelText('概览')).queryByRole('group',{name:'净流入'})).toBeNull()
+ expect(within(screen.getByLabelText('概览')).getByRole('group',{name:'平均每小时'})).toBeInTheDocument()
+})
+it('keeps everything a watcher needs on one screen: no view tabs, trend, weekly pattern, heat map, region observation and key conclusions together',async()=>{
+ render(<MemoryRouter initialEntries={['/analytics?tab=heat']}><AnalyticsPage/></MemoryRouter>)
+ await screen.findByText('104 人次')
+ expect(screen.queryByRole('tab',{name:'总览'})).toBeNull()
+ expect(screen.queryByRole('tablist',{name:'统计视图'})).toBeNull()
+ expect(screen.getByRole('region',{name:'客流趋势'})).toBeInTheDocument()
+ expect(await screen.findByRole('region',{name:'星期与小时规律'})).toBeInTheDocument()
+ expect(screen.getByTestId('analytics-map-values')).toBeInTheDocument()
+ // Region observation is part of the heat map: closed it takes no room, opened it lies over the map.
+ expect(screen.queryByRole('region',{name:'停留观测'})).toBeNull()
+ fireEvent.click(screen.getByRole('button',{name:'区域观测'}))
+ expect(screen.getByRole('region',{name:'停留观测'})).toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'关闭区域观测'}))
+ expect(screen.queryByRole('region',{name:'停留观测'})).toBeNull()
+ const key=screen.getByRole('region',{name:'关键结论'})
+ expect(key).toHaveTextContent('进入 104 · 离开 6 人次')
+ expect(key).toHaveTextContent('净流入+98')
+ expect(key).toHaveTextContent('最忙位置门二 · 占 96%')
+ expect(key).toHaveTextContent('覆盖不足或未知')
+ const trend=screen.getByRole('region',{name:'客流趋势'})
+ fireEvent.click(within(trend).getByRole('button',{name:'排名'}))
+ expect(within(trend).getByRole('list',{name:'统计位置排名'})).toHaveTextContent('门二')
+})
+it('a timed refresh keeps the screen on the last answer instead of blanking it',async()=>{
+ vi.useFakeTimers({shouldAdvanceTime:true})
+ try{
+  render(<MemoryRouter><AnalyticsPage/></MemoryRouter>)
+  await screen.findByText('104 人次')
+  let release:(v:unknown)=>void=()=>undefined
+  vi.mocked(flowService.query).mockImplementation(()=>new Promise(r=>{release=r}) as never)
+  await act(async()=>{await vi.advanceTimersByTimeAsync(61000)})
+  expect(screen.getByText('104 人次')).toBeInTheDocument()
+  expect(screen.getByTestId('analytics-map-values')).toBeInTheDocument()
+  release({from,to,items:[result]})
+ }finally{vi.useRealTimers()}
+})
+it('a statistics subject switch only offers passages and alarms; vehicle statistics are ordinary statistics',async()=>{
+ const car={...counter,counter_id:'car',name:'车辆进出',labels:[{label_id:'car',name:'car'}]}
+ vi.mocked(flowService.list).mockResolvedValue({items:[counter,car]} as never)
+ render(<MemoryRouter initialEntries={['/analytics?subject=vehicles']}><AnalyticsPage/></MemoryRouter>)
+ await waitFor(()=>expect(screen.getByLabelText('统计')).toHaveValue('car'))
+ expect([...screen.getByLabelText('统计对象').querySelectorAll('option')].map(o=>o.textContent)).toEqual(['通行统计','告警分析'])
 })
 beforeEach(()=>{
  vi.clearAllMocks()
@@ -99,12 +145,17 @@ it('uses four complete weeks and leaves uncovered samples empty',()=>{
 it('uses counter and binding filters without repeating flow queries on binding changes',async()=>{
  render(<MemoryRouter><AnalyticsPage /></MemoryRouter>)
  expect(await screen.findByText('104 人次')).toBeInTheDocument()
- await waitFor(()=>expect(flowService.query).toHaveBeenCalledTimes(3))
+ await waitFor(()=>expect(flowService.query).toHaveBeenCalledTimes(5))
  fireEvent.click(screen.getByText('统计位置 2'))
  fireEvent.click(screen.getByLabelText(/门二/))
  expect(await screen.findByText('4 人次')).toBeInTheDocument()
- expect(flowService.query).toHaveBeenCalledTimes(3)
- expect(vi.mocked(flowService.query).mock.calls.every(([q])=>q.counter_ids?.[0]==='counter')).toBe(true)
+ expect(flowService.query).toHaveBeenCalledTimes(5)
+ // Light totals queries (this period and the comparison) feed every statistic's card feeds every statistic's card; the analysis queries stay scoped to the choice.
+ const calls=vi.mocked(flowService.query).mock.calls.map(([q])=>q)
+ const light=calls.filter(q=>q.totals_only)
+ expect(light).toHaveLength(2)
+ expect(light.every(q=>q.bucket===null&&q.counter_ids===undefined)).toBe(true)
+ expect(calls.filter(q=>!q.totals_only).every(q=>q.counter_ids?.[0]==='counter')).toBe(true)
  await waitFor(()=>expect(alarmEventService.statistics).toHaveBeenLastCalledWith(expect.any(String),expect.any(String),[{channel_id:'p',zone_id:'z1'}]))
 })
 
@@ -117,18 +168,20 @@ it('restores selected bindings from a shared URL and shows the recorded peak wit
  expect(screen.queryByText('104 人次')).not.toBeInTheDocument()
 })
 
-it('combines compatible counters in one query and excludes different target definitions',async()=>{
- const compatible={...counter,counter_id:'counter2',name:'入口二',bindings:[{...counter.bindings[0],binding_id:'b3',zone_id:'z3',zone_name:'门三'}]}
+const pickTotal=()=>{const option=screen.getByRole('option',{name:/^合计/}) as HTMLOptionElement;fireEvent.change(screen.getByLabelText('统计'),{target:{value:option.value}})}
+it('totals the same measure across cameras in one query and leaves different targets out',async()=>{
+ // Another camera, same target/method/directions: the same measure.
+ const compatible={...counter,counter_id:'counter2',name:'入口二',bindings:[{...counter.bindings[0],binding_id:'b3',processor_id:'other',zone_id:'z3',zone_name:'门三'}]}
  const incompatible={...counter,counter_id:'vehicles',name:'车辆',labels:[{label_id:'car',name:'车'}]}
  vi.mocked(flowService.list).mockResolvedValue({items:[counter,compatible,incompatible]} as never)
  vi.mocked(flowService.query).mockResolvedValue({from,to,items:[result,{...result,counter:compatible,zones:[{...compatible.bindings[0],in:series,out:series}]}]} as never)
  render(<MemoryRouter><AnalyticsPage/></MemoryRouter>)
  await screen.findByText('104 人次')
- fireEvent.click(screen.getByText(/^计数器 1\//))
- expect(screen.getByLabelText(/车辆/)).toBeDisabled()
- fireEvent.click(screen.getByLabelText('入口二'))
- await waitFor(()=>expect(vi.mocked(flowService.query).mock.calls.some(([q])=>q.counter_ids?.length===2)).toBe(true))
+ expect(screen.getByRole('option',{name:/^合计/})).toHaveTextContent('2 个')
+ pickTotal()
+ await waitFor(()=>expect(vi.mocked(flowService.query).mock.calls.some(([q])=>q.counter_ids?.length===2&&!q.counter_ids.includes('vehicles'))).toBe(true))
  expect(await screen.findByText('108 人次')).toBeInTheDocument()
+ expect(screen.getByRole('heading',{level:1})).toHaveTextContent('合计')
 })
 
 it('keeps a dirty floor plan open across automatic refresh intervals',async()=>{
@@ -148,7 +201,7 @@ it('freezes the analysis range while a region observation is selected',async()=>
  vi.useFakeTimers()
  try{
   await act(async()=>{render(<MemoryRouter><AnalyticsPage /></MemoryRouter>)})
-  await act(async()=>{fireEvent.click(screen.getByRole('tab',{name:'热区'}))})
+  fireEvent.click(screen.getByRole('button',{name:'区域观测'}))
   fireEvent.change(screen.getByRole('combobox',{name:'停留位置'}),{target:{value:'0'}})
   const calls=vi.mocked(flowService.query).mock.calls.length
   await act(async()=>{await vi.advanceTimersByTimeAsync(125000)})
@@ -159,20 +212,19 @@ it('freezes the analysis range while a region observation is selected',async()=>
 })
 
 it('retains global compatible totals but never merges two counters into one map reading', async () => {
- const shared = {...counter,counter_id:'counter2',name:'同区另一计数器',bindings:[{...counter.bindings[0],binding_id:'b3'}]}
+ const shared = {...counter,counter_id:'counter2',name:'同区另一统计',bindings:[{...counter.bindings[0],binding_id:'b3'}]}
  vi.mocked(flowService.list).mockResolvedValue({items:[counter,shared]} as never)
  vi.mocked(flowService.query).mockResolvedValue({from,to,items:[result,{...result,counter:shared,zones:[{...shared.bindings[0],in:{...series,occurrences:7},out:series}]}]} as never)
  render(<MemoryRouter><AnalyticsPage/></MemoryRouter>)
  await screen.findByText('104 人次')
- fireEvent.click(screen.getByText(/^计数器 1\//))
- fireEvent.click(screen.getByLabelText('同区另一计数器'))
+ pickTotal()
  expect(await screen.findByText('111 人次')).toBeInTheDocument()
  expect(screen.getByTestId('map-label-z1')).toHaveTextContent('进入 4 · 离开 2')
  expect(screen.getByTestId('map-label-z2')).toHaveTextContent('进入 100 · 离开 4')
  expect(screen.getByTestId('map-label-z1')).toHaveTextContent('单位人次')
- fireEvent.change(screen.getByLabelText('地图计数器'),{target:{value:'counter2'}})
+ fireEvent.change(screen.getByLabelText('地图统计'),{target:{value:'counter2'}})
  expect(screen.getByTestId('map-label-z1')).toHaveTextContent('进入 7 · 离开 4')
- expect(screen.getByTestId('map-label-z2')).toHaveTextContent('未关联当前计数器')
+ expect(screen.getByTestId('map-label-z2')).toHaveTextContent('未关联当前统计')
 })
 it('lists historical bindings without selecting them by default and restores explicit historical URL selections', async () => {
  const historical={...counter.bindings[0],binding_id:'old-binding',zone_id:'old-zone',zone_name:'旧入口',active:false}
@@ -201,6 +253,10 @@ it('keeps four compact metrics and the comparison gate while putting full statis
  const entering=within(overview).getByRole('group',{name:'已记录进入'})
  expect(entering).toHaveTextContent('104 人次')
  expect(within(entering).getByLabelText(/覆盖不完整或未知，不计算变化率/)).toHaveTextContent('对比不足')
+ // In 104, out 2+4: the net figure replaces the cross-domain alarm count, which becomes a link beside the subject.
+ expect(within(overview).getByRole('group',{name:'净流入'})).toHaveTextContent('+98')
+ expect(within(overview).queryByRole('group',{name:'所选热区告警'})).toBeNull()
+ expect(screen.getByRole('link',{name:/所选位置告警 3 条/})).toBeInTheDocument()
  expect(screen.getByRole('status',{name:'数据状态'})).toHaveTextContent('覆盖不足或未知，已记录量可能偏低')
  const explanation=screen.getByLabelText('统计说明')
  expect(explanation).not.toHaveAttribute('open')
@@ -212,23 +268,18 @@ it('keeps four compact metrics and the comparison gate while putting full statis
  expect(content).toHaveTextContent('仅在两期位置匹配、覆盖完整时计算变化率')
  expect(content).toHaveTextContent('另有 2 条未关联位置（未计入总数）')
 })
-it('retains model category metadata and query scope when switching between the overview and two-pane region view', async () => {
+it('shows model category metadata in region observation beside the overview without extra queries', async () => {
  const definition={...counter,labels:[{label_id:'class:0',name:'person'}]}
  vi.mocked(flowService.list).mockResolvedValue({items:[definition]} as never)
  vi.mocked(flowService.query).mockResolvedValue({from,to,items:[{...result,counter:definition}]} as never)
  render(<MemoryRouter><AnalyticsPage /></MemoryRouter>)
  await screen.findByText('104 人次')
- await waitFor(()=>expect(flowService.query).toHaveBeenCalledTimes(3))
- const regionTab=screen.getByRole('tab',{name:'热区'})
- await act(async()=>{fireEvent.click(regionTab)})
- expect(regionTab).toHaveAttribute('aria-selected','true')
- const regionView=screen.getByRole('tabpanel',{name:'热区'})
- expect(regionView).toContainElement(screen.getByTestId('analytics-map-values'))
- expect(within(regionView).getByRole('region',{name:'停留观测'})).toHaveTextContent('筛选类别：人员')
+ await waitFor(()=>expect(flowService.query).toHaveBeenCalledTimes(5))
+ expect(screen.getByTestId('analytics-map-values')).toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'区域观测'}))
+ expect(screen.getByRole('region',{name:'停留观测'})).toHaveTextContent('筛选类别：人员')
  expect(screen.getByRole('combobox',{name:'停留位置'})).toHaveValue('')
- expect(flowService.query).toHaveBeenCalledTimes(3)
- await act(async()=>{fireEvent.click(screen.getByRole('tab',{name:'总览'}))})
- expect(screen.getByRole('tabpanel',{name:'总览'})).toContainElement(screen.getByRole('region',{name:'客流趋势'}))
+ expect(screen.getByRole('region',{name:'客流趋势'})).toBeInTheDocument()
  expect(screen.getByText('统计位置 2')).toBeInTheDocument()
- expect(flowService.query).toHaveBeenCalledTimes(3)
+ expect(flowService.query).toHaveBeenCalledTimes(5)
 })

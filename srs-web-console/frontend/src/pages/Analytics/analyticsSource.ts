@@ -9,6 +9,27 @@ export function counterUnit(counter: { labels: { label_id: string; name?: string
   const labels = counter.labels.map(l => (l.name || l.label_id).trim().toLowerCase())
   return labels.length === 1 && ['person','people','pedestrian','人','人员','行人'].includes(labels[0]!) ? '人次' : labels.length && labels.every(id => vehicleLabels.has(id)) ? '车次' : '次'
 }
+/**
+ * Two statistics measure the same thing when they count the same targets, the same way, with the same
+ * directions. Where they count (which camera) is not part of the measure: locations of one statistic are
+ * already summed across cameras, so a total across statistics follows the same rule.
+ */
+export function scopeKey(c: { labels: { label_id: string; name?: string }[]; method: string; outputs: string; names: { in: string; out: string } }): string {
+  return JSON.stringify([c.labels.map(x => [x.label_id, x.name ?? '']).sort(), c.method, c.outputs, c.outputs === 'both' ? c.names : { in: c.names.in }])
+}
+/** Short change against the comparison period: ↑ 3.4% / ↓ 2.0% / 持平; null when either side is unknown. */
+export function changeText(now: number | null, before: number | null): string | null {
+  if (now === null || before === null) return null
+  if (before === 0) return now === 0 ? '持平' : '基期为零'
+  const p = (now - before) / before * 100
+  return Math.abs(p) < 0.05 ? '持平' : `${p > 0 ? '↑' : '↓'} ${Math.abs(p).toFixed(1)}%`
+}
+/** Statistics grouped by measure, in list order. A group of two or more can be totalled. */
+export function statGroups<T extends Parameters<typeof scopeKey>[0] & { counter_id: string; deleting?: boolean }>(counters: T[]): { key: string; counters: T[] }[] {
+  const groups = new Map<string, T[]>()
+  for (const c of counters) { if (c.deleting) continue; const k = scopeKey(c); groups.set(k, [...(groups.get(k) ?? []), c]) }
+  return [...groups].map(([key, list]) => ({ key, counters: list }))
+}
 export interface Row { result: CounterResult; zone: CounterResult['zones'][number] }
 export function selectedRows(items: CounterResult[], selected: Location[]): Row[] {
   return items.flatMap(result => result.zones.filter(z => selected.some(x => x.counterId === result.counter.counter_id && x.bindingId === z.binding_id)).map(zone => ({ result, zone })))
@@ -130,7 +151,7 @@ export function csvCell(value: string | number | null | undefined): string {
   return '"' + s.replaceAll('"','""') + '"'
 }
 export function toCsv(rows: Row[], slots: Slot[], query: Slot, timezone: string, asOf: string): string {
-  const output = [['时间起','时间止','时区','计数器','热区','方向','单位','已记录次数','覆盖状态','覆盖比例','查询截止','口径']]
+  const output = [['时间起','时间止','时区','统计','热区','方向','单位','已记录次数','覆盖状态','覆盖比例','查询截止','口径']]
   for (const r of rows) for (const direction of (r.result.counter.outputs === 'both' ? ['in','out'] : ['in']) as ('in'|'out')[]) for (const s of slots) {
     const series = r.zone[direction], coverage = bucketCoverage(series?.coverage,s,query)
     output.push([new Date(Math.max(Date.parse(s.from),Date.parse(query.from))).toISOString(),new Date(Math.min(Date.parse(s.to),Date.parse(query.to))).toISOString(),timezone,r.result.counter.name,r.zone.zone_name ?? r.zone.zone_id,r.result.counter.names[direction],counterUnit(r.result.counter),

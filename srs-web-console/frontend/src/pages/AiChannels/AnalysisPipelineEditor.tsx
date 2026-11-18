@@ -91,7 +91,7 @@ export function AnalysisPipelineEditor({ value, onChange, error }: {
         <p>同一用途默认只选一个模型，可在“配置”中更换档位。相同类别采用排在前面的模型结果，不同类别合并显示；拖动或箭头调整优先顺序。</p>
         <label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={allowSameCapability} onChange={e => setAllowSameCapability(e.target.checked)} />高级：允许同类多模型</label>
         {allowSameCapability && <p>同类多模型增加算力消耗；关闭此选项不会移除已有模型。</p>}
-        <p>最大检测数合计不超过1000；新模型按剩余额度分配，已有模型的参数不变。移除模型或更换类别后，请检查已有计数器和告警规则。</p>
+        <p>最大检测数合计不超过1000；新模型按剩余额度分配，已有模型的参数不变。移除模型或更换类别后，请检查已有统计和告警规则。</p>
         <p>{MODEL_PREVIEW_NOTICE}</p>
       </div>
     </details>

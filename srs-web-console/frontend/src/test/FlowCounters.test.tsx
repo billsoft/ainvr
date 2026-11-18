@@ -39,16 +39,16 @@ const base:ArmingDocument={source_id:'cam',geometry_revision:'g:1000x500',revisi
  zones:[{zone_id:'z',channel_id:'cam',geometry_revision:'g:1000x500',version:1,name:'门口',state:'active',points:[[.1,.1],[.9,.1],[.9,.9],[.1,.9]],edge_ids:['a','b','c','d']}]}
 const source:AlarmSource={channel_id:'ai',channel_name:'识别',input_stream_id:'cam',input_name:'大门',label_map_version:'lm',geometry_revision:'g:1000x500',tracking_available:true,
  labels:[{class_id:0,label_id:'person',name:'person',description:''}]}
-it('布防里为热区选用计数器：点画面上的边设置计数线，保存时一并提交',async()=>{
+it('布防里为热区选用统计：点画面上的边设置计数线，保存时一并提交',async()=>{
  const send=vi.fn().mockResolvedValue({saved:true,sourceId:'cam',revision:2,application:{state:'applied'}})
  render(<ArmingModal sourceId="cam" sourceName="大门" base={base} reference={{url:'image',width:1000,height:500,geometryRevision:'g:1000x500',capturedAt:'now'}}
   definitions={[]} sources={[source]} counters={[{...counter,bindings:[]}]} send={send} onClose={vi.fn()} onSaved={vi.fn()}/>)
  fireEvent.click(screen.getByRole('button',{name:'选择热区 门口'}))
- fireEvent.click(screen.getByRole('button',{name:'为 门口 选用计数器'}))
+ fireEvent.click(screen.getByRole('button',{name:'为 门口 选用统计'}))
  expect(screen.queryByRole('region',{name:'门口 的选用'})).not.toBeInTheDocument()
  expect(screen.queryByRole('button',{name:'为 门口 选用告警规则'})).not.toBeInTheDocument()
  expect(screen.queryByLabelText('热区名称')).not.toBeInTheDocument()
- expect(screen.getByText('先点击下方计数器选用，再在画面上选择计数边。')).toBeInTheDocument()
+ expect(screen.getByText('先点击下方统计选用，再在画面上选择计数边。')).toBeInTheDocument()
  expect(screen.queryByRole('button',{name:'设置计数线：边 2'})).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('radio',{name:/客流/}))
  expect(screen.getByRole('radio',{name:/客流/})).toHaveAttribute('aria-checked','true')
@@ -57,8 +57,8 @@ it('布防里为热区选用计数器：点画面上的边设置计数线，保�
  fireEvent.click(screen.getByRole('button',{name:'设置计数线：边 2'}))
  expect(screen.getByText(/顺着箭头通过记为“进”，反方向记为“出”/)).toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'完成关联'}))
- expect(screen.queryByRole('region',{name:'选用计数器'})).not.toBeInTheDocument()
- expect(screen.getByRole('heading',{name:'已关联计数器 1'})).toBeInTheDocument()
+ expect(screen.queryByRole('region',{name:'选用统计'})).not.toBeInTheDocument()
+ expect(screen.getByRole('heading',{name:'已关联统计 1'})).toBeInTheDocument()
  expect(screen.getByRole('button',{name:'调整计数线 客流 · 门口'})).toHaveTextContent('已关联')
  expect(screen.getByLabelText('热区名称')).toHaveValue('门口')
  expect(screen.getByRole('button',{name:'为 门口 选用告警规则'})).toBeInTheDocument()
@@ -101,7 +101,7 @@ it('前一时段还没有选用到热区时不显示“为 0”的比较',async(
  await waitFor(()=>expect(within(card).getByRole('button',{name:'进合计 5，查看通行记录'})).toBeInTheDocument())
  expect(within(card).queryByText(/昨天同时段/)).not.toBeInTheDocument()
 })
-it('没有计数器时引导两步开始，不显示空白统计',async()=>{
+it('没有统计时引导两步开始，不显示空白统计',async()=>{
  vi.mocked(flowService.list).mockResolvedValue({items:[]})
  vi.mocked(flowService.query).mockResolvedValue({from:'',to:'',items:[]})
  render(<MemoryRouter><FlowPage/></MemoryRouter>)
@@ -130,7 +130,7 @@ it('切换时段时晚到的旧结果不会覆盖新时段，失败时不保留�
  await screen.findByRole('alert')
  expect(within(screen.getByRole('article',{name:'客流'})).queryByText('7')).not.toBeInTheDocument()
 })
-it('一页一个计数器一张卡片：统计与编辑、暂停、删除在一起，没有选项卡和归档',async()=>{
+it('一页一个统计一张卡片：统计与编辑、暂停、删除在一起，没有选项卡和归档',async()=>{
  vi.mocked(flowService.list).mockResolvedValue({items:[counter]})
  vi.mocked(flowService.query).mockImplementation(async input=>({from:input.from,to:input.to,items:[result(4,3)]}))
  render(<MemoryRouter><FlowPage/></MemoryRouter>)
@@ -147,15 +147,15 @@ it('删除前说明会连同历史记录一起删除；确认后删除并刷新'
  vi.mocked(flowService.remove).mockResolvedValue({deleted:true})
  render(<MemoryRouter><FlowPage/></MemoryRouter>)
  fireEvent.click(within(await screen.findByRole('article',{name:'客流'})).getByRole('button',{name:'删除'}))
- const confirm=screen.getByRole('alertdialog',{name:'确认删除计数器'})
+ const confirm=screen.getByRole('alertdialog',{name:'确认删除统计'})
  expect(confirm).toHaveTextContent(/历史通行记录.*一起删除/)
  expect(confirm).toHaveTextContent(/不能恢复/)
  expect(flowService.remove).not.toHaveBeenCalled()
- fireEvent.click(within(confirm).getByRole('button',{name:'删除计数器及历史'}))
+ fireEvent.click(within(confirm).getByRole('button',{name:'删除统计及历史'}))
  await waitFor(()=>expect(flowService.remove).toHaveBeenCalledWith('visitors',2,expect.any(String)))
  expect(await screen.findByText('开始统计流量')).toBeInTheDocument()
 })
-it('删除未完成的计数器只显示重试，不再显示统计',async()=>{
+it('删除未完成的统计只显示重试，不再显示统计',async()=>{
  vi.mocked(flowService.list).mockResolvedValue({items:[{...counter,bindings:[],deleting:true}]})
  vi.mocked(flowService.query).mockResolvedValue({from:'',to:'',items:[]})
  vi.mocked(flowService.remove).mockRejectedValue(Object.assign(Error('分析服务暂不可用'),{status:503}))
@@ -209,7 +209,7 @@ it('从参数库读回的计数线字段顺序不同，不算改动：未修改�
  const stored:ArmingDocument={...base,counter_bindings:[{binding_id:'flow-1',counter_id:'visitors',input_stream_id:'cam',processor_id:'ai',zone_id:'z',zone_version:1,geometry_revision:'g:1000x500',label_map_version:'lm',direction:{edge:'b',kind:'line',in_side:'inward'} as never}]}
  render(<ArmingModal sourceId="cam" sourceName="大门" base={stored} reference={{url:'image',width:1000,height:500,geometryRevision:'g:1000x500',capturedAt:'now'}}
   definitions={[]} sources={[source]} counters={[counter]} send={vi.fn()} onClose={vi.fn()} onSaved={vi.fn()}/>)
- fireEvent.click(screen.getByRole('button',{name:'门口：告警规则 0，计数器 1'}))
+ fireEvent.click(screen.getByRole('button',{name:'门口：告警规则 0，统计 1'}))
  fireEvent.click(screen.getByRole('button',{name:'调整计数线 客流 · 门口'}))
  expect(screen.queryByRole('group',{name:'以前的记录'})).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('button',{name:'从左向右'}))
@@ -244,27 +244,27 @@ it('出向没有采集数据时也禁止显示两向增长率',async()=>{
  expect(screen.queryByText(/比昨日/)).not.toBeInTheDocument()
 })
 
-it('选用计数器是“先选后配”两态：选定后列表收起，只剩所选计数器和它的设置，可点“更换”回到列表',async()=>{
+it('选用统计是“先选后配”两态：选定后列表收起，只剩所选统计和它的设置，可点“更换”回到列表',async()=>{
  const boarding:Counter={...counter,counter_id:'boarding',name:'登船',bindings:[]}
  render(<ArmingModal sourceId="cam" sourceName="大门" base={base} reference={{url:'image',width:1000,height:500,geometryRevision:'g:1000x500',capturedAt:'now'}}
   definitions={[]} sources={[source]} counters={[{...counter,bindings:[]},boarding]} send={vi.fn()} onClose={vi.fn()} onSaved={vi.fn()}/>)
  fireEvent.click(screen.getByRole('button',{name:'选择热区 门口'}))
- fireEvent.click(screen.getByRole('button',{name:'为 门口 选用计数器'}))
- // 选择态：搜索、筛选、全部计数器都在
- expect(screen.getByLabelText('搜索计数器')).toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'为 门口 选用统计'}))
+ // 选择态：搜索、筛选、全部统计都在
+ expect(screen.getByLabelText('搜索统计')).toBeInTheDocument()
  expect(screen.getByRole('radio',{name:/客流/})).toBeInTheDocument()
  expect(screen.getByRole('radio',{name:/登船/})).toBeInTheDocument()
- expect(screen.queryByRole('button',{name:'更换计数器'})).not.toBeInTheDocument()
+ expect(screen.queryByRole('button',{name:'更换统计'})).not.toBeInTheDocument()
  fireEvent.click(screen.getByRole('radio',{name:/客流/}))
- // 配置态：别的计数器、搜索、管理入口都不再出现，设置紧跟所选计数器
+ // 配置态：别的统计、搜索、管理入口都不再出现，设置紧跟所选统计
  expect(screen.getByRole('radio',{name:/客流/})).toHaveAttribute('aria-checked','true')
  expect(screen.queryByRole('radio',{name:/登船/})).not.toBeInTheDocument()
- expect(screen.queryByLabelText('搜索计数器')).not.toBeInTheDocument()
+ expect(screen.queryByLabelText('搜索统计')).not.toBeInTheDocument()
  expect(screen.queryByLabelText('计数方式筛选')).not.toBeInTheDocument()
- expect(screen.queryByRole('link',{name:/管理计数器/})).not.toBeInTheDocument()
+ expect(screen.queryByRole('link',{name:/管理统计/})).not.toBeInTheDocument()
  expect(screen.getByText(/计数方式：越过一条线/)).toBeInTheDocument()
  // 更换：回到选择态，并放下已选的计数边
- fireEvent.click(screen.getByRole('button',{name:'更换计数器'}))
+ fireEvent.click(screen.getByRole('button',{name:'更换统计'}))
  expect(screen.getByRole('radio',{name:/客流/})).toHaveAttribute('aria-checked','false')
  expect(screen.getByRole('radio',{name:/登船/})).toBeInTheDocument()
  expect(screen.queryByText(/计数方式：越过一条线/)).not.toBeInTheDocument()

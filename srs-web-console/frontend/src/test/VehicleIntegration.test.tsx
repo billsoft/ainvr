@@ -13,7 +13,7 @@ beforeEach(()=>{vi.clearAllMocks();vi.mocked(vehicleService.counters).mockResolv
 it('uses real passage API and existing recording navigation without invented plate results',async()=>{
  render(<MemoryRouter><VehicleHistory/></MemoryRouter>);await screen.findByText('未执行识别');expect(flowService.records).toHaveBeenCalledWith(expect.objectContaining({counter_id:'car-counter',binding_id:'entry',output:'in'}));expect(screen.getByRole('link',{name:'关联录像'})).toHaveAttribute('href',expect.stringContaining('/playback/camera?from='));expect(screen.queryByText('未检出车牌')).not.toBeInTheDocument()
 })
-it('retains channel scope and shows an honest setup state',async()=>{render(<MemoryRouter><VehicleHistory channelId="different"/></MemoryRouter>);await screen.findByText('尚无可查询的车辆计数器');expect(flowService.records).not.toHaveBeenCalled();expect(screen.getByRole('link',{name:'配置计数器'})).toHaveAttribute('href','/analytics/counters')})
+it('retains channel scope and shows an honest setup state',async()=>{render(<MemoryRouter><VehicleHistory channelId="different"/></MemoryRouter>);await screen.findByText('尚无可查询的车辆统计');expect(flowService.records).not.toHaveBeenCalled();expect(screen.getByRole('link',{name:'配置统计'})).toHaveAttribute('href','/analytics/counters')})
 it('saves pending configuration and does not claim activation',async()=>{
  vi.mocked(vehicleService.channel).mockResolvedValue({version:2,document:{requested:false},capability});vi.mocked(vehicleService.saveChannel).mockResolvedValue({version:3,document:{requested:true},capability});render(<MemoryRouter><VehicleChannelSettings id="processor"/></MemoryRouter>);
  const checkbox=screen.getByRole('checkbox');await waitFor(()=>expect(checkbox).toBeEnabled());fireEvent.click(checkbox);fireEvent.click(screen.getByRole('button',{name:'保存配置'}));await screen.findByText('配置已保存；模型加载和运行状态请刷新核对。');expect(vehicleService.saveChannel).toHaveBeenCalledWith('processor',2,true)
@@ -26,10 +26,10 @@ it('refreshes the selected counter and direction without resetting filters',asyn
  const second={...counter,counter_id:'second',name:'停车场'};
  vi.mocked(vehicleService.counters).mockResolvedValue({items:[counter,second],excluded:0,capability});
  render(<MemoryRouter><VehicleHistory/></MemoryRouter>);await screen.findByText('未执行识别');
- fireEvent.change(screen.getByLabelText('车辆计数器'),{target:{value:'second'}});
+ fireEvent.change(screen.getByLabelText('车辆统计'),{target:{value:'second'}});
  fireEvent.change(screen.getByLabelText('车辆通行方向'),{target:{value:'out'}});
  await waitFor(()=>expect(screen.getByRole('button',{name:'刷新车辆记录'})).toBeEnabled());
  vi.mocked(flowService.records).mockClear();fireEvent.click(screen.getByRole('button',{name:'刷新车辆记录'}));
  await waitFor(()=>expect(flowService.records).toHaveBeenCalledWith(expect.objectContaining({counter_id:'second',output:'out'})));
- expect(screen.getByLabelText('车辆计数器')).toHaveValue('second');expect(screen.getByLabelText('车辆通行方向')).toHaveValue('out');
+ expect(screen.getByLabelText('车辆统计')).toHaveValue('second');expect(screen.getByLabelText('车辆通行方向')).toHaveValue('out');
 })

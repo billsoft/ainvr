@@ -1,5 +1,5 @@
 import { Pencil } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createFloorPlanSession } from '@/api/floorPlanService'
 import { DataTag } from '../DataTag'
 import { FloorPlanEditor } from './FloorPlanEditor'
@@ -24,11 +24,13 @@ interface Props {
   selectedZone?: string | null
   onSelectZone?: (key: string | null) => void
   sourceHeat?: {zoneKey:string;variant:HeatVariant}|null
+  /** Extra header controls, e.g. opening region observation over the map. */
+  actions?: ReactNode
 }
 const figure = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? n.toLocaleString('zh-CN') : '—'
 
 /** Transparent layout outlines with a separate count-derived heat overlay. */
-export function PlanPanel({ zones, counters, readings, period, loading, error, countsFailed, onEditingChange, selectedZone, onSelectZone, sourceHeat }: Props) {
+export function PlanPanel({ zones, counters, readings, period, loading, error, countsFailed, onEditingChange, selectedZone, onSelectZone, sourceHeat, actions }: Props) {
   const [draft, setDraft] = useState<PlanDraft>(() => emptyDraft()), [editing, setEditing] = useState(false)
   const [localSelected, setLocalSelected] = useState<string | null>(null), [counterId, setCounterId] = useState('')
   const selected=selectedZone===undefined?localSelected:selectedZone
@@ -36,7 +38,7 @@ export function PlanPanel({ zones, counters, readings, period, loading, error, c
   const [direction, setDirection] = useState<'in' | 'out'>('in')
   const [cold, setCold] = useState(0)
   const [showLabels, setShowLabels] = useState(true)
-  const [layerMode,setLayerMode]=useState<'count'|'source'>('source')
+  const [layerMode,setLayerMode]=useState<'count'|'source'>('count')
   const realHeat=layerMode==='source'?sourceHeat:null
   const [session] = useState(() => createFloorPlanSession()), [planLoading, setPlanLoading] = useState(true)
   const [planError, setPlanError] = useState(''), [retry, setRetry] = useState(0)
@@ -67,23 +69,23 @@ export function PlanPanel({ zones, counters, readings, period, loading, error, c
   for (const zone of zones) {
     const rows = currentReadings.filter(r=>r.zoneKey===zone.key), r=rows[0]
     const share = !countsFailed && allKnown && sum > 0 && rows.length===1 ? `${((r?.[output] ?? 0)/sum*100).toFixed(0)}%` : '—'
-    const summary = rows.length>1 ? `${rows.length} 个统计位置 · 点击查看` : !r ? '未关联当前计数器' : `${counter?.names?.in ?? '进'} ${figure(countsFailed?null:r.in)} · ${counter?.names?.out ?? '出'} ${figure(countsFailed?null:r.out)} · ${share}`
-    annotations[zone.key] = {summary, detail:`${counter?.name ?? '未选择计数器'} · ${summary}；占比按${outputName}，单位${unit}`}
+    const summary = rows.length>1 ? `${rows.length} 个统计位置 · 点击查看` : !r ? '未关联当前统计' : `${counter?.names?.in ?? '进'} ${figure(countsFailed?null:r.in)} · ${counter?.names?.out ?? '出'} ${figure(countsFailed?null:r.out)} · ${share}`
+    annotations[zone.key] = {summary, detail:`${counter?.name ?? '未选择统计'} · ${summary}；占比按${outputName}，单位${unit}`}
   }
   const unplaced=zones.filter(z=>currentReadings.some(r=>r.zoneKey===z.key)&&(!plan||!isPlaced(plan,z.key)))
   const picked = zones.find(z => z.key === selected)
   const pickedReadings = readings.filter(r => r.zoneKey === selected)
   const directionLabel = (id: string, output: 'in' | 'out') => counters.find(c => c.id === id)?.names?.[output] ?? (output === 'in' ? '进入' : '离开')
-  const legend = counter ? `${counter.name} · ${outputName} · 单位：${unit}` : '未选择计数器'
+  const legend = counter ? `${counter.name} · ${outputName} · 单位：${unit}` : '未选择统计'
   const displayedValues = Object.keys(plan?.placements ?? {}).filter(key => zones.some(z => z.key === key)).map(key => shown[key]).filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
   const displayedMax = displayedValues.length ? Math.max(...displayedValues) : null
   return <section className="ui-panel flex min-h-[22rem] min-w-0 flex-col gap-2 p-3 [@container(min-width:44rem)]:min-h-0" aria-label="热区分布">
     <header className="flex flex-wrap items-center gap-2">
       <h2 className="text-sm font-semibold text-ink">热区分布</h2><DataTag kind="live" />
       {sourceHeat&&<select aria-label="地图数据图层" className="form-input !w-auto !py-1 text-xs" value={layerMode} onChange={e=>setLayerMode(e.target.value as 'count'|'source')}><option value="source">画面热度嵌图</option><option value="count">通行计数示意</option></select>}
-      <select aria-label="地图计数器" value={counter?.id ?? ''} className="form-input !w-auto !py-1 text-xs [@media(pointer:coarse)]:min-h-11" disabled={!counters.length}
+      <select aria-label="地图统计" value={counter?.id ?? ''} className="form-input !w-auto !py-1 text-xs [@media(pointer:coarse)]:min-h-11" disabled={!counters.length}
         onChange={e => setCounterId(e.target.value)}>
-        {!counters.length && <option value="">未选择计数器</option>}
+        {!counters.length && <option value="">未选择统计</option>}
         {counters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
       {draft.plans.length > 1 && <select aria-label="平面图" value={saved?.id ?? ''} className="form-input !w-auto !py-1 text-xs" onChange={e => setDraft(d => setActive(d, e.target.value))}>{draft.plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
@@ -91,7 +93,7 @@ export function PlanPanel({ zones, counters, readings, period, loading, error, c
         <button key={o} type="button" aria-pressed={output === o} className={seg} onClick={() => setDirection(o)}>{counter?.names?.[o] ?? (o === 'in' ? '进入' : '离开')}</button>)}</div>
       <label className="flex items-center gap-1 text-[11px] text-ink-subtle">隐藏冷区<input type="range" min={0} max={90} step={5} value={cold} aria-label="隐藏冷区" className="h-6 w-16 accent-primary [@media(pointer:coarse)]:h-11" onChange={e => setCold(Number(e.target.value))} /></label>
       <button type="button" className={seg} aria-pressed={showLabels} onClick={()=>setShowLabels(v=>!v)}>数据标签</button>
-      <button type="button" disabled={planLoading || !!planError} className="btn-secondary ml-auto !px-2.5 !py-1 text-xs [@media(pointer:coarse)]:min-h-11" onClick={() => setEditing(true)}><Pencil size={14} aria-hidden="true" />编辑平面图</button>
+      <button type="button" disabled={planLoading || !!planError} className="btn-secondary ml-auto !px-2.5 !py-1 text-xs [@media(pointer:coarse)]:min-h-11" onClick={() => setEditing(true)}><Pencil size={14} aria-hidden="true" />编辑平面图</button>{actions}
     </header>
     {unresolved.length > 0 && <details className="text-xs text-ink-subtle" aria-label="地图未读取引用">
       <summary>失效/未读取引用 {unresolved.length} 个</summary>
@@ -103,16 +105,16 @@ export function PlanPanel({ zones, counters, readings, period, loading, error, c
     {countsFailed && !loading && <p role="status" className="rounded-base border border-warning bg-amber-50 px-2 py-1 text-xs text-ink">所选时段的计数没有读到，下面只显示热区位置。</p>}
     {error && <p role="alert" className="text-xs text-danger-700">{error}</p>}
     {loading ? <p role="status" className="py-10 text-center text-sm text-ink-subtle">正在读取热区…</p>
-      : !zones.length && !Object.keys(plan?.placements ?? {}).length ? <p className="py-10 text-center text-sm text-ink-subtle">还没有热区。到实时监看的布防里画热区，再选用计数器，这里就会显示。</p>
+      : !zones.length && !Object.keys(plan?.placements ?? {}).length ? <p className="py-10 text-center text-sm text-ink-subtle">还没有热区。到实时监看的布防里画热区，再选用统计，这里就会显示。</p>
       : <div className="flex min-h-0 flex-1 flex-col gap-1">
         <div className="flex min-h-[12rem] min-w-0 flex-1 flex-col gap-1 [@container(min-width:44rem)]:min-h-0">
           <PlanCanvas annotations={showLabels?annotations:undefined} plan={plan} zones={zones} heat={realHeat?undefined:heat} sourceHeat={realHeat} heatMin={cold / 100} selectedKey={selected} readOnly onSelectZone={setSelected} />
           {selected && <div aria-label="热区读数" aria-live="polite" className="max-h-28 overflow-auto text-xs text-ink">
-            {picked ? <><p>{picked.name} · 各计数器独立读数</p><ul>{pickedReadings.map((r, i) => <li key={r.counterId + ':' + r.bindingId} title={`统计位置：${r.bindingId}`}>
+            {picked ? <><p>{picked.name} · 各统计独立读数</p><ul>{pickedReadings.map((r, i) => <li key={r.counterId + ':' + r.bindingId} title={`统计位置：${r.bindingId}`}>
               {counters.find(c => c.id === r.counterId)?.name ?? r.counterId} · 位置 {i + 1}：
               {directionLabel(r.counterId, 'in')} {figure(countsFailed ? null : r.in)}，
               {directionLabel(r.counterId, 'out')} {figure(countsFailed ? null : r.out)} {counters.find(c => c.id === r.counterId)?.unit ?? '次'}
-            </li>)}</ul></> : selected && unresolved.includes(selected) ? <p>失效/未读取引用：{selected}，原摆放仍保留。</p> : <p>点热区查看各计数器的独立读数。</p>}
+            </li>)}</ul></> : selected && unresolved.includes(selected) ? <p>失效/未读取引用：{selected}，原摆放仍保留。</p> : <p>点热区查看各统计的独立读数。</p>}
           </div>}
           <p className="text-[11px] text-ink-faint">{saved ? saved.name : '临时布局 · 尚未保存'} · {realHeat?'所选位置的原画面热度嵌图 · 非地面投影':'按热区计数生成的相对分布示意'}</p>
           {realHeat&&!plan?.placements[realHeat.zoneKey]&&<p className="text-xs text-amber-700">所选位置不在本图，请在编辑平面图中规划摆放。</p>}
@@ -124,7 +126,7 @@ export function PlanPanel({ zones, counters, readings, period, loading, error, c
       <span>{realHeat?'目标·秒 · 原始网格，等比例嵌入规划框':`${outputName} · ${unit} · 相对热度`}</span>
       <details className="ml-auto" aria-label="地图图例"><summary className="cursor-pointer hover:text-primary">数据说明</summary>
         {realHeat&&<p className="mt-1 max-w-prose">当前显示右侧所选版本、所选时段的真实网格，共 {(realHeat.variant.observed_ms/1000).toFixed(2)} 目标·秒。复用同一次查询，不额外采集。网格保持原画面比例，在规划框内作为小图展示；其位置是布局标记，不能当作地面坐标或区内投影。未加载位置不补造热度。下方通行计数说明仅适用于切回计数示意图层。</p>}
-        <p className="mt-1 max-w-prose">{legend}；{new Date(period.from).toLocaleString('zh-CN')} — {new Date(period.to).toLocaleString('zh-CN')}（结束不含，{period.timezone}）。颜色仅比较本图该计数器的已记录量，当前最大 {figure(displayedMax)} {unit}。热力图层在热区摆放中心平滑展开，仅表达计数的相对分布，不代表区内真实轨迹、精确密度或摄像头到平面图的投影；覆盖不足可能偏低。区域框保持透明，只用于规划位置与选择，不改检测范围。“—”为未知，0 为已确认零值。同一热区的不同计数器不叠加；同一计数器有多个位置时不合并，请查看明细。</p>
+        <p className="mt-1 max-w-prose">{legend}；{new Date(period.from).toLocaleString('zh-CN')} — {new Date(period.to).toLocaleString('zh-CN')}（结束不含，{period.timezone}）。颜色仅比较本图该统计的已记录量，当前最大 {figure(displayedMax)} {unit}。热力图层在热区摆放中心平滑展开，仅表达计数的相对分布，不代表区内真实轨迹、精确密度或摄像头到平面图的投影；覆盖不足可能偏低。区域框保持透明，只用于规划位置与选择，不改检测范围。“—”为未知，0 为已确认零值。同一热区的不同统计不叠加；同一统计有多个位置时不合并，请查看明细。</p>
       </details>
     </footer>
     {editing && <FloorPlanEditor zones={zones} counters={counters} counts={shown} countLabel={legend} sourceHeat={realHeat}

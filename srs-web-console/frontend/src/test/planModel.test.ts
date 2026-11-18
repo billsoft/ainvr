@@ -5,7 +5,7 @@ import {
   updateActive, updateShape, type Plan, type PlanDraft, type ZoneInfo,
 } from '@/pages/Analytics/plan/planModel'
 
-const counter = (id: string) => ({ id, name: `计数器${id}` })
+const counter = (id: string) => ({ id, name: `统计${id}` })
 const zone = (id: string, counters: string[] = []): ZoneInfo => ({ key: id, channelId: 'ch', zoneId: id, name: `热区${id}`, counters: counters.map(counter) })
 const overlap = (a: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
 const first = (d: PlanDraft) => activePlan(d)!

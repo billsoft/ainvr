@@ -158,12 +158,12 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
   {id:FRAME,name:'整个画面',frame:true,counters:[],triggers:current.assignments.filter(a=>!a.zoneId).map(a=>({id:a.id,name:triggerName(a.triggerId),label:`调整 ${triggerName(a.triggerId)} · 整个画面`,muted:definitions.find(t=>t.trigger_id===a.triggerId)?.state!=='enabled'}))},
   ...current.zones.map(z=>({id:z.id,name:z.name,points:z.points,erpWrap:z.erpWrap,noCounting:z.erpWrap?'全景环绕区域暂不支持计数':'',
    triggers:current.assignments.filter(a=>a.zoneId===z.id).map(a=>({id:a.id,name:triggerName(a.triggerId),label:`调整 ${triggerName(a.triggerId)} · ${z.name}`,warn:a.needsDirectionConfirmation,muted:definitions.find(t=>t.trigger_id===a.triggerId)?.state!=='enabled'})),
-   counters:current.counterBindings.filter(b=>b.zoneId===z.id).map(b=>{const c=counterOf(b.counterId);return {id:b.id,name:`${c?.name??'计数器'}${b.needsConfirmation?' · 需重新设置计数线':c?.state==='paused'?' · 已暂停':''}`,label:`调整计数线 ${c?.name??'计数器'} · ${z.name}`,warn:b.needsConfirmation,muted:c?.state==='paused'}})})),
+   counters:current.counterBindings.filter(b=>b.zoneId===z.id).map(b=>{const c=counterOf(b.counterId);return {id:b.id,name:`${c?.name??'统计'}${b.needsConfirmation?' · 需重新设置计数线':c?.state==='paused'?' · 已暂停':''}`,label:`调整计数线 ${c?.name??'统计'} · ${z.name}`,warn:b.needsConfirmation,muted:c?.state==='paused'}})})),
  ]
  const newZoneName=()=>{let n=current.zones.length+1;while(current.zones.some(z=>z.name===`热区 ${n}`))n++;return `热区 ${n}`}
  const title=<h2 className="hidden lg:block max-w-[12rem] shrink-0 truncate text-base font-semibold text-ink" title={`布防 · ${sourceName}`}>布防 · {sourceName}</h2>
  const selectedTarget=targets.find(t=>t.id===activeZone)
- const hint=drawing?(drawing==='rectangle'?'拖出矩形，松手后即可改名和关联。':'逐点绘制多边形，点“完成绘制”后即可关联。'):counting?(pick?'在画面上点热区的边设置计数线，箭头为“进”的方向。':'先在右侧选用计数器，再在画面上设置计数线。'):select?'直接编辑设置；返回或切换对象会保留有效修改，最后统一保存布防。':activeZone?'直接拖动选中热区；右侧修改名称和关联；所有修改统一保存。':'点画面中的热区或它的标记选中；不画热区可点“整个画面”直接关联告警规则。所有修改在“保存布防”后统一生效。'
+ const hint=drawing?(drawing==='rectangle'?'拖出矩形，松手后即可改名和关联。':'逐点绘制多边形，点“完成绘制”后即可关联。'):counting?(pick?'在画面上点热区的边设置计数线，箭头为“进”的方向。':'先在右侧选用统计，再在画面上设置计数线。'):select?'直接编辑设置；返回或切换对象会保留有效修改，最后统一保存布防。':activeZone?'直接拖动选中热区；右侧修改名称和关联；所有修改统一保存。':'点画面中的热区或它的标记选中；不画热区可点“整个画面”直接关联告警规则。所有修改在“保存布防”后统一生效。'
  return createPortal(<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-2 sm:p-4">
   <div role="dialog" aria-modal="true" aria-label={`布防 · ${sourceName}`} tabIndex={-1} ref={dialog} className="alarm-workspace relative flex h-full w-full flex-col overflow-hidden rounded-panel bg-surface shadow-modal outline-none" onKeyDown={e=>{
    if(e.key==='Escape'){
@@ -236,7 +236,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
     {(busyPanel||selectedTarget)&&<aside aria-label="编辑窗" className="flex w-[340px] max-w-[38%] shrink-0 flex-col gap-3 overflow-hidden border-l border-line p-4 portrait:max-h-[46%] portrait:w-full portrait:max-w-none portrait:border-l-0 portrait:border-t [&>div>fieldset>section]:rounded-none [&>div>fieldset>section]:border-0 [&>div>fieldset>section]:p-0">
      <div className="flex items-center justify-between gap-2 border-b border-line pb-2">
       <button type="button" className="btn-secondary min-h-11" disabled={locked} onClick={()=>{if(leaveEditor()&&!busyPanel)setActiveZone(null)}}><ArrowLeft size={16} aria-hidden="true"/>{busyPanel?'返回关联':'收起面板'}</button>
-      <button type="button" className="btn-secondary min-h-11" aria-label="刷新告警规则和计数器库" disabled={refreshing||locked} onClick={()=>void refreshLibraries()}><RefreshCw size={16} aria-hidden="true"/>{refreshing?'读取中':'刷新库'}</button>
+      <button type="button" className="btn-secondary min-h-11" aria-label="刷新告警规则和统计" disabled={refreshing||locked} onClick={()=>void refreshLibraries()}><RefreshCw size={16} aria-hidden="true"/>{refreshing?'读取中':'刷新库'}</button>
      </div>
      <div data-scroll-region className="min-h-0 flex-1 space-y-3 overflow-y-auto">
      {!busyPanel&&selectedTarget&&!selectedTarget.frame&&<div className="space-y-2"><label className="block text-xs font-medium text-ink-subtle" htmlFor="arming-zone-name">热区名称</label><input id="arming-zone-name" aria-label="热区名称" maxLength={128} className="form-input w-full" disabled={locked} value={nameDraft?.id===selectedTarget.id?nameDraft.value:selectedTarget.name} onChange={e=>setNameDraft({id:selectedTarget.id,value:e.target.value})} onBlur={flushName}/><p className="text-xs text-ink-faint">拖内部平移；矩形拖旋转柄旋转、角点等比缩放、边中点调整宽高。</p>{selectedTarget.noCounting&&<button className="btn-secondary" type="button" disabled={locked} onClick={()=>{if(leaveEditor())setEditZone(selectedTarget.id)}}>360° 视角调整</button>}</div>}
@@ -266,7 +266,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
    {!editZone&&<div className="flex min-h-9 shrink-0 flex-nowrap overflow-x-auto whitespace-nowrap items-center gap-x-4 gap-y-1 border-t border-line px-4 py-1.5 text-xs" aria-live="polite">
     <span className="text-ink-faint">{hint}</span>
     {current.coordinateSpace==='erp'&&<span className="text-ink-faint">跨左右接缝时跟踪编号可能改变，请尽量在远离接缝处布防。</span>}
-    {unsetCounting>0&&<span role="status" className="font-medium text-amber-700">有 {unsetCounting} 条计数线因热区的边变化需要重新设置，点画面上带 ⚠ 的计数器重新设置后才能保存。</span>}
+    {unsetCounting>0&&<span role="status" className="font-medium text-amber-700">有 {unsetCounting} 条计数线因热区的边变化需要重新设置，点画面上带 ⚠ 的统计重新设置后才能保存。</span>}
     {error&&<span role="alert" className="text-sm text-danger">{error}</span>}
     {!busy&&session.hasPending()&&<span role="status" className="text-sm">上次保存结果尚未确认，草稿已锁定。请点“重试确认保存”，避免重复写入。</span>}
    </div>}
@@ -281,15 +281,15 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
      <header className="flex items-center justify-between gap-2"><h3 className="text-base font-semibold">移除 {zoneName(removeZone)}？</h3><button type="button" aria-label="关闭" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover" onClick={()=>setRemoveZone(null)}><X size={20} aria-hidden="true"/></button></header>
      <p className="text-sm text-ink-subtle">以下选用将一并解除；保存布防后生效，历史记录保留。</p>
      <ul className="list-disc pl-5 text-sm">{current.assignments.filter(a=>a.zoneId===removeZone).map(a=><li key={a.id}>{triggerName(a.triggerId)} · {processorName(a.processorId)}</li>)}
-      {current.counterBindings.filter(b=>b.zoneId===removeZone).map(b=><li key={b.id}>计数：{counterOf(b.counterId)?.name??'计数器'}（停止这里的计数，已有统计保留）</li>)}</ul>
-     {!current.assignments.some(a=>a.zoneId===removeZone)&&!current.counterBindings.some(b=>b.zoneId===removeZone)&&<p className="text-sm">此热区尚未选用告警规则或计数器。</p>}
+      {current.counterBindings.filter(b=>b.zoneId===removeZone).map(b=><li key={b.id}>计数：{counterOf(b.counterId)?.name??'统计'}（停止这里的计数，已有统计保留）</li>)}</ul>
+     {!current.assignments.some(a=>a.zoneId===removeZone)&&!current.counterBindings.some(b=>b.zoneId===removeZone)&&<p className="text-sm">此热区尚未选用告警规则或统计。</p>}
      <div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setRemoveZone(null)}>保留热区</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={()=>{draft.removeZone(removeZone);setRemoveZone(null);setActiveZone(null);changed()}}>确认移除热区</button></div>
     </section>
    </div>}
    {discard&&<div className="absolute inset-0 z-10 flex items-center justify-center rounded-panel bg-black/30 p-4">
     <section ref={confirmation} tabIndex={-1} role="alertdialog" aria-label="放弃布防修改" className="w-full max-w-md space-y-3 rounded-panel bg-surface p-5 shadow-modal outline-none">
      <header className="flex items-center justify-between gap-2"><h3 className="text-base font-semibold">放弃本次布防的修改？</h3><button type="button" aria-label="关闭" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover" onClick={()=>setDiscard(false)}><X size={20} aria-hidden="true"/></button></header>
-     <p className="text-sm text-ink-subtle">未保存的热区、告警规则和计数器选用都会丢弃，已保存的配置不变。</p>
+     <p className="text-sm text-ink-subtle">未保存的热区、告警规则和统计选用都会丢弃，已保存的配置不变。</p>
      <div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setDiscard(false)}>继续编辑</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={onClose}>放弃布防修改</button></div>
     </section>
    </div>}

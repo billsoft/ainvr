@@ -10,21 +10,15 @@ interface Props {
   onClear: (bindingId: string) => void
 }
 
-/** Beside the analysis: the counter's locations to tick in or out, with the analysis's numbers on each. */
+/** The chosen statistic's locations: tick them in or out of the analysis, with the analysis's numbers on each. */
 export function CounterLocations({ counter, sel, zoneName, onClear }: Props) {
   const mine = sel.counters.find(c => c.counter_id === counter.counter_id)
-  if (!mine) return <p className="text-xs text-ink-subtle">已选用 {counter.bindings.length} 个统计位置。当前统计对象不包含它。</p>
-  if (!sel.ids.includes(mine.counter_id)) {
-    return <p className="text-xs text-ink-subtle">{sel.canSelect(mine.counter_id) ? '勾选“纳入分析”后，可选择统计位置并在这里看到数量。' : '口径与已纳入的计数器不同，不能一起分析。'}</p>
-  }
+  if (!mine) return <p className="text-xs text-ink-subtle">已选用 {counter.bindings.length} 个统计位置。</p>
   const item = sel.items?.find(i => i.counter.counter_id === mine.counter_id)
   const outputs = mine.outputs === 'both' ? (['in', 'out'] as const) : (['in'] as const)
   return (
     <section aria-label={`${counter.name} 的统计位置`} className="space-y-1">
-      <p className="text-xs text-ink-subtle">
-        {sel.range.label}
-        {item ? ' · ' + outputs.map(o => `${mine.names[o]} ${item[o]?.occurrences ?? '—'}`).join(' · ') : ' · 正在读取…'}
-      </p>
+      <p className="text-xs text-ink-subtle">统计位置 · 取消勾选可从分析中排除{item ? '' : ' · 正在读取…'}</p>
       <ul className="divide-y divide-line rounded-base border border-line">
         {mine.bindings.map(b => {
           const checked = sel.bindings.includes(b.binding_id)

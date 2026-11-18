@@ -58,7 +58,7 @@ it('previews the same draft with the independent data layer without saving or ch
 })
 it('lists zones by counter, with a shared zone under each counter and loose zones last, or by zone', () => {
   mount()
-  expect(within(list()).getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['一厅人数', '二厅人数', '未关联计数器'])
+  expect(within(list()).getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['一厅人数', '二厅人数', '未关联统计'])
   expect(within(list()).getAllByRole('button', { name: /共用通道/ })).toHaveLength(2)
   fireEvent.click(screen.getByRole('button', { name: '按热区' }))
   expect(screen.getByRole('button', { name: '按热区' })).toHaveAttribute('aria-pressed', 'true')
@@ -73,7 +73,7 @@ it("shows a zone's counters and sends shape, name and counter changes to the arm
   const panel = screen.getByRole('region', { name: '热区属性' })
   expect(panel).toHaveTextContent('共用通道'); expect(panel).toHaveTextContent('一厅人数'); expect(panel).toHaveTextContent('二厅人数')
   expect(within(panel).getByRole('link', { name: /在布防中修改形状和名称/ })).toHaveAttribute('href', '/monitor')
-  expect(panel).toHaveTextContent('名称、形状和关联的计数器在布防里改')
+  expect(panel).toHaveTextContent('名称、形状和关联的统计在布防里改')
 })
 it('moves a zone by dragging on the canvas or typing numbers, and keeps both in step', () => {
   mount()

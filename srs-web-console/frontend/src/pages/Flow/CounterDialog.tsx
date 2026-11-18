@@ -30,7 +30,7 @@ export function CounterDialog({initial,labels,onCancel,onSaved,send=flowService.
  const save=async()=>{
   if(saving)return
   const name=value.name.trim()
-  if(!name)return setError('请填写计数器名称')
+  if(!name)return setError('请填写统计名称')
   if(!value.labels.length)return setError('至少选择一个统计目标')
   if(!value.names.in.trim()||(value.outputs==='both'&&(!value.names.out.trim()||value.names.in.trim()===value.names.out.trim())))return setError('请填写两个不同的方向名称')
   setSaving(true);setError('')
@@ -39,13 +39,13 @@ export function CounterDialog({initial,labels,onCancel,onSaved,send=flowService.
    onSaved(result.counter)
   }catch(e){
    const status=(e as {status?:number}).status
-   setError(status===409?'计数器已被修改，请关闭后重新打开。':[400,422].includes(status??0)?(e instanceof Error?e.message:'保存未成功，请检查后重试。'):'保存结果尚未确认，请重试保存，不会重复创建。')
+   setError(status===409?'统计已被修改，请关闭后重新打开。':[400,422].includes(status??0)?(e instanceof Error?e.message:'保存未成功，请检查后重试。'):'保存结果尚未确认，请重试保存，不会重复创建。')
   }finally{setSaving(false)}
  }
  return createPortal(<div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-2 sm:p-5">
   <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby={title} className="alarm-workspace relative flex max-h-[calc(100dvh-1rem)] w-full max-w-[760px] flex-col rounded-panel bg-surface shadow-modal"
    onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();if(discard)setDiscard(false);else close()}}}>
-   <header className="relative border-b border-line py-4 pl-6 pr-16"><button type="button" aria-label="关闭" disabled={locked} onClick={close} className="absolute right-3 top-3 flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover"><X size={20} aria-hidden="true"/></button><h2 id={title} className="text-base font-semibold">{initial?'编辑计数器':'新建计数器'}</h2>
+   <header className="relative border-b border-line py-4 pl-6 pr-16"><button type="button" aria-label="关闭" disabled={locked} onClick={close} className="absolute right-3 top-3 flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover"><X size={20} aria-hidden="true"/></button><h2 id={title} className="text-base font-semibold">{initial?'编辑统计':'新建统计'}</h2>
     <p className="mt-1 text-sm text-ink-subtle">这里只定义数什么、怎么数。计数线画在哪里，到实时监看的布防中选用到热区时设置。</p></header>
    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-6 py-5"><fieldset disabled={locked} className="space-y-5">
     <label className="block text-sm font-medium text-ink">名称<input ref={first} className="form-input mt-1.5" maxLength={128} placeholder="例如：客流、车辆进出" value={value.name} onChange={e=>patch({name:e.target.value})}/></label>
@@ -57,7 +57,7 @@ export function CounterDialog({initial,labels,onCancel,onSaved,send=flowService.
      {!merged.length&&<p role="status" className="text-sm text-ink-subtle">尚未读到模型目标，请先检查 AI 处理器。</p>}
     </section>
     <section aria-label="计数方式" className="space-y-2">
-     <h3 className="text-sm font-medium text-ink">计数方式{initial&&<span className="ml-2 text-xs font-normal text-ink-faint">已有计数器不能更改，可新建</span>}</h3>
+     <h3 className="text-sm font-medium text-ink">计数方式{initial&&<span className="ml-2 text-xs font-normal text-ink-faint">已有统计不能更改，可新建</span>}</h3>
      <div role="radiogroup" aria-label="计数方式" className="grid gap-3 sm:grid-cols-3">{(['line','gates','zone'] as CounterMethod[]).map(m=>{const Icon=methodIcons[m];return <button key={m} type="button" role="radio" aria-checked={value.method===m} disabled={!!initial} onClick={()=>patch({method:m})}
       className={`relative rounded-panel border p-4 text-left transition-colors disabled:cursor-not-allowed ${value.method===m?'border-primary bg-primary-50 ring-1 ring-primary':'border-line bg-surface hover:bg-surface-hover disabled:opacity-60'}`}>
       <Icon size={20} aria-hidden="true" className="mb-2 text-primary"/><strong className="block text-sm font-semibold text-ink">{methodNames[m]}</strong><span className="mt-1 block text-xs leading-5 text-ink-subtle">{methodHelp[m]}</span>
@@ -87,7 +87,7 @@ export function CounterDialog({initial,labels,onCancel,onSaved,send=flowService.
     <button type="button" className="btn-secondary" disabled={locked} onClick={close}><X size={16} aria-hidden="true"/>取消</button>
     <button type="button" className="btn-primary" disabled={saving} onClick={()=>void save()}><Save size={16} aria-hidden="true"/>{saving?'保存中…':session.hasPending()?'重试保存':'保存'}</button>
    </footer>
-   {discard&&<div className="absolute inset-0 z-10 flex items-center justify-center rounded-panel bg-black/30 p-4"><section ref={discardPanel} role="alertdialog" aria-label="放弃计数器修改" className="w-full max-w-sm space-y-3 rounded-panel bg-surface p-5 shadow-modal">
+   {discard&&<div className="absolute inset-0 z-10 flex items-center justify-center rounded-panel bg-black/30 p-4"><section ref={discardPanel} role="alertdialog" aria-label="放弃统计修改" className="w-full max-w-sm space-y-3 rounded-panel bg-surface p-5 shadow-modal">
     <header className="flex items-center justify-between gap-2"><p className="text-base font-semibold">放弃尚未保存的修改？</p><button type="button" aria-label="关闭" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base hover:bg-surface-hover" onClick={()=>setDiscard(false)}><X size={20} aria-hidden="true"/></button></header><div className="flex justify-end gap-2"><button type="button" className="btn-secondary" onClick={()=>setDiscard(false)}>继续编辑</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={onCancel}>放弃修改</button></div></section></div>}
   </div>
  </div>,host)

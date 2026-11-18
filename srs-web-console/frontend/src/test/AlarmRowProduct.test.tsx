@@ -10,11 +10,12 @@ vi.mock('@/features/faces/FaceAlarmEvidence',async importOriginal=>({
  FaceAlarmPhoto:({recordId,onOpen}:{recordId:string;onOpen:()=>void})=><button onClick={onOpen}>受保护人脸照片 {recordId}</button>,
 }))
 const alarm:AlarmEvent={alarm_id:'a',event_kind:'fire_smoke',channel_id:'c',behavior:'appearance',occurred_at:'2026-11-13T00:00:00Z',last_seen_at:'2026-11-13T00:00:00Z',rule:{id:'r',name:'仓库规则'},severity:'warning',lifecycle:{state:'ended'},handling:{state:'unacknowledged',revision:0},stages:[{event_id:'s',behavior:'appearance',at:'2026-11-13T00:00:00Z',direction:null,behavior_event_ids:['e']}]}
-it('keeps the long channel name readable and all three actions reachable',()=>{
+it('titles the row by alarm type, keeps the long channel name readable and all three actions reachable',()=>{
  const onHandle=vi.fn(),onOpen=vi.fn()
  render(<AlarmRow alarm={alarm} trigger={undefined} channelName="测试仓库东侧入口完整通道名称" onHandle={onHandle} onOpen={onOpen}/>)
- const heading=screen.getByRole('heading',{name:/测试仓库东侧入口完整通道名称/})
- expect(heading).not.toHaveClass('truncate')
+ expect(screen.getByRole('heading',{name:'烟雾 / 明火'})).toBeInTheDocument()
+ const where=screen.getByText(/测试仓库东侧入口完整通道名称/)
+ expect(where).not.toHaveClass('truncate')
  expect(screen.getByRole('article')).toHaveAccessibleName('测试仓库东侧入口完整通道名称 · 烟雾 / 明火')
  for(const name of ['确认','标记误报','详情与录像'])expect(screen.getByRole('button',{name})).toHaveClass('!min-h-11')
  fireEvent.click(screen.getByRole('button',{name:'确认'}))

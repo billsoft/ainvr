@@ -58,7 +58,7 @@ export function planViewport(plan: Plan | null, readOnly = false): Placement {
 }
 
 export const emptyDraft = (): PlanDraft => ({ version: 2, plans: [], activeId: null })
-/** 热区的唯一标识就是布防里的 zone_id，计数器的选用也按它引用。 */
+/** 热区的唯一标识就是布防里的 zone_id，统计的选用也按它引用。 */
 export const zoneKey = (zoneId: string) => zoneId
 
 let counter = 0
@@ -66,11 +66,11 @@ const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}${(counter
 
 // ---------- 左侧列表 ----------
 export interface CounterGroup { id: string | null; name: string; zones: ZoneInfo[] }
-/** 每个计数器列出它选用的热区；一个热区选了几个计数器就出现在几处；没选任何计数器的热区归到最后一组。 */
+/** 每个统计列出它选用的热区；一个热区选了几个统计就出现在几处；没选任何统计的热区归到最后一组。 */
 export function groupByCounter(zones: ZoneInfo[], counters: { id: string; name: string }[]): CounterGroup[] {
   const groups: CounterGroup[] = counters.map(c => ({ id: c.id, name: c.name, zones: zones.filter(z => z.counters.some(k => k.id === c.id)) }))
   const loose = zones.filter(z => !z.counters.length)
-  return loose.length ? [...groups, { id: null, name: '未关联计数器', zones: loose }] : groups
+  return loose.length ? [...groups, { id: null, name: '未关联统计', zones: loose }] : groups
 }
 
 // ---------- 摆放 ----------

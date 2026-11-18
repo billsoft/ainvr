@@ -64,7 +64,7 @@ it('undo restores removed zone before a save and does not call backend',()=>{
 
 it('closing an inner editor restores focus inside arming instead of the page background',()=>{
  render(<ArmingModal sourceId="cam" sourceName="门" base={base} reference={reference} definitions={[]} sources={[]} onClose={vi.fn()} onSaved={vi.fn()}/> )
- fireEvent.click(screen.getByRole('button',{name:'整个画面：告警规则 0，计数器 0'}))
+ fireEvent.click(screen.getByRole('button',{name:'整个画面：告警规则 0，统计 0'}))
  fireEvent.click(screen.getByRole('button',{name:'整个画面选用告警规则'}))
  const cancel=screen.getByRole('button',{name:'返回关联'})
  cancel.focus();fireEvent.click(cancel)

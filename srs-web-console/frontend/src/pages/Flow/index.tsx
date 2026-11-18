@@ -13,7 +13,7 @@ import {ClearFlowDialog,type ClearScope} from './ClearFlowDialog'
 import {CounterDialog} from './CounterDialog'
 import {periodSlots} from './FlowChart'
 import {CounterStatistics} from './CounterStatistics'
-import {CounterLocations} from './CounterLocations'
+import {StatColumn} from './StatColumn'
 import {RecordsDrawer} from './RecordsDrawer'
 import {formatRangeLabel} from './counterText'
 import {DateTimeRangePicker} from '@/components/ui/DateTimeRangePicker'
@@ -43,7 +43,7 @@ export default function FlowPage({variant='full'}:{variant?:'full'|'manage'}={})
  const latest=useRef(0),window_=useRef(rangeOf('today'))
  useEffect(()=>{
   let alive=true;setLoadError('')
-  void flowService.list().then(r=>{if(alive)setCounters(r.items)}).catch(()=>{if(alive){setCounters([]);setLoadError('计数器读取失败')}})
+  void flowService.list().then(r=>{if(alive)setCounters(r.items)}).catch(()=>{if(alive){setCounters([]);setLoadError('统计读取失败')}})
   return()=>{alive=false}
  },[revision])
  useEffect(()=>{
@@ -126,37 +126,33 @@ export default function FlowPage({variant='full'}:{variant?:'full'|'manage'}={})
   catch(e){setCardError(x=>({...x,[c.counter_id]:e instanceof Error?e.message:'删除未完成，请重试'}));setRevision(n=>n+1)}
   finally{setBusy(null)}
  }
+ // Beside the analysis the period is the analysis's own; on the full page it is this page's range.
  const openClear=(c:Counter,r:CounterResult,bindingId?:string)=>{
-  const currentRange=window_.current,to=new Date(Math.min(currentRange.to.getTime(),Date.now()))
+  const currentRange=sel&&variant==='manage'?{from:new Date(sel.range.from),to:new Date(sel.range.to)}:window_.current,to=new Date(Math.min(currentRange.to.getTime(),Date.now()))
   if(to<=currentRange.from)return
   const selected=r.zones.filter(z=>!bindingId||z.binding_id===bindingId)
   if(!selected.length)return
   setClearing({counterId:c.counter_id,counterName:c.name,label:bindingId?zoneName(selected[0]!):`全部 ${selected.length} 个统计位置（含已取消关联）`,bindingIds:selected.map(z=>z.binding_id),from:currentRange.from.toISOString(),to:to.toISOString()})
  }
- const clearAt=(c:Counter,r:CounterResult,bindingId:string,span:{from:string;to:string})=>{
-  const to=new Date(Math.min(Date.parse(span.to),Date.now()))
-  const z=r.zones.find(x=>x.binding_id===bindingId)
-  if(!z||to.getTime()<=Date.parse(span.from))return
-  setClearing({counterId:c.counter_id,counterName:c.name,label:zoneName(z),bindingIds:[bindingId],from:span.from,to:to.toISOString()})
- }
  const list=counters??[]
  return <main className="alarm-workspace space-y-4 p-4 md:p-6">
   <AlarmInputNotice/>
   <header className="flex flex-wrap items-center gap-3">
-   <div className="min-w-0 basis-full [@container(min-width:40rem)]:flex-1 [@container(min-width:40rem)]:basis-0"><h1 className="page-title [@container(max-width:40rem)]:sr-only">计数统计</h1><p className="mt-1 text-sm text-ink-subtle">统计经过计数线的目标数量。计数器在这里定义，在实时监看的布防中选用到热区。</p></div>
-   <button type="button" className="btn-primary" onClick={()=>setEditing('new')}><Plus size={16} aria-hidden="true"/>新建计数器</button>
+   <div className="min-w-0 basis-full [@container(min-width:40rem)]:flex-1 [@container(min-width:40rem)]:basis-0"><h1 className="page-title [@container(max-width:40rem)]:sr-only">统计列表</h1><p className="mt-1 text-sm text-ink-subtle">{variant==='manage'&&sel?'每个统计数经过计数线的目标。点选一项，左侧显示它的分析。':'统计经过计数线的目标数量。统计在这里新建，在实时监看的布防中选用到热区。'}</p></div>
+   <button type="button" className="btn-primary" onClick={()=>setEditing('new')}><Plus size={16} aria-hidden="true"/>新建统计</button>
   </header>
   {notice&&<p role="status" className="rounded-base border border-line bg-surface p-3 text-sm">{notice}</p>}
-  {!counters&&<p role="status" className="py-8 text-center text-sm text-ink-subtle">正在读取计数器…</p>}
+  {!counters&&<p role="status" className="py-8 text-center text-sm text-ink-subtle">正在读取统计…</p>}
   {loadError&&<p role="alert" className="text-sm text-danger">{loadError} <button type="button" className="btn-secondary ml-2" onClick={()=>setRevision(n=>n+1)}>重新读取</button></p>}
   {counters&&!list.length&&!loadError&&<section className="ui-panel grid gap-4 p-6 md:grid-cols-3">
-   <div className="md:col-span-3"><h2 className="text-base font-semibold text-ink">开始统计流量</h2><p className="mt-1 text-sm text-ink-subtle">两步即可：先定义计数器，再把它选用到画面中的热区上。</p></div>
-   <div className="rounded-panel border border-line p-4"><p className="text-sm font-semibold text-ink">1. 新建计数器</p><p className="mt-1 text-sm text-ink-subtle">选择数什么目标、按什么方式计数。</p><button type="button" className="btn-primary mt-3" onClick={()=>setEditing('new')}><Plus size={16} aria-hidden="true"/>新建计数器</button></div>
-   <div className="rounded-panel border border-line p-4"><p className="text-sm font-semibold text-ink">2. 选用到热区</p><p className="mt-1 text-sm text-ink-subtle">在实时监看点“布防”，选中热区后点“选用计数器”，在画面上设置计数线。</p><Link to="/monitor" className="btn-secondary mt-3"><MapPin size={16} aria-hidden="true"/>前往实时监看</Link></div>
+   <div className="md:col-span-3"><h2 className="text-base font-semibold text-ink">开始统计流量</h2><p className="mt-1 text-sm text-ink-subtle">两步即可：先新建统计，再把它选用到画面中的热区上。</p></div>
+   <div className="rounded-panel border border-line p-4"><p className="text-sm font-semibold text-ink">1. 新建统计</p><p className="mt-1 text-sm text-ink-subtle">选择数什么目标、按什么方式计数。</p><button type="button" className="btn-primary mt-3" onClick={()=>setEditing('new')}><Plus size={16} aria-hidden="true"/>新建统计</button></div>
+   <div className="rounded-panel border border-line p-4"><p className="text-sm font-semibold text-ink">2. 选用到热区</p><p className="mt-1 text-sm text-ink-subtle">在实时监看点“布防”，选中热区后点“选用统计”，在画面上设置计数线。</p><Link to="/monitor" className="btn-secondary mt-3"><MapPin size={16} aria-hidden="true"/>前往实时监看</Link></div>
    <div className="rounded-panel border border-line p-4"><p className="text-sm font-semibold text-ink">3. 查看结果</p><p className="mt-1 text-sm text-ink-subtle">这里自动显示今天的进出数量和分时趋势，实时画面上也会显示计数线和今日数字。</p></div>
   </section>}
-  {!!list.length&&variant==='manage'&&sel&&<p className="text-xs text-ink-subtle">数量按“数据分析”里选的时段：{sel.range.label}。在那里切换时间。</p>}
-  {!!list.length&&<>
+  {!!list.length&&variant==='manage'&&sel&&<StatColumn sel={sel} list={sel.counters} zoneName={zoneName} busy={busy} cardError={cardError}
+   onEdit={setEditing} onToggleState={c=>void setState(c,c.state==='enabled'?'paused':'enabled')} onRemove={setRemoving} onRetryRemove={c=>void remove(c)} onClear={(c,r,bindingId)=>openClear(c,r,bindingId)}/>}
+  {!!list.length&&!(variant==='manage'&&sel)&&<>
    {statsOn&&<div className="flex flex-wrap items-center gap-2">
     <div role="group" aria-label="时间范围" className="flex flex-wrap gap-2">{presets.map(p=><button key={p.id} type="button" aria-pressed={preset===p.id} className={choice} onClick={()=>setPreset(p.id)}>{p.name}</button>)}</div>
     <button type="button" aria-label="自选时间范围" aria-pressed={preset==='custom'} className={`${choice} min-h-11`} onClick={()=>{const r=rangeOf(preset,new Date(),custom);setPickerRange({from:toDatetimeLocalValue(r.from),to:toDatetimeLocalValue(new Date(r.to.getTime()-(['custom','yesterday'].includes(preset)?1000:0)))})}}><CalendarClock size={16} aria-hidden="true"/>{preset==='custom'?'自选范围':'自选时间'}</button>
@@ -181,7 +177,6 @@ export default function FlowPage({variant='full'}:{variant?:'full'|'manage'}={})
        <h2 className="flex flex-wrap items-center gap-2 text-base font-semibold text-ink">{c.name}{c.state==='paused'&&<span className="rounded-full bg-surface-page px-2.5 py-0.5 text-xs font-normal text-ink-subtle">已暂停</span>}</h2>
        <p className="mt-1 text-xs text-ink-subtle">{methodNames[c.method]} · {c.labels.map(l=>labelDisplay(l.name)).join('、')} · {c.outputs==='both'?`${c.names.in} / ${c.names.out}`:`只计“${c.names.in}”`}</p>
       </div>
-      {sel&&<label className="flex min-h-11 items-center gap-2 text-sm text-ink" title={sel.canSelect(c.counter_id)?undefined:'口径与已选计数器不同，或当前统计对象不包含它'}><input type="checkbox" className="h-4 w-4 accent-primary" checked={sel.ids.includes(c.counter_id)} disabled={!sel.canSelect(c.counter_id)} onChange={()=>sel.toggle(c.counter_id)}/>纳入分析</label>}
       <div className="flex flex-wrap gap-2">
        {r&&r.zones.length>0&&<button type="button" className="btn-secondary min-h-11" onClick={()=>openClear(c,r)}><Eraser size={16} aria-hidden="true"/>清理本期数据</button>}
        <button type="button" className="btn-secondary" disabled={busy===c.counter_id} onClick={()=>setEditing(c)}><Pencil size={16} aria-hidden="true"/>编辑</button>
@@ -190,8 +185,7 @@ export default function FlowPage({variant='full'}:{variant?:'full'|'manage'}={})
       </div>
      </header>
      {error&&<p role="alert" className="text-sm text-danger-700">{error}</p>}
-     {variant==='manage'?(sel?<CounterLocations counter={c} sel={sel} zoneName={zoneName} onClear={bindingId=>{const mine=sel.items?.find(i=>i.counter.counter_id===c.counter_id);if(mine)clearAt(c,mine,bindingId,sel.range)}}/>
-      :c.bindings.length?<p className="text-xs text-ink-subtle">已选用 {c.bindings.length} 个统计位置。</p>
+     {variant==='manage'?(c.bindings.length?<p className="text-xs text-ink-subtle">已选用 {c.bindings.length} 个统计位置。</p>
       :<div className="rounded-base border border-dashed border-line p-4 text-sm text-ink-subtle">还没有选用到热区，暂不计数。<Link to="/monitor" className="ml-1 text-primary hover:underline">去实时监看布防</Link></div>)
       :statsOn&&r&&zones.length?<CounterStatistics counter={c} result={r} previous={prev} comparison={range.compare} bucket={range.bucket} slots={slots} zoneName={zoneName} onClear={bindingId=>openClear(c,r,bindingId)} onRecords={(output,bindingId)=>{const currentRange=rangeOf(preset,new Date(),custom);setRecords({result:r,output,bindingId,from:currentRange.from.toISOString(),to:currentRange.to.toISOString()})}}/>
       :!r&&zones.length?<p role="status" className="py-6 text-center text-sm text-ink-subtle">{loading?'正在读取各热区统计…':'统计暂不可用，请重试。'}</p>
@@ -202,11 +196,11 @@ export default function FlowPage({variant='full'}:{variant?:'full'|'manage'}={})
   {clearing&&<ClearFlowDialog scope={clearing} onClose={closeClear} onCleared={()=>{++latest.current;querying.current=false;setClearing(null);setRecords(null);reload('已清理所选时段的数据，后续通行继续正常计数')}}/>}
   {pickerRange&&<DateTimeRangePicker open from={pickerRange.from} to={pickerRange.to} validateRange={validateCustomRange} onConfirm={(from,to)=>{setCustom({from:new Date(from),to:new Date(to)});setPreset('custom')}} onClose={()=>setPickerRange(null)}/>}
   {editing&&<CounterDialog key={editing==='new'?'new':editing.counter_id} initial={editing==='new'?undefined:editing} labels={labels} onCancel={()=>setEditing(null)} onSaved={c=>reload(editing==='new'?`已创建“${c.name}”。到实时监看的布防中选用到热区后开始计数。`:`已保存“${c.name}”`)}/>}
-  {removing&&<div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"><section role="alertdialog" aria-modal="true" aria-label="确认删除计数器" className="w-full max-w-md space-y-3 rounded-panel bg-surface p-5 text-sm shadow-modal">
+  {removing&&<div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"><section role="alertdialog" aria-modal="true" aria-label="确认删除统计" className="w-full max-w-md space-y-3 rounded-panel bg-surface p-5 text-sm shadow-modal">
    <header className="flex items-center justify-between gap-2"><h2 className="text-base font-semibold text-ink">删除“{removing.name}”？</h2><button type="button" aria-label="关闭" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover" onClick={()=>setRemoving(null)}><span aria-hidden="true" className="text-xl">×</span></button></header>
    <p className="text-ink">将从 {removing.bindings.length} 个热区解除并停止计数，它的全部历史通行记录也会一起删除，删除后不能恢复。</p>
    <p className="text-ink-subtle">只想暂时不计数，可以用“暂停”。</p>
-   <div className="flex justify-end gap-2"><button type="button" autoFocus className="btn-secondary" onClick={()=>setRemoving(null)}>保留</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={()=>void remove(removing)}>删除计数器及历史</button></div></section></div>}
+   <div className="flex justify-end gap-2"><button type="button" autoFocus className="btn-secondary" onClick={()=>setRemoving(null)}>保留</button><button type="button" className="btn-primary bg-danger hover:bg-danger-700" onClick={()=>void remove(removing)}>删除统计及历史</button></div></section></div>}
   {records&&<RecordsDrawer result={records.result} output={records.output} bindingId={records.bindingId} from={records.from} to={records.to} zoneName={zoneName} onClose={()=>setRecords(null)}/>}
  </main>
 }

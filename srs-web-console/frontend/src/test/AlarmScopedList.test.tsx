@@ -35,7 +35,7 @@ it('loads the fixed pair scope and keeps it while status and conclusion refine r
  await waitFor(()=>expect(alarmEventService.list).toHaveBeenCalledWith('all',undefined,{from,to,locations}))
  expect(screen.getByText(/通道和时间已固定/)).toBeInTheDocument()
  expect(screen.getByLabelText('时间')).toBeDisabled()
- expect(screen.getByRole('button',{name:'A'})).toBeDisabled()
+ expect(screen.getByLabelText('通道')).toBeDisabled()
  fireEvent.click(screen.getByRole('button',{name:'已人工审核'}))
  fireEvent.change(screen.getByLabelText('审核结论'),{target:{value:'handled'}})
  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('human',undefined,{from,to,locations,disposition:'handled'}))

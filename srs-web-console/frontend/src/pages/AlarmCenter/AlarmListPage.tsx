@@ -20,12 +20,13 @@ import {AlarmSheet,type PendingAcknowledgement} from './AlarmSheet'
 import {AlarmConfirmation} from './AlarmConfirmation'
 import {AlarmPurgeDialog} from './AlarmPurgeDialog'
 import {alarmInScope,parseAlarmListScope} from './alarmListScope'
+import {segment,segmented,field,fieldSelect} from '@/components/ui/filterStyles'
+import {Info,MoreHorizontal,Trash2} from 'lucide-react'
 
 // One compact row per target activity (highest level), newest first.
 // Evidence and stage history open in one detail layer; controls keep 44 px targets.
 type Status='pending'|'acknowledged'|'all'|'human'|'ai'
 type Range='today'|'7d'|'all'
-const pill='btn-secondary !min-h-11 aria-pressed:border-primary aria-pressed:bg-primary-50 aria-pressed:text-primary'
 const midnight=()=>{const d=new Date();d.setHours(0,0,0,0);return d}
 function rangeFrom(range:Range){return range==='today'?midnight().toISOString():range==='7d'?new Date(Date.now()-7*86400000).toISOString():undefined}
 const ackOk=(outcome:string)=>['succeeded','already_acknowledged'].includes(outcome)
@@ -66,7 +67,7 @@ export default function AlarmListPage(){
  const [channels,setChannels]=useState<{id:string;name:string}[]>([]),[triggers,setTriggers]=useState<AlarmTrigger[]>([])
  const [definitions,setDefinitions]=useState<TriggerDefinition[]>([]),[armings,setArmings]=useState<Record<string,ArmingDocument|null>>({})
  const [rows,setRows]=useState<AlarmEvent[]>([]),[cursor,setCursor]=useState<string|null>(null),[loaded,setLoaded]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(false)
- const [purge,setPurge]=useState(false)
+ const [purge,setPurge]=useState(false),[more,setMore]=useState(false)
  const [detail,setDetail]=useState<{id:string;stageId?:string;intent?:AckDisposition}|null>(null)
  const [bulk,setBulk]=useState<{phase:'asking'|'working';items:AckItem[];key:string;scope:string;uncertain?:boolean}|null>(null),[bulkResult,setBulkResult]=useState('')
  const [singleAttempts,setSingleAttempts]=useState<Record<string,PendingAcknowledgement>>({})
@@ -227,26 +228,21 @@ export default function AlarmListPage(){
  const counts=new Map<string,number>();for(const r of rows)counts.set(r.channel_id,(counts.get(r.channel_id)??0)+1)
  const open=rows.find(r=>r.alarm_id===detail?.id)
  const maxToday=Math.max(1,...triggerBehaviors.map(b=>today?.[b.id]??0))
- return <div className="flex h-full min-h-0 flex-col gap-0 bg-surface-page [@container(min-width:56rem)]:flex-row">
-  <nav aria-label="告警通道" className="flex shrink-0 flex-col border-line bg-surface [@container(min-width:56rem)]:w-56 [@container(min-width:56rem)]:border-r">
-   <div className="px-5 pb-2 pt-5"><h1 className="page-title">告警记录</h1>
-    <p className="mt-1.5 text-sm text-ink-subtle"><span className={`text-base font-semibold ${status==='pending'?'text-danger-700':'text-primary-600'}`}>{rows.length}{cursor?'+':''}</span> 条{status==='pending'?'未审核':status==='ai'?'已 AI 审核':status==='human'?'已人工审核':'告警'}（已加载）</p></div>
-   <div className="flex gap-1 overflow-x-auto p-3 [@container(min-width:56rem)]:flex-col">{[{id:'',name:'全部通道'},...channels].map(c=><button key={c.id||'all'} type="button" aria-pressed={scope.kind==='none'&&channel===c.id} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择通道':undefined} onClick={()=>setChannel(c.id)}
-    className={`flex !min-h-11 shrink-0 items-center justify-between gap-2 rounded-base px-3 py-2 text-left text-sm ${scope.kind==='none'&&channel===c.id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle hover:bg-surface-hover'}`}>
-    <span className="truncate">{c.name}</span><span className="text-sm text-ink-subtle">{c.id?counts.get(c.id)??'':rows.length||''}</span></button>)}</div>
-   <aside aria-label="今日空间行为概况" className="mx-3 mb-3 mt-auto hidden rounded-panel border border-line p-3 [@container(min-width:56rem)]:block"><h2 className="mb-1 text-sm font-semibold">今天空间行为记录</h2>
-    <p className="mb-3 text-xs text-ink-subtle">全通道 · 今日已记录量，不随列表筛选变化；不含烟火、区域业务及名单告警。</p>
-    <div className="space-y-2">{[...triggerBehaviors].reverse().map(b=>{const count=todayState==='ready'?(today?.[b.id]??(todayComplete?0:null)):null;return <div key={b.id}><div className="flex justify-between text-sm"><span>{b.name}</span><span className="tabular-nums">{count??'—'}</span></div>
+ return <div className="flex h-full min-h-0 gap-4 bg-surface-page p-3 [@container(min-width:40rem)]:p-4">
+  {/* Wide screens only: a quiet daily summary beside the list, never a second navigation. */}
+  <aside aria-label="今日空间行为概况" className="hidden w-52 shrink-0 flex-col gap-3 self-start rounded-panel border border-line bg-surface p-4 [@container(min-width:72rem)]:flex">
+   <div><h2 className="text-sm font-semibold text-ink">今天空间行为记录</h2>
+    <p className="mt-1 text-xs leading-5 text-ink-subtle">全通道 · 今日已记录量，不随列表筛选变化；不含烟火、区域业务及名单告警。</p></div>
+    <div className="space-y-2.5">{[...triggerBehaviors].reverse().map(b=>{const count=todayState==='ready'?(today?.[b.id]??(todayComplete?0:null)):null;return <div key={b.id}><div className="flex justify-between text-sm"><span>{b.name}</span><span className="tabular-nums">{count??'—'}</span></div>
      {count!==null&&<div className="mt-1 h-1.5 rounded bg-slate-100"><div className="h-1.5 rounded" style={{width:`${Math.round(count/maxToday*100)}%`,background:levelLook[b.id]!.color}}/></div>}</div>})}</div>
-    <p className="mt-2 text-xs text-ink-subtle">{todayState==='loading'?'正在读取统计…':todayState==='failed'?'统计暂不可用':!todayComplete?'采集覆盖不完整或未知；— 表示无可用计数，不代表零。':'采集覆盖完整。'}</p>
-   </aside>
-   <p className="hidden border-t border-line p-4 text-sm leading-relaxed text-ink-subtle [@container(min-width:56rem)]:block">同一规则的持续风险合并告警，条件稳定解除后重新布防；穿越按独立通过事件判断。</p>
-  </nav>
-  <main className="alarm-workspace flex min-w-0 flex-1 flex-col" style={{containerType:'inline-size'}}>
+    <p className="text-xs leading-5 text-ink-subtle">{todayState==='loading'?'正在读取统计…':todayState==='failed'?'统计暂不可用':!todayComplete?'采集覆盖不完整或未知；— 表示无可用计数，不代表零。':'采集覆盖完整。'}</p>
+   <p className="border-t border-line pt-3 text-xs leading-5 text-ink-subtle">同一规则的持续风险合并告警，条件稳定解除后重新布防；穿越按独立通过事件判断。</p>
+  </aside>
+  <main className="alarm-workspace flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-panel border border-line bg-surface" style={{containerType:'inline-size'}}>
    <AlarmInputNotice/>
    <PtzProtectionNotice/>
-   <div className="space-y-3 px-4 pb-3 pt-4 [@container(min-width:40rem)]:px-6">
-    {scope.kind!=='none'&&<div role={scope.kind==='invalid'?'alert':'status'} className="rounded-panel border border-line bg-surface p-3 text-sm">
+   <div className="space-y-3 border-b border-line px-4 py-3 [@container(min-width:40rem)]:px-5">
+    {scope.kind!=='none'&&<div role={scope.kind==='invalid'?'alert':'status'} className="rounded-base bg-surface-page p-3 text-sm">
     {scope.kind==='valid'?<>统计范围：<span title={`${scope.from} — ${scope.to}`}>{scopeTime(scope.from,scope.analytics?.timezone)} — {scopeTime(scope.to,scope.analytics?.timezone)}</span>（结束不含），{scope.locations.length?`${scope.locations.length} 个位置`:'全部位置（含未关联）'}。业务范围：{fixedBusinessKind?alarmBusinessName(fixedBusinessKind):'全部业务类型'}。{scope.analytics?'沿用统计条件，下方筛选仅缩小范围。':'通道和时间已固定，可按处理状态、结论和空间阶段继续筛选。'}</>:<>统计范围无效或不完整，无法读取告警。请返回统计页重新打开，或清除范围。</>}
      <button type="button" onClick={clearScope} className="btn-secondary ml-3 !min-h-11">清除统计范围</button>
      {scope.kind==='valid'&&scope.analytics&&<p className="mt-2 break-words text-xs text-ink-subtle">固定统计条件：{[
@@ -260,35 +256,47 @@ export default function AlarmListPage(){
      ].filter(Boolean).join(' · ')}。处理状态“全部”表示这些固定条件内的全部记录。</p>}
      {scope.kind==='valid'&&scope.locations.length>0&&<details className="mt-2"><summary className="min-h-11 cursor-pointer">查看统计位置</summary><ul>{scope.locations.map((pair,index)=><li key={index}>{channelName(pair.channel_id)} · {pair.zone_id}</li>)}</ul></details>}
     </div>}
-    <div className="flex flex-wrap items-center gap-3">
-     <div role="group" aria-label="处理状态" className="flex flex-wrap gap-1 rounded-base border border-line bg-surface p-1">{([['pending','未审核'],['human','已人工审核'],['ai','已 AI 审核'],['all','全部']] as const).map(([id,label])=>
-      <button key={id} type="button" aria-pressed={status===id} onClick={()=>pickStatus(id)} className={`!min-h-11 rounded-base px-3 py-1.5 text-sm ${status===id?'bg-primary-50 font-medium text-primary-600':'text-ink-subtle'}`}>{label}</button>)}</div>
-     <label className="flex items-center gap-2 text-sm text-ink-subtle">结论<select aria-label="审核结论" disabled={status==='pending'} title={status==='pending'?'未审核告警尚无确认或误报结论':undefined} value={review} onChange={e=>setReview(e.target.value)} className="form-input !min-h-11 w-auto"><option value="">全部</option><option value="handled">确认</option><option value="false_positive">误报</option></select></label>
-     <label className="flex items-center gap-2 text-sm text-ink-subtle">时间<select value={scope.kind==='none'?range:'scoped'} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择时间':undefined} onChange={e=>{rangeTouched.current=true;setRange(e.target.value as Range)}} className="form-input !min-h-11 w-auto py-1.5">{scope.kind!=='none'&&<option value="scoped">统计范围</option>}<option value="today">今天</option><option value="7d">近 7 天</option><option value="all">全部</option></select></label>
-     {status!=='acknowledged'&&pending.length>0&&<button type="button" disabled={!!bulk} onClick={askBulk} className={`btn-secondary !min-h-11 ml-auto`}>确认已加载（{Math.min(200,pending.length)}）</button>}
-     <button type="button" disabled={!!bulk||purge} onClick={()=>setPurge(true)} className="btn-secondary !min-h-11 text-danger-700">清空所有告警</button>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+     <div role="group" aria-label="处理状态" className={segmented}>{([['pending','未审核'],['human','已人工审核'],['ai','已 AI 审核'],['all','全部']] as const).map(([id,label])=>
+      <button key={id} type="button" aria-pressed={status===id} onClick={()=>pickStatus(id)} className={segment}>{label}</button>)}</div>
+     <span title="已加载的条数" className="text-sm text-ink-subtle"><span className={`font-semibold tabular-nums ${status==='pending'&&rows.length?'text-danger-700':'text-ink'}`}>{rows.length}{cursor?'+':''}</span> 条</span>
+     <div className="ml-auto flex items-center gap-1">
+      {status!=='acknowledged'&&pending.length>0&&<button type="button" disabled={!!bulk} onClick={askBulk} className="btn-primary !min-h-11">全部确认（{Math.min(200,pending.length)}）</button>}
+      <div className="relative" onBlur={e=>{if(!e.currentTarget.contains(e.relatedTarget as Node|null))setMore(false)}} onKeyDown={e=>{if(e.key==='Escape')setMore(false)}}>
+       <button type="button" aria-label="更多操作" aria-haspopup="menu" aria-expanded={more} onClick={()=>setMore(v=>!v)} className="inline-flex !min-h-11 min-w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover hover:text-ink"><MoreHorizontal size={18} aria-hidden="true"/></button>
+       {more&&<div role="menu" className="absolute right-0 top-full z-20 mt-1 w-44 rounded-panel border border-line bg-surface p-1 shadow-lg">
+        <button role="menuitem" type="button" disabled={!!bulk||purge} onClick={()=>{setMore(false);setPurge(true)}} className="flex !min-h-11 w-full items-center gap-2 rounded-base px-3 text-left text-sm text-danger-700 hover:bg-danger-50 disabled:opacity-50"><Trash2 size={16} aria-hidden="true"/>清空所有告警</button>
+       </div>}
+      </div>
+     </div>
     </div>
-    <label className="flex flex-wrap items-center gap-2 text-sm text-ink-subtle">业务类别<select aria-label="告警业务类型" className="form-input !min-h-11 w-auto max-w-full" value={effectiveBusinessKind} disabled={!!fixedBusinessKind||scope.kind==='invalid'} onChange={e=>pickBusinessKind(e.target.value)}><option value="">全部业务类型</option>{Object.entries(alarmBusinessKinds).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select>{fixedBusinessKind&&<span className="text-xs">统计页固定</span>}</label>
-    {spatialFilters&&<div role="group" aria-label="空间阶段" className="flex flex-wrap items-center gap-2"><span className="text-sm text-ink-subtle">空间阶段</span>{[{id:'',name:'全部阶段'},...triggerBehaviors].map(b=><button key={b.id||'all'} type="button" aria-pressed={localLevel===b.id} onClick={()=>{setLevel(b.id);if(b.id&&!fixedBusinessKind)setBusinessKind('spatial')}} className={pill}>
-     <span aria-hidden="true" className="h-2.5 w-2.5 rounded-sm" style={{background:b.id?levelLook[b.id]!.color:'#cbd5e1'}}/>{b.name}</button>)}</div>}
+    <div role="group" aria-label="筛选" className="flex flex-wrap items-center gap-2">
+     <label className={field}>通道<select aria-label="通道" value={scope.kind==='none'?channel:''} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择通道':undefined} onChange={e=>setChannel(e.target.value)} className={fieldSelect}><option value="">全部通道</option>{channels.map(c=><option key={c.id} value={c.id}>{c.name}{counts.get(c.id)?`（${counts.get(c.id)}）`:''}</option>)}</select></label>
+     <label className={field}>时间<select aria-label="时间" value={scope.kind==='none'?range:'scoped'} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择时间':undefined} onChange={e=>{rangeTouched.current=true;setRange(e.target.value as Range)}} className={fieldSelect}>{scope.kind!=='none'&&<option value="scoped">统计范围</option>}<option value="today">今天</option><option value="7d">近 7 天</option><option value="all">全部</option></select></label>
+     <label className={field} title={fixedBusinessKind?'统计页固定':undefined}>业务<select aria-label="告警业务类型" className={fieldSelect} value={effectiveBusinessKind} disabled={!!fixedBusinessKind||scope.kind==='invalid'} onChange={e=>pickBusinessKind(e.target.value)}><option value="">全部类型</option>{Object.entries(alarmBusinessKinds).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select></label>
+     {status!=='pending'&&<label className={field}>结论<select aria-label="审核结论" value={review} onChange={e=>setReview(e.target.value)} className={fieldSelect}><option value="">全部</option><option value="handled">确认</option><option value="false_positive">误报</option></select></label>}
+     {spatialFilters&&<div role="group" aria-label="空间阶段" className={segmented}>{[{id:'',name:'全部阶段'},...triggerBehaviors].map(b=><button key={b.id||'all'} type="button" aria-pressed={localLevel===b.id} onClick={()=>{setLevel(b.id);if(b.id&&!fixedBusinessKind)setBusinessKind('spatial')}} className={segment}>
+      {b.id&&<span aria-hidden="true" className="h-2 w-2 rounded-full" style={{background:levelLook[b.id]!.color}}/>}{b.name}</button>)}</div>}
+     {(review||localLevel||(scope.kind==='none'&&channel)||(!fixedBusinessKind&&businessKind)||(scope.kind==='none'&&rangeTouched.current))&&<button type="button" onClick={()=>{setReview('');setLevel('');if(scope.kind==='none')setChannel('');if(!fixedBusinessKind)setBusinessKind('');rangeTouched.current=false;setRange(status==='pending'?'all':'today')}} className="inline-flex !min-h-11 items-center px-2 text-sm text-primary hover:underline">清除筛选</button>}
+    </div>
     {bulk&&<AlarmConfirmation busy={bulk.phase==='working'} close={()=>setBulk(null)}><div role="group" aria-label="确认全部" className="flex flex-wrap items-center justify-end gap-3 text-sm"><p className="basis-full leading-relaxed"><strong>{bulk.scope}</strong>：确认这批已加载的 {bulk.items.length} 条告警？切换筛选不会改变此批次，行为统计不受影响。</p>
      {bulk.uncertain&&<p role="status" className="basis-full text-warning-700">上次结果未确认；重试沿用原批次，不会重复处理。</p>}
      <button type="button" disabled={bulk.phase==='working'} onClick={()=>setBulk(null)} className="btn-secondary !min-h-11">{bulk.uncertain?'关闭并稍后核对':'取消'}</button>
      <button type="button" disabled={bulk.phase==='working'} onClick={()=>void confirmAll()} className="btn-primary !min-h-11">{bulk.phase==='working'?'处理中…':`确认这 ${bulk.items.length} 条`}</button></div></AlarmConfirmation>}
     {bulkResult&&!bulk&&<p role="status">{bulkResult}</p>}
-    <details className="text-sm text-ink-subtle">
-     <summary className="min-h-11 cursor-pointer py-3">{!spatialFilters?(effectiveBusinessKind.endsWith('watchlist')?'名单候选需人工复核':'业务候选需人工审核'):automaticReview?'自动审核仅用于已授权且证据满足条件的告警':'告警审核以每条记录为准'} · 展开说明</summary>
+    <details className="text-xs text-ink-subtle">
+     <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-ink-subtle hover:text-primary"><Info size={14} aria-hidden="true"/>{!spatialFilters?(effectiveBusinessKind.endsWith('watchlist')?'名单候选需人工复核':'业务候选需人工审核'):automaticReview?'自动审核仅用于已授权且证据满足条件的告警':'告警审核以每条记录为准'} · 展开说明</summary>
      <p>烟火、区域业务候选及名单匹配需人工复核；名单相似度不代表身份概率。全局审核设置不表示所有业务已自动处理。</p>
      {automaticReview&&<p className="mt-2">{automaticReviewBanner(automaticReview)}</p>}
      {!automaticReview&&reference&&<p className="mt-2">全局 AI 参考分析：{reference.active?'后台运行中':'后台未运行'} · 已分析 {reference.counts.completed??0} · 分析中 {reference.counts.running??0} · 待分析 {(reference.counts.waiting??0)+(reference.counts.queued??0)} · 无法分析 {reference.counts.failed??0}。优先分析最新未审核告警；模型待验证，参考分数不改变审核结论。这些计数不是当前筛选结果。</p>}
     </details>
    </div>
-   <div ref={scroll} onPointerDownCapture={()=>{interaction.current=Date.now()}} onKeyDownCapture={()=>{interaction.current=Date.now()}} aria-busy={busy} className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-4 [@container(min-width:40rem)]:px-6">
-    {error&&<p role="alert">告警读取失败，请重试当前筛选。<button className="btn-secondary ml-2" onClick={()=>void load()}>重试</button></p>}
+   <div ref={scroll} onPointerDownCapture={()=>{interaction.current=Date.now()}} onKeyDownCapture={()=>{interaction.current=Date.now()}} aria-busy={busy} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+    {error&&<p role="alert" className="p-4">告警读取失败，请重试当前筛选。<button className="btn-secondary ml-2" onClick={()=>void load()}>重试</button></p>}
     {loaded&&!rows.length&&<p className="py-10 text-center text-ink-subtle">{cursor?'本批已处理完，可继续加载更早的未审核告警。':'当前筛选下没有告警。'}</p>}
-    {!!rows.length&&<div aria-label="告警记录" className="shrink-0 overflow-hidden rounded-panel border border-line bg-surface">{groups.map(([key,items])=>{const content=items.map(a=><div key={a.alarm_id} data-alarm-id={a.alarm_id}><AlarmRow alarm={a} trigger={triggerOf(a)} channelName={channelName(a.channel_id)} onOpen={stageId=>setDetail({id:a.alarm_id,stageId})} onHandle={intent=>setDetail({id:a.alarm_id,intent})}/></div>);return items.length===1?<div key={key}>{content}</div>:<details key={key} open className="border-b border-line"><summary className="min-h-11 cursor-pointer bg-surface-subtle px-3 py-2 text-sm">{channelName(items[0]!.channel_id)} · 同一区域一分钟内 {items.length} 条告警（分别审核）</summary>{content}</details>})}</div>}
-    {busy&&<p role="status" className="text-center text-sm text-ink-subtle">正在读取…</p>}
-    {cursor&&!busy&&<button type="button" onClick={()=>void load(true)} className="btn-secondary mx-auto">加载更早的告警</button>}
+    {!!rows.length&&<div aria-label="告警记录" className="shrink-0">{groups.map(([key,items])=>{const content=items.map(a=><div key={a.alarm_id} data-alarm-id={a.alarm_id}><AlarmRow alarm={a} trigger={triggerOf(a)} channelName={channelName(a.channel_id)} onOpen={stageId=>setDetail({id:a.alarm_id,stageId})} onHandle={intent=>setDetail({id:a.alarm_id,intent})}/></div>);return items.length===1?<div key={key}>{content}</div>:<details key={key} open className="border-b border-line"><summary className="min-h-11 cursor-pointer bg-surface-subtle px-3 py-2 text-sm">{channelName(items[0]!.channel_id)} · 同一区域一分钟内 {items.length} 条告警（分别审核）</summary>{content}</details>})}</div>}
+    {busy&&<p role="status" className="py-4 text-center text-sm text-ink-subtle">正在读取…</p>}
+    {cursor&&!busy&&<button type="button" onClick={()=>void load(true)} className="btn-secondary mx-auto my-4">加载更早的告警</button>}
    </div>
   </main>
   {purge&&<AlarmPurgeDialog close={()=>setPurge(false)} cleared={count=>{

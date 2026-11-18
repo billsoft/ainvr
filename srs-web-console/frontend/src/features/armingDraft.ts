@@ -109,9 +109,9 @@ export function createArmingDraft(input:ArmingSnapshotInput){
     for(const b of s.counterBindings){
       if(!b.id||counterIds.has(b.id))throw Error('计数选用编号重复')
       counterIds.add(b.id)
-      if(!b.counterId||!b.processorId)throw Error('请选择计数器和 AI 处理器')
+      if(!b.counterId||!b.processorId)throw Error('请选择统计和 AI 处理器')
       const key=JSON.stringify([b.counterId,b.zoneId,b.processorId])
-      if(counterKeys.has(key))throw Error('同一热区不能重复选用同一计数器')
+      if(counterKeys.has(key))throw Error('同一热区不能重复选用同一统计')
       counterKeys.add(key)
       const zone=s.zones.find(z=>z.id===b.zoneId)
       if(!zone)throw Error('计数选用的热区不存在')

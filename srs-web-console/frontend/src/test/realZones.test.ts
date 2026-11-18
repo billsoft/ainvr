@@ -4,7 +4,7 @@ import type { Counter, CounterResult } from '@/api/flowService'
 
 const zone = (id: string, name: string): ZoneSource => ({ zone_id: id, name, processor_id: 'p' })
 const usage = (zone_id: string, active = true, zone_name: string | null = null) => ({ binding_id: `b-${zone_id}`, source_id: 's', processor_id: 'p', zone_id, zone_name, active, counting: true, direction: { kind: 'line', edge: 'e', in_side: 'inward' } as const })
-const counter = (id: string, bindings: ReturnType<typeof usage>[]): Counter => ({ counter_id: id, name: `计数器${id}`, labels: [], method: 'line', outputs: 'both', names: { in: '进', out: '出' }, occupancy: false, max_gap_ms: 0, state: 'enabled', version: 1, bindings })
+const counter = (id: string, bindings: ReturnType<typeof usage>[]): Counter => ({ counter_id: id, name: `统计${id}`, labels: [], method: 'line', outputs: 'both', names: { in: '进', out: '出' }, occupancy: false, max_gap_ms: 0, state: 'enabled', version: 1, bindings })
 const result = (c: Counter, rows: { zone_id: string; in?: number; out?: number }[]): CounterResult => ({ counter: c, in: { occurrences: 0, buckets: [], coverage: 'complete' },
   zones: rows.map(r => ({ ...usage(r.zone_id), in: r.in === undefined ? undefined : { occurrences: r.in, tracked_targets: 0, coverage: { state: 'complete' as const }, buckets: [] }, out: r.out === undefined ? undefined : { occurrences: r.out, tracked_targets: 0, coverage: { state: 'complete' as const }, buckets: [] } })) })
 
@@ -20,7 +20,7 @@ it('lists the zones drawn in arming with every counter that uses them, keeps cou
 it('never loses a zone that a counter is actually using, even when the arming document could not be read', () => {
   const c = counter('1', [usage('boarding', true, '登船口')])
   const { zones } = assembleZones([], [c], null)
-  expect(zones.map(z => [z.zoneId, z.name, z.counters.map(k => k.name)])).toEqual([['boarding', '登船口', ['计数器1']]])
+  expect(zones.map(z => [z.zoneId, z.name, z.counters.map(k => k.name)])).toEqual([['boarding', '登船口', ['统计1']]])
   const named = assembleZones([zone('boarding', '登船口（新名）')], [c], null).zones
   expect(named).toHaveLength(1); expect(named[0]!.name).toBe('登船口（新名）')
   expect(assembleZones([], [counter('2', [usage('x', true, null)])], null).zones[0]!.name).toBe('热区')

@@ -126,8 +126,8 @@ export function ModelParametersDialog({ node, others, allowSameCapability, onApp
                 onChange={e => change({ ...draft, postprocess: { ...draft.postprocess, max_detections: e.currentTarget.valueAsNumber } })} />
             </label>
           </section>
-          {draft.model.adapter === 'plate_bpu' && <p className="text-xs leading-5 text-ink-subtle">自动检测、矫正和读牌。支持不超过8388608像素的输入，每帧最多为4个候选读牌；未读到不等于无牌。车辆通行仍由车辆计数器产生。</p>}
-          <p className="text-xs leading-5 text-ink-subtle">更换模型或识别目标后，请检查使用这些类别的计数器和告警规则。采样帧率在通道运行设置中统一调整。</p>
+          {draft.model.adapter === 'plate_bpu' && <p className="text-xs leading-5 text-ink-subtle">自动检测、矫正和读牌。支持不超过8388608像素的输入，每帧最多为4个候选读牌；未读到不等于无牌。车辆通行仍由车辆统计产生。</p>}
+          <p className="text-xs leading-5 text-ink-subtle">更换模型或识别目标后，请检查使用这些类别的统计和告警规则。采样帧率在通道运行设置中统一调整。</p>
           {error && <p role="alert" className="rounded-base bg-danger/5 p-3 text-sm text-danger">{error}</p>}
         </div>
         <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-line px-4 py-3 sm:px-6">

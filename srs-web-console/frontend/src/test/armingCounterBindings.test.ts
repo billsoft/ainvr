@@ -27,7 +27,7 @@ describe('热区上的计数选用',()=>{
   draft.putCounterBinding({...draft.read().counterBindings[0]!,direction:{kind:'line',edge:'c',in_side:'outward'},needsConfirmation:false})
   expect(()=>draft.changeSet()).not.toThrow()
  })
- it('移除热区一并移除它的计数选用；同一热区不能重复选用同一计数器',()=>{
+ it('移除热区一并移除它的计数选用；同一热区不能重复选用同一统计',()=>{
   const draft=createArmingDraft(readArmingSnapshot('cam','g',document))
   expect(()=>draft.putCounterBinding({id:'flow-2',counterId:'visitors',processorId:'ai',zoneId:'door',direction:{kind:'line',edge:'left',in_side:'inward'},needsConfirmation:false})).toThrow(/重复选用/)
   draft.removeZone('door')

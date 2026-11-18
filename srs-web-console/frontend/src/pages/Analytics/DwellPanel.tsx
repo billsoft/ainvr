@@ -154,7 +154,7 @@ export function DwellPanel({ locations, from, to, bucket, labels, labelNames, on
       <button type="button" role="tab" aria-selected={view === 'dwell'} className="border-b-2 border-transparent px-1 py-2 text-ink-subtle aria-selected:border-primary aria-selected:text-primary [@media(pointer:coarse)]:min-h-11" onClick={() => setView('dwell')}>停留片段</button>
       <button type="button" role="tab" aria-selected={view === 'heat'} className="border-b-2 border-transparent px-1 py-2 text-ink-subtle aria-selected:border-primary aria-selected:text-primary [@media(pointer:coarse)]:min-h-11" onClick={() => setView('heat')}>画面热度</button>
     </div>
-    <p className="text-[11px] text-ink-subtle" title="分析期间固定查询截止时间；使用顶部刷新读取最新数据。">筛选类别：{labels.length ? labels.map(displayLabel).join('、') : '全部类别'}（当前计数器类别）。<span title="历史类别变更时不能直接与通行次数核对。">统计范围与顶部筛选一致</span></p>
+    <p className="text-[11px] text-ink-subtle" title="分析期间固定查询截止时间；使用顶部刷新读取最新数据。">筛选类别：{labels.length ? labels.map(displayLabel).join('、') : '全部类别'}（当前统计类别）。<span title="历史类别变更时不能直接与通行次数核对。">统计范围与顶部筛选一致</span></p>
     {view === 'heat' ? index !== '' && location
       ? <RegionHeatPanel key={location.channel_id + ':' + location.zone_id} location={location} from={from} to={to} labels={labels} autoLoad={!!onSelectZone} revision={revision} onVariantChange={onVariantChange} />
       : <p className="text-sm text-ink-subtle">先选择统计位置，再查询该位置的画面观测热度。</p>

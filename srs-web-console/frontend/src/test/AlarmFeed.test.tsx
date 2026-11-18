@@ -61,7 +61,7 @@ it('filters by status, level, channel and time from the toolbar and the channel 
   await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('pending',undefined,expect.objectContaining({behavior:'region_traverse'})))
   fireEvent.click(screen.getByRole('button',{name:'已人工审核'}))
   await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('human',undefined,expect.anything()))
-  fireEvent.click(within(screen.getByRole('navigation',{name:'告警通道'})).getByRole('button',{name:/东围栏/}))
+  fireEvent.change(screen.getByLabelText('通道'),{target:{value:'east'}})
   await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('human',undefined,expect.objectContaining({channel_id:'east'})))
   const filters=vi.mocked(alarmEventService.list).mock.lastCall![2]!
   const midnight=new Date();midnight.setHours(0,0,0,0)
@@ -84,7 +84,7 @@ it('confirms every loaded alarm after an on-page confirmation and reports partia
   vi.mocked(alarmEventService.confirm).mockResolvedValueOnce({items:[{alarm_id:'a',outcome:'succeeded'},{alarm_id:'b',outcome:'version_conflict'}]})
   const confirm=vi.spyOn(window,'confirm')
   await open()
-  fireEvent.click(screen.getByRole('button',{name:'确认已加载（2）'}))
+  fireEvent.click(screen.getByRole('button',{name:'全部确认（2）'}))
   expect(alarmEventService.confirm).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
   expect(await screen.findByText('已确认 1 条；1 条记录已变化，请刷新后重试。')).toBeInTheDocument()
@@ -121,7 +121,7 @@ it('confirms on a LAN page without secure-context crypto helpers',async()=>{
 it('an uncertain bulk confirmation is retried with the same operation key',async()=>{
   vi.mocked(alarmEventService.confirm).mockRejectedValueOnce(Error('timeout')).mockResolvedValueOnce({items:[{alarm_id:'a',outcome:'already_acknowledged'},{alarm_id:'b',outcome:'succeeded'}]})
   await open()
-  fireEvent.click(screen.getByRole('button',{name:'确认已加载（2）'}));fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
+  fireEvent.click(screen.getByRole('button',{name:'全部确认（2）'}));fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
   expect(await screen.findByText(/结果未确认/)).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
   expect(await screen.findByText('已确认 2 条。')).toBeInTheDocument()
@@ -155,7 +155,7 @@ it('unhandled alarms from before midnight stay in the default view',async()=>{
   expect(screen.getByLabelText('时间')).toHaveValue('all')
 })
 it('bulk confirmation opens one separate dialog and Escape cancels without writing',async()=>{
- await open();const entry=screen.getByRole('button',{name:'确认已加载（2）'});entry.focus();fireEvent.click(entry)
+ await open();const entry=screen.getByRole('button',{name:'全部确认（2）'});entry.focus();fireEvent.click(entry)
  const dialog=await screen.findByRole('dialog',{name:'批量确认告警'})
  expect(alarmEventService.confirm).not.toHaveBeenCalled()
  fireEvent.keyDown(dialog,{key:'Escape'})
@@ -214,7 +214,7 @@ it('keeps keyboard focus inside details and restores it when Escape closes the d
 })
 it('freezes the bulk selection while its request outcome is uncertain, even if filters change',async()=>{
  vi.mocked(alarmEventService.confirm).mockRejectedValueOnce(Error('timeout')).mockResolvedValueOnce({items:[{alarm_id:'a',outcome:'already_acknowledged'},{alarm_id:'b',outcome:'succeeded'}]})
- await open();fireEvent.click(screen.getByRole('button',{name:'确认已加载（2）'}));fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
+ await open();fireEvent.click(screen.getByRole('button',{name:'全部确认（2）'}));fireEvent.click(screen.getByRole('button',{name:'确认这 2 条'}))
  await screen.findByText(/结果未确认/)
  vi.mocked(alarmEventService.list).mockResolvedValue({items:[alarm('other')],next_cursor:null})
  fireEvent.click(screen.getByRole('button',{name:/^穿过/}))
@@ -278,13 +278,13 @@ it('uses the authoritative AI source for a replayed acknowledgement',async()=>{
  await waitFor(()=>expect(card(/门前禁区/)).toHaveTextContent('已 AI 审核 · 确认'))
 })
 
-it('clears a completed conclusion when switching to unreviewed',async()=>{
+it('clears a completed conclusion and hides that filter when switching to unreviewed',async()=>{
  await open();fireEvent.click(screen.getByRole('button',{name:'已人工审核'}))
  fireEvent.change(screen.getByLabelText('审核结论'),{target:{value:'handled'}})
  await waitFor(()=>expect(alarmEventService.list).toHaveBeenLastCalledWith('human',undefined,expect.objectContaining({disposition:'handled'})))
  fireEvent.click(screen.getByRole('button',{name:'未审核'}))
- await waitFor(()=>expect(screen.getByLabelText('审核结论')).toHaveValue(''))
- expect(screen.getByLabelText('审核结论')).toBeDisabled()
+ // Unreviewed alarms have no conclusion yet: the conclusion filter is not offered.
+ await waitFor(()=>expect(screen.queryByLabelText('审核结论')).not.toBeInTheDocument())
  expect(vi.mocked(alarmEventService.list).mock.lastCall![2]!.disposition).toBeUndefined()
 })
 it('reference scores stay unreviewed and explain the validation status',async()=>{
@@ -302,7 +302,7 @@ it('refreshes new alarms automatically and preserves an open confirmation draft'
   await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
   expect(screen.getAllByRole('article')).toHaveLength(3)
   expect(screen.queryByText(/点击刷新/)).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button',{name:'确认已加载（3）'}))
+  fireEvent.click(screen.getByRole('button',{name:'全部确认（3）'}))
   const calls=vi.mocked(alarmEventService.list).mock.calls.length
   await act(async()=>{await vi.advanceTimersByTimeAsync(6000)})
   expect(vi.mocked(alarmEventService.list).mock.calls.length).toBe(calls)
