@@ -42,8 +42,12 @@ it('beside the analysis it never queries numbers or offers its own time range', 
   expect(await screen.findByRole('article', { name: '大门客流' })).toBeInTheDocument()
   expect(flowService.query).not.toHaveBeenCalled()
   expect(screen.queryByRole('group', { name: '时间范围' })).toBeNull()
-  expect(screen.getByText(/数量按“统计分析”里选的时段：今天/)).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: /新建统计/ })).toBeInTheDocument()
+  // One line on top: the period the numbers follow, and a compact way to add a statistic.
+  const top = screen.getByRole('group', { name: '统计列表操作' })
+  expect(top).toHaveTextContent('今天')
+  expect(within(top).getByRole('button', { name: /新建统计/ })).toBeInTheDocument()
+  expect(screen.queryByText(/点选一项，左侧显示/)).toBeNull()
+  expect(screen.queryByText(/数量按“统计分析”里选的时段/)).toBeNull()
   expect(screen.queryByText(new RegExp('计数'+'器'))).toBeNull()
 })
 
@@ -121,7 +125,7 @@ it('the chosen card carries the overview: large numbers, change, peak and net; o
   const other = screen.getByRole('radio', { name: /车间客流/ })
   expect(other).toHaveTextContent('↑ 5.0%')
   expect(within(other).queryByLabelText('概览')).toBeNull()
-  expect(screen.getByText(/箭头为较昨天同时段/)).toBeInTheDocument()
+  expect(screen.getByRole('group', { name: '统计列表操作' })).toHaveTextContent('箭头较昨天同时段')
   // The trend moved from the middle onto the chosen card; other cards stay compact.
   expect(within(screen.getByRole('article', { name: '大门客流' })).getByLabelText('通行趋势')).toBeInTheDocument()
   expect(within(screen.getByRole('article', { name: '车间客流' })).queryByLabelText('通行趋势')).toBeNull()

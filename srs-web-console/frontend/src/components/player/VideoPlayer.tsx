@@ -26,6 +26,7 @@ import {
   attachWebRTC, extractWebrtcJitterBufferRaw, extractWebrtcVideoStats, webrtcPlayUrls,
   WebrtcWatchdog,
 } from './webrtc'
+import { connectionCapReached, mediaServerReachable, recoverFromConnectionCap, retryDelay } from './playerRecovery'
 import { inspectSeiDetections, SeiFrameCache, type SeiFrameDetections } from './seiDetections'
 import { AiDetectionOverlay } from './AiDetectionOverlay'
 import { SavedZoneOverlay } from './SavedZoneOverlay'
@@ -431,6 +432,7 @@ export function VideoPlayer({
       const ai = !!aiChannelIdRef.current
       if (statusRef.current === 'playing' && hiddenFor < VISIBILITY_RECONNECT_AFTER_MS) return
       autoReconnectsRef.current = []
+      failuresRef.current = 0
       if (ai) setOverlaySync('syncing')
       dispatch({ type: 'retry' })
     }
@@ -438,14 +440,27 @@ export function VideoPlayer({
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [canConnect, state.chain])
 
-  // 失败不是终点：可见时按固定间隔自动重试（隐藏时等回到前台再说）。
+  // 失败不是终点：自动重试，但每次重试都要新建一个连接，而浏览器给每个页面的连接名额有限
+  // （见 playerRecovery）。所以先确认服务器能连上再建连接；源一直失败就逐次放慢；网络一恢复立刻重连。
+  // 隐藏时不建连接，回到前台由可见性处理重连。
+  const failuresRef = useRef(0)
+  useEffect(() => { if (state.status === 'playing') failuresRef.current = 0 }, [state.status])
   useEffect(() => {
     if (!canConnect || state.status !== 'failed' || !state.chain.length) return
-    const timer = setInterval(() => {
-      if (!document.hidden) dispatch({ type: 'retry' })
-    }, FAILED_RETRY_MS)
-    return () => clearInterval(timer)
-  }, [canConnect, state.status, state.chain])
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const schedule = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => void attempt(), ms) }
+    const attempt = async () => {
+      if (!alive) return
+      if (document.hidden || !(await mediaServerReachable())) { if (alive) schedule(FAILED_RETRY_MS); return }
+      if (alive) dispatch({ type: 'retry' })
+    }
+    failuresRef.current += 1
+    schedule(retryDelay(failuresRef.current))
+    const onOnline = () => { failuresRef.current = 0; schedule(0) }
+    window.addEventListener('online', onOnline)
+    return () => { alive = false; clearTimeout(timer); window.removeEventListener('online', onOnline) }
+  }, [canConnect, state.status, state.generation, state.chain])
 
   // 连接中的兜底：ICE 可能连上却始终不出画面（连接中的重连事件已被忽略），
   // 超时才算一次失败。隐藏时不计（后台本就不出画面）。
@@ -691,6 +706,8 @@ export function VideoPlayer({
           localCleanup?.()
         }
       } catch (e) {
+        // The page has no connections left: only a reload gives them back, so a wall display recovers by itself.
+        if (connectionCapReached(e)) recoverFromConnectionCap()
         if (!cancelled && mountedRef.current) {
           activeGenerationRef.current = null
           dispatch({ type: 'fail', reason: e instanceof Error ? e.message : String(e) })

@@ -202,6 +202,48 @@ describe('attachWebRTC 编码帧通道选路', () => {
     handle.close()
   })
 
+  it('关闭连接时断开编码帧通道并清掉连接上的回调：已关闭的连接不能被任何东西继续引用', async () => {
+    // 浏览器给每个页面的连接数有上限，已关闭但仍被引用的连接一直占名额；占满后整页再也连不上。
+    const { receiver, closed } = installFakes({ insertable: true, script: false })
+    let cancelled: unknown = null
+    receiver.createEncodedStreams = () => ({
+      readable: new ReadableStream({ cancel(reason) { cancelled = reason ?? 'cancelled' } }),
+      writable: new WritableStream(),
+    })
+    const handle = await attachWebRTC(document.createElement('video'), {
+      api: 'x', streamurl: 'y', onEncodedVideoFrame: () => {}, onConnectionLost: () => {},
+    })
+    handle.close()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cancelled).not.toBeNull()
+    const closedPc = closed[0] as { ontrack: unknown; onconnectionstatechange: unknown; oniceconnectionstatechange: unknown }
+    expect(closedPc.ontrack).toBeNull()
+    expect(closedPc.onconnectionstatechange).toBeNull()
+    expect(closedPc.oniceconnectionstatechange).toBeNull()
+  })
+
+  it('关闭后编码帧通道不再持有播放器的回调：浏览器留着这条数据流也牵不住连接和画面', async () => {
+    // Chrome keeps the encoded stream of a closed connection alive; whatever its callbacks reach stays alive with it.
+    const { receiver } = installFakes({ insertable: true, script: false })
+    let input!: ReadableStreamDefaultController
+    receiver.createEncodedStreams = () => ({
+      readable: new ReadableStream({ start(c) { input = c } }),
+      writable: new WritableStream(),
+    })
+    const onFrame = vi.fn(), onError = vi.fn()
+    const handle = await attachWebRTC(document.createElement('video'), {
+      api: 'x', streamurl: 'y', onEncodedVideoFrame: onFrame, onEncodedPipelineError: onError,
+    })
+    input.enqueue({ timestamp: 1, data: new Uint8Array([1]).buffer })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(onFrame).toHaveBeenCalledTimes(1)
+    handle.close()
+    try { input.enqueue({ timestamp: 2, data: new Uint8Array([2]).buffer }) } catch { /* already cancelled */ }
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(onFrame).toHaveBeenCalledTimes(1)
+    expect(onError).not.toHaveBeenCalled()
+  })
+
   it('只有 RTCRtpScriptTransform（Safari/iPad）→ Worker 通道，回调拿到主线程时基的到达时刻', async () => {
     const { receiver, created } = installFakes({ insertable: false, script: true })
     const video = document.createElement('video')
@@ -222,16 +264,17 @@ describe('attachWebRTC 编码帧通道选路', () => {
     expect(w.terminated).toBe(true)
   })
 
-  it('两种都有（Chrome）→ 保持原来的 createEncodedStreams 路径，行为不变', async () => {
+  it('两种都有（新版 Chrome）→ 走 Worker 通道：主线程编码帧数据流会让关闭的连接永远不被释放', async () => {
+    // 190 实测（Chrome 156）：读过 createEncodedStreams 的连接关闭后永不回收，Worker 通道的连接正常回收且照样收帧。
     const { receiver, created } = installFakes({ insertable: true, script: true })
     const handle = await attachWebRTC(document.createElement('video'), {
       api: 'x', streamurl: 'y', onEncodedVideoFrame: () => {},
     })
     expect(handle.encodedFramesSupported).toBe(true)
-    expect(created[0]).toEqual({ encodedInsertableStreams: true })
-    expect(receiver.transform).toBeUndefined()
-    expect(FakeWorker.last).toBeNull()
+    expect(created[0]).toBeUndefined()
+    expect(receiver.transform).toBeInstanceOf(FakeScriptTransform)
     handle.close()
+    expect(FakeWorker.last!.terminated).toBe(true)
   })
 
   it('都没有 → encodedFramesSupported=false，调用方显示不可用', async () => {
@@ -243,12 +286,23 @@ describe('attachWebRTC 编码帧通道选路', () => {
     handle.close()
   })
 
-  it('建连失败（SDP 请求失败）时关掉 PC 和 Worker，不留泄漏——失败后会反复重试', async () => {
+  it('建连失败（SDP 请求失败）时关掉 PC 并终止 Worker，不留泄漏——失败后会反复重试', async () => {
+    // The Worker must be in place before negotiation (frames never reach a late one); a failed attempt ends it.
     const { closed } = installFakes({ insertable: false, script: true, fetchFails: true })
     await expect(attachWebRTC(document.createElement('video'), {
       api: 'x', streamurl: 'y', onEncodedVideoFrame: () => {},
     })).rejects.toThrow('Failed to fetch')
     expect(closed).toHaveLength(1)
     expect(FakeWorker.last!.terminated).toBe(true)
+  })
+
+  it('Chrome 路径同样：请求失败的尝试不创建编码帧数据流', async () => {
+    const { receiver } = installFakes({ insertable: true, script: false, fetchFails: true })
+    const created = vi.fn(receiver.createEncodedStreams as () => unknown)
+    receiver.createEncodedStreams = created
+    await expect(attachWebRTC(document.createElement('video'), {
+      api: 'x', streamurl: 'y', onEncodedVideoFrame: () => {},
+    })).rejects.toThrow('Failed to fetch')
+    expect(created).not.toHaveBeenCalled()
   })
 })

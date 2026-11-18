@@ -135,12 +135,19 @@ export default function FlowPage({variant='full'}:{variant?:'full'|'manage'}={})
   setClearing({counterId:c.counter_id,counterName:c.name,label:bindingId?zoneName(selected[0]!):`全部 ${selected.length} 个统计位置（含已取消关联）`,bindingIds:selected.map(z=>z.binding_id),from:currentRange.from.toISOString(),to:to.toISOString()})
  }
  const list=counters??[]
- return <main className="alarm-workspace space-y-4 p-4 md:p-6">
+ return <main className={`alarm-workspace ${variant==='manage'&&sel?'space-y-3 p-3':'space-y-4 p-4 md:p-6'}`}>
   <AlarmInputNotice/>
-  <header className="flex flex-wrap items-center gap-3">
-   <div className="min-w-0 basis-full [@container(min-width:40rem)]:flex-1 [@container(min-width:40rem)]:basis-0"><h1 className="page-title [@container(max-width:40rem)]:sr-only">统计列表</h1><p className="mt-1 text-sm text-ink-subtle">{variant==='manage'&&sel?'每个统计数经过计数线的目标。点选一项，左侧显示它的分析。':'统计经过计数线的目标数量。统计在这里新建，在实时监看的布防中选用到热区。'}</p></div>
+  {variant==='manage'&&sel
+   // Beside the analysis the column title already says what this is: one line with the period and a compact add button.
+   ?<div role="group" aria-label="统计列表操作" className="flex items-center gap-2">
+    <h1 className="sr-only">统计列表</h1>
+    <p className="min-w-0 flex-1 text-xs leading-5 text-ink-subtle" title="数量按“统计分析”里选的时段；在那里切换时间">时段 <span className="font-medium text-ink">{sel.range.label}</span>{sel.compareLabel?<> · 箭头较{sel.compareLabel}</>:null}</p>
+    <button type="button" className="btn-primary shrink-0 !min-h-9 !px-3 text-sm [@media(pointer:coarse)]:!min-h-11" onClick={()=>setEditing('new')}><Plus size={16} aria-hidden="true"/>新建统计</button>
+   </div>
+   :<header className="flex flex-wrap items-center gap-3">
+   <div className="min-w-0 basis-full [@container(min-width:40rem)]:flex-1 [@container(min-width:40rem)]:basis-0"><h1 className="page-title [@container(max-width:40rem)]:sr-only">统计列表</h1><p className="mt-1 text-sm text-ink-subtle">统计经过计数线的目标数量。统计在这里新建，在实时监看的布防中选用到热区。</p></div>
    <button type="button" className="btn-primary" onClick={()=>setEditing('new')}><Plus size={16} aria-hidden="true"/>新建统计</button>
-  </header>
+  </header>}
   {notice&&<p role="status" className="rounded-base border border-line bg-surface p-3 text-sm">{notice}</p>}
   {!counters&&<p role="status" className="py-8 text-center text-sm text-ink-subtle">正在读取统计…</p>}
   {loadError&&<p role="alert" className="text-sm text-danger">{loadError} <button type="button" className="btn-secondary ml-2" onClick={()=>setRevision(n=>n+1)}>重新读取</button></p>}

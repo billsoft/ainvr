@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, expect, it, vi } from 'vitest'
-import AnalyticsPage from '@/pages/Analytics'
+import AnalyticsPage, { alarmAnalysisSearch } from '@/pages/Analytics'
 import type { PlanCanvasProps } from '@/pages/Analytics/plan/PlanCanvas'
 import { flowService, type CounterResult } from '@/api/flowService'
 import { alarmEventService } from '@/api/alarmEventService'
@@ -82,12 +82,18 @@ it('a timed refresh keeps the screen on the last answer instead of blanking it',
   release({from,to,items:[result]})
  }finally{vi.useRealTimers()}
 })
-it('a statistics subject switch only offers passages and alarms; vehicle statistics are ordinary statistics',async()=>{
+it('alarm analysis lives under 告警分析: an old statistics link keeps its period, places and rule',()=>{
+ const old=new URLSearchParams({subject:'alarms',range:'custom',from:'2026-10-01T00:00:00Z',to:'2026-10-02T00:00:00Z',compare:'0',alarm_locations:'[]',trigger_id:'t1',event_kind:'spatial',alarm_tab:'heat',counters:'["c"]'})
+ const p=new URLSearchParams(alarmAnalysisSearch(old))
+ expect(Object.fromEntries(p)).toEqual({view:'analysis',range:'custom',compare:'0',afrom:'2026-10-01T00:00:00Z',ato:'2026-10-02T00:00:00Z',alarm_locations:'[]',rule:'t1',event_kind:'spatial'})
+ expect(new URLSearchParams(alarmAnalysisSearch(new URLSearchParams({subject:'alarms',alarm_tab:'quality'})))).toHaveProperty('size',2)
+})
+it('vehicle statistics are ordinary statistics, and the page offers no subject switch',async()=>{
  const car={...counter,counter_id:'car',name:'车辆进出',labels:[{label_id:'car',name:'car'}]}
  vi.mocked(flowService.list).mockResolvedValue({items:[counter,car]} as never)
  render(<MemoryRouter initialEntries={['/analytics?subject=vehicles']}><AnalyticsPage/></MemoryRouter>)
  await waitFor(()=>expect(screen.getByLabelText('统计')).toHaveValue('car'))
- expect([...screen.getByLabelText('统计对象').querySelectorAll('option')].map(o=>o.textContent)).toEqual(['通行统计','告警分析'])
+ expect(screen.queryByLabelText('统计对象')).toBeNull()
 })
 beforeEach(()=>{
  vi.clearAllMocks()
@@ -211,7 +217,7 @@ it('freezes the analysis range while a region observation is selected',async()=>
  }finally{vi.useRealTimers()}
 })
 
-it('retains global compatible totals but never merges two counters into one map reading', async () => {
+it('a total maps every statistic at once but never merges two statistics on one zone into one reading', async () => {
  const shared = {...counter,counter_id:'counter2',name:'同区另一统计',bindings:[{...counter.bindings[0],binding_id:'b3'}]}
  vi.mocked(flowService.list).mockResolvedValue({items:[counter,shared]} as never)
  vi.mocked(flowService.query).mockResolvedValue({from,to,items:[result,{...result,counter:shared,zones:[{...shared.bindings[0],in:{...series,occurrences:7},out:series}]}]} as never)
@@ -219,12 +225,11 @@ it('retains global compatible totals but never merges two counters into one map 
  await screen.findByText('104 人次')
  pickTotal()
  expect(await screen.findByText('111 人次')).toBeInTheDocument()
- expect(screen.getByTestId('map-label-z1')).toHaveTextContent('进入 4 · 离开 2')
+ // z1 carries both statistics: shown as two locations to open, not summed; z2 belongs to one of them.
+ expect(screen.getByTestId('map-label-z1')).toHaveTextContent('2 个统计位置 · 点击查看')
  expect(screen.getByTestId('map-label-z2')).toHaveTextContent('进入 100 · 离开 4')
- expect(screen.getByTestId('map-label-z1')).toHaveTextContent('单位人次')
- fireEvent.change(screen.getByLabelText('地图统计'),{target:{value:'counter2'}})
- expect(screen.getByTestId('map-label-z1')).toHaveTextContent('进入 7 · 离开 4')
- expect(screen.getByTestId('map-label-z2')).toHaveTextContent('未关联当前统计')
+ expect(screen.getByTestId('map-label-z2')).toHaveTextContent('单位人次')
+ expect(screen.queryByLabelText('地图统计')).not.toBeInTheDocument()
 })
 it('lists historical bindings without selecting them by default and restores explicit historical URL selections', async () => {
  const historical={...counter.bindings[0],binding_id:'old-binding',zone_id:'old-zone',zone_name:'旧入口',active:false}

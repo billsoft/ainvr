@@ -77,34 +77,54 @@ type MinimalPC = {
  * ⚠️ 帧必须原样 enqueue 回去，否则视频不会解码（这条链路是解码前的必经之路，
  * 不是旁路监听）。回调抛错不能冒泡——所以整段包在 try/catch 里。
  */
+/** Returns the function that cuts the pipe (null when the browser has no encoded streams). */
 function attachEncodedFrameTap(
   trans: MinimalTransceiver | void,
   onFrame: (rtpTimestamp: number, data: Uint8Array, arrivalMs: number) => void,
   onError: (reason: string) => void,
-): boolean {
+): (() => void) | null {
   const receiver = trans && typeof trans === 'object' ? trans.receiver : undefined
-  if (!receiver || typeof receiver.createEncodedStreams !== 'function') return false
+  if (!receiver || typeof receiver.createEncodedStreams !== 'function') return null
+  let streams: { readable: ReadableStream; writable: WritableStream }
   try {
-    const streams = receiver.createEncodedStreams()
-    const transform = new TransformStream<
-      { timestamp: number; data: ArrayBuffer },
-      { timestamp: number; data: ArrayBuffer }
-    >({
-      transform(frame, controller) {
-        try {
-          onFrame(frame.timestamp, new Uint8Array(frame.data), performance.now())
-        } catch {
-          // 叠加层出问题绝不能拖垮视频解码，静默吞掉这一帧的解析
-        }
-        controller.enqueue(frame)
-      },
-    })
-    void streams.readable.pipeThrough(transform).pipeTo(streams.writable).catch((error) => {
-      onError(`encoded stream: ${String(error)}`)
-    })
-    return true
+    streams = receiver.createEncodedStreams()
   } catch {
-    return false
+    return null
+  }
+  return pipeEncodedFrames(streams, onFrame, onError)
+}
+
+/**
+ * Chrome keeps the encoded stream of a closed connection alive once it has been read, and with it the connection
+ * itself (measured on 190, Chrome 156) — which is why attachWebRTC prefers the Worker channel and uses this one only
+ * where that is missing. What this function can limit is what else stays alive: the pipe's callbacks reach the
+ * caller only through `link`, which closing empties, and this scope holds nothing but the link and the stop signal,
+ * so a leaked stream never keeps the player, its video element or the page.
+ */
+function pipeEncodedFrames(
+  streams: { readable: ReadableStream; writable: WritableStream },
+  onFrame: (rtpTimestamp: number, data: Uint8Array, arrivalMs: number) => void,
+  onError: (reason: string) => void,
+): () => void {
+  const link: { onFrame: typeof onFrame | null; onError: typeof onError | null } = { onFrame, onError }
+  const stop = new AbortController()
+  const transform = new TransformStream<{ timestamp: number; data: ArrayBuffer }, { timestamp: number; data: ArrayBuffer }>({
+    transform(frame, controller) {
+      try {
+        link.onFrame?.(frame.timestamp, new Uint8Array(frame.data), performance.now())
+      } catch {
+        // 叠加层出问题绝不能拖垮视频解码，静默吞掉这一帧的解析
+      }
+      controller.enqueue(frame)
+    },
+  })
+  void streams.readable.pipeThrough(transform).pipeTo(streams.writable, { signal: stop.signal }).catch((error) => {
+    if (!stop.signal.aborted) link.onError?.(`encoded stream: ${String(error)}`)
+  })
+  return () => {
+    link.onFrame = null
+    link.onError = null
+    stop.abort()
   }
 }
 
@@ -213,6 +233,10 @@ function attachScriptTransformTap(
   }
 }
 
+/** 标准 RTCRtpScriptTransform（Worker 通道）是否可用：Safari/iPad 与新版 Chrome 都有，优先用它。 */
+function hasScriptTransform(): boolean {
+  return typeof (window as unknown as { RTCRtpScriptTransform?: unknown }).RTCRtpScriptTransform === 'function'
+}
 /** Chrome 的 createEncodedStreams 是否可用——必须建连前知道（要在构造 PC 时声明） */
 function hasInsertableStreams(): boolean {
   const R = (window as unknown as { RTCRtpReceiver?: { prototype?: object } }).RTCRtpReceiver
@@ -228,10 +252,15 @@ export async function attachWebRTC(
   }).RTCPeerConnection
   if (!PC) throw new Error('当前浏览器不支持 WebRTC')
 
-  // encodedInsertableStreams 必须在建连时声明，事后挂不上（Chrome 的要求）。
-  // Chrome 两种接口都有时仍走它（与改造前一致）；只有标准接口时（Safari）不声明。
-  // 不需要编码帧时不传，行为与改造前完全一致。
-  const useInsertable = !!opts.onEncodedVideoFrame && hasInsertableStreams()
+  // encodedInsertableStreams 必须在建连时声明，事后挂不上（Chrome 的要求），所以选路要在构造 PC 之前定。
+  // 不需要编码帧时两种都不用。
+  // 编码帧取 SEI 优先走标准 RTCRtpScriptTransform（Worker）：Chrome 的 createEncodedStreams 数据流一旦被读过，
+  // 连接关闭后浏览器永不释放它（190 实测 Chrome 156：每关一个连接就留下一个，整页最多约 500 个，满了全页再也
+  // 建不了连接，断网恢复后画面回不来就是这个原因）；Worker 通道的连接正常回收，照样逐帧收到 SEI。
+  // 只有不支持 Worker 通道的浏览器才用主线程数据流，并且只在服务器应答成功后才接（失败的尝试不碰它）。
+  const wantsFrames = !!opts.onEncodedVideoFrame
+  const useScript = wantsFrames && hasScriptTransform()
+  const useInsertable = wantsFrames && !useScript && hasInsertableStreams()
   const pc = useInsertable
     ? new PC({ encodedInsertableStreams: true })
     : new PC()
@@ -256,6 +285,11 @@ export async function attachWebRTC(
       } catch {
         /* already closed */
       }
+      // Nothing may keep a closed connection reachable: the browser counts it against the page's allowance
+      // until it can free it (see playerRecovery).
+      pc.ontrack = null
+      pc.onconnectionstatechange = null
+      pc.oniceconnectionstatechange = null
       video.srcObject = null
     },
     getStats: () => pc.getStats(),
@@ -286,15 +320,10 @@ export async function attachWebRTC(
   const videoTrans = pc.addTransceiver('video', { direction: 'recvonly' })
   pc.addTransceiver('audio', { direction: 'recvonly' })
 
-  // 必须在 setRemoteDescription 之前挂好：媒体一开始流动就会有编码帧过来，
-  // 迟挂等于开头那批帧的 SEI 全丢（同 ontrack 的早绑定要求）。
-  if (opts.onEncodedVideoFrame) {
-    if (useInsertable) {
-      encodedFramesSupported = attachEncodedFrameTap(videoTrans, opts.onEncodedVideoFrame, reportPipelineError)
-    } else {
-      disposeTap = attachScriptTransformTap(videoTrans, opts.onEncodedVideoFrame, reportPipelineError)
-      encodedFramesSupported = disposeTap !== null
-    }
+  // Worker 通道必须在协商前挂上，晚挂收不到任何编码帧（190 实测）。
+  if (useScript && opts.onEncodedVideoFrame) {
+    disposeTap = attachScriptTransformTap(videoTrans, opts.onEncodedVideoFrame, reportPipelineError)
+    encodedFramesSupported = disposeTap !== null
   }
 
   // 建连阶段任何一步失败（SDP 请求失败、ICE 超时/失败）都在这里收尾：调用方拿不到 handle，
@@ -324,6 +353,14 @@ export async function attachWebRTC(
       const data = (await res.json()) as { code: number; sdp?: string }
       if (data.code !== 0 || !data.sdp) {
         throw new Error(`WebRTC API 错误 code=${data.code}`)
+      }
+      // 编码帧通道在服务器应答之后、setRemoteDescription 之前挂：媒体一开始流动就会有编码帧过来，
+      // 这时还没有任何帧，开头那批帧的 SEI 一帧不丢。不在建连一开始就挂：Chrome 对读过编码帧数据流
+      // 的连接，关闭后永远不释放（190 实测：每个失败的重试都留下一个，直到整页再也建不了连接）。
+      // 绝大多数重试失败在这一步之前（无流、断网、凭据过期），它们不碰编码帧通道。
+      if (useInsertable && opts.onEncodedVideoFrame) {
+        disposeTap = attachEncodedFrameTap(videoTrans, opts.onEncodedVideoFrame, reportPipelineError)
+        encodedFramesSupported = disposeTap !== null
       }
       await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp })
     } finally {

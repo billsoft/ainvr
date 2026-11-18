@@ -1,4 +1,5 @@
-import { Pencil } from 'lucide-react'
+import { Grid3x3, Pencil, Waves } from 'lucide-react'
+import { segment, segmented } from '@/components/ui/filterStyles'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createFloorPlanSession } from '@/api/floorPlanService'
 import { DataTag } from '../DataTag'
@@ -7,13 +8,15 @@ import { PlanCanvas } from './PlanCanvas'
 import type { MapAnnotation } from './mapLabels'
 import type { HeatVariant } from '../RegionHeatPanel'
 import {
-  activePlan, addPlan, emptyDraft, heatCells, isPlaced, mapValuesForCounter, setActive, unresolvedPlacementKeys,
+  activePlan, addPlan, emptyDraft, heatCells, isPlaced, mapValuesForCounters, setActive, unresolvedPlacementKeys,
   type MapCounter, type MapReading, type PlanDraft, type ZoneInfo,
 } from './planModel'
 
 const seg = 'btn-secondary !px-2.5 !py-1 text-xs [@media(pointer:coarse)]:min-h-11 aria-pressed:border-primary aria-pressed:bg-primary-50 aria-pressed:text-primary'
+const toggle = segment + ' !min-h-8 !px-2.5 text-xs [@media(pointer:coarse)]:!min-h-11'
 interface Props {
   zones: ZoneInfo[]
+  /** The statistics the page chose: one, or every statistic of a total (same measure), shown together. */
   counters: MapCounter[]
   readings: MapReading[]
   period: { from: string; to: string; timezone: string }
@@ -32,7 +35,7 @@ const figure = (n: number | null | undefined) => typeof n === 'number' && Number
 /** Transparent layout outlines with a separate count-derived heat overlay. */
 export function PlanPanel({ zones, counters, readings, period, loading, error, countsFailed, onEditingChange, selectedZone, onSelectZone, sourceHeat, actions }: Props) {
   const [draft, setDraft] = useState<PlanDraft>(() => emptyDraft()), [editing, setEditing] = useState(false)
-  const [localSelected, setLocalSelected] = useState<string | null>(null), [counterId, setCounterId] = useState('')
+  const [localSelected, setLocalSelected] = useState<string | null>(null)
   const selected=selectedZone===undefined?localSelected:selectedZone
   const setSelected=(key:string|null)=>{setLocalSelected(key);onSelectZone?.(key)}
   const [direction, setDirection] = useState<'in' | 'out'>('in')
@@ -52,16 +55,19 @@ export function PlanPanel({ zones, counters, readings, period, loading, error, c
   }, [session, retry])
   useEffect(() => () => session.dispose(), [session])
   useEffect(() => { onEditingChange?.(editing); return () => onEditingChange?.(false) }, [editing, onEditingChange])
-  const counter = counters.find(c => c.id === counterId) ?? counters[0]
+  // A total maps all of its statistics at once; they share names, directions and unit (one measure).
+  const first = counters[0]
+  const counter = first && { ...first, name: counters.length > 1 ? `合计（${counters.length} 个统计）` : first.name }
+  const ids = useMemo(() => new Set(counters.map(c => c.id)), [counters])
   const output = counter?.outputs === 'in' ? 'in' : direction
   const outputName = counter?.names?.[output] ?? (output === 'in' ? '进入' : '离开')
   const unit = counter?.unit ?? '次'
   const saved = activePlan(draft)
   const plan = useMemo(() => saved ?? (zones.length ? activePlan(addPlan(emptyDraft(), '', zones)) : null), [saved, zones])
   const unresolved = unresolvedPlacementKeys(plan, zones)
-  const shown = useMemo(() => countsFailed || !counter ? {} : mapValuesForCounter(readings, counter.id, output), [countsFailed, counter, readings, output])
+  const shown = useMemo(() => countsFailed || !counter ? {} : mapValuesForCounters(readings, ids, output), [countsFailed, counter, readings, ids, output])
   const heat = useMemo(() => plan && !countsFailed ? heatCells(plan, shown, 96, 54) : undefined, [plan, countsFailed, shown])
-  const currentReadings = readings.filter(r => r.counterId === counter?.id)
+  const currentReadings = readings.filter(r => ids.has(r.counterId))
   const ranked = [...currentReadings].sort((a, b) => (b[output] ?? -1) - (a[output] ?? -1))
   const allKnown = ranked.length > 0 && ranked.every(r => r[output] !== null && Number.isFinite(r[output]))
   const sum = ranked.reduce((n, r) => n + (r[output] ?? 0), 0)
@@ -82,15 +88,13 @@ export function PlanPanel({ zones, counters, readings, period, loading, error, c
   return <section className="ui-panel flex min-h-[22rem] min-w-0 flex-col gap-2 p-3 [@container(min-width:44rem)]:min-h-0" aria-label="热区分布">
     <header className="flex flex-wrap items-center gap-2">
       <h2 className="text-sm font-semibold text-ink">热区分布</h2><DataTag kind="live" />
-      {sourceHeat&&<select aria-label="地图数据图层" className="form-input !w-auto !py-1 text-xs" value={layerMode} onChange={e=>setLayerMode(e.target.value as 'count'|'source')}><option value="source">画面热度嵌图</option><option value="count">通行计数示意</option></select>}
-      <select aria-label="地图统计" value={counter?.id ?? ''} className="form-input !w-auto !py-1 text-xs [@media(pointer:coarse)]:min-h-11" disabled={!counters.length}
-        onChange={e => setCounterId(e.target.value)}>
-        {!counters.length && <option value="">未选择统计</option>}
-        {counters.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-      </select>
+      {sourceHeat&&<div role="group" aria-label="地图数据图层" className={segmented}>
+        <button type="button" className={toggle} aria-pressed={layerMode==='count'} title="按热区计数生成的相对分布示意" onClick={()=>setLayerMode('count')}><Waves size={14} aria-hidden="true"/>计数示意</button>
+        <button type="button" className={toggle} aria-pressed={layerMode==='source'} title="区域观测里所选位置的原画面热度网格" onClick={()=>setLayerMode('source')}><Grid3x3 size={14} aria-hidden="true"/>画面热度</button>
+      </div>}
       {draft.plans.length > 1 && <select aria-label="平面图" value={saved?.id ?? ''} className="form-input !w-auto !py-1 text-xs" onChange={e => setDraft(d => setActive(d, e.target.value))}>{draft.plans.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
-      <div role="group" aria-label="统计方向" className="flex gap-1">{(['in', 'out'] as const).filter(o => o === 'in' || counter?.outputs !== 'in').map(o =>
-        <button key={o} type="button" aria-pressed={output === o} className={seg} onClick={() => setDirection(o)}>{counter?.names?.[o] ?? (o === 'in' ? '进入' : '离开')}</button>)}</div>
+      <div role="group" aria-label="统计方向" className={segmented}>{(['in', 'out'] as const).filter(o => o === 'in' || counter?.outputs !== 'in').map(o =>
+        <button key={o} type="button" aria-pressed={output === o} className={toggle} onClick={() => setDirection(o)}>{counter?.names?.[o] ?? (o === 'in' ? '进入' : '离开')}</button>)}</div>
       <label className="flex items-center gap-1 text-[11px] text-ink-subtle">隐藏冷区<input type="range" min={0} max={90} step={5} value={cold} aria-label="隐藏冷区" className="h-6 w-16 accent-primary [@media(pointer:coarse)]:h-11" onChange={e => setCold(Number(e.target.value))} /></label>
       <button type="button" className={seg} aria-pressed={showLabels} onClick={()=>setShowLabels(v=>!v)}>数据标签</button>
       <button type="button" disabled={planLoading || !!planError} className="btn-secondary ml-auto !px-2.5 !py-1 text-xs [@media(pointer:coarse)]:min-h-11" onClick={() => setEditing(true)}><Pencil size={14} aria-hidden="true" />编辑平面图</button>{actions}

@@ -68,3 +68,8 @@ export function alarmInScope(alarm:AlarmEvent,scope:Extract<AlarmListScope,{kind
  return scope.locations.some(pair=>pair.channel_id===alarm.channel_id&&
   (rule.snapshot?.zone_id===pair.zone_id||alarm.stages?.some(stage=>stage.zone_id===pair.zone_id)))
 }
+
+/** The alarm belongs to a rule when the rule fired it or fired any of its stages (the same test the statistics use). */
+export function alarmHasTrigger(alarm:AlarmEvent,triggerId:string):boolean {
+ return [alarm.trigger_id??alarm.rule.id,...(alarm.stages??[]).map(s=>(s as {trigger_id?:string}).trigger_id)].some(id=>id===triggerId||(!!id&&id.split('@')[0]===triggerId))
+}

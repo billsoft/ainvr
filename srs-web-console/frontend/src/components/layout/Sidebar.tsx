@@ -12,7 +12,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/analytics', label: '统计分析', icon: ChartColumn },
-  { to: '/alarms', label: '告警', icon: Bell },
+  { to: '/alarms', label: '告警分析', icon: Bell },
   { to: '/monitor', label: '实时监看', icon: MonitorPlay },
   { to: '/playback', label: '录像回放', icon: Clapperboard },
   { to: '/recognition-history', label: '识别历史', icon: History },

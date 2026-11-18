@@ -59,7 +59,7 @@ function resultFor(query: AlarmAnalyticsQuery, counts: {
 
 function mount(extra = '') {
   return render(<MemoryRouter initialEntries={[
-    '/analytics?subject=alarms&alarm_tab=quality&range=custom&from=' + from + '&to=' + to + '&compare=0' + extra,
+    '/alarms?view=analysis&alarm_tab=quality&range=custom&afrom=' + from + '&ato=' + to + '&compare=0' + extra,
   ]}><AlarmAnalyticsPage /></MemoryRouter>)
 }
 

@@ -32,15 +32,15 @@ const draft: PlanDraft = { version: 2, activeId: 'p1', plans: [{
 }] }
 const period = { from: '2026-10-01T00:00:00Z', to: '2026-10-02T00:00:00Z', timezone: 'Asia/Shanghai' }
 beforeEach(() => { vi.clearAllMocks(); load.mockResolvedValue(draft) })
-function mount(data = readings, currentZones = zones) {
-  return render(<MemoryRouter><PlanPanel zones={currentZones} counters={counters} readings={data} period={period}
-    loading={false} error="" countsFailed={false} /></MemoryRouter>)
+function mount(data = readings, currentZones = zones, mapCounters = counters, extra: Partial<Parameters<typeof PlanPanel>[0]> = {}) {
+  return render(<MemoryRouter><PlanPanel zones={currentZones} counters={mapCounters} readings={data} period={period}
+    loading={false} error="" countsFailed={false} {...extra} /></MemoryRouter>)
 }
 function annotations(): Record<string, MapAnnotation> {
   return JSON.parse(screen.getByTestId('map-annotations').textContent ?? '{}')
 }
 it('derives an independent heat layer from one counter and exposes each binding reading', async () => {
-  mount()
+  mount([readings[0]!], zones, [counters[0]!])
   await waitFor(() => expect(screen.queryByText('正在读取服务器平面图…')).not.toBeInTheDocument())
   expect(screen.queryByRole('table', { name: '热区排名' })).not.toBeInTheDocument()
   expect(annotations().shared?.summary).toBe('进入 5 · 离开 2 · 100%')
@@ -56,14 +56,31 @@ it('derives an independent heat layer from one counter and exposes each binding 
   fireEvent.click(screen.getByText('选择共享热区'))
   const details = screen.getByLabelText('热区读数')
   expect(details).toHaveTextContent('人员入口 · 位置 1：进入 5，离开 2 次')
-  expect(details).toHaveTextContent('人员穿越 · 位置 2：进入 70，离开 — 次')
   expect(within(details).getByTitle('统计位置：b1')).toHaveTextContent('人员入口')
-  expect(within(details).getByTitle('统计位置：b2')).toHaveTextContent('人员穿越')
-  fireEvent.change(screen.getByLabelText('地图统计'), { target: { value: 'c2' } })
-  expect(annotations().shared?.summary).toBe('进入 70 · 离开 — · 100%')
-  expect(annotations().shared?.detail).toContain('人员穿越')
-  expect(legend).toHaveTextContent('人员穿越 · 进入')
-  expect(annotations().shared?.summary).not.toContain('75')
+  // The statistic is chosen in the statistics list; the map does not offer a second picker.
+  expect(screen.queryByLabelText('地图统计')).not.toBeInTheDocument()
+})
+it('shows a total of several statistics on one map instead of only the first one', async () => {
+  const east: ZoneInfo = { key: 'east', zoneId: 'east', channelId: 'q', name: '东门', counters: [counters[1]!] }
+  mount([readings[0]!, { counterId: 'c2', bindingId: 'b2', zoneKey: 'east', in: 15, out: 4 }],
+    [{ ...zones[0]!, counters: [counters[0]!] }, east], counters)
+  await waitFor(() => expect(screen.queryByText('正在读取服务器平面图…')).not.toBeInTheDocument())
+  expect(annotations().shared?.summary).toBe('进入 5 · 离开 2 · 25%')
+  expect(annotations().east?.summary).toBe('进入 15 · 离开 4 · 75%')
+  expect(screen.getByLabelText('地图图例')).toHaveTextContent('合计（2 个统计） · 进入 · 单位：次')
+  // East is not placed on the saved plan, so only the placed zone colours this map.
+  expect(screen.getByLabelText('地图图例')).toHaveTextContent('当前最大 5 次')
+  expect(screen.getByTestId('map-heat')).toHaveTextContent('有热度')
+})
+it('switches the map layer with a two-way toggle when real picture heat is available', async () => {
+  const variant = { source_width: 4, source_height: 2, columns: 2, rows: 1, values_ms: [1, 2], observed_ms: 3 } as never
+  mount([readings[0]!], zones, [counters[0]!], { sourceHeat: { zoneKey: 'shared', variant } })
+  await waitFor(() => expect(screen.queryByText('正在读取服务器平面图…')).not.toBeInTheDocument())
+  const layer = screen.getByRole('group', { name: '地图数据图层' })
+  expect(within(layer).getByRole('button', { name: '计数示意' })).toHaveAttribute('aria-pressed', 'true')
+  fireEvent.click(within(layer).getByRole('button', { name: '画面热度' }))
+  expect(within(layer).getByRole('button', { name: '画面热度' })).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.queryByRole('combobox', { name: '地图数据图层' })).not.toBeInTheDocument()
 })
 it('keeps a confirmed zero distinct from an unsupported or unknown direction', async () => {
   mount([{ counterId: 'c1', bindingId: 'b1', zoneKey: 'shared', in: 0, out: null }])
@@ -77,7 +94,7 @@ it('keeps a confirmed zero distinct from an unsupported or unknown direction', a
   expect(annotations().shared?.detail).toContain('占比按离开，单位次')
 })
 it('toggles map labels without changing heat, geometry, or independent binding details', async () => {
-  mount()
+  mount([readings[0]!], zones, [counters[0]!])
   await waitFor(() => expect(screen.queryByText('正在读取服务器平面图…')).not.toBeInTheDocument())
   const initialAnnotations = annotations()
   const placements = screen.getByTestId('placements').textContent
@@ -101,7 +118,7 @@ it('keeps multiple bindings of the same counter separate instead of summing map 
     readings[1]!,
   ])
   await waitFor(() => expect(screen.queryByText('正在读取服务器平面图…')).not.toBeInTheDocument())
-  expect(annotations().shared?.summary).toBe('2 个统计位置 · 点击查看')
+  expect(annotations().shared?.summary).toBe('3 个统计位置 · 点击查看')
   expect(screen.getByTestId('map-heat')).toHaveTextContent('无热度')
   expect(screen.getByLabelText('地图图例')).toHaveTextContent('当前最大 — 次')
   fireEvent.click(screen.getByRole('button', { name: '选择共享热区' }))
@@ -109,9 +126,6 @@ it('keeps multiple bindings of the same counter separate instead of summing map 
   expect(within(details).getByTitle('统计位置：b1')).toHaveTextContent('进入 5，离开 2 次')
   expect(within(details).getByTitle('统计位置：b3')).toHaveTextContent('进入 8，离开 0 次')
   expect(within(details).getByTitle('统计位置：b2')).toHaveTextContent('进入 70，离开 — 次')
-  fireEvent.change(screen.getByLabelText('地图统计'), { target: { value: 'c2' } })
-  expect(annotations().shared?.summary).toBe('进入 70 · 离开 — · 100%')
-  expect(screen.getByTestId('map-heat')).toHaveTextContent('有热度')
 })
 it('lists stored unresolved references and keeps rendering their saved geometry even without loaded zones', async () => {
   mount([], [])

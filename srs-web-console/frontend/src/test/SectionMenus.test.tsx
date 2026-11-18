@@ -43,7 +43,7 @@ it('puts alarms in one menu entry and counters under statistics', () => {
   const nav = screen.getByRole('navigation', { name: '主导航' })
   for (const gone of ['告警触发', '告警列表', '流量统计']) expect(nav).not.toHaveTextContent(gone)
   expect(screen.getByRole('link', { name: /统计分析/ })).toHaveAttribute('href', '/analytics')
-  expect(screen.getByRole('link', { name: /^告警$/ })).toHaveAttribute('href', '/alarms')
+  expect(screen.getByRole('link', { name: /^告警分析$/ })).toHaveAttribute('href', '/alarms')
 })
 
 it('docks the rules beside the records on a wide page, with no tabs', () => {

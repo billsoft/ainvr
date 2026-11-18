@@ -19,7 +19,7 @@ import {AlarmRow} from './AlarmRow'
 import {AlarmSheet,type PendingAcknowledgement} from './AlarmSheet'
 import {AlarmConfirmation} from './AlarmConfirmation'
 import {AlarmPurgeDialog} from './AlarmPurgeDialog'
-import {alarmInScope,parseAlarmListScope} from './alarmListScope'
+import {alarmHasTrigger,alarmInScope,parseAlarmListScope} from './alarmListScope'
 import {segment,segmented,field,fieldSelect} from '@/components/ui/filterStyles'
 import {Info,MoreHorizontal,Trash2} from 'lucide-react'
 
@@ -32,7 +32,7 @@ function rangeFrom(range:Range){return range==='today'?midnight().toISOString():
 const ackOk=(outcome:string)=>['succeeded','already_acknowledged'].includes(outcome)
 const scopeTime=(iso:string,timezone?:string)=>new Intl.DateTimeFormat('zh-CN',{timeZone:timezone,month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).format(new Date(iso))
 
-export default function AlarmListPage(){
+export default function AlarmListPage({rule=null,ruleName='',onShowAll}:{rule?:string|null;ruleName?:string;onShowAll?:()=>void}={}){
  // Unhandled alarms are never hidden by the clock: pending defaults to all time,
  // handled history defaults to today, until the user picks a range.
  const location=useLocation(),navigate=useNavigate()
@@ -78,8 +78,12 @@ export default function AlarmListPage(){
  const [today,setToday]=useState<Record<string,number>|null>(null)
  const [todayState,setTodayState]=useState<'loading'|'ready'|'failed'>('loading')
  const [todayComplete,setTodayComplete]=useState(false)
+ // A rule chosen in the rules column: the events API filters by rule only inside a dated scope of at most 31 days,
+ // so 全部 time becomes the last 30 days for one rule, and the page says so.
+ const ruleMode=!!rule&&scope.kind==='none'
+ const ruleScope=useMemo(()=>rule?{from:rangeFrom(range)??new Date(Date.now()-30*86400000).toISOString(),to:new Date(Date.now()+12*3600000).toISOString(),timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC',bucket:'day' as const,trigger_id:rule}:null,[rule,range])
  const filters=useMemo<AlarmFilters>(()=>({...(review?{disposition:review}:{}),...(localLevel?{behavior:localLevel}:{}),...(!fixedBusinessKind&&businessKind?{event_kind:businessKind}:{}),
-  ...(scope.kind==='valid'?(scope.analytics?{analytics:JSON.stringify(scope.analytics)}:{from:scope.from,to:scope.to,locations:scope.locations}):{...(channel?{channel_id:channel}:{}),...(rangeFrom(range)?{from:rangeFrom(range)}:{})})}),[channel,localLevel,range,review,scope,businessKind,fixedBusinessKind])
+  ...(scope.kind==='valid'?(scope.analytics?{analytics:JSON.stringify(scope.analytics)}:{from:scope.from,to:scope.to,locations:scope.locations}):{...(channel?{channel_id:channel}:{}),...(ruleMode&&ruleScope?{analytics:JSON.stringify(ruleScope)}:rangeFrom(range)?{from:rangeFrom(range)}:{})})}),[channel,localLevel,range,review,scope,businessKind,fixedBusinessKind,ruleMode,ruleScope])
  const live=useRef(true)
  useEffect(()=>{live.current=true;return()=>{live.current=false}},[])
  useEffect(()=>{
@@ -143,6 +147,7 @@ export default function AlarmListPage(){
      (status!=='ai'||r.handling.reviewed_by_kind==='ai')&&
      (status!=='acknowledged'||r.handling.state==='acknowledged')&&
      (!review||r.handling.disposition===review)&&(!channel||r.channel_id===channel)&&(!filters.behavior||r.behavior===filters.behavior)&&
+     (!ruleMode||!rule||alarmHasTrigger(r,rule))&&
      (!filters.from||Date.parse(r.occurred_at)>=Date.parse(filters.from))
     ))
     const container=scroll.current
@@ -158,7 +163,7 @@ export default function AlarmListPage(){
   }
   const timer=setInterval(()=>void poll(),3000)
   return()=>{active=false;clearInterval(timer)}
- },[status,filters,review,channel,level,busy,detail,bulk,purge,singleAttempts,scope])
+ },[status,filters,review,channel,level,busy,detail,bulk,purge,singleAttempts,scope,ruleMode,rule])
  // Zone names come from the source's arming; read each source once while its alarms are shown.
  useEffect(()=>{
   for(const id of new Set(rows.flatMap(r=>r.input_stream_id&&!(r.input_stream_id in armings)?[r.input_stream_id]:[]))){
@@ -215,7 +220,7 @@ export default function AlarmListPage(){
  const groups=[...rows.reduce((map,a)=>{const zone=a.stages?.at(-1)?.zone_id??'frame';const key=JSON.stringify([a.channel_id,zone,Math.floor(Date.parse(a.occurred_at)/60000)]);map.set(key,[...(map.get(key)??[]),a]);return map},new Map<string,AlarmEvent[]>()).entries()]
  const pending=rows.filter(r=>r.handling.state!=='acknowledged')
  const businessScopeLabel=effectiveBusinessKind?alarmBusinessName(effectiveBusinessKind):'全部业务类型'
- const askBulk=()=>setBulk({phase:'asking',items:pending.slice(0,200).map(r=>({alarm_id:r.alarm_id,expected_handling_revision:r.handling.revision})),key:newAlarmOperationId(),scope:scope.kind==='valid'?`统计范围 · ${businessScopeLabel} · ${scope.locations.length ? scope.locations.length + ' 个位置' : '全部位置'} · ${scope.from} 至 ${scope.to}`:`${channel?channelName(channel):'全部通道'} · ${businessScopeLabel}${localLevel?` · ${triggerBehaviors.find(b=>b.id===localLevel)?.name??localLevel}`:''} · ${range==='all'?'全部时间':range==='today'?'今天':'近7天'}`})
+ const askBulk=()=>setBulk({phase:'asking',items:pending.slice(0,200).map(r=>({alarm_id:r.alarm_id,expected_handling_revision:r.handling.revision})),key:newAlarmOperationId(),scope:(ruleMode?`规则「${ruleName||'所选规则'}」 · `:'')+(scope.kind==='valid'?`统计范围 · ${businessScopeLabel} · ${scope.locations.length ? scope.locations.length + ' 个位置' : '全部位置'} · ${scope.from} 至 ${scope.to}`:`${channel?channelName(channel):'全部通道'} · ${businessScopeLabel}${localLevel?` · ${triggerBehaviors.find(b=>b.id===localLevel)?.name??localLevel}`:''} · ${range==='all'?'全部时间':range==='today'?'今天':'近7天'}`)})
  const confirmAll=async()=>{
   if(!bulk||bulk.phase==='working')return
   const batch=bulk;setBulk({...batch,phase:'working'})
@@ -242,6 +247,10 @@ export default function AlarmListPage(){
    <AlarmInputNotice/>
    <PtzProtectionNotice/>
    <div className="space-y-3 border-b border-line px-4 py-3 [@container(min-width:40rem)]:px-5">
+    {ruleMode&&<div role="status" className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-base bg-primary-50 px-3 py-2 text-sm text-ink">
+     <span>只看规则「{ruleName||'所选规则'}」的告警{range==='all'?'（按规则最多查看近 30 天，更早的未审核告警请在全部规则中查看）':''}。</span>
+     {onShowAll&&<button type="button" onClick={onShowAll} className="inline-flex !min-h-9 items-center text-primary hover:underline [@media(pointer:coarse)]:!min-h-11">查看全部规则</button>}
+    </div>}
     {scope.kind!=='none'&&<div role={scope.kind==='invalid'?'alert':'status'} className="rounded-base bg-surface-page p-3 text-sm">
     {scope.kind==='valid'?<>统计范围：<span title={`${scope.from} — ${scope.to}`}>{scopeTime(scope.from,scope.analytics?.timezone)} — {scopeTime(scope.to,scope.analytics?.timezone)}</span>（结束不含），{scope.locations.length?`${scope.locations.length} 个位置`:'全部位置（含未关联）'}。业务范围：{fixedBusinessKind?alarmBusinessName(fixedBusinessKind):'全部业务类型'}。{scope.analytics?'沿用统计条件，下方筛选仅缩小范围。':'通道和时间已固定，可按处理状态、结论和空间阶段继续筛选。'}</>:<>统计范围无效或不完整，无法读取告警。请返回统计页重新打开，或清除范围。</>}
      <button type="button" onClick={clearScope} className="btn-secondary ml-3 !min-h-11">清除统计范围</button>
@@ -272,7 +281,7 @@ export default function AlarmListPage(){
     </div>
     <div role="group" aria-label="筛选" className="flex flex-wrap items-center gap-2">
      <label className={field}>通道<select aria-label="通道" value={scope.kind==='none'?channel:''} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择通道':undefined} onChange={e=>setChannel(e.target.value)} className={fieldSelect}><option value="">全部通道</option>{channels.map(c=><option key={c.id} value={c.id}>{c.name}{counts.get(c.id)?`（${counts.get(c.id)}）`:''}</option>)}</select></label>
-     <label className={field}>时间<select aria-label="时间" value={scope.kind==='none'?range:'scoped'} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择时间':undefined} onChange={e=>{rangeTouched.current=true;setRange(e.target.value as Range)}} className={fieldSelect}>{scope.kind!=='none'&&<option value="scoped">统计范围</option>}<option value="today">今天</option><option value="7d">近 7 天</option><option value="all">全部</option></select></label>
+     <label className={field}>时间<select aria-label="时间" value={scope.kind==='none'?range:'scoped'} disabled={scope.kind!=='none'} title={scope.kind!=='none'?'请先清除统计范围再选择时间':undefined} onChange={e=>{rangeTouched.current=true;setRange(e.target.value as Range)}} className={fieldSelect}>{scope.kind!=='none'&&<option value="scoped">统计范围</option>}<option value="today">今天</option><option value="7d">近 7 天</option><option value="all">{ruleMode?'近 30 天':'全部'}</option></select></label>
      <label className={field} title={fixedBusinessKind?'统计页固定':undefined}>业务<select aria-label="告警业务类型" className={fieldSelect} value={effectiveBusinessKind} disabled={!!fixedBusinessKind||scope.kind==='invalid'} onChange={e=>pickBusinessKind(e.target.value)}><option value="">全部类型</option>{Object.entries(alarmBusinessKinds).map(([id,name])=><option key={id} value={id}>{name}</option>)}</select></label>
      {status!=='pending'&&<label className={field}>结论<select aria-label="审核结论" value={review} onChange={e=>setReview(e.target.value)} className={fieldSelect}><option value="">全部</option><option value="handled">确认</option><option value="false_positive">误报</option></select></label>}
      {spatialFilters&&<div role="group" aria-label="空间阶段" className={segmented}>{[{id:'',name:'全部阶段'},...triggerBehaviors].map(b=><button key={b.id||'all'} type="button" aria-pressed={localLevel===b.id} onClick={()=>{setLevel(b.id);if(b.id&&!fixedBusinessKind)setBusinessKind('spatial')}} className={segment}>

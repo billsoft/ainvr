@@ -203,8 +203,12 @@ export interface MapReading {
 }
 /** Ambiguous multiple locations on one zone are not silently summed for a map label. */
 export function mapValuesForCounter(readings: MapReading[], counterId: string, direction: 'in' | 'out'): Record<string, number> {
+  return mapValuesForCounters(readings, new Set([counterId]), direction)
+}
+/** Several statistics of one total on one map: each zone shows its own location; a zone two of them share stays unsummed. */
+export function mapValuesForCounters(readings: MapReading[], counterIds: ReadonlySet<string>, direction: 'in' | 'out'): Record<string, number> {
   const groups = new Map<string, MapReading[]>()
-  for (const r of readings) if (r.counterId === counterId) groups.set(r.zoneKey, [...(groups.get(r.zoneKey) ?? []), r])
+  for (const r of readings) if (counterIds.has(r.counterId)) groups.set(r.zoneKey, [...(groups.get(r.zoneKey) ?? []), r])
   const values: Record<string, number> = {}
   for (const [key, rows] of groups) {
     const value = rows[0]?.[direction]

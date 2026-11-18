@@ -8,6 +8,7 @@ import { attachWebRTC } from '@/components/player/webrtc'
 import { aiChannelService } from '@/api/aiChannelService'
 import { useServerRtcHevc } from '@/hooks/useServerRtcHevc'
 import { getCodecSupport, type CodecSupport } from '@/utils/codec'
+import { mediaServerReachable, recoverFromConnectionCap } from '@/components/player/playerRecovery'
 
 // attachWebRTC 用 mock 接管（不建真实 RTCPeerConnection），其余导出保持真实——
 // 看门狗判定类、stats 解析都要跑真实现。
@@ -21,6 +22,12 @@ vi.mock('@/hooks/useServerRtcHevc', () => ({ useServerRtcHevc: vi.fn(() => null)
 vi.mock('@/utils/codec', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/utils/codec')>()
   return { ...actual, getCodecSupport: vi.fn(actual.getCodecSupport) }
+})
+
+// Reachability and the last-resort page reload are decided per test; backoff stays real.
+vi.mock('@/components/player/playerRecovery', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/components/player/playerRecovery')>()
+  return { ...actual, mediaServerReachable: vi.fn(async () => true), recoverFromConnectionCap: vi.fn(() => true) }
 })
 
 vi.mock('@/api/aiChannelService', () => ({
@@ -482,6 +489,40 @@ describe('VideoPlayer · WebRTC 延迟/冻屏看门狗自动重连', () => {
     expect(screen.getByTestId('player-recovery-status').className).not.toContain('inset-0')
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
     expect(attachWebRTC).toHaveBeenCalledTimes(2)
+    unmount()
+  })
+
+  it('断网时不建新连接（不耗浏览器的连接名额）；网络恢复立刻重连，之后连续失败逐次放慢', async () => {
+    vi.useFakeTimers()
+    vi.mocked(attachWebRTC).mockRejectedValue(new Error('temporary failure'))
+    vi.mocked(mediaServerReachable).mockResolvedValue(false)
+    const { unmount } = render(<VideoPlayer {...baseProps} protocols={['webrtc']} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(attachWebRTC).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000) })
+    expect(attachWebRTC).toHaveBeenCalledTimes(1)
+    expect(mediaServerReachable).toHaveBeenCalled()
+    vi.mocked(mediaServerReachable).mockResolvedValue(true)
+    await act(async () => { window.dispatchEvent(new Event('online')); await vi.advanceTimersByTimeAsync(0) })
+    expect(attachWebRTC).toHaveBeenCalledTimes(2)
+    // The source itself still fails: 5 s, then 10 s, then 20 s.
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(attachWebRTC).toHaveBeenCalledTimes(3)
+    await act(async () => { await vi.advanceTimersByTimeAsync(9_000) })
+    expect(attachWebRTC).toHaveBeenCalledTimes(3)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(attachWebRTC).toHaveBeenCalledTimes(4)
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+    expect(attachWebRTC).toHaveBeenCalledTimes(5)
+    unmount()
+  })
+
+  it('浏览器连接名额用尽时自动刷新页面恢复，不停在失败画面', async () => {
+    vi.useFakeTimers()
+    vi.mocked(attachWebRTC).mockRejectedValue(new Error("Failed to construct 'RTCPeerConnection': Cannot create so many PeerConnections"))
+    const { unmount } = render(<VideoPlayer {...baseProps} protocols={['webrtc']} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(recoverFromConnectionCap).toHaveBeenCalledTimes(1)
     unmount()
   })
 

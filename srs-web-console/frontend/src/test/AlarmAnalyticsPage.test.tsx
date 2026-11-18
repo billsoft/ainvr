@@ -15,7 +15,7 @@ function fixture(query?: AlarmAnalyticsQuery): AlarmAnalyticsResult {
     trend: [{ from: a, to: b, total: 12 }], zones: [], triggers: [{ trigger_id: 'trigger', name: '入口规则', total: 12, pending: 4, human_reviewed: 4, human_false_positive: 1, rule_versions: [1, 2] }], types: [{ id: 'region_enter', total: 12 }], business_kinds: query?.event_kind ? [{ id: query.event_kind, total: 12 }] : [{ id: 'spatial', total: 7 }, { id: 'fire_smoke', total: 5 }], week: Array.from({ length: 7 }, (_, day) => Array.from({ length: 24 }, (_, hour) => day === 0 && hour === 9 ? 12 : 0)), quality: { human_reviewed: 4, false_positive_ratio: .25, wait: { samples: 4, median_ms: 90000, p90_ms: 3600000, unknown: 0 }, pending_age: { lt10m: 1, lt1h: 1, gte1h: 2 } }, association: { unassociated: query?.locations ? 0 : 2 }, catalog: { zones: [{ ...scope, name: '入口' }], triggers: [{ trigger_id: 'trigger', name: '入口规则' }], types: ['region_enter'], event_kinds: ['spatial', 'fire_smoke'] }, consistency: 'non_transactional', coverage: 'unknown', issues: [] }
 }
 function Location() { const location = useLocation(); return <output data-testid="url">{location.search}</output> }
-function mount(extra = '') { return render(<MemoryRouter initialEntries={['/analytics?subject=alarms&range=custom&from=' + from + '&to=' + to + '&compare=0' + extra]}><AlarmAnalyticsPage /><Location /></MemoryRouter>) }
+function mount(extra = '') { return render(<MemoryRouter initialEntries={['/alarms?view=analysis&range=custom&afrom=' + from + '&ato=' + to + '&compare=0' + extra]}><AlarmAnalyticsPage /><Location /></MemoryRouter>) }
 function linkQuery(element: HTMLElement) { return JSON.parse(new URL(element.getAttribute('href')!, 'http://localhost').searchParams.get('analytics_scope')!) as AlarmAnalyticsQuery }
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(alarmAnalyticsService.query).mockImplementation(async q => fixture(q)) })
 
@@ -97,13 +97,15 @@ it('queries the true API contract and links all four KPI scopes without mixing A
   expect(screen.getByText(/保留当前全部筛选条件/)).toHaveTextContent('已选热区时未关联数为 0')
   expect(alarmAnalyticsService.query).toHaveBeenCalledTimes(1)
 })
-it('switches all four views with URL state and preserves unrelated flow choices without refetch', async () => {
+it('shows map, distribution and weekly pattern on one screen; review quality is its own view kept in the URL', async () => {
   mount('&counters=%5B%22original%22%5D')
   await screen.findByRole('link', { name: '范围内新增告警 12条' })
-  fireEvent.click(screen.getByRole('button', { name: '规律' }))
+  expect(screen.getByLabelText('fixture map')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: '热区' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: '规律' })).not.toBeInTheDocument()
   const cell = screen.getByRole('link', { name: '周一 9时 12条告警' })
   expect(linkQuery(cell)).toMatchObject({ weekday: 0, hour: 9, from, to })
-  fireEvent.click(screen.getByRole('button', { name: '审核质量' }))
+  fireEvent.click(within(screen.getByRole('group', { name: '分析内容' })).getByRole('button', { name: '审核质量' }))
   expect(screen.getByRole('region', { name: '发生至首次人工审核' })).toHaveTextContent('有效样本 4')
   const summary = screen.getByText('统计说明')
   expect(summary.closest('details')).not.toHaveAttribute('open')
@@ -112,9 +114,10 @@ it('switches all four views with URL state and preserves unrelated flow choices 
   expect(summary.closest('details')).toHaveTextContent('样本少，仅供参考')
   expect(screen.getByText('1.5 分钟')).toBeInTheDocument()
   expect(screen.getByRole('region', { name: '人工结论分布' })).toHaveTextContent('样本少，不作优劣比较')
-  fireEvent.click(screen.getByRole('button', { name: '热区' }))
+  expect(screen.getByTestId('url')).toHaveTextContent('alarm_tab=quality')
+  fireEvent.click(within(screen.getByRole('group', { name: '分析内容' })).getByRole('button', { name: '概况' }))
   expect(screen.getByLabelText('fixture map')).toBeInTheDocument()
-  expect(screen.getByTestId('url')).toHaveTextContent('alarm_tab=heat')
+  expect(screen.getByTestId('url')).not.toHaveTextContent('alarm_tab')
   expect(screen.getByTestId('url')).toHaveTextContent('counters=%5B%22original%22%5D')
   expect(alarmAnalyticsService.query).toHaveBeenCalledTimes(1)
 })
@@ -124,7 +127,12 @@ it('keeps bucket clipping and trigger IDs in drilldown; picker keeps half-open i
   fireEvent.click(screen.getByRole('button', { name: '趋势' }))
   fireEvent.change(screen.getByLabelText('告警趋势时段'), { target: { value: '0' } })
   expect(linkQuery(screen.getByRole('link', { name: '查看该时段' }))).toMatchObject({ from, to })
-  expect(linkQuery(within(screen.getByRole('table', { name: '告警规则排名' })).getByRole('link', { name: /入口规则/ }))).toMatchObject({ trigger_id: 'trigger' })
+  // The rules column ranks rules; the overview no longer repeats a rule table, the quality view keeps its error ranking.
+  expect(screen.queryByRole('table', { name: '告警规则排名' })).not.toBeInTheDocument()
+  fireEvent.click(within(screen.getByRole('group', { name: '分析内容' })).getByRole('button', { name: '审核质量' }))
+  expect(linkQuery(within(screen.getByRole('table', { name: '规则审核质量排名' })).getByRole('link', { name: /入口规则/ }))).toMatchObject({ trigger_id: 'trigger' })
+  fireEvent.click(within(screen.getByRole('group', { name: '分析内容' })).getByRole('button', { name: '概况' }))
+  fireEvent.click(screen.getByRole('button', { name: '趋势' }))
   fireEvent.click(screen.getByLabelText('告警自选时间范围'))
   expect(screen.getByLabelText('刷新告警统计')).toBeDisabled()
   fireEvent.click(screen.getByRole('button', { name: '确认测试日期' }))

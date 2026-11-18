@@ -1,6 +1,6 @@
 import { CalendarClock, ChevronDown, Download, Info, RefreshCw, ScanSearch, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useSearchParams } from 'react-router-dom'
 import { alarmEventService, type AlarmStatistics } from '@/api/alarmEventService'
 import { flowService, type Counter, type CounterResult } from '@/api/flowService'
 import { DateTimeRangePicker } from '@/components/ui/DateTimeRangePicker'
@@ -17,8 +17,6 @@ import { WeekHourPanel } from './WeekHourPanel'
 import { DwellPanel } from './DwellPanel'
 import type { HeatVariant } from './RegionHeatPanel'
 import { zoneKey, type MapReading, type ZoneInfo } from './plan/planModel'
-import { AnalyticsSubjectSwitch } from './AnalyticsSubjectSwitch'
-import AlarmAnalyticsPage from './AlarmAnalyticsPage'
 import { useAnalyticsLink, type ChoiceSummary, type StatChoice } from './analyticsLinkContext'
 import { formatRangeLabel } from '@/pages/Flow/counterText'
 
@@ -52,9 +50,17 @@ function Kpi({ label, value, children }: { label: string; value: ReactNode; chil
   </div>
 }
 const totalValue = (key:string) => 'total:' + key
+/** Alarm analysis moved to 告警分析; an old statistics link opens it with the same period, places and filters. */
+export function alarmAnalysisSearch(old:URLSearchParams):string {
+  const p=new URLSearchParams({view:'analysis'})
+  const copy=(from:string,to=from)=>{const v=old.get(from);if(v!==null)p.set(to,v)}
+  copy('range');copy('compare');copy('from','afrom');copy('to','ato');copy('alarm_locations');copy('alarm_scope_origin');copy('trigger_id','rule');copy('event_kind');copy('primary_type')
+  if(old.get('alarm_tab')==='quality')p.set('alarm_tab','quality')
+  return p.toString()
+}
 export default function AnalyticsPage() {
   const [params]=useSearchParams()
-  return params.get('subject')==='alarms'?<AlarmAnalyticsPage/>:<FlowAnalyticsPage/>
+  return params.get('subject')==='alarms'?<Navigate replace to={'/alarms?'+alarmAnalysisSearch(params)}/>:<FlowAnalyticsPage/>
 }
 function FlowAnalyticsPage() {
   const link=useAnalyticsLink()
@@ -329,7 +335,6 @@ function FlowAnalyticsPage() {
   return <main className="alarm-workspace flex min-h-0 min-w-0 flex-col gap-2 overflow-auto [@container(min-width:44rem)]:h-full [@container(min-width:56rem)]:overflow-hidden">
     <header aria-label="统计筛选与操作" className="flex shrink-0 flex-wrap items-center gap-2">
       <h1 className="mr-1 min-w-0 truncate text-lg font-semibold leading-7 text-ink" title={choiceName||undefined}>统计分析{choiceName&&<span className="font-normal text-ink-subtle"> · {choiceName}</span>}</h1>
-      <AnalyticsSubjectSwitch locations={locations} disabled={counters===null&&!configError}/>
       {showPicker && !!counters?.length && <label className={field}>
         <span className="sr-only">统计</span>
         <select aria-label="统计" className={fieldSelect + ' !pl-0'} value={choice?.kind==='counter'?choice.id:choice?totalValue(choice.key):''} onChange={e=>{const v=e.target.value;if(v)choose(v.startsWith('total:')?{kind:'total',key:v.slice(6)}:{kind:'counter',id:v})}}>

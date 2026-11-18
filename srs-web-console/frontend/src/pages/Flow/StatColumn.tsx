@@ -76,7 +76,6 @@ export function StatColumn({ sel, list, zoneName, busy, cardError, onEdit, onTog
   const several = groups.length > 1
   const ids = new Set(groups.flatMap(g => g.counters.map(c => c.counter_id)))
   return <div className="space-y-3">
-    <p className="text-xs text-ink-subtle">数量按“统计分析”里选的时段：{sel.range.label}{sel.compareLabel ? `，箭头为较${sel.compareLabel}` : ''}。在那里切换时间。</p>
     <div role="radiogroup" aria-label="选择统计" className="space-y-4">
       {groups.map(g => <section key={g.key} aria-label={several ? scopeText(g.counters[0]!) : undefined} className="space-y-2">
         {several && <h3 className="text-xs font-medium text-ink-subtle">{scopeText(g.counters[0]!)}</h3>}
