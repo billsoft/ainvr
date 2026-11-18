@@ -465,6 +465,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       passwordHash:()=>passwordCache.get(),
       connection: alarmConnection,
       principal: alarmPrincipal,
+      // The arming store is created below; by the time a request arrives it exists (or alarms are not configured).
+      zoneNames: async () => armingStore ? armingStore.zoneNames() : new Map(),
     });
     await instance.register(alarmEvidenceRoutes,{
       connection:alarmConnection,

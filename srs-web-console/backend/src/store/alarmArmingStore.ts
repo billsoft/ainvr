@@ -146,11 +146,24 @@ export class AlarmArmingStore {
       await c.query('COMMIT');return {updated,blocked};
     }catch(error){await c.query('ROLLBACK').catch(()=>undefined);throw error;}finally{c.release();}
   }
+  /** Every configured zone's name by zone id; an id two sources name differently has no single name and is left out. */
+  async zoneNames(){
+    const rows=await this.pool.query(`SELECT z->>'zone_id' AS zone_id,z->>'name' AS name FROM alarm_arming_sources s,jsonb_array_elements(COALESCE(s.document->'zones','[]'::jsonb)) z WHERE COALESCE(z->>'name','')<>''`);
+    const names=new Map<string,string>(),clash=new Set<string>();
+    for(const r of rows.rows as {zone_id:string|null;name:string}[]){
+      if(!r.zone_id)continue;
+      const known=names.get(r.zone_id);
+      if(known!==undefined&&known!==r.name)clash.add(r.zone_id);else names.set(r.zone_id,r.name);
+    }
+    for(const id of clash)names.delete(id);
+    return names;
+  }
   async listDefinitions(){
     const rows=await this.pool.query(`SELECT d.document,d.version,
       COALESCE((SELECT jsonb_agg(jsonb_build_object(
         'assignment_id',a.assignment_id,'source_id',a.source_id,'processor_id',a.document->>'processor_id',
         'label_map_version',a.document->>'label_map_version','geometry_revision',a.document->>'geometry_revision',
+        'zone_id',a.document->>'zone_id',
         'zone_name',(SELECT z->>'name' FROM jsonb_array_elements(s.document->'zones') z
           WHERE z->>'zone_id'=a.document->>'zone_id')
       ) ORDER BY a.assignment_id) FROM alarm_trigger_assignments a

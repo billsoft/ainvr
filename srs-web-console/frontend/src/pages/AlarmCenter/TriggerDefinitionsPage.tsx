@@ -126,9 +126,9 @@ export default function TriggerDefinitionsPage(){
    }}/>
   </header>}{!link&&<details className="text-xs text-ink-subtle"><summary className="cursor-pointer">车辆规则与车牌功能</summary><p className="py-2">车辆出现、接近、侵入、穿过与数量条件沿用现有告警规则，选择车辆标签后在原布防中绑定。车牌关注名单在车辆通行后匹配，需先启用通道车牌识别并绑定车辆统计；不替代原空间规则。<Link className="ml-2 text-primary" to="/config-center?category=vehicles">管理关注名单</Link></p></details>}
   <div className="flex flex-wrap items-center gap-2" role="group" aria-label="筛选告警规则">
-   <label className={field}>业务<select aria-label="告警规则业务类别" className={fieldSelect} value={business} onChange={e=>{setBusiness(e.target.value);setFilter('')}}><option value="">全部类型</option>{Array.from(new Set(['spatial',...rows.flatMap(t=>t.region_state?[t.region_state.event_kind]:[])])).map(kind=><option key={kind} value={kind}>{alarmBusinessName(kind)}</option>)}</select></label>
+   <label className={field}>规则类型<select aria-label="告警规则业务类别" className={fieldSelect} value={business} onChange={e=>{setBusiness(e.target.value);setFilter('')}}><option value="">全部类型</option>{Array.from(new Set(['spatial',...rows.flatMap(t=>t.region_state?[t.region_state.event_kind]:[])])).map(kind=><option key={kind} value={kind}>{alarmBusinessName(kind)}</option>)}</select></label>
    {(!business||business==='spatial')&&<div className={segmented}>{[{id:'' as const,name:'全部'},...triggerBehaviors].map(b=><button type="button" key={b.id} aria-pressed={filter===b.id}
-    onClick={()=>setFilter(b.id)} className={segment}>{b.id&&<span aria-hidden="true" className="h-2 w-2 rounded-full" style={{background:levelLook[b.id]?.color}}/>}{b.name}</button>)}</div>}
+    onClick={()=>setFilter(b.id)} className={segment+' !px-2'}>{b.id&&<span aria-hidden="true" className="h-2 w-2 rounded-full" style={{background:levelLook[b.id]?.color}}/>}{b.name}</button>)}</div>}
    <label className="ml-auto flex items-center gap-2 px-2 text-sm text-ink-subtle"><input type="checkbox" checked={archived} onChange={e=>setArchived(e.target.checked)}/>查看已归档</label>
   </div>
   {error&&<p role="alert">{error} <button className={button} onClick={()=>setRevision(n=>n+1)}>重新读取</button></p>}
@@ -138,7 +138,7 @@ export default function TriggerDefinitionsPage(){
    {operation.error&&<><button className={button} onClick={()=>void perform(operation)}>{operation.uncertain?'重试确认操作':'重试'}</button>{!operation.uncertain&&<button className={button} onClick={()=>{setOperation(null);setRevision(n=>n+1)}}>关闭提示并重新读取</button>}</>}
   </section>}
   {application&&<p role="status" className="rounded-base border border-line bg-surface p-3 text-sm">{application.state==='applied'?'已保存并应用':'已保存，等待应用确认'}{application.reason?`：${application.reason}`:''}</p>}
-  {loading?<p role="status">正在读取告警规则…</p>:link?<RuleColumn link={link} rules={shown} details={details} menu={menu}/>:!shown.length?<div className="rounded-panel border border-dashed border-line p-8 text-center">
+  {loading?<p role="status">正在读取告警规则…</p>:link?<RuleColumn link={link} rules={shown} allRules={rows} details={details} menu={menu} channelName={id=>usageNames[id]??id}/>:!shown.length?<div className="rounded-panel border border-dashed border-line p-8 text-center">
    <p>{archived?'没有已归档的告警规则。':'还没有符合筛选的告警规则。可先创建，再选用，无需提前绘制热区。'}</p><Link to="/monitor" className="mt-3 inline-flex items-center text-sm text-primary hover:underline">前往实时监看布防</Link>
   </div>:<div className="grid gap-4 [@container(min-width:48rem)]:grid-cols-2">{shown.map(t=><article key={t.trigger_id} aria-label={t.name} className="flex flex-col gap-3 rounded-panel border border-line bg-surface p-4">
    <header className="flex items-start gap-2"><div className="min-w-0 flex-1">

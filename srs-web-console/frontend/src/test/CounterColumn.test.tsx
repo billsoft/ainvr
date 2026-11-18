@@ -25,7 +25,7 @@ const total = (c: Counter, inn: number, out: number) => ({ counter: c, in: { occ
 const item = total(a, 9, 7)
 
 const selection = (over: Partial<CounterSelection> = {}): CounterSelection => ({
-  ids: ['a'], choice: { kind: 'counter', id: 'a' }, choose: vi.fn(), counters: [a, b], bindings: ['a-door'], toggleBinding: vi.fn(), items: [item],
+  ids: ['a'], choice: { kind: 'counter', id: 'a' }, choose: vi.fn(), counters: [a, b], bindings: ['a-door'], toggleBinding: vi.fn(), setBindings: vi.fn(), items: [item],
   totals: [item, total(b, 21, 15)], previousTotals: null, compareLabel: null, summary: null,
   range: { from: '2026-11-17T00:00:00Z', to: '2026-11-18T00:00:00Z', label: '今天' }, openRecords: vi.fn(), ...over,
 })
@@ -91,7 +91,7 @@ it('only the chosen statistic lists its locations with the analysis numbers', as
   expect(within(card).getByRole('checkbox', { name: /门口/ })).toBeChecked()
   expect(within(card).getByRole('checkbox', { name: /大厅/ })).not.toBeChecked()
   await userEvent.click(within(card).getByRole('checkbox', { name: /大厅/ }))
-  expect(sel.toggleBinding).toHaveBeenCalledWith('a-hall')
+  expect(sel.setBindings).toHaveBeenCalledWith(['a-door', 'a-hall'])
   await userEvent.click(within(card).getAllByRole('button', { name: /的进记录/ })[0]!)
   expect(sel.openRecords).toHaveBeenCalledWith('a', 'a-door', 'in')
   const other = screen.getByRole('article', { name: '车间客流' })

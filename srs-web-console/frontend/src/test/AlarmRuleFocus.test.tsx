@@ -57,7 +57,7 @@ it('the background refresh never brings in another rule',async()=>{
 
 const rule=(id:string,name:string):TriggerDefinition=>({trigger_id:id,name,state:'enabled',behavior:'region_enter',labels:[],version:1} as unknown as TriggerDefinition)
 function link(over:Partial<AlarmRuleLink>={}):AlarmRuleLink{
- return {rule:null,choose:vi.fn(),periodLabel:'今天',countsError:'',columnOpen:true,reload:0,bump:vi.fn(),
+ return {rule:null,choose:vi.fn(),periodLabel:'今天',countsError:'',columnOpen:true,reload:0,bump:vi.fn(),now:new Date(),refresh:vi.fn(),locations:null,setLocations:vi.fn(),
   counts:{total:9,pending:3,human_confirmed:4,human_false_positive:1,triggers:[{trigger_id:'door',name:'门口闯入',total:7,pending:2,human_reviewed:5,human_false_positive:1,rule_versions:[1]}]} as unknown as AlarmRuleLink['counts'],...over}
 }
 it('the rules column is one choice: every rule, or one rule with its alarms and pending ones for the period',()=>{

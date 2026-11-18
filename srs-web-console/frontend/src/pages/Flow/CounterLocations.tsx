@@ -1,5 +1,6 @@
 import { Eraser } from 'lucide-react'
 import type { Counter } from '@/api/flowService'
+import { ZoneChecklist } from '@/components/ZoneChecklist'
 import type { CounterSelection } from '../Analytics/analyticsLinkContext'
 import { passageReason } from './CounterStatistics'
 
@@ -10,47 +11,45 @@ interface Props {
   onClear: (bindingId: string) => void
 }
 
-/** The chosen statistic's locations: tick them in or out of the analysis, with the analysis's numbers on each. */
+/**
+ * The chosen statistic's locations, picked on its card the same way as an alarm rule's zones: tick several, 只看 one,
+ * or 全选; the analysis's numbers sit on each row.
+ */
 export function CounterLocations({ counter, sel, zoneName, onClear }: Props) {
   const mine = sel.counters.find(c => c.counter_id === counter.counter_id)
   if (!mine) return <p className="text-xs text-ink-subtle">已选用 {counter.bindings.length} 个统计位置。</p>
   const item = sel.items?.find(i => i.counter.counter_id === mine.counter_id)
   const outputs = mine.outputs === 'both' ? (['in', 'out'] as const) : (['in'] as const)
+  const own = new Set(mine.bindings.map(b => b.binding_id))
+  // Other statistics' locations (a total of several) are not this card's to change.
+  const others = sel.bindings.filter(id => !own.has(id))
+  const change = (keys: string[]) => sel.setBindings([...others, ...keys])
   return (
     <section aria-label={`${counter.name} 的统计位置`} className="space-y-1">
-      <p className="text-xs text-ink-subtle">统计位置 · 取消勾选可从分析中排除{item ? '' : ' · 正在读取…'}</p>
-      <ul className="divide-y divide-line rounded-base border border-line">
-        {mine.bindings.map(b => {
-          const checked = sel.bindings.includes(b.binding_id)
-          const z = item?.zones.find(x => x.binding_id === b.binding_id)
-          const diagnostic = [z?.in?.diagnostic, z?.out?.diagnostic].filter(d => !!d).sort((x, y) => y!.at.localeCompare(x!.at))[0]
-          const name = zoneName(b)
-          return (
-            <li key={b.binding_id} className="flex flex-wrap items-center gap-x-1 px-2">
-              <label className="flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-2 text-sm text-ink">
-                <input type="checkbox" className="h-4 w-4 shrink-0 accent-primary" checked={checked} onChange={() => sel.toggleBinding(b.binding_id)} />
-                <span className="min-w-0 break-words">{name}{!b.active ? '（已解绑/历史）' : ''}</span>
-              </label>
-              {checked && z && outputs.map(o => (
-                <button key={o} type="button" disabled={!z[o]} aria-label={`查看 ${name} 的${mine.names[o]}记录`}
-                  className="min-h-11 min-w-11 px-1 text-sm font-semibold tabular-nums text-primary hover:underline disabled:text-ink-faint"
-                  onClick={() => sel.openRecords(mine.counter_id, b.binding_id, o)}>{mine.names[o]} {z[o]?.occurrences ?? '—'}</button>
-              ))}
-              {checked && z && (
-                <button type="button" aria-label={`清理 ${name} 的所选时段数据`} title="清理所选时段的数据"
-                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-danger-50 hover:text-danger"
-                  onClick={() => onClear(b.binding_id)}><Eraser size={14} aria-hidden="true" /></button>
-              )}
-              {checked && diagnostic && (
-                <details className="basis-full pb-1 text-xs text-amber-800">
-                  <summary className="cursor-pointer py-1">通行诊断</summary>
-                  <p className="py-1 leading-5">{passageReason(diagnostic.reason)}（{new Date(diagnostic.at).toLocaleString('zh-CN')}）。不是已确认的漏计人数。</p>
-                </details>
-              )}
-            </li>
-          )
-        })}
-      </ul>
+      <ZoneChecklist label={`${counter.name} 的统计位置`} hint={`统计位置 · 只统计勾选的${item ? '' : ' · 正在读取…'}`}
+        options={mine.bindings.map(b => ({ key: b.binding_id, name: zoneName(b), ...(!b.active ? { note: '已解绑/历史' } : {}) }))}
+        chosen={new Set(sel.bindings)} onChange={change}
+        extra={(o, checked) => {
+          const z = item?.zones.find(x => x.binding_id === o.key)
+          if (!checked || !z) return null
+          const diagnostic = [z.in?.diagnostic, z.out?.diagnostic].filter(d => !!d).sort((x, y) => y!.at.localeCompare(x!.at))[0]
+          return <>
+            {outputs.map(out => (
+              <button key={out} type="button" disabled={!z[out]} aria-label={`查看 ${o.name} 的${mine.names[out]}记录`}
+                className="min-h-9 min-w-9 px-1 text-sm font-semibold tabular-nums text-primary hover:underline disabled:text-ink-faint [@media(pointer:coarse)]:min-h-11"
+                onClick={() => sel.openRecords(mine.counter_id, o.key, out)}>{mine.names[out]} {z[out]?.occurrences ?? '—'}</button>
+            ))}
+            <button type="button" aria-label={`清理 ${o.name} 的所选时段数据`} title="清理所选时段的数据"
+              className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-base text-ink-subtle hover:bg-danger-50 hover:text-danger [@media(pointer:coarse)]:min-h-11"
+              onClick={() => onClear(o.key)}><Eraser size={14} aria-hidden="true" /></button>
+            {diagnostic && (
+              <details className="basis-full pb-1 text-xs text-amber-800">
+                <summary className="cursor-pointer py-1">通行诊断</summary>
+                <p className="py-1 leading-5">{passageReason(diagnostic.reason)}（{new Date(diagnostic.at).toLocaleString('zh-CN')}）。不是已确认的漏计人数。</p>
+              </details>
+            )}
+          </>
+        }} />
     </section>
   )
 }

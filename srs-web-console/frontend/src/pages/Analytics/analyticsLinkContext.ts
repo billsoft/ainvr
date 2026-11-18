@@ -26,6 +26,8 @@ export interface CounterSelection {
   counters: Counter[]
   bindings: string[]
   toggleBinding: (bindingId: string) => void
+  /** Replace the ticked locations at once (only one, or all again). */
+  setBindings: (bindingIds: string[]) => void
   /** Numbers for the chosen statistic over the analysis's time range. */
   items: CounterResult[] | null
   /** Period totals for every statistic, so each card shows its numbers before it is chosen. */

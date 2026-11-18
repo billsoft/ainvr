@@ -294,7 +294,7 @@ function FlowAnalyticsPage() {
   } : null
   const summaryKey = JSON.stringify(summary)
   const openSlotRef = useRef(openSlot); openSlotRef.current = openSlot
-  useEffect(()=>{if(counters)publish({ids:counterIds,choice,choose,counters,bindings,toggleBinding,items:current?.items??null,totals,previousTotals:compare?previousTotals:null,compareLabel:compare?range.compare:null,summary,openSlot:i=>openSlotRef.current(i),range:{from:query.from,to:query.to,label:rangeText},openRecords})},[counters,counterIds,bindings,current,totals,previousTotals,compare,summaryKey,rangeText])
+  useEffect(()=>{if(counters)publish({ids:counterIds,choice,choose,counters,bindings,toggleBinding,setBindings:ids=>setBindings(ids),items:current?.items??null,totals,previousTotals:compare?previousTotals:null,compareLabel:compare?range.compare:null,summary,openSlot:i=>openSlotRef.current(i),range:{from:query.from,to:query.to,label:rangeText},openRecords})},[counters,counterIds,bindings,current,totals,previousTotals,compare,summaryKey,rangeText])
   useEffect(()=>()=>publish(null),[publish])
   // Key conclusions: what a person watching this screen should take away without reading a chart.
   const busiest = grid.flatMap((row, d) => row.map((c, h) => ({ d, h, v: c.value }))).filter(c => c.v !== null && c.v > 0).sort((a, b) => b.v! - a.v!)[0]

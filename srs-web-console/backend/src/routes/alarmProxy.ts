@@ -12,12 +12,29 @@ export interface AlarmProxyOptions {
   connection: () => Promise<AlarmConnection | null>;
   /** Server-validated console principal. Never read the actor from client headers. */
   principal: (request: FastifyRequest) => Promise<string | null>;
+  /** Configured zone names by zone id. The alarm service knows zones only by id, and people pick zones by name. */
+  zoneNames?: () => Promise<Map<string, string>>;
+}
+
+type NamedZone = {zone_id?: unknown; name?: unknown};
+/** Replace a name that is only the zone id (or empty) with the configured one; a real name from the service stays. */
+async function nameZones(body: unknown, zoneNames: () => Promise<Map<string, string>>) {
+  const result = body as {zones?: unknown; catalog?: {zones?: unknown}} | null;
+  const lists = [result?.zones, result?.catalog?.zones].filter((list): list is NamedZone[] => Array.isArray(list));
+  if (!lists.some(list => list.length)) return;
+  let names: Map<string, string>;
+  try { names = await zoneNames(); } catch { return; }
+  for (const zone of lists.flat()) {
+    if (!zone || typeof zone.zone_id !== 'string') continue;
+    const configured = names.get(zone.zone_id);
+    if (configured && (typeof zone.name !== 'string' || !zone.name.trim() || zone.name === zone.zone_id)) zone.name = configured;
+  }
 }
 
 /** Named BFF API only. Producer input, health probes and credentials are never proxied. */
 export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxyOptions) {
   const passwordAttempts=new LoginAttempts();
-  const forward = (path: (req: FastifyRequest) => string, queryKeys: string[] = [], mutation = false) =>
+  const forward = (path: (req: FastifyRequest) => string, queryKeys: string[] = [], mutation = false, named = false) =>
     async (req: FastifyRequest, reply: FastifyReply) => {
       const actor = await options.principal(req);
       if (!actor) return reply.code(401).send({error: {code: 'unauthorized', message: '需要登录'}});
@@ -53,6 +70,7 @@ export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxy
           return reply.code(403).send(body);
         // Upstream authentication errors are service configuration failures, not a console logout.
         if (upstream.status === 401 || upstream.status === 403) throw new Error('Service authentication failed');
+        if (named && upstream.ok && options.zoneNames) await nameZones(body, options.zoneNames);
         return reply.code(upstream.status).send(body);
       } catch {
         return reply.code(502).send({error: {code: 'alarm_unavailable', message: '告警服务暂不可用；操作可能已完成，请刷新状态', retryable: true}});
@@ -68,7 +86,7 @@ export async function alarmProxyRoutes(app: FastifyInstance, options: AlarmProxy
   app.get('/alarms/events', forward(() => '/v1/events', ['status', 'channel_id', 'review', 'disposition', 'limit', 'cursor', 'from', 'to', 'zone_id', 'behavior', 'event_kind', 'locations', 'analytics']));
   app.get('/alarms/events/summary', forward(() => '/v1/events/summary'));
   app.post('/alarms/events/statistics', forward(() => '/v1/events/statistics'));
-  app.post('/alarms/events/analytics', {bodyLimit:16384}, forward(() => '/v1/events/analytics'));
+  app.post('/alarms/events/analytics', {bodyLimit:16384}, forward(() => '/v1/events/analytics', [], false, true));
   app.post('/flow/dwell', forward(() => '/v1/flow/dwell'));
   app.post('/flow/heat', forward(() => '/v1/flow/heat'));
   app.get('/alarms/events/:id', forward(idPath()));
