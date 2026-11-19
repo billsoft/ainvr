@@ -28,6 +28,8 @@ export interface SearchRuntimeDependencies {
   volumes: () => Promise<unknown>;
   modelAuthority?: () => Promise<SearchModelAuthority>;
   modelViews?: (model: NonNullable<SearchModelAuthority['active_model_pin']>) => Promise<number | null>;
+  // Verified crop capability of the pinned space; when absent, only a single-view space takes crops.
+  modelObjects?: (model: NonNullable<SearchModelAuthority['active_model_pin']>) => Promise<boolean | null>;
   ingestionGate?:(current:{revision:string;source_ids:readonly string[];active_model:SearchModelAuthority['active_model_pin'];approved_transition?:SearchModelAuthority['approved_model_transition']})=>Promise<{gate:SearchMigrationIngestionGate|null}>;
 }
 export class SearchConfigurationError extends Error {
@@ -116,8 +118,9 @@ export async function readEffectiveSearchConfiguration(dependencies: SearchRunti
   // Desired may already name a migration target. Only the actual pinned space
   // can authorize object crops; unknown capabilities leave scene sampling alone.
   const activeModel = authority?.active_model_pin;
-  const objectSupported = !!activeModel && !!dependencies.modelViews &&
-    await dependencyWithin(() => dependencies.modelViews!(activeModel)) === 1;
+  const objectSupported = !!activeModel && (dependencies.modelObjects
+    ? await dependencyWithin(() => dependencies.modelObjects!(activeModel)) === true
+    : !!dependencies.modelViews && await dependencyWithin(() => dependencies.modelViews!(activeModel)) === 1);
   const index = resolveSearchIndexDirectory(settings, rawVolumes);
   const sources = (catalog?.sources ?? []).filter(source => settings.sampling.mode === 'all' ||
     settings.sampling.channel_ids.includes(source.channel_id)).map(source => ({ ...source,

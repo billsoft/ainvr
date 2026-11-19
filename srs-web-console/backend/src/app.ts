@@ -9,7 +9,7 @@ import { SearchIndexShards } from './store/searchIndexShards.js';
 import { SearchJobs } from './store/searchJobs.js';
 import { searchRoutes } from './routes/searchRoutes.js';
 import { searchRuntimeRoutes } from './routes/searchRuntimeRoutes.js';
-import { createSearchModelViewsReader } from './services/searchModelCapabilities.js';
+import { createSearchModelCapabilityReader } from './services/searchModelCapabilities.js';
 import { SearchConfigAdapter } from './store/searchConfigAdapter.js';
 import { SearchRuntimeStore } from './store/searchRuntimeStore.js';
 import { readAppliedSearchConnection, readAppliedSearchSettings, readAppliedSearchConfiguration, type SearchRuntimeDependencies } from './services/searchConnection.js';
@@ -522,10 +522,13 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const searchChannels = async () => { try { return (await searchCatalog()).channels; } catch { return []; } };
     const searchRuntime = pgStore ? new SearchRuntimeStore(pgStore.pool) : null;
     let searchVolumesPending: Promise<unknown> | null = null;
+    // One cached verification (it hashes the model files) answers both views and crop capability.
+    const searchModelCapability = createSearchModelCapabilityReader(packageId=>searchCapabilityNative.verifyMigrationModel(packageId));
     const searchDependencies: SearchRuntimeDependencies | null = pgStore ? {
       store: pgStore, sourceCatalog: searchCatalog,
       modelAuthority:()=>searchRuntime!.modelAuthority(),
-      modelViews:createSearchModelViewsReader(packageId=>searchCapabilityNative.verifyMigrationModel(packageId)),
+      modelViews:pin=>searchModelCapability(pin).then(capability=>capability?.views??null),
+      modelObjects:pin=>searchModelCapability(pin).then(capability=>capability?.objects??null),
       ingestionGate:current=>searchJobs!.ingestionGate(current),
       volumes: async () => {
         const helper = osHelperConfigFromEnv();

@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { createSearchModelViewsReader } from '../services/searchModelCapabilities.js';
+import { createSearchModelCapabilityReader, createSearchModelViewsReader } from '../services/searchModelCapabilities.js';
 import { SearchNativeClient } from '../services/searchNativeClient.js';
 
 const pin = { package_id: 'siglip2-base-full-int8', model_version: `search-v1-${'a'.repeat(64)}`, package_sha256: 'a'.repeat(64) };
@@ -51,4 +51,20 @@ it('rechecks a changed pin even under the same package name and does not cache t
   verify.mockResolvedValue({ ...profile, ...changed, views: 1 });
   expect(await read(changed)).toBe(1);
   expect(verify).toHaveBeenCalledTimes(3);
+});
+
+it.each([
+  [{ views: 4, objects: true }, { views: 4, objects: true }],
+  [{ views: 4 }, { views: 4, objects: false }],
+  [{ views: 1 }, { views: 1, objects: true }],
+  [{ views: 4, objects: false }, { views: 4, objects: false }],
+])('reads whether the verified package stores detector crops, defaulting to the single-view rule: %j', async (patch, expected) => {
+  const verify = vi.fn(async () => ({ ...profile, ...patch }));
+  const read = createSearchModelCapabilityReader(verify);
+  expect(await Promise.all([read(pin), read(pin)])).toEqual([expected, expected]);
+  expect(verify).toHaveBeenCalledTimes(1);
+});
+it('withholds the crop capability when the profile carries no views and no crop flag', async () => {
+  const read = createSearchModelCapabilityReader(async () => ({ ...profile, views: undefined }));
+  expect(await read(pin)).toBeNull();
 });

@@ -23,6 +23,8 @@ export const searchMigrationModelProfileSchema = searchMigrationModelSchema.exte
   dimensions: z.number().int().min(1).max(4096),
   // Older services omit this capability; omission never authorizes object sampling.
   views: z.number().int().min(1).max(8).optional(),
+  // Whether the space also stores detector crops (one vector each); older services omit it.
+  objects: z.boolean().optional(),
   input_spec_version: z.string().min(1).max(512).regex(/^[\x20-\x7e]+$/),
   files_verified: z.boolean(), production_approval_declared: z.boolean(),
   pruned: z.boolean(), runtime_ready: z.literal(false),

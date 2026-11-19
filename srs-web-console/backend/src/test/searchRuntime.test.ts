@@ -57,6 +57,12 @@ describe('sampling follows actual pinned package capability', () => {
     expect(after.sources[0]).toMatchObject({ object: desired === single, scene: true });
     expect(after.revision).not.toBe(before.revision);
   });
+  it.each([[multi, true, true], [single, false, false]] as const)('a verified crop flag decides object sampling over the view count: %j', async (pin, objects, object) => {
+    const f = fixture();
+    const effective = await readEffectiveSearchConfiguration({ ...f.dependencies, modelViews: async () => (pin === multi ? 4 : 1),
+      modelObjects: async () => objects, modelAuthority: async () => ({ active_model_pin: pin, approved_model_transition: null }) });
+    expect(effective.sources[0]).toMatchObject({ object, scene: true });
+  });
   it('keeps channel eligibility and saved opt-outs authoritative for single-view models', async () => {
     const f = fixture();
     const dependencies = { ...f.dependencies, modelViews: async () => 1,
