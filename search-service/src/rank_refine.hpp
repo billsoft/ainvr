@@ -119,9 +119,13 @@ std::vector<Item> FuseSceneAndObjects(const std::vector<Item>& scenes, const std
     }
     fused.push_back(scene); scores.push_back(share); merged.push_back(false);
   }
-  for (size_t i = 0; i < fused.size(); ++i) fused[i].score = scores[i];
-  std::stable_sort(fused.begin(), fused.end(), [](const Item& a, const Item& b) { return a.score > b.score; });
-  if (fused.size() > limit) fused.resize(limit);
-  return fused;
+  // The fused value only orders the list. Each item keeps its own cosine as `score`: the page shows it as the
+  // similarity and the minimum-similarity filter applies to it (a crop's cosine for a merged crop).
+  std::vector<size_t> order(fused.size());
+  for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return scores[a] > scores[b]; });
+  std::vector<Item> out;
+  for (size_t i = 0; i < order.size() && out.size() < limit; ++i) out.push_back(std::move(fused[order[i]]));
+  return out;
 }
 }  // namespace ainvr::search

@@ -742,12 +742,18 @@ it('keeps slider and numeric minimum in sync and submits a frozen search conditi
   const slider = screen.getByRole('slider', { name: '拖动最低相似度' });
   const numeric = screen.getByRole('spinbutton', { name: '最低相似度' });
   expect(numeric).toHaveValue(0.035);
-  expect(slider).toHaveAttribute('max', '0.1');
+  // Opened to 0-10 (2026-11-19) so the operator can find the default and range on real footage.
+  expect(slider).toHaveAttribute('max', '10');
   expect(slider).toHaveAttribute('step', '0.005');
   fireEvent.change(slider, { target: { value: '0.075' } });
   expect(numeric).toHaveValue(0.075);
   fireEvent.change(slider, { target: { value: '0.09' } });
   expect(numeric).toHaveValue(0.09);
+  fireEvent.change(numeric, { target: { value: '7.5' } });
+  expect(slider).toHaveValue('7.5');
+  expect(screen.getByRole('button', { name: '搜索录像' })).not.toBeDisabled();
+  fireEvent.change(numeric, { target: { value: '10.5' } });
+  expect(numeric).toHaveAttribute('aria-invalid', 'true');
   fireEvent.change(numeric, { target: { value: '0.1' } });
   expect(slider).toHaveValue('0.1');
   fireEvent.change(screen.getByRole('textbox', { name: '想找什么？' }), { target: { value: '白色衣服' } });

@@ -48,7 +48,17 @@ int main() {
     Check(fused.size() == 4, "one crop merged with its scene sample, the rest stand alone");
     Check(fused[0].sample.record.track == "p1" && fused[0].context && fused[0].context->sample.record.captured_ms == 10000,
           "the crop is the evidence, the scene sample 1 s away its context");
-    Check(std::abs(fused[0].score - 1.0) < 1e-9, "first in both rankings scores 1");
+    // The page shows `score` as the raw cosine and filters on it: fusion orders, it never rewrites a score.
+    Check(std::abs(fused[0].score - 0.30) < 1e-9, "a merged crop keeps its own cosine");
+    for (const auto& item : fused) if (item.sample.record.track == "p2") Check(std::abs(item.score - 0.20) < 1e-9, "a lone crop keeps its cosine");
+    for (const auto& item : fused) if (item.sample.record.channel == "cam2") Check(std::abs(item.score - 0.13) < 1e-9, "a scene sample keeps its cosine");
+    {   // order follows the fused rank, not the raw cosines of the two scales
+      const std::vector<Item> s1{Make("cam9", "", 0, true, 0.90)};
+      const std::vector<Item> c3{Make("cam1", "q1", 0, false, 0.20), Make("cam2", "q2", 0, false, 0.19), Make("cam3", "q3", 0, false, 0.18)};
+      const auto order = FuseSceneAndObjects(s1, c3, SceneObjectFusion{}, 60);
+      Check(order.size() == 4 && order[0].sample.record.track == "q1" && order[3].sample.record.channel == "cam9" && std::abs(order[3].score - 0.90) < 1e-9,
+            "crops (0.6 share) rank ahead of the scene (0.4 share) despite its higher cosine, which it keeps");
+    }
     Check(!fused[1].context && fused[1].sample.record.track == "p2", "a crop without a nearby scene sample keeps its own rank share");
     for (const auto& item : fused) Check(!(item.sample.record.scene && item.sample.record.captured_ms == 10000), "a merged scene sample is not listed twice");
     fusion.merge_ms = 500;

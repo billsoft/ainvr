@@ -14,7 +14,8 @@ export const searchRangeSchema = z.object({
 export const searchQuerySchema = z.object({
   query: z.string().trim().min(1).max(256).refine(v => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(v), '描述包含无效字符'),
   scope: searchRangeSchema,
-  min_similarity: z.number().finite().min(-1).max(1).optional(),
+  // Raw cosine never exceeds 1; the operator range is opened to 10 while the default is found on real footage.
+  min_similarity: z.number().finite().min(-1).max(10).optional(),
   verify: z.boolean().default(false),
   request_id: z.string().uuid(),
 }).strict();
@@ -105,7 +106,8 @@ export const searchResultSchema = z.object({
 });
 export type SearchResult = z.infer<typeof searchResultSchema>;
 export const searchPageSchema = z.object({
-  min_similarity: z.number().finite().min(-1).max(1).optional(),
+  // Raw cosine never exceeds 1; the operator range is opened to 10 while the default is found on real footage.
+  min_similarity: z.number().finite().min(-1).max(10).optional(),
   search_id: z.string().uuid(), scope: searchRangeSchema,
   model_version: z.string().min(1).max(128),
   coverage: z.enum(['unknown', 'partial', 'sampled']),

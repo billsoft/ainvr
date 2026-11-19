@@ -66,7 +66,7 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
   useEffect(() => { liveReferences.current = { reference, submitted: submittedReference } }, [reference, submittedReference])
   useEffect(() => () => { releaseReference(liveReferences.current.reference); if (liveReferences.current.submitted?.url !== liveReferences.current.reference?.url) releaseReference(liveReferences.current.submitted) }, [])
   const [minimum, setMinimum] = useState('0.035')
-  const validMinimum = minimum === '' || (Number.isFinite(Number(minimum)) && Number(minimum) >= 0 && Number(minimum) <= 0.1)
+  const validMinimum = minimum === '' || (Number.isFinite(Number(minimum)) && Number(minimum) >= 0 && Number(minimum) <= 10)
   const [data, setData] = useState<SearchPageResult | null>(null)
   const [submitted, setSubmitted] = useState('')
   const [submittedCriteria, setSubmittedCriteria] = useState('')
@@ -235,7 +235,7 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
         if (epoch.current !== own) return
         next = await searchService.imageQuery({ query: query.trim(), image, request_id: id, scope,
           ...(searchKind === 'image_text' ? { image_weight: imageWeight } : {}) }, abort.signal)
-      } else next = await searchService.query({ ...(minimum === '' ? {} : { min_similarity: Math.min(1, Number(minimum)) }), query: query.trim(), request_id: id, verify: aiReferenceEnabled(),
+      } else next = await searchService.query({ ...(minimum === '' ? {} : { min_similarity: Number(minimum) }), query: query.trim(), request_id: id, verify: aiReferenceEnabled(),
         scope }, abort.signal)
       if (epoch.current === own) {
         loadedPages.current = [{ cursor: null, ids: next.items.map(i => i.id) }]
@@ -454,9 +454,9 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
         {kind === 'text' && <div className="mt-2 max-w-xl space-y-1">
         <label htmlFor="search-minimum" className="text-sm font-medium text-ink">最低相似度</label>
         <div className="flex flex-wrap items-center gap-3">
-          <input type="range" aria-label="拖动最低相似度" aria-describedby="search-minimum-hint" min="0" max="0.1" step="0.005" value={minimum === '' ? 0 : Number(minimum) || 0} disabled={searching}
+          <input type="range" aria-label="拖动最低相似度" aria-describedby="search-minimum-hint" min="0" max="10" step="0.005" value={minimum === '' ? 0 : Number(minimum) || 0} disabled={searching}
             onChange={e => setMinimum(Number(e.target.value).toFixed(3))} className="h-11 min-w-32 flex-1 cursor-pointer accent-primary focus-visible:outline-primary" />
-          <input id="search-minimum" type="number" inputMode="decimal" min="0" max="0.1" step="0.005" placeholder="不限" value={minimum} disabled={searching}
+          <input id="search-minimum" type="number" inputMode="decimal" min="0" max="10" step="0.005" placeholder="不限" value={minimum} disabled={searching}
             onChange={e => setMinimum(e.target.value)} aria-invalid={!validMinimum} aria-describedby="search-minimum-hint"
             className="h-11 w-24 rounded-base border border-line bg-surface px-3 text-sm tabular-nums focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
           <button type="button" disabled={searching} className={button} onClick={() => setMinimum('')}>不限</button>

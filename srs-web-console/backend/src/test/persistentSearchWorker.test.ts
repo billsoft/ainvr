@@ -480,7 +480,8 @@ it('returns a genuine empty snapshot when every score is below the minimum', asy
   const f = fixture();
   const page = await f.worker.query({ ...query, min_similarity: 1 }, 'operator');
   expect(page.items).toEqual([]); expect(page.next_cursor).toBeNull();
-  for (const min_similarity of [NaN, Infinity, -1.01, 1.01])
+  expect((await fixture().worker.query({ ...query, min_similarity: 10 }, 'operator')).items).toEqual([]);
+  for (const min_similarity of [NaN, Infinity, -1.01, 10.01])
     await expect(f.worker.query({ ...query, min_similarity }, 'operator')).rejects.toBeDefined();
 });
 
