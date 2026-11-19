@@ -1,5 +1,6 @@
 #pragma once
 #include "index_projection.hpp"
+#include "rank_refine.hpp"
 #include "text_embedding_cache.hpp"
 #include "model_migration_authorization.hpp"
 #include "source_admission.hpp"
@@ -41,7 +42,9 @@ class MatchEngine {
  public:
   // `views` stored vectors per scene sample. Queries read the attached shard files and
   // the newest rows from Mongo (see IndexProjection); nothing is resident per sample.
-  MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t views = 1);
+  // `objects`: the space also stores detector crops (one vector each). Scene samples and crops are then ranked
+  // apart and fused by rank (FuseSceneAndObjects); a crop carries its nearby scene sample as context.
+  MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t views = 1, bool objects = false);
   void Start(const Scope& window);
   // Start, with the attached shards (none) taken as the whole catalog: tests, fixtures.
   void Rebuild(const Scope& window);
@@ -61,18 +64,23 @@ class MatchEngine {
   nlohmann::json MatchVector(std::vector<float> picture, const std::string& text, double image_weight, const Scope& scope);
   size_t Dimensions() const { return dimensions_; }
   size_t Views() const { return views_; }
+  bool StoresObjects() const { return objects_; }
   const std::string& ModelVersion() const { return model_; }
   bool Healthy() const { return encoder_.Healthy(); }
   bool Ready() const { return loaded_.load() && Healthy(); }
  private:
   const std::string model_;
   const size_t dimensions_, views_;
+  const bool objects_;
   TextEncoder& encoder_;
   IndexProjection projection_;
   BoundedTextEmbeddingCache text_cache_;
   std::mutex inference_;
   std::atomic<bool> loaded_{false};
   std::vector<float> TextVector(const std::string& text);   // caller holds inference_
+  // One query vector over this space, refined; both kinds fused when the space stores crops.
+  ProjectionResult Ranked(const std::vector<float>& query, const Scope& scope, const RankRefineOptions& options);
+  void CheckShape(const Sample& sample) const;
 };
 
 struct ProducerSource {

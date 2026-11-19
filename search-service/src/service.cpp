@@ -218,7 +218,8 @@ int main(int argc, char** argv) {
               } else encoder = LoadConfiguredTextEncoder(runtime, ProductionTextLoader(runtime,*history));
               if (encoder) {
                 const size_t views = FindPackageSpec(runtime.package_id).views;
-                engine = std::make_unique<MatchEngine>(*history, *encoder, views);
+                engine = std::make_unique<MatchEngine>(*history, *encoder, views,
+                    views > 1 && PackageStoresObjects(runtime.package_id));   // split ranking only where scene views and crops coexist
                 runtime.access.ingestion_model = encoder->ModelVersion();
                 engine->Start(window);
                 text_ready = true;

@@ -10,12 +10,16 @@ bool FiniteBox(const std::array<double,4>& box) {
   return std::all_of(box.begin(),box.end(),[](double v) {return std::isfinite(v)&&std::abs(v)<=131072;}) && box[2]>0&&box[3]>0;
 }
 }
-// What the vector's model actually saw. Truthful per package: the dual-tower SigLIP vision towers squash to 256x256,
-// the Qwen3-VL-Embedding input is 896x448 and is stretched or letterboxed by the region's aspect ratio.
-nlohmann::json ModelInputEvidence(const ainvr::search::PackageSpec& spec,const ainvr::SnapshotPlan& plan){
+// What the vector's model actually saw. Truthful per package: the dual-tower vision towers squash to their square
+// (a detector box in a letterbox space keeps its aspect ratio on grey 127), the Qwen3-VL-Embedding input is
+// 896x448 and is stretched or letterboxed by the region's aspect ratio.
+nlohmann::json ModelInputEvidence(const ainvr::search::PackageSpec& spec,const ainvr::SnapshotPlan& plan,bool scene=true){
   if(spec.kind==ainvr::search::PackageKind::QwenEmbedding)return QwenModelInputEvidence(plan);
-  nlohmann::json input={{"width",256},{"height",256},{"color","RGB"},{"interpolation","INTER_AREA"},{"aspect","squash"},{"mean",127.5},{"divisor",127.5}};
-  if(spec.views>1)input["views"]=spec.views;
+  const bool letterbox=!scene&&spec.object_crop==ainvr::search::ObjectCrop::LetterboxGray127;
+  nlohmann::json input={{"width",spec.vision_size},{"height",spec.vision_size},{"color","RGB"},{"interpolation","INTER_AREA"},
+    {"aspect",letterbox?"letterbox":"squash"},{"mean",127.5},{"divisor",127.5}};
+  if(letterbox)input["padding"]=127;
+  if(scene&&spec.views>1)input["views"]=spec.views;
   return input;
 }
 std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const FrozenSearchFrame& frame,
@@ -33,7 +37,8 @@ std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const Froz
       product.render_backend.find("cpu")!=std::string::npos||product.render_backend.empty()||
       product.jpeg.size()<4||product.jpeg.size()>size_t(lease.grant->limits.image_max_bytes)||
       product.jpeg.front()!=255||product.jpeg[1]!=216||product.jpeg[product.jpeg.size()-2]!=255||product.jpeg.back()!=217||
-      product.embedding.size()!=spec.dimensions*spec.views||(spec.views>1&&selection.slot)||identity.captured_ms<0||space.model_version.empty()||space.input_spec_version.empty())
+      product.embedding.size()!=spec.dimensions*ainvr::search::SampleViews(spec.id,!selection.slot)||
+      (selection.slot&&!ainvr::search::PackageStoresObjects(spec.id))||identity.captured_ms<0||space.model_version.empty()||space.input_spec_version.empty())
     throw std::runtime_error("search_prepared_sample_invalid");
   const auto permitted=lease.grant->sources.find(source.processor_id);
   if(permitted==lease.grant->sources.end()||permitted->second.processor_id!=source.processor_id||permitted->second.channel_id!=source.channel_id||
@@ -50,7 +55,8 @@ std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const Froz
   record.id=ainvr::search::SearchSampleStorageUuid({source.input_stream_id,source.channel_id,source.processor_id,
     identity.binding.stream_session_id,space.model_version,selection.track_id,selection.slot,
     static_cast<uint64_t>(identity.source_pts_ns),static_cast<uint64_t>(identity.source_frame_index)});
-  record.vector=ainvr::search::NormalizeViews(product.embedding,spec.dimensions*spec.views,spec.views);
+  const size_t blocks=ainvr::search::SampleViews(spec.id,record.scene);
+  record.vector=ainvr::search::NormalizeViews(product.embedding,spec.dimensions*blocks,blocks);
   const int64_t days=lease.grant->limits.retention_days;
   if(days<1||days>365||record.captured_ms>INT64_MAX-days*86400000)throw std::runtime_error("search_prepared_expiry_invalid");
   sample->expires_ms=record.captured_ms+days*86400000;sample->track_slot=selection.slot;sample->jpeg=std::move(product.jpeg);
@@ -63,10 +69,10 @@ std::shared_ptr<const SearchPreparedSample> BuildSearchPreparedSample(const Froz
     {"raw_frame_width",geometry.raw_width},{"raw_frame_height",geometry.raw_height},
     {"captured_ms",record.captured_ms},{"image_width",product.plan.width},{"image_height",product.plan.height},
     {"raw_source_rectangle",product.plan.source_rectangle},{"image_space","raw-nv12-crop"},{"projection_mode","raw_planar"},
-    {"input_spec_version",space.input_spec_version},{"model_input",ModelInputEvidence(spec,product.plan)},
+    {"input_spec_version",space.input_spec_version},{"model_input",ModelInputEvidence(spec,product.plan,record.scene)},
     {"source_yuv",{{"bt709",frame.Bt709()},{"full_range",frame.FullRange()}}},
     {"render_backend",product.render_backend},{"encoder_backend",product.encoder_backend},{"vision_backend",product.vision_backend}};
-  if(spec.views>1){
+  if(record.scene&&spec.views>1){
     // Fractions of the whole frame, so the console can outline the view that matched without knowing pixel sizes.
     const auto rects=ainvr::search::PlanSceneViews(geometry.raw_width,geometry.raw_height);
     auto views=nlohmann::json::array();

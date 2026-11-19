@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <utility>
 #include <vector>
 namespace ainvr::search {
@@ -76,6 +77,48 @@ std::vector<Item> FuseRankings(const std::vector<Item>& by_picture, const std::v
   };
   add(by_picture, picture_weight);
   add(by_text, 1 - picture_weight);
+  for (size_t i = 0; i < fused.size(); ++i) fused[i].score = scores[i];
+  std::stable_sort(fused.begin(), fused.end(), [](const Item& a, const Item& b) { return a.score > b.score; });
+  if (fused.size() > limit) fused.resize(limit);
+  return fused;
+}
+// A space that stores scene samples and detector crops ranks the two kinds apart (their cosines live on different
+// scales: a crop is mostly the object, a scene view mostly background) and fuses the rankings by weighted reciprocal
+// rank. A crop and a scene sample of the same channel captured within `merge_ms` are one result: the crop is the
+// evidence (what matched) and the scene sample its context (where it was), attached as `context`.
+struct SceneObjectFusion {
+  // Starting points, NOT calibrated: the 2026-11-19 offline set has detector crops only. Set both from a labelled
+  // set of real scene frames before relying on them.
+  double object_weight = 0.6;
+  int64_t merge_ms = 3000;
+};
+// Item needs .score, .sample.record (channel, captured_ms) and `std::shared_ptr<const Item> context`.
+template <class Item>
+std::vector<Item> FuseSceneAndObjects(const std::vector<Item>& scenes, const std::vector<Item>& objects,
+                                      const SceneObjectFusion& options, size_t limit) {
+  constexpr double k = 20;
+  std::vector<Item> fused; std::vector<double> scores; std::vector<bool> merged;
+  for (size_t rank = 0; rank < objects.size(); ++rank) {
+    fused.push_back(objects[rank]); fused.back().context.reset();
+    scores.push_back(options.object_weight * (k + 1) / (k + 1 + double(rank))); merged.push_back(false);
+  }
+  const size_t crops = fused.size();
+  for (size_t rank = 0; rank < scenes.size(); ++rank) {
+    const auto& scene = scenes[rank]; const auto& at = scene.sample.record;
+    const double share = (1 - options.object_weight) * (k + 1) / (k + 1 + double(rank));
+    // The nearest crop of that channel in time, which has no context yet, takes this scene sample.
+    size_t best = crops;
+    for (size_t i = 0; i < crops; ++i) {
+      const auto& crop = fused[i].sample.record;
+      const auto gap = std::llabs(crop.captured_ms - at.captured_ms);
+      if (merged[i] || crop.channel != at.channel || gap > options.merge_ms) continue;
+      if (best == crops || gap < std::llabs(fused[best].sample.record.captured_ms - at.captured_ms)) best = i;
+    }
+    if (best < crops) {
+      fused[best].context = std::make_shared<const Item>(scene); merged[best] = true; scores[best] += share; continue;
+    }
+    fused.push_back(scene); scores.push_back(share); merged.push_back(false);
+  }
   for (size_t i = 0; i < fused.size(); ++i) fused[i].score = scores[i];
   std::stable_sort(fused.begin(), fused.end(), [](const Item& a, const Item& b) { return a.score > b.score; });
   if (fused.size() > limit) fused.resize(limit);

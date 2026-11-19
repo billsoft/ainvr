@@ -67,7 +67,8 @@ void LowerScalar(std::string& out, UChar32 cp) {
 }  // namespace
 
 SiglipTextTokenizer::SiglipTextTokenizer(const std::string& blob, const std::string& package) {
-  gemma_ = package == "siglip2-base-full-int8";
+  // FG-CLIP 2 ships the identical Gemma SentencePiece model (same bytes, same ids).
+  gemma_ = package == "siglip2-base-full-int8" || package == "fgclip2-base-384-o2";
   if (package != "siglip-so400m-i18n-full-int8" && !gemma_)
     throw TokenizerError("tokenizer_package_unsupported");
   UVersionInfo icu{}, unicode{}; u_getVersion(icu); u_getUnicodeVersion(unicode);

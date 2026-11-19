@@ -87,6 +87,23 @@ int main() {
       Check(transform.yuv_bt709 == bt709 && transform.yuv_full_range == range && transform.source_region &&
         *transform.source_region == std::array<float,4>{32.5,24.5,1200,700},"source plan or YUV metadata changed");
     }
+    {   // FG-CLIP 2: one 384 square; scene views squash, detector boxes keep their aspect ratio on grey 127.
+      const auto& fg = FindPackageSpec("fgclip2-base-384-o2");
+      const auto scene = BpuVisionTransform(plan,fg,false,true), crop = BpuVisionTransform(plan,fg,false,true,true);
+      Check(scene.width == 384 && scene.height == 384 && !scene.letterbox, "fgclip2 scene view is not squash384");
+      Check(crop.width == 384 && crop.height == 384 && crop.letterbox && crop.padding == std::array<float,3>{127,127,127} &&
+        crop.source_region && *crop.source_region == std::array<float,4>{32.5,24.5,1200,700} &&
+        crop.interpolation == ainvr::ImageInterpolation::Area, "fgclip2 crop is not a grey letterbox of the box");
+      Check(!BpuVisionTransform(plan,spec,false,true,true).letterbox, "a squash space never letterboxes a box");
+      auto fgDescription = Description(); fgDescription["model"] = "fgclip2_base_vision";
+      fgDescription["inputs"][0]["shape"] = {1,3,384,384}; fgDescription["inputs"][0]["byte_strides"] = {1769472,589824,1536,4};
+      fgDescription["inputs"][0]["aligned_bytes"] = 1769472;
+      ValidateBpuVisionDescription(fgDescription,fg); ++checks;
+      Reject([&] { ValidateBpuVisionDescription(Description(),fg); });   // a 256 input is another model
+      VerifiedPackage unbuilt; unbuilt.files_verified = true; unbuilt.spec = &fg; unbuilt.model_version = "search-v1-" + std::string(64,'a');
+      unbuilt.artifacts.push_back({"hbm/" + fg.vision.file,std::string(64,'f'),1});
+      Reject([&] { BpuVisionReservationBytes(unbuilt); });   // no measured HBM yet: fails closed
+    }
     auto invalid = plan; invalid.perspective = true; Reject([&] { BpuVisionTransform(invalid,spec,true,false); });
     for (double bad : {0.,-1.,std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}) {
       invalid = plan; invalid.source_rectangle[2] = bad; Reject([&] { BpuVisionTransform(invalid,spec,true,false); });

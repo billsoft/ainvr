@@ -49,12 +49,13 @@ std::unique_ptr<BpuVisionEncoder> BpuVisionEncoder::Load(VerifiedPackage package
 const std::string& BpuVisionEncoder::ModelVersion() const { return impl_->package.model_version; }
 const std::string& BpuVisionEncoder::InputSpecVersion() const { return impl_->package.spec->input_spec_version; }
 size_t BpuVisionEncoder::Dimensions() const { return impl_->package.spec->dimensions; }
-BpuVisionResult BpuVisionEncoder::Encode(const ainvr::Nv12Frame& frame, const ainvr::SnapshotPlan& plan, bool bt709, bool full_range) {
+BpuVisionResult BpuVisionEncoder::Encode(const ainvr::Nv12Frame& frame, const ainvr::SnapshotPlan& plan, bool bt709, bool full_range,
+                                         bool object_crop) {
   if (impl_->owner != std::this_thread::get_id()) throw std::runtime_error("search_vision_owner_thread_mismatch");
   std::unique_lock<std::mutex> lock(impl_->inference,std::try_to_lock);
   if (!lock.owns_lock()) throw std::runtime_error("search_busy");
   if (!ainvr::BpuRuntimeHealthy()) throw std::runtime_error("search_bpu_runtime_fault");
-  const auto transform = BpuVisionTransform(plan,*impl_->package.spec,bt709,full_range);
+  const auto transform = BpuVisionTransform(plan,*impl_->package.spec,bt709,full_range,object_crop);
   const auto output = impl_->runner->Run(frame,transform);
   if (output.image_backend != "gles") throw std::runtime_error("search_vision_preprocessing_contract_changed");
   return {NormalizeBpuVisionEmbedding(output.outputs,*impl_->package.spec),output.image_backend,

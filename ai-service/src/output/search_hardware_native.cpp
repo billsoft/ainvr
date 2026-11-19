@@ -41,18 +41,20 @@ class NativeSession final:public SearchHardwareSession {
   SearchHardwareProduct Prepare(const FrozenSearchFrame& frame,const SearchSamplingCurrent& current)override{
     if(!current||!current()||!ainvr::BpuRuntimeHealthy())throw std::runtime_error("search_hardware_stale");
     const bool scene=!frame.Selection().slot;
-    // A multi-view space is a whole-frame space: a detector box has no place in it.
-    if(views_>1&&!scene)throw std::runtime_error("search_hardware_object_not_supported");
+    // Only a space that stores detector crops takes a box (scene-only multi-view spaces refuse it).
+    if(!scene&&!ainvr::search::PackageStoresObjects(space_.package_id))throw std::runtime_error("search_hardware_object_not_supported");
     if(!scene&&!frame.RawTargetBox())throw std::runtime_error("search_hardware_target_missing");
     const auto& raw=frame.Pixels();
     auto plan=SearchHardwarePlan(scene?std::array<double,4>{}:*frame.RawTargetBox(),raw.width,raw.height,scene,
       scene?options_.scene_max_dimension:options_.object_max_dimension,options_.object_padding_ratio);
     auto image=renderer_.RenderPlanned(raw,plan,options_.jpeg_quality,frame.Bt709(),frame.FullRange());
     if(!current())throw std::runtime_error("search_hardware_stale");
-    auto vision=encoder_->Encode(raw,plan,frame.Bt709(),frame.FullRange());
+    // A detector crop is one vector (letterboxed when the space says so); a scene sample adds its tile views.
+    auto vision=encoder_->Encode(raw,plan,frame.Bt709(),frame.FullRange(),!scene);
     if(!current())throw std::runtime_error("search_hardware_stale");
     auto embedding=std::move(vision.embedding);
-    AppendTileViews(raw,frame.Bt709(),frame.FullRange(),vision.image_backend,embedding,current);
+    if(scene)AppendTileViews(raw,frame.Bt709(),frame.FullRange(),vision.image_backend,embedding,current);
+    else if(embedding.size()!=encoder_->Dimensions())throw std::runtime_error("search_hardware_view_count");
     return {image.plan,std::move(image.jpeg),std::move(embedding),image.render_backend,image.encoder_backend,vision.image_backend};
   }
   SearchReencodeResult ReencodeJpeg(const std::vector<uint8_t>& jpeg,const SearchSamplingCurrent& current)override{

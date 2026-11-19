@@ -51,6 +51,9 @@ struct SearchSamplingConfig {
   int64_t scene_active_interval_ns = 10000000000LL, scene_static_interval_ns = 60000000000LL;
   int64_t scene_change_interval_ns = 3000000000LL;
   double object_change_threshold = 0.25, scene_change_threshold = 0.25;
+  // Track slots in use (of 8): slot 0 first sighting, 1 best quality, 2..7 change/probe. A crop space with scene
+  // views keeps 2 (first + best); single-view spaces keep all 8.
+  size_t object_slots = 8;
 };
 class SearchSamplingPolicy {
  public:
@@ -96,7 +99,8 @@ class SearchSamplingPolicy {
     if (!config.max_sources || config.max_sources > 1024 || !config.max_tracks || config.max_tracks > 65536 ||
         !config.max_pending || config.max_pending > config.max_sources + config.max_tracks ||
         config.object_interval_ns < 0 || config.scene_active_interval_ns <= 0 || config.scene_static_interval_ns <= 0 ||
-        config.scene_change_interval_ns <= 0 || !Measure(config.object_change_threshold) || !Measure(config.scene_change_threshold))
+        config.scene_change_interval_ns <= 0 || !Measure(config.object_change_threshold) || !Measure(config.scene_change_threshold) ||
+        !config.object_slots || config.object_slots > 8)
       throw std::invalid_argument("invalid_search_sampling_config");
   }
   SearchSamplingPolicy(const SearchSamplingPolicy&) = delete;
@@ -107,7 +111,8 @@ class SearchSamplingPolicy {
   bool UpdateTiming(const SearchSamplingConfig& config) {
     if (config.object_interval_ns < 0 || config.scene_active_interval_ns <= 0 ||
         config.scene_static_interval_ns <= 0 || config.scene_change_interval_ns <= 0 ||
-        !Measure(config.object_change_threshold) || !Measure(config.scene_change_threshold)) return false;
+        !Measure(config.object_change_threshold) || !Measure(config.scene_change_threshold) ||
+        !config.object_slots || config.object_slots > 8) return false;
     std::lock_guard<std::mutex> lock(mutex_);
     config_.object_interval_ns = config.object_interval_ns;
     config_.scene_active_interval_ns = config.scene_active_interval_ns;
@@ -115,6 +120,7 @@ class SearchSamplingPolicy {
     config_.scene_change_interval_ns = config.scene_change_interval_ns;
     config_.object_change_threshold = config.object_change_threshold;
     config_.scene_change_threshold = config.scene_change_threshold;
+    config_.object_slots = config.object_slots;
     return true;
   }
 
@@ -187,6 +193,7 @@ class SearchSamplingPolicy {
       candidate.reason=object.change&&*object.change>=config_.object_change_threshold?Reason::Change:Reason::ObjectProbe;
       if(IsProbe(candidate)){candidate.change.reset();candidate.probe_reference_fingerprint=object.probe_reference_fingerprint;candidate.probe_threshold=config_.object_change_threshold;}
     } else return {Status::NotDue};
+    if (*candidate.slot >= config_.object_slots) return {Status::NotDue};   // this space keeps fewer frames per track
     if (pending_.size() >= config_.max_pending ||
         (found == source->tracks.end() && tracks_ >= config_.max_tracks))
       return {Status::Capacity};

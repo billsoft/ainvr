@@ -128,6 +128,22 @@ int main() {
       Check(std::abs(CoarseBestView(view->vectors,view->scales,1,3,q,nullptr) - 1.0f) < 0.01f &&
             std::abs(CoarseBestView(view->vectors+3,view->scales+1,1,3,q,nullptr)) < 0.01f,"mapped_scores");
       ++cases;
+      {   // Two scene views of 2 floats: a scene row keeps both, a detector-crop row stores one block plus an empty one.
+        auto mixed = id; mixed.revision = 30; mixed.dimensions = 4; mixed.views = 2;
+        const std::vector<Record> rows{
+          {kRecordA,mixed.channel_id,"","","",mixed.model_version,86401000,true,{0,2,3,0},std::string(64,'a')},
+          {kRecordB,mixed.channel_id,"processor","session","track-b",mixed.model_version,86402000,false,{0.6f,0.8f},std::string(64,'b')}};
+        const auto published = store->Publish(mixed,rows);
+        const auto back = store->Load(mixed,published);
+        Check(back.size() == 2 && back[0].scene && back[0].vector.size() == 4 && !back[1].scene && back[1].vector.size() == 2 &&
+          std::abs(back[1].vector[0]-0.6f) < 0.01f,"mixed_rows_restore_own_length");
+        const auto columns = store->Open(mixed,published);
+        const float q[2] = {1,0}; size_t chosen = 9;
+        Check(std::abs(CoarseBestView(columns->vectors,columns->scales,2,2,q,&chosen)-1.0f) < 0.01f && chosen == 1,"scene_row_best_view");
+        Check(columns->scales[3] == 0 && std::abs(CoarseBestView(columns->vectors+4,columns->scales+2,1,2,q,nullptr)-0.6f) < 0.01f,
+          "crop_row_single_block");
+        ++cases;
+      }
       // A v1 (float32) file from before this format still loads and opens (converted).
       auto legacy = id; legacy.revision = 20;
       auto sorted = Records(legacy); std::reverse(sorted.begin(),sorted.end());

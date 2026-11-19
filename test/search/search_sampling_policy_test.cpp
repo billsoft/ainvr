@@ -241,9 +241,24 @@ void AbandonUnknownScene(){
   Check(!policy.Resolve(object.token,Policy::Outcome::Abandoned)&&policy.Inspect(Binding(),"track-1")->pending==object.token,
     "abandon_object_dropped_cas_slot_reservation");
 }
+// A space that keeps first + best only (2 slots): a changed appearance never opens slots 2..7.
+void FirstAndBestOnly() {
+  SearchSamplingConfig two; two.object_slots = 2;
+  Policy policy(two); Check(policy.BindSource(Binding()), "source bind failed");
+  auto frame = Frame(0, 0); Commit(policy, Proposed(policy.ProposeObject(frame, Object(frame, "walker", .2))));
+  frame = Frame(1000, 10); auto best = Proposed(policy.ProposeObject(frame, Object(frame, "walker", .6)));
+  Check(best.slot == 1 && best.reason == Policy::Reason::Best, "best slot still offered"); Commit(policy, best);
+  frame = Frame(2000, 20);
+  Check(policy.ProposeObject(frame, Object(frame, "walker", .4, .9)).status == Policy::Status::NotDue, "change slot opened in a first+best space");
+  frame = Frame(3000, 30);
+  Check(Proposed(policy.ProposeObject(frame, Object(frame, "walker", .7))).slot == 1, "a better frame still replaces the best slot");
+  Check(policy.Inspect(Binding(), "walker")->Count() == 2, "more than first + best kept");
+  SearchSamplingConfig none; none.object_slots = 0; Reject([&] { Policy invalid(none); });
+  SearchSamplingConfig nine; nine.object_slots = 9; Check(!policy.UpdateTiming(nine), "slot count above the policy's 8 accepted");
+}
 int main() {
   try {AbandonUnknownScene();
-    ObjectTransactions(); BindingAndTimelineFences(); SceneAndCapacity(); MetadataAndCadence();
+    ObjectTransactions(); BindingAndTimelineFences(); SceneAndCapacity(); MetadataAndCadence(); FirstAndBestOnly();
     {
       Policy policy; policy.BindSource(Binding());
       SearchSamplingFrame first{Binding(), 0, 0, 1790000000000LL, "active"};

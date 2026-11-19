@@ -183,7 +183,8 @@ SearchHardwareOwner::ProbeResult SearchHardwareOwner::PrepareInternal(const Froz
     if(!valid())return;
     std::optional<SearchAppearanceAudit> audit;
     if(probe){
-      const auto distance=SearchAppearanceDistance(product.embedding,baseline,ainvr::search::PackageViews(space.package_id));
+      // A scene sample compares view by view; a detector crop is one vector.
+      const auto distance=SearchAppearanceDistance(product.embedding,baseline,ainvr::search::SampleViews(space.package_id,!frame.Selection().slot));
       if(!distance||!std::isfinite(frame.Selection().probe_threshold)||frame.Selection().probe_threshold<0||frame.Selection().probe_threshold>1)return;
       output->distance=distance;
       if(*distance<frame.Selection().probe_threshold)return;

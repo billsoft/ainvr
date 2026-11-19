@@ -94,5 +94,19 @@ int main() {
     bool wrong_dimension=false;try{NormalizeVector(std::vector<float>(768,1.0f),2048);}catch(const std::invalid_argument&){wrong_dimension=true;}
     Check(wrong_dimension);
   }
+  {
+    // A space with 2 scene views of 2 floats: a scene record is 4 floats, a detector crop exactly 2.
+    VectorIndex mixed("m", 4, 10, 2);
+    Record scene{"s", "allowed", "", "", "", "m", 1000, true, {0, 1, 1, 0}};
+    Record crop{"o", "allowed", "p", "sess", "t1", "m", 1000, false, {0.9f, 0.1f}};
+    mixed.Upsert(scene); mixed.Upsert(crop);
+    Reject([&]{ auto r = crop; r.id = "padded"; r.vector = {1, 0, 1, 0}; mixed.Upsert(r); });   // a crop is never padded to the scene layout
+    Reject([&]{ auto r = scene; r.id = "short"; r.vector = {1, 0}; mixed.Upsert(r); });
+    const auto both = mixed.Query({1, 0}, {{"allowed"}, 0, 2000, 20});
+    Check(both.size() == 2 && both[0].id == "s" && both[0].view == 1 && both[1].id == "o");
+    Scope only_scene{{"allowed"}, 0, 2000, 20, SampleKind::Scene}, only_objects{{"allowed"}, 0, 2000, 20, SampleKind::Object};
+    const auto scenes = mixed.Query({1, 0}, only_scene), objects = mixed.Query({1, 0}, only_objects);
+    Check(scenes.size() == 1 && scenes[0].id == "s" && objects.size() == 1 && objects[0].id == "o" && objects[0].view == 0);
+  }
   std::cout << "vector index: identity, scope, grouping, limits and validation passed\n";
 }

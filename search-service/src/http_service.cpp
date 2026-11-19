@@ -58,8 +58,17 @@ Json ProjectedMatches(const Items& items, bool partial, size_t views, const std:
   Json out = Json::array();
   for (const auto& hit : items) {
     auto item = SampleMetadata(hit.sample); item["similarity"] = hit.score;
-    if (views > 1) item["matched_view"] = hit.view;
+    if (views > 1 && hit.sample.record.scene) item["matched_view"] = hit.view;
     item["evidence_refs"]=Json::array();for(const auto& ref:hit.evidence_refs)item["evidence_refs"].push_back({{"sample_id",ref.id},{"fingerprint",ref.fingerprint}});
+    // A detector crop's scene sample at about the same moment: where the object was. Identity only; the page reads
+    // its evidence through the ordinary sample routes.
+    if (hit.context) {
+      const auto& scene = *hit.context;
+      Json context = {{"sample_id", scene.sample.record.id}, {"fingerprint", scene.sample.fingerprint},
+                      {"captured_ms", scene.sample.record.captured_ms}};
+      if (views > 1) context["matched_view"] = scene.view;
+      item["scene_context"] = std::move(context);
+    }
     out.push_back(std::move(item));
   }
   // The projection cannot certify coverage of unobserved scenes. The BFF
@@ -177,16 +186,23 @@ template<class Function> httplib::Server::Handler Handle(Function fn) {
 }
 }  // namespace
 
-MatchEngine::MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t views)
-    : model_(encoder.ModelVersion()), dimensions_(encoder.Dimensions()), views_(views), encoder_(encoder),
+MatchEngine::MatchEngine(HistoryMongo& history, TextEncoder& encoder, size_t views, bool objects)
+    : model_(encoder.ModelVersion()), dimensions_(encoder.Dimensions()), views_(views), objects_(objects), encoder_(encoder),
       projection_(history, model_, dimensions_ * views, views), text_cache_(model_, dimensions_) {
   if (model_.empty() || model_.size() > 128) throw std::invalid_argument("invalid_search_model");
 }
 void MatchEngine::Start(const Scope& window) { projection_.Start(window); loaded_.store(true); }
 void MatchEngine::Rebuild(const Scope& window) { projection_.Rebuild(window); loaded_.store(true); }
-void MatchEngine::Put(const Sample& sample) { projection_.Put(sample); }
+// A scene sample carries every view of the space, a detector crop exactly one vector, and only a space that
+// stores crops (or a single-view space) takes them.
+void MatchEngine::CheckShape(const Sample& sample) const {
+  if (!sample.record.scene && views_ > 1 && !objects_) throw std::invalid_argument("request_kind");
+  if (sample.record.vector.size() != dimensions_ * RecordViews(sample.record.scene, views_)) throw std::invalid_argument("vector_dimensions");
+}
+void MatchEngine::Put(const Sample& sample) { CheckShape(sample); projection_.Put(sample); }
 std::string MatchEngine::ReplaceTrackSlot(const Sample& sample, size_t slot, const std::string& expected,
                                          const std::string& token) {
+  CheckShape(sample);
   return projection_.ReplaceTrackSlot(sample, slot, expected, token);
 }
 std::vector<float> MatchEngine::TextVector(const std::string& text) {
@@ -214,9 +230,20 @@ Json MatchEngine::Match(const std::string& text, const Scope& scope) {
   std::unique_lock<std::mutex> lock(inference_, std::try_to_lock);
   if (!lock.owns_lock()) throw std::runtime_error("search_busy");
   if (!encoder_.Healthy()) throw std::runtime_error("search_encoding_failed");
-  auto matches = projection_.Query(TextVector(text), scope);
-  RefineRanking(matches.items, RankRefineOptionsFor(dimensions_));
+  auto matches = Ranked(TextVector(text), scope, RankRefineOptionsFor(dimensions_));
   return ProjectedMatches(matches.items, matches.partial, views_, model_);
+}
+ProjectionResult MatchEngine::Ranked(const std::vector<float>& query, const Scope& scope, const RankRefineOptions& options) {
+  if (!objects_) {
+    auto all = projection_.Query(query, scope);
+    RefineRanking(all.items, options);
+    return all;
+  }
+  Scope scenes = scope, crops = scope;
+  scenes.kind = SampleKind::Scene; crops.kind = SampleKind::Object;
+  auto by_scene = projection_.Query(query, scenes), by_crop = projection_.Query(query, crops);
+  RefineRanking(by_scene.items, options); RefineRanking(by_crop.items, options);
+  return {FuseSceneAndObjects(by_scene.items, by_crop.items, SceneObjectFusion{}, scope.limit), by_scene.partial || by_crop.partial};
 }
 Json MatchEngine::MatchVector(std::vector<float> picture, const std::string& text, double image_weight, const Scope& scope) {
   if (!(image_weight >= 0.2 && image_weight <= 0.8)) throw std::invalid_argument("request_image_weight");
@@ -231,11 +258,9 @@ Json MatchEngine::MatchVector(std::vector<float> picture, const std::string& tex
   // Picture-to-picture cosines spread far wider than description scores: the description's relative window
   // would cut almost everything after the best hit, so pictures keep the near-duplicate collapse only.
   RankRefineOptions picture_options; picture_options.relative_window = 0;
-  auto by_picture = projection_.Query(picture, scope);
-  RefineRanking(by_picture.items, picture_options);
+  auto by_picture = Ranked(picture, scope, picture_options);
   if (text.empty()) return ProjectedMatches(by_picture.items, by_picture.partial, views_, model_);
-  auto by_text = projection_.Query(TextVector(text), scope);
-  RefineRanking(by_text.items, RankRefineOptionsFor(dimensions_));
+  auto by_text = Ranked(TextVector(text), scope, RankRefineOptionsFor(dimensions_));
   return ProjectedMatches(FuseRankings(by_picture.items, by_text.items, image_weight, scope.limit),
                           by_picture.partial || by_text.partial, views_, model_);
 }

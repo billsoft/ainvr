@@ -21,3 +21,6 @@ g++ "${flags[@]}" $(pkg-config --cflags libmongoc-1.0 cpp-httplib) \
 ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 timeout 30 "$binary"
 
 AINVR_SEARCH_TEST_PACKAGE=siglip-so400m-i18n-full-int8 ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 timeout 30 "$binary"
+
+# Scene views + one vector per detector crop: objects are prepared and written as single-vector samples.
+AINVR_SEARCH_TEST_PACKAGE=fgclip2-base-384-o2 ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 timeout 30 "$binary"

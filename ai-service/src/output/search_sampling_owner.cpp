@@ -2,6 +2,7 @@
 #include <chrono>
 #include <thread>
 #include "output/search_sampling_owner.hpp"
+#include "output/search_object_crop.hpp"
 #include <atomic>
 #include <cctype>
 #include <set>
@@ -241,10 +242,10 @@ struct State: std::enable_shared_from_this<State> {
       else ++i;
     }
   }
-  std::shared_ptr<Descriptor> CopyDescriptor(std::span<const float> values,const SearchEmbeddingSpace& job_space)const {
+  std::shared_ptr<Descriptor> CopyDescriptor(std::span<const float> values,const SearchEmbeddingSpace& job_space,bool scene)const {
     if(values.empty()||values.size()>4096)return {};
-    // A whole-frame space stores several view blocks per sample, each unit-norm on its own.
-    const size_t views=ainvr::search::PackageViews(job_space.package_id);
+    // A whole-frame space stores several view blocks per scene sample, each unit-norm on its own; a detector crop one.
+    const size_t views=ainvr::search::SampleViews(job_space.package_id,scene);
     if(!views||values.size()%views)return {};
     const size_t per=values.size()/views;
     for(size_t v=0;v<views;++v){
@@ -271,9 +272,9 @@ struct State: std::enable_shared_from_this<State> {
     return ms>=0&&ms<=9007199254740991LL-span?ms+span:0;
   }
   bool CoverageAuthorized(const SearchCoverageRange& range,const config::SearchProducerLease& lease)const {
-    // A multi-view package has scene vectors only. An older grant must not
+    // A scene-only space has no detector crops. An older grant must not
     // publish object coverage for work the hardware cannot execute.
-    if(!range.scope.scene && ainvr::search::PackageViews(range.scope.package_id)>1)return false;
+    if(!range.scope.scene && !ainvr::search::PackageStoresObjects(range.scope.package_id))return false;
     if(stopped||!lease.IsCurrent()||!lease.grant||!space||lease.grant->package_id!=range.scope.package_id||
         space->package_id!=range.scope.package_id||space->model_version!=range.scope.model_version)return false;
     const auto actual=Ready();if(!actual||!(*actual==*space))return false;
@@ -351,10 +352,13 @@ struct State: std::enable_shared_from_this<State> {
     timing.scene_active_interval_ns = grant.sampling.scene_active_interval_ms * 1000000;
     timing.scene_static_interval_ns = grant.sampling.scene_static_interval_ms * 1000000;
     timing.scene_change_interval_ns = grant.sampling.scene_change_min_interval_ms * 1000000;
+    // The space decides how many frames of one track it keeps (first + best for a crop space with scene views).
+    try { timing.object_slots = std::max<size_t>(1, ainvr::search::FindPackageSpec(grant.package_id).object_slots); }
+    catch (...) { timing.object_slots = 8; }   // an id this build does not know: the original policy
     return policy.UpdateTiming(timing);
   }
   bool CurrentLocked(const Job& job, bool reconciliation) const {
-    if(job.candidate.slot && ainvr::search::PackageViews(job.space.package_id)>1)return false;
+    if(job.candidate.slot && !ainvr::search::PackageStoresObjects(job.space.package_id))return false;
     auto s = job.source.lock();
     if (stopped || job.cancelled || !s || s->retired || s->generation != job.generation || !s->fence ||
         !space || !(*space == job.space)) return false;
@@ -461,7 +465,7 @@ struct State: std::enable_shared_from_this<State> {
               bool receipt_threw = false;
               try { key = operation->ReceiptKey(); query = operation->ReceiptQuery(); }
               catch (...) { receipt_threw = true; }
-              auto descriptor=self->port->SupportsProbes()?self->CopyDescriptor(operation->Descriptor(),job->space):nullptr;
+              auto descriptor=self->port->SupportsProbes()?self->CopyDescriptor(operation->Descriptor(),job->space,!job->candidate.slot):nullptr;
               if (receipt_threw) reject(Cause::FailReceiptException);
               else if (!Safe(key) || !ReceiptQueryValid(query,*job)) reject(Cause::FailReceiptInvalid);
               else if (self->port->SupportsProbes()&&!descriptor) reject(Cause::FailDescriptorInvalid);
@@ -557,7 +561,11 @@ struct State: std::enable_shared_from_this<State> {
     if (track) {
       // Enforce the actual resident package, including during BFF upgrades or
       // model transitions. Reject before retaining pixels or queuing BPU work.
-      if (!mapping->second.object || ainvr::search::PackageViews(ready->package_id)>1) return {Status::NotEligible};
+      if (!mapping->second.object || !ainvr::search::PackageStoresObjects(ready->package_id)) return {Status::NotEligible};
+      // A box too small to show anything is left to the scene views of the same frame (not a coverage gap).
+      const double floor = ainvr::search::PackageObjectMinShortEdge(ready->package_id);
+      if (floor > 0 && !SearchObjectLargeEnough(result, *track, capture.fence.raw_width, capture.fence.raw_height, floor))
+        return {Status::NotEligible};
       auto object = Policy::ObjectFromResult(result, *track, usable, quality, change);
       if(object&&port->SupportsProbes()){
         const auto found=source->tracks.find(*track);
@@ -703,7 +711,7 @@ bool SearchSamplingSource::EndFrame(uint64_t token,const FrameResult& result,con
       if(!state->RetainTracks(*source_,result))return false;
       state->source_highest[source_.get()]={result.frame_pts_ns,result.frame_index};
     }
-    const bool object_enabled=mapping->second.object && ainvr::search::PackageViews(ready->package_id)==1;
+    const bool object_enabled=mapping->second.object && ainvr::search::PackageStoresObjects(ready->package_id);
     const auto expiry=State::CoverageExpiry(frame->captured_ms,*lease->grant);bool accepted=true;
     if(source_->owed_lost){source_->owed_lost=false;
       if(object_enabled)state->coverage.Gap(state->CoverageScope(*source_,false),frame->captured_ms,expiry,SearchCoverageLedger::GapCause::DeferredTrackLost);}

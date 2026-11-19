@@ -49,6 +49,19 @@ describe('native search transport', () => {
     // A service without views keeps its exact old shape.
     expect(Object.keys((await fixture({ ...page, items: [{ ...scene, similarity: 0.9 }] }).client.match('person', scope, 'pair-v1')).items[0]!)).not.toContain('matched_view');
   });
+  it('passes a detector crop\'s scene context through and rejects it anywhere else', async () => {
+    const context = { sample_id: channel, fingerprint: 'd'.repeat(64), captured_ms: at, matched_view: 1 };
+    const result = await fixture({ ...page, items: [{ ...sample, similarity: 0.9, scene_context: context }] }).client.match('person', scope, 'pair-v1');
+    expect(result.items[0]!.scene_context).toEqual(context);
+    const scene = { ...sample, kind: 'scene', processor_id: '', track_id: '' };
+    for (const bad of [
+      { ...sample, similarity: 0.9, scene_context: { ...context, sample_id: sample.id } },
+      { ...sample, similarity: 0.9, scene_context: { ...context, captured_ms: at + 10 } },
+      { ...sample, similarity: 0.9, scene_context: { ...context, extra: 1 } },
+      { ...scene, similarity: 0.9, scene_context: context },
+    ]) await expect(fixture({ ...page, items: [bad] }).client.match('person', scope, 'pair-v1')).rejects.toMatchObject({ code: 'invalid_response' });
+    expect(Object.keys((await fixture(page).client.match('person', scope, 'pair-v1')).items[0]!)).not.toContain('scene_context');
+  });
   it('preserves explicit model pending and does not pretend an unconfigured service is ready', async () => {
     const { client } = fixture({ ready: false, reason: 'model_pending', model_version: null });
     expect(await client.status()).toEqual({ ready: false, reason: 'model_pending', model_version: null });

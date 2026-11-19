@@ -382,6 +382,20 @@ int main() {
       Await([&]{return owner.Usage().pending==0;});
       Check(port->submits==1,"supported_scene_not_committed");
     }
+    {
+      // A crop space (scene views + one vector per detector box) takes objects, but a box under its floor
+      // (30 source pixels on the short edge; this fixture's frame is 8x4) is left to the scene views, no pixels kept.
+      Fixture f; int retained=0; auto port=std::make_shared<Port>();
+      const auto& spec=ainvr::search::FindPackageSpec("fgclip2-base-384-o2");
+      Check(ainvr::search::PackageStoresObjects(spec.id),"fixture expects a crop space");
+      port->space.package_id=spec.id; port->space.input_spec_version=spec.input_spec_version;
+      f.doc["model"]["package_id"]=spec.id; f.doc["revision"]=std::string(64,'e'); f.Renew();
+      SearchSamplingOwner owner(f.Reader(),port,executor); auto source=owner.CreateSource("processor");
+      const auto token=source->Token(); Check(source->Bind(token,f.capture.fence),"crop_space_bind");
+      Check(source->OfferObject(token,f.result,f.capture,*f.raw,f.Retain(retained),"track-7",true,.9).status==Status::NotEligible,
+        "box_below_floor_reached_hardware_queue");
+      Check(retained==0&&owner.Usage().pending==0,"box_below_floor_retained_pixels");
+    }
     for(const bool good:{true,false}){
       // A whole-frame space stores several view blocks per sample, each unit-norm on its own: the resident descriptor must
       // accept them (the live system rejected every such write when the check looked at the whole vector's norm).

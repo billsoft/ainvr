@@ -25,13 +25,18 @@
 #include <functional>
 #include <iomanip>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
 #include <unordered_set>
 
 namespace ainvr::search {
-struct RankedSample { Sample sample; double score; std::vector<IndexEvidenceRef> evidence_refs{}; size_t view = 0; };
+struct RankedSample {
+  Sample sample; double score; std::vector<IndexEvidenceRef> evidence_refs{}; size_t view = 0;
+  // A detector crop's scene sample at about the same moment (FuseSceneAndObjects): where the matched object was.
+  std::shared_ptr<const RankedSample> context{};
+};
 struct ProjectionResult {
   std::vector<RankedSample> items;
   // The scope could not be read completely (unknown days during startup, a capped
@@ -234,9 +239,12 @@ inline ProjectionResult IndexProjection::Query(const std::vector<float>& raw_que
         for (auto& sample : batch.samples) {
           if (sample.record.model != model_ || sample.record.channel != channel ||
               sample.record.captured_ms < part.from_ms || sample.record.captured_ms >= part.to_ms) continue;
+          // The other kind is still remembered as a tail id: its shard row (same id) must not resurface.
+          if (!KindMatches(scope.kind, sample.record.scene)) { tail_ids.insert(sample.record.id); tail_days.insert({channel, day}); continue; }
+          const size_t blocks = RecordViews(sample.record.scene, views_);
           std::vector<float> normalized;
-          try { normalized = NormalizeViews(sample.record.vector, dimensions_, views_); } catch (...) { continue; }
-          size_t view = 0; const double score = ExactBestView(normalized, views_, query, &view);
+          try { normalized = NormalizeViews(sample.record.vector, per * blocks, blocks); } catch (...) { continue; }
+          size_t view = 0; const double score = ExactBestView(normalized, blocks, query, &view);
           tail.push_back(std::move(sample)); const auto& kept = tail.back();
           tail_ids.insert(kept.record.id); tail_days.insert({channel, day});
           note(RecordGroup(kept.record), score, true, view, Ref{kept.record.captured_ms, kept.record.id.data(), nullptr, 0, &kept});
@@ -256,8 +264,12 @@ inline ProjectionResult IndexProjection::Query(const std::vector<float>& raw_que
       if (at < scope.from_ms || at >= scope.to_ms) continue;
       if (skip && (*skip)[row]) continue;
       if (check && tail_ids.count(v.Id(row))) continue;
+      const bool scene_row = v.scene[row] != 0;
+      if (!KindMatches(scope.kind, scene_row)) continue;
       size_t view = 0;
-      const float score = CoarseBestView(v.vectors + row * v.dimensions, v.scales + row * v.views, v.views, v.per, query.data(), &view);
+      // A detector-crop row scores its single block only (the rest of the row is empty, see ShardRowVector).
+      const float score = CoarseBestView(v.vectors + row * v.dimensions, v.scales + row * v.views, RecordViews(scene_row, v.views),
+                                         v.per, query.data(), &view);
       GroupKey group; std::memcpy(group.data(), v.groups + 16 * row, group.size());
       note(group, score, false, view, Ref{at, v.ids + 36 * row, &v, row, nullptr});
     }
@@ -295,9 +307,10 @@ inline ProjectionResult IndexProjection::Query(const std::vector<float>& raw_que
       if (found == verified.end() || found->second.fingerprint != group->best.shard->Fingerprint(group->best.row)) {
         gone_rows[group->best.shard].push_back(group->best.row); continue;
       }
+      const size_t blocks = RecordViews(found->second.record.scene, views_);
       std::vector<float> normalized;
-      try { normalized = NormalizeViews(found->second.record.vector, dimensions_, views_); } catch (...) { continue; }
-      group->score = ExactBestView(normalized, views_, query, &group->view); group->exact = true;
+      try { normalized = NormalizeViews(found->second.record.vector, per * blocks, blocks); } catch (...) { continue; }
+      group->score = ExactBestView(normalized, blocks, query, &group->view); group->exact = true;
       finals.push_back({group, std::move(found->second)});
     }
     next = end;

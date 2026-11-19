@@ -16,7 +16,10 @@ const Profile& ProfileFor(const PackageSpec& spec) {
     {"siglip2-base-full-int8", 768, ainvr::text::kSiglip2EmbeddingRows, ainvr::text::kSiglip2PadId, ainvr::text::kSiglip2EosId,
      "siglip2_base_text", ainvr::text::kSiglip2NormalizationSpec, kSiglip2BaseTextMeasuredSha256, kSiglip2BaseTextReservationBytes},
     {"siglip-so400m-i18n-full-int8", 1152, ainvr::text::kSiglipEmbeddingRows, ainvr::text::kSiglipPadId, ainvr::text::kSiglipEosId,
-     "siglip_text", ainvr::text::kSiglipNormalizationSpec, kSo400mTextMeasuredSha256, kSo400mTextReservationBytes}};
+     "siglip_text", ainvr::text::kSiglipNormalizationSpec, kSo400mTextMeasuredSha256, kSo400mTextReservationBytes},
+    // Same Gemma tokenizer, token ids, pad and eos as SigLIP2 (checked against the reference tokenizer, 2026-11-19).
+    {"fgclip2-base-384-o2", 768, ainvr::text::kSiglip2EmbeddingRows, ainvr::text::kSiglip2PadId, ainvr::text::kSiglip2EosId,
+     "fgclip2_base_text", ainvr::text::kSiglip2NormalizationSpec, kFgClip2BaseTextMeasuredSha256, kFgClip2BaseTextReservationBytes}};
   for (const auto& profile : profiles) if (spec.id == profile.id) return profile;
   Invalid();
 }
@@ -56,6 +59,8 @@ uint64_t BpuTextReservationBytes(const VerifiedPackage& package) {
   Spec(*package.spec);
   const auto path = "hbm/" + package.spec->text.file;
   size_t matches = 0;
+  // An unmeasured HBM has no resource profile: never guess one.
+  if (!*ProfileFor(*package.spec).sha256 || !ProfileFor(*package.spec).bytes) throw std::runtime_error("search_text_resource_profile_unverified");
   for (const auto& artifact : package.artifacts) if (artifact.relative_path == path) {
     if (artifact.sha256 != ProfileFor(*package.spec).sha256)
       throw std::runtime_error("search_text_resource_profile_unverified");

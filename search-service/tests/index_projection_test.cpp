@@ -16,8 +16,9 @@ constexpr int64_t kDay = 86400000;
 const std::string kChannel = "22222222-2222-4222-8222-222222222222", kModel = "search-v1-" + std::string(64, 'a');
 std::string Id(int n) { char b[37]; std::snprintf(b, sizeof b, "%08x-0000-4000-8000-%012x", n, n); return b; }
 std::string Fp(int n) { std::string s(64, '0'); const auto t = std::to_string(n); s.replace(64 - t.size(), t.size(), t); return s; }
-Sample Make(int n, int64_t at, std::vector<float> v, const std::string& track = "") {
-  Sample s; s.record = {Id(n), kChannel, "processor", "session", track.empty() ? "track-" + std::to_string(n) : track, kModel, at, false, std::move(v), Fp(n)};
+// Multi-view rows are scene samples (a scene sample carries every view); detector crops pass scene=false and one block.
+Sample Make(int n, int64_t at, std::vector<float> v, const std::string& track = "", bool scene = true) {
+  Sample s; s.record = {Id(n), kChannel, "processor", "session", track.empty() ? "track-" + std::to_string(n) : track, kModel, at, scene, std::move(v), Fp(n)};
   s.fingerprint = s.record.fingerprint; return s;
 }
 // Ordinal-ordered authority with the Scan/ReadVisibleSamples contract of HistoryMongo.
@@ -87,7 +88,7 @@ int main() { try {
       worst = std::max(worst, std::abs(exact - coarse));
     }
     Check(worst < 0.01, "int8 coarse score drifted from exact");
-    auto a = Make(1, 0, {1, 0}), b = Make(2, 1, {0, 1}, "track-1"); a.record.track = "track-1";
+    auto a = Make(1, 0, {1, 0}, "", false), b = Make(2, 1, {0, 1}, "track-1", false); a.record.track = "track-1";
     Check(RecordGroup(a.record) == RecordGroup(b.record), "one track is one group");
     b.record.scene = true; Check(RecordGroup(a.record) != RecordGroup(b.record), "a scene sample is its own group");
   }
@@ -100,6 +101,8 @@ int main() { try {
     if (x0 == 0 && x1 == 0) v[3] = 1;
     if (y0 == 0 && y1 == 0) v[7] = 1;
     return v; };
+  // A detector crop in the same space: one block of four dimensions.
+  const auto crop = [](float x0, float x1, float x2, float x3) { return std::vector<float>{x0, x1, x2, x3}; };
   {   // An old day: the shard answers, Mongo is not scanned, the score is exact after rescoring.
     FakeAuthority mongo; std::vector<Sample> rows;
     for (int n = 0; n < 30; ++n) { auto s = Make(100 + n, old_day * kDay + n * 1000, vec(std::cos(n * 0.1f), std::sin(n * 0.1f), 0, 1)); mongo.Put(s); rows.push_back(s); }
@@ -151,24 +154,26 @@ int main() { try {
       // version at once, the shard's old row for that id is ignored, and one track stays
       // one group whose evidence spans both sides.
     FakeAuthority mongo; std::vector<Sample> built;
-    auto slot = Make(300, today * kDay + 1000, vec(1, 0, 0, 0), "walker"); mongo.Put(slot); built.push_back(slot);
-    auto other = Make(301, today * kDay + 2000, vec(0, 1, 0, 0)); mongo.Put(other); built.push_back(other);
+    auto slot = Make(300, today * kDay + 1000, crop(1, 0, 0, 0), "walker", false); mongo.Put(slot); built.push_back(slot);
+    auto other = Make(301, today * kDay + 2000, crop(0, 1, 0, 0), "", false); mongo.Put(other); built.push_back(other);
     IndexProjection projection(mongo, kModel, dims, views, clock); projection.Rebuild({{kChannel}, 0, 1, 20});
     projection.Attach(Shard(*files, today, mongo.Checkpoint(), built, dims, views));
-    auto replaced = slot; replaced.record.vector = vec(0, 0, 1, 0); replaced.record.captured_ms = today * kDay + 5000;
+    auto replaced = slot; replaced.record.vector = crop(0.9f, 0, 0.43588989f, 0); replaced.record.captured_ms = today * kDay + 5000;
     replaced.record.fingerprint = replaced.fingerprint = Fp(9300);
     projection.ReplaceTrackSlot(replaced, 0, slot.fingerprint, "token");
-    auto later = Make(302, today * kDay + 9000, vec(0, 0, 0.8f, 0.6f), "walker"); projection.Put(later);
+    auto later = Make(302, today * kDay + 9000, crop(0.8f, 0, 0.6f, 0), "walker", false); projection.Put(later);
     const Scope scope{{kChannel}, today * kDay, (today + 1) * kDay, 10};
-    // The old slot row (view 0 = [1,0,0,0]) would score 1 if it were not overridden; the
-    // replacement scores 1 on its second view, the later track member 0.8.
+    // The old slot row ([1,0,0,0]) would score 1 if it were not overridden; the
+    // replacement scores 0.9, the later track member 0.8.
     const auto result = projection.Query({1, 0, 0, 0}, scope);
     Check(!result.partial && result.items.size() == 2, "track grouped across shard and tail");
     const auto& top = result.items[0];
-    Check(top.sample.record.id == Id(300) && top.sample.fingerprint == Fp(9300) && std::abs(top.score - 1.0) < 1e-9 && top.view == 1,
+    Check(top.sample.record.id == Id(300) && top.sample.fingerprint == Fp(9300) && std::abs(top.score - 0.9) < 1e-6 && top.view == 0,
           "replaced slot visible at once, old shard row ignored");
     Check(top.evidence_refs.size() == 2 && top.evidence_refs[1].id == Id(302), "group evidence spans shard and tail");
     Check(mongo.scanned_days.count({kChannel, today}) == 1, "today reads its tail");
+    Scope scenes_only = scope; scenes_only.kind = SampleKind::Scene;
+    Check(projection.Query({1, 0, 0, 0}, scenes_only).items.empty(), "tail and shard crops filtered out of a scene ranking");
   }
   {   // A day without a shard after the catalog was read is read from Mongo, capped.
     FakeAuthority mongo;
@@ -180,6 +185,24 @@ int main() { try {
     IndexProjection complete(small, kModel, dims, views, clock); complete.Rebuild({{kChannel}, 0, 1, 20});
     const auto all = complete.Query({1, 0, 0, 0}, {{kChannel}, old_day * kDay, (old_day + 1) * kDay, 100});
     Check(!all.partial && all.items.size() == 65, "a day without a shard read completely");
+  }
+  {   // Scene samples and detector crops share a shard (crop rows hold one block) and are ranked per kind.
+    FakeAuthority mongo; std::vector<Sample> built;
+    auto scene = Make(400, (old_day - 3) * kDay + 1000, vec(0, 1, 1, 0)); mongo.Put(scene); built.push_back(scene);
+    auto person = Make(401, (old_day - 3) * kDay + 2000, crop(0.6f, 0.8f, 0, 0), "person-1", false); mongo.Put(person); built.push_back(person);
+    IndexProjection projection(mongo, kModel, dims, views, clock); projection.Rebuild({{kChannel}, 0, 1, 20});
+    projection.Attach(Shard(*files, old_day - 3, mongo.Checkpoint(), built, dims, views));
+    Scope scope{{kChannel}, (old_day - 3) * kDay, (old_day - 2) * kDay, 10};
+    const auto any = projection.Query({1, 0, 0, 0}, scope);
+    Check(any.items.size() == 2 && any.items[0].sample.record.id == Id(400) && any.items[0].view == 1, "scene row scores its best view");
+    scope.kind = SampleKind::Object;
+    const auto objects = projection.Query({1, 0, 0, 0}, scope);
+    Check(objects.items.size() == 1 && objects.items[0].sample.record.id == Id(401) && std::abs(objects.items[0].score - 0.6) < 1e-6,
+          "crop rows only, scored on their single block");
+    scope.kind = SampleKind::Scene;
+    const auto scenes = projection.Query({1, 0, 0, 0}, scope);
+    Check(scenes.items.size() == 1 && scenes.items[0].sample.record.id == Id(400), "scene rows only");
+    Check(projection.TakeRebuildRequests().empty(), "a filtered kind is not mistaken for evicted rows");
   }
   {   // Attach validates the shard against this space; status reports attached shards.
     FakeAuthority mongo; IndexProjection projection(mongo, kModel, dims, views, clock);

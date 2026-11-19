@@ -52,6 +52,12 @@ const evidenceRefsSchema = z.array(z.object({ sample_id: identity, fingerprint: 
 const nativeFramesSchema = z.array(z.object({ id: identity, captured_ms: integer, role: z.enum(['match', 'before', 'after']), bbox: searchBoundingBoxSchema.optional() }).strict()).min(1).max(3)
   .refine(frames => new Set(frames.map(frame => frame.id)).size === frames.length && frames.filter(frame => frame.role === 'match').length === 1);
 
+// A detector crop's scene sample at about the same moment (where the matched object was). Identity only.
+const sceneContextSchema = z.object({
+  sample_id: identity, fingerprint: z.string().regex(/^[a-f0-9]{64}$/), captured_ms: integer,
+  matched_view: z.number().int().min(0).max(7).optional(),
+}).strict();
+export type NativeSceneContext = z.infer<typeof sceneContextSchema>;
 const nativeMatchSchema = z.object({
   model_version: model, partial: z.boolean(),
   // Whole-frame spaces store several view vectors per scene sample; the service names the layout and the view that matched.
@@ -60,11 +66,13 @@ const nativeMatchSchema = z.object({
     // Parse the complete sample separately, since refinement schemas cannot be extended.
     similarity: z.number().finite().min(-1.00001).max(1.00001),
     matched_view: z.number().int().min(0).max(7).optional(),
+    scene_context: sceneContextSchema.optional(),
   }).passthrough()).max(60),
 }).strict();
 export interface NativeMatch {
   model_version: string; partial: boolean;
-  items: (NativeSample & { similarity: number; evidence_refs?: z.infer<typeof evidenceRefsSchema>; matched_view?: number })[];
+  items: (NativeSample & { similarity: number; evidence_refs?: z.infer<typeof evidenceRefsSchema>; matched_view?: number;
+    scene_context?: NativeSceneContext })[];
 }
 const rangeSchema = z.object({
   channel: identity, from: integer, to: integer, scene: z.boolean(), state: z.enum(['sampled', 'pending', 'gap']),
@@ -317,13 +325,17 @@ export class SearchNativeClient {
       if (raw.model_version !== expectedModel) throw new Error();
       const ids = new Set<string>();
       const items = raw.items.map(row => {
-        const { similarity, evidence_refs: refs, matched_view, ...value } = row; const sample = nativeSampleSchema.parse(value);
+        const { similarity, evidence_refs: refs, matched_view, scene_context, ...value } = row; const sample = nativeSampleSchema.parse(value);
+        // Context belongs to a detector crop only, inside the same scope and never the crop itself.
+        if (scene_context && (sample.kind !== 'object' || scene_context.sample_id === sample.id ||
+          scene_context.captured_ms < input.from_ms || scene_context.captured_ms >= input.to_ms)) throw new Error();
         const evidence_refs = refs === undefined ? undefined : evidenceRefsSchema.parse(refs);
         if (evidence_refs && (!sample.fingerprint || !evidence_refs.some(ref => ref.sample_id === sample.id && ref.fingerprint === sample.fingerprint) ||
           (sample.kind === 'scene' && (evidence_refs.length !== 1 || evidence_refs[0]!.sample_id !== sample.id)))) throw new Error();
         if (ids.has(sample.id) || !scope.channel_ids.includes(sample.channel_id) || sample.captured_ms < input.from_ms ||
           sample.captured_ms >= input.to_ms || sample.model_version !== expectedModel || sample.expires_ms <= Date.now()) throw new Error();
-        ids.add(sample.id); return { ...sample, similarity, ...(evidence_refs ? { evidence_refs } : {}), ...(matched_view === undefined ? {} : { matched_view }) };
+        ids.add(sample.id); return { ...sample, similarity, ...(evidence_refs ? { evidence_refs } : {}), ...(matched_view === undefined ? {} : { matched_view }),
+          ...(scene_context ? { scene_context } : {}) };
       });
       return { ...raw, items };
     } catch (error) { if (error instanceof SearchNativeError) throw error; throw new SearchNativeError('invalid_response'); }

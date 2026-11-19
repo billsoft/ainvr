@@ -1,11 +1,13 @@
 #include "rank_refine.hpp"
 #include "vector_index.hpp"
+#include <cmath>
 #include <cstdio>
+#include <memory>
 #include <string>
 using namespace ainvr::search;
 namespace {
 struct Sample { Record record; };
-struct Item { Sample sample; double score; };
+struct Item { Sample sample; double score; std::shared_ptr<const Item> context{}; };
 Item Make(const char* channel, const char* track, int64_t ms, bool scene, double score) {
   Item item; item.sample.record.id = std::string(channel) + "/" + track + "/" + std::to_string(ms); item.sample.record.channel = channel; item.sample.record.track = track; item.sample.record.captured_ms = ms;
   item.sample.record.scene = scene; item.score = score; return item;
@@ -37,6 +39,26 @@ int main() {
     Check(windowed.size() == 2, "2048-d keeps hits within 0.08 of the best");
     RefineRanking(items, RankRefineOptionsFor(768));
     Check(items.size() == 3, "768-d has no window");
+  }
+  {   // scene samples and detector crops: ranked apart, fused by rank, a crop absorbs the nearest scene sample as context
+    const std::vector<Item> scenes{Make("cam1", "", 10000, true, 0.14), Make("cam2", "", 50000, true, 0.13), Make("cam1", "", 90000, true, 0.12)};
+    const std::vector<Item> crops{Make("cam1", "p1", 11000, false, 0.30), Make("cam3", "p2", 0, false, 0.20)};
+    SceneObjectFusion fusion;
+    auto fused = FuseSceneAndObjects(scenes, crops, fusion, 60);
+    Check(fused.size() == 4, "one crop merged with its scene sample, the rest stand alone");
+    Check(fused[0].sample.record.track == "p1" && fused[0].context && fused[0].context->sample.record.captured_ms == 10000,
+          "the crop is the evidence, the scene sample 1 s away its context");
+    Check(std::abs(fused[0].score - 1.0) < 1e-9, "first in both rankings scores 1");
+    Check(!fused[1].context && fused[1].sample.record.track == "p2", "a crop without a nearby scene sample keeps its own rank share");
+    for (const auto& item : fused) Check(!(item.sample.record.scene && item.sample.record.captured_ms == 10000), "a merged scene sample is not listed twice");
+    fusion.merge_ms = 500;
+    Check(FuseSceneAndObjects(scenes, crops, fusion, 60).size() == 5, "outside the merge window nothing merges");
+    Check(FuseSceneAndObjects(scenes, std::vector<Item>{}, SceneObjectFusion{}, 2).size() == 2 &&
+          FuseSceneAndObjects(std::vector<Item>{}, crops, SceneObjectFusion{}, 60).size() == 2, "one kind alone and the limit");
+    const std::vector<Item> twice{Make("cam1", "p1", 11000, false, 0.30), Make("cam1", "p3", 10500, false, 0.25)};
+    const auto nearest = FuseSceneAndObjects(std::vector<Item>{scenes[0]}, twice, SceneObjectFusion{}, 60);
+    Check(nearest.size() == 2 && ((nearest[0].context != nullptr) + (nearest[1].context != nullptr)) == 1, "a scene sample gives context once");
+    for (const auto& item : nearest) if (item.context) Check(item.sample.record.track == "p3", "the nearest crop in time takes the context");
   }
   {   // empty input and ties keep insertion order
     std::vector<Item> none; RefineRanking(none, RankRefineOptionsFor(2048)); Check(none.empty(), "empty input");

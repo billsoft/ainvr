@@ -346,14 +346,14 @@ void EmitV2(const IndexShardIdentity& identity, const std::vector<Record>& recor
   pad(l.scales);
   for (const auto index : order) {
     std::vector<float> normalized;
-    try { normalized = NormalizeViews(records[index].vector, dims, views); }
+    try { normalized = ShardRowVector(records[index], dims, views); }
     catch (...) { Fail("search_index_record_invalid"); }
     QuantizeViews(normalized, views, quantized.data(), scales.data());
     for (const auto scale : scales) { uint32_t bits; std::memcpy(&bits, &scale, 4); Integer(put, bits, 4); }
   }
   pad(l.vectors);
   for (const auto index : order) {
-    QuantizeViews(NormalizeViews(records[index].vector, dims, views), views, quantized.data(), scales.data());
+    QuantizeViews(ShardRowVector(records[index], dims, views), views, quantized.data(), scales.data());
     put(quantized.data(), quantized.size());
   }
   pad(l.meta_index);
@@ -407,14 +407,20 @@ std::vector<Record> RecordsV2(const unsigned char* base, uint64_t bytes, const I
         record.scene != (view.scene[row] != 0) || std::memcmp(RecordGroup(record).data(), view.groups + 16 * row, 16))
       Fail("search_index_record_invalid");
     previous = record.id;
-    record.vector.resize(view.dimensions);
+    // A detector-crop row holds one block; its other blocks must be empty (see ShardRowVector).
+    const size_t blocks = RecordViews(record.scene, view.views);
+    record.vector.resize(view.per * blocks);
     for (size_t v = 0; v < view.views; ++v) {
       const float scale = view.scales[row * view.views + v];
       if (!std::isfinite(scale) || scale < 0) Fail("search_index_vector_invalid");
-      for (size_t i = 0; i < view.per; ++i)
-        record.vector[v * view.per + i] = scale * float(view.vectors[row * view.dimensions + v * view.per + i]);
+      const int8_t* block = view.vectors + row * view.dimensions + v * view.per;
+      if (v >= blocks) {
+        if (scale != 0 || std::any_of(block, block + view.per, [](int8_t q) { return q != 0; })) Fail("search_index_vector_invalid");
+        continue;
+      }
+      for (size_t i = 0; i < view.per; ++i) record.vector[v * view.per + i] = scale * float(block[i]);
     }
-    try { record.vector = NormalizeViews(record.vector, view.dimensions, view.views); }
+    try { record.vector = NormalizeViews(record.vector, view.per * blocks, blocks); }
     catch (...) { Fail("search_index_vector_invalid"); }
     result.push_back(std::move(record));
   }

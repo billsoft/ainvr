@@ -102,6 +102,14 @@ int main() {
                 kSiglip2BaseTextMeasuredSha256, kSiglip2BaseTextReservationBytes, 485359400});
     RunProfile({"siglip-so400m-i18n-full-int8", "siglip_text", 1152, ainvr::text::kSiglipEmbeddingRows,
                 kSo400mTextMeasuredSha256, kSo400mTextReservationBytes, 1006129016});
+    {   // FG-CLIP 2 text tower: same 64-token contract and Gemma ids; no measured HBM yet, so it never loads.
+      const auto& fg = FindPackageSpec("fgclip2-base-384-o2");
+      ValidateBpuTextDescription(Description(fg.text.program.c_str(), 768), fg); ++cases;
+      Reject([&] { ValidateBpuTextDescription(Description("siglip2_base_text", 768), fg); });
+      VerifiedPackage unbuilt; unbuilt.files_verified = true; unbuilt.spec = &fg; unbuilt.model_version = "search-v1-" + std::string(64, 'a');
+      unbuilt.artifacts.push_back({"hbm/" + fg.text.file, std::string(64, 'f'), 1});
+      Reject([&] { BpuTextReservationBytes(unbuilt); });
+    }
     for (const char* pruned : {"siglip2-base-pruned-int8", "siglip-so400m-i18n-pruned-int8"}) {
       const auto& spec = FindPackageSpec(pruned);
       Reject([&] { ValidateBpuTextDescription(Description(spec.text.program.c_str(), int64_t(spec.dimensions)), spec); });

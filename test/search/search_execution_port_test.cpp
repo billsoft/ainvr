@@ -20,8 +20,12 @@ const std::string package_id = std::getenv("AINVR_SEARCH_TEST_PACKAGE") ?
   std::getenv("AINVR_SEARCH_TEST_PACKAGE") : "siglip2-base-full-int8";
 const auto& package_spec = ainvr::search::FindPackageSpec(package_id);
 const size_t dimensions = package_spec.dimensions;
-// A multi-view package stores `views` unit-norm blocks per whole-frame sample; detector (object) samples do not exist there.
+// A multi-view package stores `views` unit-norm blocks per whole-frame sample. Detector (object) samples exist only in a
+// space that stores crops, and then as one block each.
 const size_t views = package_spec.views, record_dimensions = dimensions * views;
+const bool objects = ainvr::search::PackageStoresObjects(package_id);
+size_t Blocks(bool scene) { return ainvr::search::SampleViews(package_id, scene); }
+size_t RecordDims(bool scene) { return dimensions * Blocks(scene); }
 const std::string input_spec = package_spec.input_spec_version;
 const SearchEmbeddingSpace space{package_id, "search-v1-" + std::string(64, 'a'), input_spec};
 void DrainWorkerCompletion() {
@@ -75,7 +79,8 @@ class Hardware final : public SearchHardwareSession {
     ++state_->prepares; state_->Event("prepare");
     if (state_->preparing) state_->preparing();
     ainvr::SnapshotPlan plan; plan.width = plan.height = 18; plan.source_rectangle = {0,0,8,4};
-    std::vector<float> embedding(record_dimensions); for (size_t k = 0; k < views; ++k) embedding[k * dimensions] = 1;
+    const bool scene = !frame.Selection().slot;
+    std::vector<float> embedding(RecordDims(scene)); for (size_t k = 0; k < Blocks(scene); ++k) embedding[k * dimensions] = 1;
     return {plan, {255,216,255,217}, std::move(embedding), "gles", "jpu", "gles"};
   }
  private:
@@ -117,7 +122,8 @@ class Transport final : public SearchProducerHttpTransport {
     if (object) Check(body.at("expected_fingerprint") == expected_previous && body.at("slot") == expected_slot && body.at("slot") == query.at("slot") &&
       body.at("replacement_token") == query.at("replacement_token"), "slot/CAS token changed");
     const auto& e = written_sample.at("evidence");
-    Check(written_sample.at("vector").size() == record_dimensions && written_sample.at("model_version") == space.model_version, "wrong embedding space");
+    Check(written_sample.at("vector").size() == RecordDims(written_sample.at("kind") == "scene") &&
+      written_sample.at("model_version") == space.model_version, "wrong embedding space");
     Check(e.at("input_spec_version") == input_spec, "full image/text preprocessing contract was shortened");
     Check(e.at("source_input_id") == "00000000-0000-4000-8000-000000000001" &&
       e.at("output_channel_id") == "00000000-0000-4000-8000-000000000002" &&
@@ -215,10 +221,10 @@ int main() { try {
     hardware.Stop();
   }
   for (bool scene : {false, true}) {
-    if (!scene && views > 1) {
+    if (!scene && !objects) {
       Case c(false); bool refused = false;
       try { refused = !c.Prepare(); } catch (...) { refused = true; }
-      Check(refused, "an object sample was prepared in a multi-view space");
+      Check(refused, "an object sample was prepared in a scene-only space");
       c.Stop(); continue;
     }
     Case c(scene); auto operation = c.Prepare(); Check(bool(operation), "full graph prepare failed");
@@ -245,7 +251,7 @@ int main() { try {
     Check(c.transport->writes == 0 && c.transport->receipts == 0, "fence made a network call"); c.Stop();
   }
   for (bool scene : {false, true}) {
-    if (!scene && views > 1) continue;
+    if (!scene && !objects) continue;
     Case c(scene); auto operation = c.Prepare(); Check(bool(operation), "unknown fixture missing operation");
     c.transport->unknown = true;
     const auto key = operation->ReceiptKey(), query = operation->ReceiptQuery();
@@ -265,9 +271,9 @@ int main() { try {
     c.Stop();
   }
   for(bool scene:{false,true})for(bool changed:{false,true}){
-    if(!scene&&views>1)continue;
-    Case c(scene);c.Probe(scene);std::vector<float> baseline(record_dimensions,0);
-    for(size_t k=0;k<views;++k)baseline[k*dimensions+(changed?1:0)]=1;
+    if(!scene&&!objects)continue;
+    Case c(scene);c.Probe(scene);std::vector<float> baseline(RecordDims(scene),0);
+    for(size_t k=0;k<Blocks(scene);++k)baseline[k*dimensions+(changed?1:0)]=1;
     const auto prepared=c.port->PrepareProbe(*c.frame,space,c.lease,baseline,c.Current());
     Check(prepared.distance.has_value(),"probe_did_not_compare_real_fixture_descriptor");
     if(!changed){
@@ -276,7 +282,7 @@ int main() { try {
     }else{
       Check(prepared.result==SearchSamplingProbePreparation::Result::Write&&prepared.operation&&*prepared.distance>=.25,"changed_probe_not_prepared");
       c.transport->frozen_query=prepared.operation->ReceiptQuery();c.transport->fingerprint=Json::parse(c.transport->frozen_query).at("request_fingerprint");
-      Check(prepared.operation->Descriptor().size()==record_dimensions,"operation_descriptor_borrow_lost");
+      Check(prepared.operation->Descriptor().size()==RecordDims(scene),"operation_descriptor_borrow_lost");
       Check(prepared.operation->Submit(c.Current()).result==Receipt::Result::Committed,"changed_probe_write_failed");
       const auto audit=c.transport->written_sample.at("evidence").at("appearance");
       Check(audit.at("metric")==kSearchAppearanceMetric&&audit.at("reference_fingerprint")==std::string(64,'e')&&

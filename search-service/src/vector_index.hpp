@@ -45,10 +45,17 @@ struct Record {
   std::vector<float> vector;
   std::string fingerprint{};
 };
+// Which samples a query ranks. Scene samples and detector crops score on different scales, so a space that stores
+// both ranks each kind on its own and fuses the two rankings by rank (FuseSceneAndObjects in rank_refine.hpp).
+enum class SampleKind { Any, Scene, Object };
+inline bool KindMatches(SampleKind kind, bool scene) { return kind == SampleKind::Any || (kind == SampleKind::Scene) == scene; }
+// Blocks stored in one record: a scene record has the space's `views`, a detector crop exactly one.
+inline size_t RecordViews(bool scene, size_t views) { return scene ? views : 1; }
 struct Scope {
   std::set<std::string> channels;
   int64_t from_ms = 0, to_ms = 0;
   size_t limit = 20;
+  SampleKind kind = SampleKind::Any;
 };
 struct IndexEvidenceRef { std::string id, fingerprint; int64_t captured_ms = 0; };
 struct Hit { std::string id; double score; std::string fingerprint{}; std::vector<IndexEvidenceRef> evidence_refs{}; size_t view = 0; };
@@ -58,8 +65,9 @@ struct IndexReference { std::string id, fingerprint, channel; int64_t captured_m
 // persisted separately; this bounded projection can be rebuilt after restart.
 class VectorIndex {
  public:
-  // `dimensions` is the stored record length. With views > 1 a record is `views` unit-norm blocks of
-  // dimensions/views floats; a query is one block and a record scores as its best block.
+  // `dimensions` is the longest stored record. With views > 1 a scene record is `views` unit-norm blocks of
+  // dimensions/views floats and a detector-crop record is one block; a query is one block and a record scores as
+  // its best block.
   VectorIndex(std::string model, size_t dimensions, size_t capacity, size_t views = 1)
       : model_(std::move(model)), dimensions_(dimensions), capacity_(capacity), views_(views) {
     if (model_.empty() || dimensions_ == 0 || dimensions_ > 4096 || views_ == 0 || views_ > 8 || dimensions_ % views_ ||
@@ -157,9 +165,10 @@ class VectorIndex {
     std::map<Key, Group> groups;
     for (const auto& [id, record] : records_) {
       if (!scope.channels.count(record.channel) || record.captured_ms < scope.from_ms ||
-          record.captured_ms >= scope.to_ms) continue;
+          record.captured_ms >= scope.to_ms || !KindMatches(scope.kind, record.scene)) continue;
       double score = -2; size_t best_view = 0;
-      for (size_t v = 0; v < views_; ++v) {
+      const size_t blocks = RecordViews(record.scene, views_);
+      for (size_t v = 0; v < blocks; ++v) {
         const float* block = record.vector.data() + v * view_dimensions_;
         double s = 0;
         for (size_t i = 0; i < view_dimensions_; ++i) s += double(query[i]) * block[i];
@@ -199,8 +208,9 @@ class VectorIndex {
         (!value.scene && (value.processor.empty() || value.session.empty() || value.track.empty())))
       throw std::invalid_argument("invalid_record_identity");
     // Each view block is normalised on its own, so a record never trades one view's weight for another's.
-    if (value.vector.size() != dimensions_) throw std::invalid_argument("vector_dimensions");
-    for (size_t v = 0; v < views_; ++v) {
+    const size_t blocks = RecordViews(value.scene, views_);
+    if (value.vector.size() != view_dimensions_ * blocks) throw std::invalid_argument("vector_dimensions");
+    for (size_t v = 0; v < blocks; ++v) {
       const auto begin = value.vector.begin() + std::ptrdiff_t(v * view_dimensions_);
       const auto block = NormalizeVector(std::vector<float>(begin, begin + std::ptrdiff_t(view_dimensions_)), view_dimensions_);
       std::copy(block.begin(), block.end(), value.vector.begin() + std::ptrdiff_t(v * view_dimensions_));

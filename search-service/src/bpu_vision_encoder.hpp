@@ -16,6 +16,10 @@ inline constexpr const char* kSiglip2BaseVisionMeasuredSha256 =
 inline constexpr uint64_t kSo400mVisionReservationBytes = 576ULL * 1024 * 1024;
 inline constexpr const char* kSo400mVisionMeasuredSha256 =
     "cba12c5063090254bcd0e65f580f9eebd04cef336e7b643682b93041ddb9b71a";
+// FG-CLIP 2 base 384 vision HBM: NOT built yet. Empty = unmeasured, so the package cannot load (fails closed)
+// until the O2 file's sha256 and measured ION are written here.
+inline constexpr uint64_t kFgClip2BaseVisionReservationBytes = 0;
+inline constexpr const char* kFgClip2BaseVisionMeasuredSha256 = "";
 struct BpuVisionLoadOptions {
   std::string reservation_directory = "/run/ainvr";
   uint64_t total_bytes = UINT64_MAX;  // optional cap; the real budget is read from the SDK (ReadBpuIonBudgetBytes)
@@ -25,8 +29,10 @@ struct BpuVisionLoadOptions {
 void ValidateBpuVisionLoadOptions(const BpuVisionLoadOptions& options);
 uint64_t BpuVisionReservationBytes(const VerifiedPackage& package);
 void ValidateBpuVisionDescription(const nlohmann::json& description, const PackageSpec& spec);
+// `object_crop`: the plan is a detector box. A space with ObjectCrop::LetterboxGray127 then keeps the box's aspect
+// ratio on a grey square; scene views and every other space squash the plan's rectangle to the model square.
 ainvr::ImageTransform BpuVisionTransform(const ainvr::SnapshotPlan& plan,
-    const PackageSpec& spec, bool bt709, bool full_range);
+    const PackageSpec& spec, bool bt709, bool full_range, bool object_crop = false);
 std::vector<float> NormalizeBpuVisionEmbedding(const std::vector<std::vector<float>>& outputs,
     const PackageSpec& spec);
 struct BpuVisionResult {
@@ -52,7 +58,7 @@ class BpuVisionEncoder {
   // same crop plan for evidence. No second crop/association/NN/thread pipeline.
   // Load, Encode and normal destruction must all occur on the same owner.
   BpuVisionResult Encode(const ainvr::Nv12Frame& frame, const ainvr::SnapshotPlan& plan,
-      bool bt709, bool full_range);
+      bool bt709, bool full_range, bool object_crop = false);
  private:
   struct Impl;
   explicit BpuVisionEncoder(std::unique_ptr<Impl> impl);

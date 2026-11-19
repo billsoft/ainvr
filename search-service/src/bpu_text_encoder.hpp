@@ -14,6 +14,10 @@ inline constexpr const char* kSo400mTextMeasuredSha256 =
     "b4d759a179dc037f05df781bcce77aec3d5263cf8bd65efb26169a7cc234bfe0";
 
 // Measured profile of the complete-vocabulary SigLIP2-base text HBM: ion_mb=475 in its sidecar; hbm_bytes=485359400.
+// FG-CLIP 2 base text HBM (64 tokens, full vocabulary, int8 tables): NOT built yet. Empty/0 = unmeasured, so the
+// package cannot load (fails closed) until the O2 file's sha256 and measured ION are written here.
+inline constexpr uint64_t kFgClip2BaseTextReservationBytes = 0;
+inline constexpr const char* kFgClip2BaseTextMeasuredSha256 = "";
 inline constexpr uint64_t kSiglip2BaseTextReservationBytes = 475ULL * 1024 * 1024;
 inline constexpr const char* kSiglip2BaseTextMeasuredSha256 =
     "b738a59f5f03d6b64ffcdd814907fccde086edacd6a9d23a36d68af616f14aa8";

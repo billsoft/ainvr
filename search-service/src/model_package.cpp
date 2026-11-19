@@ -179,7 +179,30 @@ PackageSpec Spec(bool so400m, bool pruned) {
   if (!so400m && !pruned) {
     spec.views = ainvr::search::kSceneViews;
     spec.input_spec_version += std::string(";scene-views=") + ainvr::search::kSceneViewLayout;
+  } else {
+    spec.object_crop = ObjectCrop::Legacy; spec.object_slots = 8;   // single-view spaces keep their original detector crops
   }
+  return spec;
+}
+// FG-CLIP 2 base (SigLIP2 backbone, same Gemma tokenizer bytes and token ids) on one fixed 24x24 grid (384x384).
+// Scene samples keep whole + three short-edge squares; detector crops are letterboxed onto grey and stored as their
+// own single vector. HBM file names and sidecar programs are placeholders until the O2 build lands.
+PackageSpec FgClip2Spec() {
+  PackageSpec spec;
+  spec.id = "fgclip2-base-384-o2";
+  spec.title = "中文细粒度 · 场景与目标";
+  spec.family = "fg-clip2-base";
+  spec.embedding_vocab_size = 256000; spec.dimensions = 768; spec.pad_id = 0; spec.eos_id = 1;
+  spec.vision_size = 384;
+  spec.vision = {"fgclip2-base-384-vision-o2.hbm", "fgclip2_base_vision", TS("pixel_values", "F32", {1,3,384,384}), TS("image_embedding", "F32", {1,768})};
+  spec.text = {"fgclip2-base-text64-tbl8-o2.hbm", "fgclip2_base_text", TS("input_ids", "S64", {1,64}), TS("text_embedding", "F32", {1,768})};
+  spec.tokenizer = "fgclip2-base.tokenizer.model";
+  spec.views = ainvr::search::kSceneViews;
+  spec.object_crop = ObjectCrop::LetterboxGray127; spec.object_slots = 2; spec.object_min_short_edge_px = 30;
+  spec.input_spec_version = "image-area-rgb-u8-round-before-normalize-mean127.5-div127.5-squash384-l2-v1;source-yuv-matrix-range-from-frame-metadata;";
+  spec.input_spec_version += ainvr::text::kSiglip2NormalizationSpec;
+  spec.input_spec_version += std::string(";scene-views=") + ainvr::search::kSceneViewLayout;
+  spec.input_spec_version += ";object-crop=letterbox-gray127-384-v1;object-slots=first+best;text=short-last-token-head-v1";
   return spec;
 }
 PackageSpec EmbeddingSpec() {
@@ -189,6 +212,7 @@ PackageSpec EmbeddingSpec() {
   spec.title = "Qwen3-VL-Embedding-2B · 全 BPU";
   spec.family = "qwen3vl-embedding-2b";
   spec.dimensions = 2048;
+  spec.object_crop = ObjectCrop::Legacy; spec.object_slots = 8;
   spec.embedding_vocab_size = 151936;
   spec.pad_id = 151643; spec.eos_id = 151643;
   // Estimate, not an ION measurement: HBM file sizes 2.94 GB (measured) + about 0.63 GB of program tensors (computed from the port shapes).
@@ -217,7 +241,8 @@ struct PackageVerificationState {
   std::vector<HeldFile> files, directories;
 };
 const std::vector<PackageSpec>& PackageSpecs() {
-  static const std::vector<PackageSpec> specs{Spec(false, false), Spec(true, false), Spec(false, true), Spec(true, true), EmbeddingSpec()};   // first entry is the product default (SigLIP2 base 256); the Qwen3-VL-Embedding package stays selectable
+  static const std::vector<PackageSpec> specs{Spec(false, false), Spec(true, false), Spec(false, true), Spec(true, true), EmbeddingSpec(),
+    FgClip2Spec()};   // first entry is the product default (SigLIP2 base 256); the Qwen3-VL-Embedding and FG-CLIP 2 packages stay selectable
   return specs;
 }
 const PackageSpec& FindPackageSpec(const std::string& id) {

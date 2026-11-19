@@ -10,7 +10,8 @@ namespace {
 void Spec(const PackageSpec& spec) {
   const bool siglip2 = spec.id == "siglip2-base-full-int8";
   const bool so400m = spec.id == "siglip-so400m-i18n-full-int8";
-  if ((!siglip2 && !so400m) || spec.pruned) Invalid();
+  const bool fgclip2 = spec.id == "fgclip2-base-384-o2";
+  if ((!siglip2 && !so400m && !fgclip2) || spec.pruned) Invalid();
   const auto& expected = FindPackageSpec(spec.id);
   if (spec.family != expected.family || spec.dimensions != expected.dimensions ||
       spec.vision.file != expected.vision.file || spec.vision.program != expected.vision.program ||
@@ -18,7 +19,9 @@ void Spec(const PackageSpec& spec) {
       spec.vision.input.shape != expected.vision.input.shape ||
       spec.vision.output.name != expected.vision.output.name || spec.vision.output.dtype != "F32" ||
       spec.vision.output.shape != expected.vision.output.shape ||
-      spec.input_spec_version != expected.input_spec_version) Invalid();
+      spec.input_spec_version != expected.input_spec_version || spec.vision_size != expected.vision_size ||
+      spec.object_crop != expected.object_crop || spec.vision.input.shape != std::vector<int64_t>{1,3,spec.vision_size,spec.vision_size})
+    Invalid();
 }
 void Tensor(const nlohmann::json& tensor, const TensorSpec& spec, size_t maximum) {
   for (const auto* field : {"dtype_id","quantization","aligned_bytes"}) if (!tensor.at(field).is_number_integer()) Invalid();
@@ -53,14 +56,17 @@ uint64_t BpuVisionReservationBytes(const VerifiedPackage& package) {
     throw std::runtime_error("search_vision_package_unverified");
   Spec(*package.spec);
   const bool so400m = package.spec->id == "siglip-so400m-i18n-full-int8";
-  const auto expected_hash = so400m ? kSo400mVisionMeasuredSha256 : kSiglip2BaseVisionMeasuredSha256;
+  const bool fgclip2 = package.spec->id == "fgclip2-base-384-o2";
+  const std::string expected_hash = so400m ? kSo400mVisionMeasuredSha256 : fgclip2 ? kFgClip2BaseVisionMeasuredSha256 : kSiglip2BaseVisionMeasuredSha256;
+  // An unmeasured HBM has no resource profile: never guess one.
+  if (expected_hash.empty() || (fgclip2 && !kFgClip2BaseVisionReservationBytes)) throw std::runtime_error("search_vision_resource_profile_unverified");
   size_t matches = 0;
   for (const auto& artifact : package.artifacts) if (artifact.relative_path == "hbm/" + package.spec->vision.file) {
     if (artifact.sha256 != expected_hash) throw std::runtime_error("search_vision_resource_profile_unverified");
     ++matches;
   }
   if (matches != 1) throw std::runtime_error("search_vision_resource_profile_unverified");
-  return so400m ? kSo400mVisionReservationBytes : kSiglip2BaseVisionReservationBytes;
+  return so400m ? kSo400mVisionReservationBytes : fgclip2 ? kFgClip2BaseVisionReservationBytes : kSiglip2BaseVisionReservationBytes;
 }
 void ValidateBpuVisionDescription(const nlohmann::json& description, const PackageSpec& spec) {
   try {
@@ -72,7 +78,8 @@ void ValidateBpuVisionDescription(const nlohmann::json& description, const Packa
     Tensor(description.at("outputs").at(0),spec.vision.output,1024*1024);
   } catch (const nlohmann::json::exception&) { Invalid(); }
 }
-ainvr::ImageTransform BpuVisionTransform(const ainvr::SnapshotPlan& plan, const PackageSpec& spec, bool bt709, bool full_range) {
+ainvr::ImageTransform BpuVisionTransform(const ainvr::SnapshotPlan& plan, const PackageSpec& spec, bool bt709, bool full_range,
+                                         bool object_crop) {
   Spec(spec);
   if (plan.perspective) throw std::runtime_error("search_vision_panorama_unverified");
   if (plan.width <= 0 || plan.height <= 0 || plan.width > 16384 || plan.height > 16384 ||
@@ -80,7 +87,11 @@ ainvr::ImageTransform BpuVisionTransform(const ainvr::SnapshotPlan& plan, const 
       plan.source_rectangle[2] <= 0 || plan.source_rectangle[3] <= 0)
     throw std::runtime_error("search_vision_crop_invalid");
   auto transform = ainvr::SnapshotTransform(plan,bt709,full_range);
-  transform.width = transform.height = 256; transform.letterbox = false; transform.bgr = false;
+  transform.width = transform.height = spec.vision_size; transform.bgr = false;
+  // A detector box in a letterbox space keeps its aspect ratio, centred on grey 127 (padding is in 0-255 pixel
+  // units, before normalization); everything else is squashed to the square as the SigLIP family was trained.
+  transform.letterbox = object_crop && spec.object_crop == ObjectCrop::LetterboxGray127;
+  transform.padding = {127.f,127.f,127.f};
   transform.mean = transform.divisor = {127.5f,127.5f,127.5f};
   transform.interpolation = ainvr::ImageInterpolation::Area;
   // Existing ImagePreprocessor/ValidateInterpolation owns support limits.

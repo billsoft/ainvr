@@ -169,7 +169,23 @@ int main() {
   static_assert(!std::is_copy_constructible_v<VerifiedPackage>);
   try {
     Check(std::string(DefaultPackageId()) == "siglip2-base-full-int8", "wrong default");
-    Check(PackageSpecs().size() == 5 && PackageSpecs()[0].id == DefaultPackageId() && PackageSpecs()[4].id == "qwen3vl-embedding-2b-o2", "candidate duplication/order"); ++cases;
+    Check(PackageSpecs().size() == 6 && PackageSpecs()[0].id == DefaultPackageId() && PackageSpecs()[4].id == "qwen3vl-embedding-2b-o2" &&
+      PackageSpecs()[5].id == "fgclip2-base-384-o2", "candidate duplication/order"); ++cases;
+    {   // Scene + detector-crop space: four scene views, one vector per crop, first+best slots, its own vector space.
+      const auto& fg = FindPackageSpec("fgclip2-base-384-o2");
+      const auto& siglip2 = FindPackageSpec("siglip2-base-full-int8");
+      Check(fg.views == 4 && fg.vision_size == 384 && fg.vision.input.shape == std::vector<int64_t>{1,3,384,384} &&
+        fg.object_crop == ObjectCrop::LetterboxGray127 && fg.object_slots == 2 && fg.dimensions == 768, "fgclip2 spec");
+      Check(PackageStoresObjects(fg.id) && SampleViews(fg.id, true) == 4 && SampleViews(fg.id, false) == 1, "fgclip2 sample views");
+      Check(PackageObjectMinShortEdge(fg.id) == 30 && PackageObjectMinShortEdge(siglip2.id) == 0 &&
+        PackageObjectMinShortEdge("siglip-so400m-i18n-full-int8") == 0, "only the crop space has a box-size floor");
+      Check(!PackageStoresObjects(siglip2.id) && siglip2.vision_size == 256, "multi-view siglip2 stays scene-only");
+      Check(PackageStoresObjects("siglip-so400m-i18n-full-int8") && PackageStoresObjects("qwen3vl-embedding-2b-o2") &&
+        PackageStoresObjects("unknown") && SampleViews("unknown", true) == 1, "single-view spaces keep detector crops");
+      Check(fg.input_spec_version != siglip2.input_spec_version && fg.input_spec_version.find("letterbox-gray127-384") != std::string::npos &&
+        fg.input_spec_version.find("squash384") != std::string::npos, "fgclip2 input spec distinct");
+      ++cases;
+    }
     Reject([] { FindPackageSpec("../../private"); });
     for (const auto& spec : PackageSpecs()) {
       if (spec.kind != PackageKind::DualTower) continue;   // the Qwen embedding package has its own fixture below

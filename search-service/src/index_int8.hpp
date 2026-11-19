@@ -23,6 +23,16 @@ inline GroupKey RecordGroup(const Record& record) {
   SHA256(reinterpret_cast<const unsigned char*>(key.data()), key.size(), digest);
   GroupKey out{}; std::memcpy(out.data(), digest, out.size()); return out;
 }
+// Shard rows have one fixed width (the scene layout of the space). A detector-crop row stores its single unit-norm
+// block first and leaves the other blocks empty (zero, scale 0); queries score only RecordViews(scene, views) blocks
+// of a row, so the empty blocks never take part. Mongo keeps the crop as its own single vector.
+inline std::vector<float> ShardRowVector(const Record& record, size_t dimensions, size_t views) {
+  if (!views || !dimensions || dimensions % views) throw std::invalid_argument("vector_dimensions");
+  const size_t blocks = RecordViews(record.scene, views), per = dimensions / views;
+  auto normalized = NormalizeViews(record.vector, per * blocks, blocks);
+  normalized.resize(dimensions, 0.0f);
+  return normalized;
+}
 // `normalized` holds `views` unit-norm blocks. Writes views*per int8 values and views scales.
 inline void QuantizeViews(const std::vector<float>& normalized, size_t views, int8_t* out, float* scales) {
   if (!views || normalized.empty() || normalized.size() % views) throw std::invalid_argument("vector_dimensions");
