@@ -86,3 +86,7 @@ deploy/s100p/rollback-ai-*/
 
 # Generated local browser build cache
 **/.vite/
+
+# Local rollback copies of installed executables and the local search index
+/deploy/s100p/bin/*.bak-*
+/search-index/
