@@ -59,7 +59,8 @@ try {
  for(const name of shards){
   const p=path.join(index,name);
   if(!/^[a-f0-9-]{36}$/.test(name)||fs.lstatSync(p).isSymbolicLink()||!fs.statSync(p).isDirectory())throw Error('unsafe_index_shard');
-  const files=fs.readdirSync(p);if(files.some(f=>!/^\d+\.(manifest\.json|records\.f32le)$/.test(f)||fs.lstatSync(path.join(p,f)).isSymbolicLink()))throw Error('unknown_index_file');
+  // Shard data is the v1 float file or the v2 int8 file (index_shard_files.cpp kDataV1/kDataV2); the whole shard directory is removed.
+  const files=fs.readdirSync(p);if(files.some(f=>!/^\d+\.(manifest\.json|records\.f32le|records\.i8)$/.test(f)||fs.lstatSync(path.join(p,f)).isSymbolicLink()))throw Error('unknown_index_file');
   const manifests=files.filter(f=>f.endsWith('.manifest.json'));if(!manifests.length)throw Error('index_manifest_missing');
   for(const f of manifests)validateFreshModelManifest(read(path.join(p,f)),pin,transition);
  }
