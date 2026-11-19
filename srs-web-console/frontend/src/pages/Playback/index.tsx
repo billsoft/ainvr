@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import SearchPage from '@/pages/Search'
 import type { SearchChannel, SearchScope } from '@/api/searchService'
-import { CalendarClock, CircleAlert, PanelLeft, PanelLeftClose, Search, X } from 'lucide-react'
+import { CalendarClock, CircleAlert, Maximize2, Minimize2, PanelLeft, PanelLeftClose, Search, X } from 'lucide-react'
 import { recordingService } from '@/api/recordingService'
 import { Toaster } from '@/components/ui/Toaster'
 import { toast } from '@/store/toast'
@@ -45,6 +45,21 @@ export default function PlaybackPage() {
   // Three docked columns like an editor with a side assistant: channels | playback | search.
   const { hostRef, stacked, showLeft, showRight: showSearch, toggleLeft, toggleRight: toggleSearch, closeRight: closeSearch } =
     useDockedColumns({ searchRequested: searchParams.get('search') === '1' })
+  // Widened search column for browsing many results; the player keeps its minimum width. Remembered per browser.
+  const [searchWideWanted, setSearchWideWanted] = useState(() => { try { return localStorage.getItem('playback.searchWide') === '1' } catch { return false } })
+  const searchWide = searchWideWanted && !stacked
+  // Widening folds the channel list into its 44 px rail (the scope line can still show it); restoring reopens it only
+  // when the widening folded it, never a list the person folded or reopened by hand.
+  const foldedByWide = useRef(false)
+  const SEARCH_WIDE_GROW = 'flex-[1.2_1_0%]'
+  const setSearchWide = (wide: boolean) => {
+    setSearchWideWanted(wide)
+    try { localStorage.setItem('playback.searchWide', wide ? '1' : '0') } catch { /* unsaved is fine */ }
+    if (wide && showLeft) { foldedByWide.current = true; toggleLeft() }
+    if (!wide && foldedByWide.current) { foldedByWide.current = false; if (!showLeft) toggleLeft() }
+  }
+  const toggleSearchWide = () => setSearchWide(!searchWide)
+  const closeSearchPanel = () => { if (searchWide) setSearchWide(false); closeSearch() }
   // The panel is created the first time its column is shown, with the channel and window open at that moment.
   useEffect(() => {
     if (!showSearch || searchMounted) return
@@ -439,7 +454,7 @@ export default function PlaybackPage() {
       />
 
       {/* ============ 右主区（播放器 + 时间轴）============ */}
-      <div className={`flex min-w-0 flex-col gap-3 ${stacked ? 'flex-none' : 'min-h-0 flex-1 overflow-hidden'}`}>
+      <div className={`flex min-w-0 flex-col gap-3 ${stacked ? 'flex-none' : 'min-h-0 flex-1 overflow-hidden'} ${searchWide ? 'min-w-[400px]' : ''}`}>
         {(playNotice || checking || catalogue.loading || catalogue.error) && <div role="status" className="rounded-base border border-line bg-surface px-4 py-2 text-sm">
           {checking ? '正在加载所选位置的录像…' : catalogue.error || (catalogue.loading ? '正在加载所选时间范围…' : playNotice)}
         </div>}
@@ -565,15 +580,19 @@ export default function PlaybackPage() {
       )}
       {searchMounted && (
         <aside aria-label="智能搜索" hidden={!showSearch}
-          className={`flex shrink-0 flex-col overflow-hidden rounded-panel border border-line bg-surface p-3 [&[hidden]]:hidden ${stacked ? 'max-h-[60vh] w-full' : 'w-80'}`}>
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="font-semibold text-ink">智能搜索</h2>
-            <button type="button" aria-label="收起智能搜索" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-base hover:bg-surface-page" onClick={closeSearch}><X size={18} /></button>
+          className={`relative flex shrink-0 flex-col overflow-hidden rounded-panel border border-line bg-surface p-3 pt-2 [&[hidden]]:hidden ${stacked ? 'max-h-[60vh] w-full' : searchWide ? `min-w-80 ${SEARCH_WIDE_GROW}` : 'w-80'}`}>
+          <div className="absolute right-2 top-1.5 z-10 flex items-center">
+            <h2 className="sr-only">智能搜索</h2>
+            <div className="flex items-center">
+            {!stacked && <button type="button" aria-label={searchWide ? '还原搜索面板' : '放大搜索面板'} aria-pressed={searchWide} title={searchWide ? '还原搜索面板宽度' : '放大搜索面板，多列浏览结果'}
+              className="inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 min-w-9 [@media(pointer:coarse)]:min-w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-page hover:text-primary" onClick={toggleSearchWide}>{searchWide ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>}
+            <button type="button" aria-label="收起智能搜索" className="inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 min-w-9 [@media(pointer:coarse)]:min-w-11 items-center justify-center rounded-base hover:bg-surface-page" onClick={closeSearchPanel}><X size={18} /></button>
+            </div>
           </div>
           <div className="min-h-0 flex-1">
             <SearchPage variant="side" entryScope={searchEntry} onPlay={openEvidence}
               selected={searchSelected} onSelectedChange={setSearchSelected} onChannels={setSearchChannels}
-              listVisible={showLeft} onResults={setHits} />
+              listVisible={showLeft} onResults={setHits} onShowList={toggleLeft} wide={searchWide} />
           </div>
         </aside>
       )}

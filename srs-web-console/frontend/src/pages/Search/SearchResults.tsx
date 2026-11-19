@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { Camera, ChevronLeft, ChevronRight, ImageUp, Play, ThumbsDown, ThumbsUp, X } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Camera, ChevronLeft, ChevronRight, ImageUp, Info, Play, ThumbsDown, ThumbsUp, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { SearchEvidenceImage } from './SearchEvidenceImage'
 import { searchImagePath, searchService, type SearchFrame, type SearchPageResult, type SearchQueryKind, type SearchResult } from '@/api/searchService'
@@ -46,12 +46,18 @@ export function SearchSimilarity({ value, kind = 'text' }: { value?: number; kin
 }
 const frameLabels = { match: '命中时刻', before: '较早采样', after: '较晚采样', context: '其他关键时刻' }
 function stamp(value: string) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
-export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyReason, onAccessDenied, queryKind = 'text', onUseImage, pictureBusy, onPlay, compact = false }: {
+export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyReason, onAccessDenied, queryKind = 'text', onUseImage, pictureBusy, onPlay, compact = false, wide = false, info, onRetryUnlimited }: {
   data: SearchPageResult
   /** Beside the player: opening a candidate plays its recording there instead of in a new page. */
   onPlay?: (channelId: string, at: number) => void
   /** One narrow column: single-column list and a small detail picture. */
   compact?: boolean
+  /** A widened side panel: cards fill as many ~200 px columns as fit, for browsing many results. */
+  wide?: boolean
+  /** Compact panel only: shown inside the ⓘ explanation (the coverage intervals of this search). */
+  info?: ReactNode
+  /** Compact panel only: search again with no minimum similarity, from the empty result line. */
+  onRetryUnlimited?: () => void
   queryKind?: SearchQueryKind
   /** Puts this evidence picture into the search conditions; the page does not search until asked. */
   onUseImage?: (item: SearchResult, frame: SearchFrame) => void
@@ -66,6 +72,7 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
   const ranks = new Map((rankedIds ?? []).map((id, n) => [id, n]))
   const items = rankedIds ? [...data.items].sort((a, b) => (ranks.get(a.id) ?? Infinity) - (ranks.get(b.id) ?? Infinity)) : data.items
   const aiOn = aiReferenceEnabled()
+  const [explained, setExplained] = useState(false)
   const hasReview = items.some(i => ['match', 'mismatch', 'uncertain', 'unavailable'].includes(i.verification.state))
   const gesture = useRef<{ x: number; y: number; at: number } | null>(null)
   function reorder() {
@@ -123,37 +130,55 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
     : data.coverage === 'partial' ? '所选范围有未分析或缺失时段，结果可能不完整。' : '覆盖情况暂未确认，未找到不代表事件没有发生。'
   const replay = !onPlay && selected?.recording.state === 'available'
     ? evidencePlaybackHref(selected.recording.channel_id, selected.started_at, selected.ended_at) : null
-  return <section aria-label="搜索结果" className="min-w-0 space-y-3">
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold text-ink">已加载 {data.items.length} 条候选</h2>
-        {data.coverage !== 'sampled' && <span className="rounded-full bg-amber-50 px-2 py-1 text-xs text-amber-800">{data.coverage === 'partial' ? '部分覆盖' : '覆盖待确认'}</span>}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-ink-subtle">{rankedIds ? '按复核状态排序' : queryKind === 'image' ? '按外观相似度排序' : queryKind === 'image_text' ? '按相关性排序' : '按图文相似度排序'}</span>
-        {aiOn && hasReview && <button type="button" className={action} onClick={reorder}>按复核状态重排已加载候选</button>}
-      </div>
-    </div>
-    <details className="text-xs text-ink-subtle">
-      <summary className="flex min-h-9 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1"><span>结果说明</span><span role="status" className="rounded-full bg-surface px-2 py-1">{aiOn ? 'AI 参考分析已开启' : 'AI 参考分析已暂停'}</span></summary>
-      <div className="max-w-3xl space-y-2 rounded-lg border border-line bg-surface p-3 leading-relaxed">
+  const order = rankedIds ? '按复核状态排序' : queryKind === 'image' ? '按外观相似度排序' : queryKind === 'image_text' ? '按相关性排序' : '按图文相似度排序'
+  const explanation = <>
         {queryKind === 'text' ? <p>按图文相似度返回最多 60 条候选，不代表均符合描述。分数不是概率；第一名也可能不匹配。{data.min_similarity === undefined ? '本次不限最低相似度。' : `本次最低相似度 ${data.min_similarity.toFixed(3).replace(/0$/, '')}，低于门槛的候选不显示。`}</p>
           : <p>按与参考图片的外观相近程度{queryKind === 'image_text' ? '并结合文字描述' : ''}返回最多 60 条相似候选，需人工确认。外观相似不代表是同一个人或同一件物品；同款衣物、物品会一起出现。</p>}
         <p>{coverage}</p>
         <p>{aiOn ? '本次搜索仅对前 5 条候选进行 AI 参考分析；其余候选尚未复核。参考分析未标定，不是概率，不会隐藏候选或代替人工判断。' : '让大模型优先处理告警审核；请人工核对候选与录像。'}</p>
         {aiOn && hasReview && <p>复核已更新，候选顺序保持稳定。手动重排仅调整已加载候选；新加载结果追加到末尾。</p>}
+  </>
+  return <section aria-label="搜索结果" className={compact ? 'min-w-0 space-y-2' : 'min-w-0 space-y-3'}>
+    {compact && <>
+    {/* Side panel (2026-11-19): one summary line; the explanation and coverage open from ⓘ, so results start right below. */}
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-subtle">
+      <h2 className="text-sm font-semibold text-ink">{data.items.length} 条候选</h2>
+      {data.coverage !== 'sampled' && <span className="rounded-full bg-amber-50 px-1.5 py-0.5 text-amber-800">{data.coverage === 'partial' ? '部分覆盖' : '覆盖待确认'}</span>}
+      <span className="min-w-0 truncate">{order}</span>
+      <button type="button" aria-label="结果说明" aria-expanded={explained} title="结果说明与采样覆盖" onClick={() => setExplained(v => !v)}
+        className={`ml-auto inline-flex min-h-7 [@media(pointer:coarse)]:min-h-11 min-w-7 [@media(pointer:coarse)]:min-w-11 items-center justify-center rounded-base hover:bg-surface-page hover:text-primary ${explained ? 'text-primary' : ''}`}><Info size={15} aria-hidden="true" /></button>
+      {aiOn && hasReview && <button type="button" className={action} onClick={reorder}>按复核状态重排已加载候选</button>}
+    </div>
+    {explained && <div className="space-y-2 rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-subtle">{explanation}<p role="status">{aiOn ? 'AI 参考分析已开启' : 'AI 参考分析已暂停'}</p>{info}</div>}
+    {!data.items.length && <p className="flex flex-wrap items-center gap-2 text-sm text-ink-subtle"><span>{data.next_cursor ? '本批候选证据已过期或不可用' : data.min_similarity === undefined ? '所选范围内暂未找到相关候选' : `没有达到 ${data.min_similarity.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')} 的候选`}</span>
+      {!data.next_cursor && data.min_similarity !== undefined && onRetryUnlimited && <button type="button" className="min-h-7 [@media(pointer:coarse)]:min-h-11 rounded-base border border-line px-2 text-xs text-primary hover:border-primary" onClick={onRetryUnlimited}>不限重搜</button>}</p>}
+    </>}
+    {!compact && <>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold text-ink">已加载 {data.items.length} 条候选</h2>
+        {data.coverage !== 'sampled' && <span className="rounded-full bg-amber-50 px-2 py-1 text-xs text-amber-800">{data.coverage === 'partial' ? '部分覆盖' : '覆盖待确认'}</span>}
       </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-ink-subtle">{order}</span>
+        {aiOn && hasReview && <button type="button" className={action} onClick={reorder}>按复核状态重排已加载候选</button>}
+      </div>
+    </div>
+    <details className="text-xs text-ink-subtle">
+      <summary className="flex min-h-9 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1"><span>结果说明</span><span role="status" className="rounded-full bg-surface px-2 py-1">{aiOn ? 'AI 参考分析已开启' : 'AI 参考分析已暂停'}</span></summary>
+      <div className="max-w-3xl space-y-2 rounded-lg border border-line bg-surface p-3 leading-relaxed">{explanation}</div>
     </details>
     {!data.items.length && <div className="rounded-xl border border-line bg-surface p-6">
       <h3 className="font-medium">{data.next_cursor ? '本批候选证据已过期或不可用' : data.min_similarity === undefined ? '所选范围内暂未找到相关候选' : '所选范围内，没有候选达到当前相似度要求'}</h3>
         <p className="mt-2 text-sm text-ink-subtle">{data.next_cursor ? '可继续加载后续候选。' : queryKind === 'text' ? '可降低最低相似度后重新搜索，扩大时间或摄像头范围，或改用更具体的外观描述。' : '可换一张更清晰的图片、框选目标，或扩大时间与摄像头范围后重新搜索。'}</p>
     </div>}
+    </>}
     {error && error.id !== selectedId && <div role="alert" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
       第 {items.findIndex(i => i.id === error.id) + 1} 条候选的反馈未保存：{error.message}
       <button type="button" className={`${action} ml-2`} onClick={() => open(error.id)}>返回该候选重试</button>
     </div>}
     {readOnlyReason && <p role="status" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{readOnlyReason}</p>}
     <div className={selected && !compact ? 'grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]' : compact ? 'space-y-3' : ''}>
-      <div className={`grid min-w-0 items-start gap-3 ${compact ? 'grid-cols-1' : selected ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3'}`}>
+      <div className={`grid min-w-0 items-start gap-3 ${compact ? (wide ? 'grid-cols-[repeat(auto-fill,minmax(200px,1fr))]' : 'grid-cols-1') : selected ? 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3'}`}>
         {items.map((item, n) => {
           const cover = item.frames.find(f => f.role === 'match') ?? item.frames[0]!
           return <button type="button" key={item.id} aria-label={`查看第 ${n + 1} 条候选：${item.channel_name}`}

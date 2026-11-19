@@ -90,7 +90,7 @@ const actorSchema = z.string().min(1).max(128).refine(value => !/[\u0000-\u001f\
 const versionSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const nativeSessionSchema = z.object({
   search_id: identity, version: versionSchema, query: z.string().min(1).max(1024), model_version: model,
-  min_similarity: z.number().finite().min(-1).max(10).optional(),
+  min_similarity: z.number().finite().min(-1).max(1).optional(),
   verify: z.boolean(), expires_ms: integer, published: z.boolean(), coverage: z.enum(['unknown', 'partial', 'sampled']),
   scope: z.object({ channel_ids: z.array(identity).min(1).max(100), from_ms: integer, to_ms: integer, limit: z.literal(60) }).strict(),
   items: z.array(z.object({ similarity: z.number().finite().min(-1.00001).max(1.00001), feedback: z.boolean().nullable(), verification: searchVerificationViewSchema.optional() }).passthrough()).max(60),

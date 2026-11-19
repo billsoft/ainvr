@@ -117,10 +117,10 @@ it('takes the channels to search from ticks in the left list, with no second lis
   // Only the searchable channel has a tick; the panel itself offers no channel picker.
   expect(screen.queryByRole('checkbox', { name: '搜索范围：大门口' })).toBeNull()
   expect(screen.queryByRole('checkbox', { name: '大门口_AI输出' })).toBeNull()
-  expect(screen.getByText(/左侧列表中勾选的 1 个 AI 通道/)).toBeInTheDocument()
+  expect(screen.getByText(/左侧勾选的 1 个 AI 通道/)).toBeInTheDocument()
   fireEvent.click(tick)
   expect(tick).not.toBeChecked()
-  expect(screen.getByText(/请在左侧通道列表中勾选要搜索的 AI 通道/)).toBeInTheDocument()
+  expect(screen.getByText(/请在左侧通道列表中勾选 AI 通道/)).toBeInTheDocument()
   fireEvent.click(within(screen.getByRole('group', { name: '搜索范围' })).getByRole('button', { name: '全部 AI' }))
   expect(tick).toBeChecked()
 })
@@ -148,7 +148,7 @@ it('folds the column that does not fit instead of floating it over the player; e
   vi.unstubAllGlobals()
 })
 
-it('offers its own compact channel picker only while the channel list is folded away', async () => {
+it('never offers a second channel picker: with the list folded away it offers to show the list again', async () => {
   const observers: ((e: { contentRect: { width: number } }[]) => void)[] = []
   const resize = (width: number) => observers.forEach(cb => cb([{ contentRect: { width } }]))
   vi.stubGlobal('ResizeObserver', class { constructor(cb: (e: { contentRect: { width: number } }[]) => void) { observers.push(cb) } observe() {} disconnect() {} })
@@ -158,11 +158,14 @@ it('offers its own compact channel picker only while the channel list is folded 
   await screen.findByLabelText('搜索条件')
   act(() => resize(1700))
   await screen.findByRole('checkbox', { name: '搜索范围：大门口_AI输出' })
-  expect(screen.queryByRole('checkbox', { name: '大门口_AI输出' })).toBeNull()
+  expect(screen.queryByRole('button', { name: '显示通道列表' })).toBeNull()
   act(() => resize(900))
-  // The list is hidden, so the scope would be unreachable: the panel carries a picker of its own.
-  fireEvent.click(await screen.findByText(/^范围：已选 1 个 AI 通道/))
-  expect(await screen.findByRole('checkbox', { name: '大门口_AI输出' })).toBeChecked()
+  // The scope is only ever ticked in the channel list: no drop-down picker inside the panel.
+  expect(screen.queryByRole('checkbox', { name: '大门口_AI输出' })).toBeNull()
+  expect(screen.getByLabelText('搜索条件').querySelector('details')).toBeNull()
+  expect(screen.getByText(/左侧勾选的 1 个 AI 通道/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '显示通道列表' }))
+  expect(document.querySelector('aside[aria-label="通道列表"]')).not.toHaveAttribute('hidden')
   vi.unstubAllGlobals()
 })
 
@@ -175,3 +178,61 @@ it('remembers which columns were open, and seeds the search scope from the chann
   expect(await screen.findByRole('checkbox', { name: '搜索范围：停车场' })).toBeChecked()
   expect(JSON.parse(localStorage.getItem('playback.columns') ?? '{}')).toMatchObject({ right: true })
 })
+
+it('starts the side search at the last 24 hours and widens the panel for browsing, remembered per browser', async () => {
+  vi.spyOn(recordingService, 'listSegments').mockResolvedValue([])
+  open('/playback/demo-detect?search=1&from=' + (now - 3_600_000) + '&to=' + now)
+  await screen.findByRole('textbox', { name: '想找什么？' })
+  // Only the channel is carried over from the player, never its time window.
+  const presets = screen.getByRole('group', { name: '快捷时间范围' })
+  expect(within(presets).getByRole('button', { name: '近24小时' })).toHaveAttribute('aria-pressed', 'true')
+  const panel = screen.getByRole('complementary', { name: '智能搜索' })
+  expect(panel.className).toContain('w-80')
+  fireEvent.click(screen.getByRole('button', { name: '放大搜索面板' }))
+  expect(screen.getByRole('button', { name: '还原搜索面板' })).toHaveAttribute('aria-pressed', 'true')
+  expect(panel.className).toContain('flex-[1.2_1_0%]')
+  expect(localStorage.getItem('playback.searchWide')).toBe('1')
+  fireEvent.click(screen.getByRole('button', { name: '还原搜索面板' }))
+  expect(panel.className).toContain('w-80')
+  expect(localStorage.getItem('playback.searchWide')).toBe('0')
+})
+
+it('widening folds the channel list into its rail and restoring brings it back', async () => {
+  vi.spyOn(recordingService, 'listSegments').mockResolvedValue([])
+  open('/playback/demo-detect?search=1')
+  await screen.findByRole('textbox', { name: '想找什么？' })
+  const left = () => document.querySelector('aside[aria-label="通道列表"]')!
+  expect(left()).not.toHaveAttribute('hidden')
+  fireEvent.click(screen.getByRole('button', { name: '放大搜索面板' }))
+  expect(left()).toHaveAttribute('hidden')
+  // The scope is still reachable from the panel while wide.
+  expect(screen.getByRole('button', { name: '显示通道列表' })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '还原搜索面板' }))
+  expect(left()).not.toHaveAttribute('hidden')
+})
+
+it('keeps the result head to one line and offers a search without the minimum when nothing reaches it', async () => {
+  vi.spyOn(recordingService, 'listSegments').mockResolvedValue([])
+  vi.mocked(searchService.query).mockClear()
+  vi.mocked(searchService.query).mockImplementation(async input => ({ ...hit(), search_id: input.request_id, items: [], scope: input.scope,
+    ...(input.min_similarity === undefined ? {} : { min_similarity: input.min_similarity }) }))
+  vi.mocked(searchService.coverage).mockImplementation(async scope => ({ scope, state: 'partial', ranges: [] }))
+  open('/playback/demo-detect?search=1')
+  fireEvent.change(await screen.findByRole('textbox', { name: '想找什么？' }), { target: { value: '粉色围巾' } })
+  fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
+  expect(await screen.findByText('没有达到 0.08 的候选')).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: '0 条候选' })).toBeInTheDocument()
+  // No repeated description line and no separate coverage bar: both live behind the ⓘ toggle.
+  expect(screen.queryByText(/本次描述/)).toBeNull()
+  expect(screen.queryByText('采样覆盖')).toBeNull()
+  const info = screen.getByRole('button', { name: '结果说明' })
+  fireEvent.click(info)
+  expect(info).toHaveAttribute('aria-expanded', 'true')
+  expect(await screen.findByText('采样覆盖')).toBeInTheDocument()
+  expect(screen.getByText(/本次最低相似度 0.08/)).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '不限重搜' }))
+  await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(searchService.query).mock.calls[1]![0].min_similarity).toBeUndefined()
+  expect(vi.mocked(searchService.query).mock.calls[1]![0].query).toBe('粉色围巾')
+  expect(screen.getByRole('spinbutton', { name: '最低相似度' })).toHaveValue(null)
+}, 15000)

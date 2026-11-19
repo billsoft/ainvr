@@ -169,7 +169,7 @@ Json SearchRequestJson(const SearchSessionRequest& request) {
   if (request.query.empty() || request.query.size() > 1024 || request.model.empty() || request.model.size() > 128)
     throw std::invalid_argument("invalid_search_request");
   const std::vector<std::string> channels(request.scope.channels.begin(), request.scope.channels.end());
-  if(request.min_similarity && (!std::isfinite(*request.min_similarity) || *request.min_similarity < -1 || *request.min_similarity > 10)) throw std::invalid_argument("invalid_search_min_similarity");   // operator range 0-10 (cosine itself <= 1)
+  if(request.min_similarity && (!std::isfinite(*request.min_similarity) || *request.min_similarity < -1 || *request.min_similarity > 1)) throw std::invalid_argument("invalid_search_min_similarity");
   Json result = {{"id", request.id}, {"actor", request.actor}, {"query", request.query}, {"model", request.model},
     {"channels", channels}, {"from", request.scope.from_ms}, {"to", request.scope.to_ms}, {"verify", request.verify}};
   if(request.min_similarity) result["min_similarity"] = *request.min_similarity;

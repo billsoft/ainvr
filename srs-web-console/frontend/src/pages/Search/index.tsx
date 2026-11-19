@@ -1,6 +1,6 @@
 import { aiReferenceEnabled } from './aiReference'
 import { useEffect, useRef, useState } from 'react'
-import { CalendarClock, ImagePlus, ListChecks, Search, RefreshCw, SlidersHorizontal } from 'lucide-react'
+import { CalendarClock, ImagePlus, ListChecks, Search, RefreshCw } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { requestBlob } from '@/api/httpClient'
 import { blobToBase64, encodeReference, loadReference, referenceAccept, releaseReference, ReferenceImageError, type ReferenceCrop, type SearchReference } from '@/features/searchReference'
@@ -32,7 +32,7 @@ function coverageAfter(current: SearchPageResult['coverage'], next: SearchPageRe
 }
 /** `page`: the stand-alone screen. `side`: the panel beside the recording player, where a result plays in the
  *  player instead of opening a new page, and the channel scope is one compact line. */
-export default function SearchPage({ variant = 'page', entryScope = null, onPlay, selected: selectedProp, onSelectedChange, onChannels, listVisible = true, onResults }: {
+export default function SearchPage({ variant = 'page', entryScope = null, onPlay, selected: selectedProp, onSelectedChange, onChannels, listVisible = true, onResults, onShowList, wide = false }: {
   variant?: 'page' | 'side'
   entryScope?: SearchScope | null
   onPlay?: (channelId: string, at: number) => void
@@ -45,6 +45,10 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
   listVisible?: boolean
   /** The playable hits of the current search, for marking them on the player's timeline. */
   onResults?: (hits: { channelId: string; at: number }[]) => void
+  /** Shows the folded channel list again: the scope is always ticked there, never in a second picker here. */
+  onShowList?: () => void
+  /** The panel is widened for browsing many results: the result grid uses several columns. */
+  wide?: boolean
 } = {}) {
   const [mode, setMode] = useState<'text' | 'face'>('text')
   const [entryParams, setEntryParams] = useSearchParams()
@@ -65,8 +69,11 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
   const liveReferences = useRef({ reference: null as SearchReference | null, submitted: null as SearchReference | null })
   useEffect(() => { liveReferences.current = { reference, submitted: submittedReference } }, [reference, submittedReference])
   useEffect(() => () => { releaseReference(liveReferences.current.reference); if (liveReferences.current.submitted?.url !== liveReferences.current.reference?.url) releaseReference(liveReferences.current.submitted) }, [])
-  const [minimum, setMinimum] = useState('0.035')
-  const validMinimum = minimum === '' || (Number.isFinite(Number(minimum)) && Number(minimum) >= 0 && Number(minimum) <= 10)
+  // Raw cosine of the description against the stored picture. FG-CLIP 2 (2026-11-19, 91-person set): matching
+  // crops mostly 0.08-0.13, non-matching mostly under 0.10, scene views lower; 0.08 is the starting point.
+  const [minimum, setMinimum] = useState('0.08')
+  const rerunUnlimited = useRef(false)
+  const validMinimum = minimum === '' || (Number.isFinite(Number(minimum)) && Number(minimum) >= 0 && Number(minimum) <= 0.3)
   const [data, setData] = useState<SearchPageResult | null>(null)
   const [submitted, setSubmitted] = useState('')
   const [submittedCriteria, setSubmittedCriteria] = useState('')
@@ -122,9 +129,12 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
   const [retry, setRetry] = useState(0)
   const [picker, setPicker] = useState(false)
   // Which quick preset produced the current range (null = hand-picked in the dialog or inherited). Only paints the pressed state.
-  const [selectedPreset, setSelectedPreset] = useState<string | null>(inherited ? null : '近24小时')
+  // Beside the player only the channel is carried over: the time always starts as the last 24 hours, not the
+  // player's own window (which is often an hour or a day being reviewed).
+  const timeInherited = inherited && variant === 'page'
+  const [selectedPreset, setSelectedPreset] = useState<string | null>(timeInherited ? null : '近24小时')
   const [range, setRange] = useState(() => {
-    if (inherited) return { from: toDatetimeLocalValue(new Date(inherited.from)), to: toDatetimeLocalValue(new Date(Date.parse(inherited.to) - 1)) }
+    if (inherited && timeInherited) return { from: toDatetimeLocalValue(new Date(inherited.from)), to: toDatetimeLocalValue(new Date(Date.parse(inherited.to) - 1)) }
     const now = new Date()
     return { from: toDatetimeLocalValue(new Date(now.getTime() - 86400000)), to: toDatetimeLocalValue(now) }
   })
@@ -207,6 +217,7 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
       if (own === referenceEpoch.current) { setReferenceError(e instanceof ReferenceImageError ? e.message : '无法读取这张证据图片，请重试'); setReferenceBusy(false) }
     }
   }
+  useEffect(() => { if (rerunUnlimited.current && minimum === '') { rerunUnlimited.current = false; void run() } })
   async function run() {
     if ((minimumApplies && !validMinimum) || loading || error || !status?.ready || !validRange || !hasClue || referenceBusy || !selected.length || selected.length > 100) return
     let id: string
@@ -375,13 +386,13 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
       <div className="mb-3 border-b border-line p-3"><h1 className="page-title">智能搜索</h1><p className="mt-2 text-xs text-ink-subtle">选择 AI 输出，查找录像证据</p></div>
       {pickerBody}
     </aside>}
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-    <nav aria-label="搜索方式" className="flex shrink-0 gap-1 border-b border-line">
-      {([['text', '画面搜索'], ['face', '以脸查找']] as const).map(([id, title]) => <button key={id} type="button" aria-pressed={mode === id} className={'min-h-11 border-b-2 px-3 text-sm ' + (mode === id ? 'border-primary text-primary' : 'border-transparent text-ink-subtle')} onClick={() => { if (mode !== id) { stop(); setPicker(false); setMode(id) } }}>{title}</button>)}
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+    <nav aria-label="搜索方式" className={`flex shrink-0 gap-1 border-b border-line ${variant === 'side' ? 'pr-20' : ''}`}>
+      {([['text', '画面搜索'], ['face', '以脸查找']] as const).map(([id, title]) => <button key={id} type="button" aria-pressed={mode === id} className={'min-h-9 [@media(pointer:coarse)]:min-h-11 border-b-2 px-3 text-sm ' + (mode === id ? 'border-primary text-primary' : 'border-transparent text-ink-subtle')} onClick={() => { if (mode !== id) { stop(); setPicker(false); setMode(id) } }}>{title}</button>)}
     </nav>
     {mode === 'face' ? <div className="min-h-0 overflow-y-auto"><FaceQueryConnected mode="search" /></div> : <>
     {/* Search conditions never scroll away with the results; a tall expanded panel scrolls on its own. */}
-    <div aria-label="搜索条件区" className="max-h-[60vh] shrink-0 space-y-3 overflow-y-auto">
+    <div aria-label="搜索条件区" className="max-h-[60vh] shrink-0 space-y-2 overflow-y-auto">
     {(!status?.ready || error) && <section role={error ? 'alert' : 'status'} className="rounded-xl border border-line bg-surface p-5">
       <h2 className="font-medium text-ink">{loading ? '正在检查搜索服务' : error ? '暂时无法读取搜索状态' : status?.reason === 'disabled' ? '智能搜索未启用' : status?.reason === 'config_pending' ? '配置等待应用' : status?.reason === 'storage_unavailable' ? '搜索存储不可用' : status?.reason === 'service_unavailable' ? '搜索服务暂不可用' : '等待搜索能力就绪'}</h2>
       <p className="mt-2 text-sm text-ink-subtle">{message}</p>
@@ -401,76 +412,54 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
         const file = pictureFrom(e.dataTransfer?.files)
         if (file) { e.preventDefault(); void addPicture(file, 'upload') }
       }}
-      className={`min-w-0 space-y-3 rounded-lg ${dropping ? 'outline-dashed outline-2 outline-offset-4 outline-primary' : ''}`} aria-label="搜索条件">
+      className={`min-w-0 space-y-2 rounded-lg ${dropping ? 'outline-dashed outline-2 outline-offset-4 outline-primary' : ''}`} aria-label="搜索条件">
       <input ref={fileInput} type="file" accept={referenceAccept} className="sr-only" tabIndex={-1} aria-hidden="true" data-testid="search-reference-file"
         onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void addPicture(file, 'upload') }} />
       {inheritedVisible && variant === 'page' && <p className="text-sm text-ink-subtle">已继承入口的摄像头与时间；无权或不可搜索的摄像头不会被选中。<button type="button" className={`${button} ml-2`} onClick={() => {
         const now = new Date(); setSelected([]); setRange({ from: toDatetimeLocalValue(new Date(now.getTime() - 86400000)), to: toDatetimeLocalValue(now) }); setInheritedVisible(false); if (variant === 'page') setEntryParams({}, { replace: true })
       }}>清除继承范围</button></p>}
-      <div className={variant === 'side' ? 'flex flex-col gap-2' : 'flex flex-col gap-2 sm:flex-row'}>
-      <div className="relative min-w-0 flex-1">{variant === 'page' && <Search size={18} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-2 text-ink-faint" />}
-      <label className={variant === 'side' ? 'mb-1 block text-sm font-medium text-ink' : 'sr-only'} htmlFor="search-description">想找什么？</label>
+      {/* Compact conditions (2026-11-19): one input row, one scope line, one row of time and threshold. No
+          drop-downs or expanders: the results below take the height. Every control keeps 44 px on touch. */}
+      <div className="flex min-w-0 items-center gap-1.5">
+      <div className="relative min-w-0 flex-1"><Search size={16} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint" />
+      <label className="sr-only" htmlFor="search-description">想找什么？</label>
       <input ref={descriptionInput} id="search-description" value={query} onChange={e => {
         setQuery(e.target.value)
         if (descriptionError) { setDescriptionError(false); setQueryError('') }
       }} maxLength={256} aria-invalid={descriptionError || undefined}
         aria-describedby={`search-description-hint${descriptionError ? ' search-query-error' : ''}`}
         onKeyDown={e => { if (e.key === 'Enter' && (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) e.preventDefault() }}
-        placeholder={reference ? '补充描述（可选），例如：有人背着这个包' : variant === 'side' ? '描述要找的人或物，例如：背黑色双肩包的人' : '描述衣着、颜色或物品，也可以添加图片'} className={`${variant === 'side' ? 'min-h-12 border-2 py-2 pl-3 text-base' : 'min-h-9 [@media(pointer:coarse)]:min-h-11 border py-1.5 pl-9 text-sm'} w-full min-w-0 rounded-base border-line bg-surface pr-3 text-ink outline-none transition focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary/10`} />
+        placeholder={reference ? '补充描述（可选），例如：有人背着这个包' : variant === 'side' ? '描述要找的人或物，例如：背黑色双肩包的人' : '描述衣着、颜色或物品，也可以添加图片'}
+        className="min-h-9 [@media(pointer:coarse)]:min-h-11 w-full min-w-0 rounded-base border border-line bg-surface py-1.5 pl-8 pr-2 text-sm text-ink outline-none transition focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary/10" />
       </div>
-      <div className={variant === 'side' ? 'flex gap-2' : 'flex shrink-0 gap-2'}>
-        {!reference && <button type="button" className={`${button} inline-flex items-center gap-1.5`} disabled={referenceBusy || searching} onClick={() => fileInput.current?.click()}
-          aria-describedby="search-reference-hint"><ImagePlus size={16} aria-hidden="true" />{referenceBusy ? '正在读取…' : '添加图片'}</button>}
-        <button type="submit" disabled={(minimumApplies && !validMinimum) || loading || !status?.ready || !validRange || !hasClue || referenceBusy || !selected.length || selected.length > 100 || searching} className={`inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 items-center gap-2 rounded-base bg-primary px-4 py-1.5 text-sm text-white transition-colors hover:bg-primary/90 disabled:opacity-50 ${variant === 'side' ? 'min-h-11 flex-1 justify-center' : ''}`}><Search size={18} />{searching ? '正在搜索…' : '搜索录像'}</button>
-        {searching && <button type="button" className={button} onClick={stop}>取消搜索</button>}
+      {!reference && <button type="button" aria-label="添加图片" title="添加图片（也可粘贴或拖入）" className={`${button} inline-flex min-w-9 [@media(pointer:coarse)]:min-w-11 items-center justify-center px-2`} disabled={referenceBusy || searching} onClick={() => fileInput.current?.click()}
+        aria-describedby="search-reference-hint"><ImagePlus size={16} aria-hidden="true" />{referenceBusy && <span className="sr-only">正在读取…</span>}</button>}
+      <button type="submit" disabled={(minimumApplies && !validMinimum) || loading || !status?.ready || !validRange || !hasClue || referenceBusy || !selected.length || selected.length > 100 || searching} className="inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 shrink-0 items-center gap-1.5 rounded-base bg-primary px-3 py-1.5 text-sm text-white transition-colors hover:bg-primary/90 disabled:opacity-50"><Search size={16} aria-hidden="true" />{searching ? '正在搜索…' : '搜索录像'}</button>
+      {searching && <button type="button" className={`${button} shrink-0`} onClick={stop}>取消搜索</button>}
       </div>
-      </div>
-      {variant === 'side' && listVisible && <p aria-label="搜索范围" className="flex items-start gap-1.5 text-xs text-ink-subtle"><ListChecks size={14} aria-hidden="true" className="mt-0.5 shrink-0" /><span>范围：{selected.length ? `左侧列表中勾选的 ${selected.length} 个 AI 通道` : '请在左侧通道列表中勾选要搜索的 AI 通道'}</span></p>}
-      {variant === 'side' && !listVisible && <details aria-label="搜索范围" className="group shrink-0 rounded-base border border-line bg-surface">
-      <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-2 px-3 text-sm text-ink-subtle"><span>范围：{selected.length ? `已选 ${selected.length} 个 AI 通道` : '尚未选择 AI 通道'}</span><span className="text-xs text-ink-faint group-open:rotate-180">⌄</span></summary>
-      <div className="flex max-h-72 flex-col border-t border-line pt-2">{pickerBody}</div>
-    </details>}
+      {variant === 'side' && <p aria-label="搜索范围" className="flex min-w-0 items-center gap-1.5 text-xs text-ink-subtle"><ListChecks size={14} aria-hidden="true" className="shrink-0" />
+        <span className="min-w-0 truncate">范围：{selected.length ? `左侧勾选的 ${selected.length} 个 AI 通道` : '请在左侧通道列表中勾选 AI 通道'}</span>
+        {!listVisible && onShowList && <button type="button" className="ml-auto min-h-7 [@media(pointer:coarse)]:min-h-11 shrink-0 rounded-base px-1.5 text-primary hover:bg-primary-50" onClick={onShowList}>显示通道列表</button>}</p>}
       <span id="search-reference-hint" className="sr-only">选择一张 JPEG 或 PNG 图片，也可以直接粘贴或拖入图片</span>
       {reference && <ReferenceImageStrip reference={reference} disabled={searching || referenceBusy}
         onCrop={() => setCropping(true)} onReplace={() => fileInput.current?.click()}
         onRemove={() => { referenceEpoch.current++; setReferenceBusy(false); setReferenceError(''); replaceReference(null); descriptionInput.current?.focus() }} />}
       {referenceError && <p role="alert" className="rounded-base border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{referenceError}</p>}
-      <div className="flex flex-wrap items-end gap-2">
-        <div><span className="mb-1 block text-xs text-ink-faint">时间范围</span><button type="button" aria-label="选择时间范围" className={`${button} inline-flex items-center gap-1.5 px-2`} onClick={() => setPicker(true)}><CalendarClock size={14} className="text-ink-faint" aria-hidden="true" /><span>{from && to ? `${formatRangeShort(from)} → ${formatRangeShort(to)}` : '选择时间范围'}</span></button></div>
-        <div className="flex flex-wrap gap-1" aria-label="快捷时间范围">{searchRanges.map(preset => <button key={preset.label} type="button" aria-pressed={selectedPreset === preset.label} className={['min-h-9 [@media(pointer:coarse)]:min-h-11 rounded-base border px-2 py-1 text-xs transition-colors', selectedPreset === preset.label ? 'border-primary bg-primary-50 text-primary' : 'border-line text-ink-subtle hover:border-primary hover:text-primary'].join(' ')} onClick={() => { setRange(presetRange(preset)); setSelectedPreset(preset.label) }}>{preset.label}</button>)}</div>
-      <details className="group ml-auto open:basis-full open:ml-0">
-        <summary className="inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 cursor-pointer items-center gap-1.5 text-xs text-ink-subtle hover:text-primary"><SlidersHorizontal size={14} aria-hidden="true" />高级选项 · {kind === 'text' ? `相似度 ${minimum === '' ? '不限' : minimum}` : kind === 'image_text' ? `侧重 ${imageWeight === 0.5 ? '均衡' : imageWeight > 0.5 ? '图片' : '文字'}` : '以图搜索'}<span className="ml-1 text-ink-faint group-open:rotate-180">⌄</span></summary>
-        {kind === 'image_text' && <div className="mt-2 max-w-xl space-y-1">
-          <label htmlFor="search-image-weight" className="text-sm font-medium text-ink">图片与文字的侧重</label>
-          <div className="flex items-center gap-3 text-xs text-ink-subtle"><span className="shrink-0">更看重文字</span>
-            <input id="search-image-weight" type="range" min="0.2" max="0.8" step="0.1" value={imageWeight} disabled={searching}
-              aria-valuetext={imageWeight === 0.5 ? '均衡' : imageWeight > 0.5 ? '更看重图片' : '更看重文字'}
-              onChange={e => setImageWeight(Number(Number(e.target.value).toFixed(1)))} className="h-11 min-w-32 flex-1 cursor-pointer accent-primary" />
-            <span className="shrink-0">更看重图片</span>
-            <button type="button" disabled={searching || imageWeight === 0.5} className={button} onClick={() => setImageWeight(0.5)}>均衡</button></div>
-          <p className="text-xs text-ink-subtle">结果太杂时可调整侧重后重新搜索；文字只用于排序参考，不是必须满足的条件。</p>
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <div className="flex gap-1" role="group" aria-label="快捷时间范围">{searchRanges.map(preset => <button key={preset.label} type="button" aria-pressed={selectedPreset === preset.label} className={['min-h-7 [@media(pointer:coarse)]:min-h-11 rounded-base border px-1.5 transition-colors', selectedPreset === preset.label ? 'border-primary bg-primary-50 text-primary' : 'border-line text-ink-subtle hover:border-primary hover:text-primary'].join(' ')} onClick={() => { setRange(presetRange(preset)); setSelectedPreset(preset.label) }}><span className="sr-only">近</span>{preset.label.replace(/^近/, '')}</button>)}</div>
+        <button type="button" aria-label="选择时间范围" title={from && to ? `自定义时间范围（当前 ${formatRangeShort(from)} → ${formatRangeShort(to)}）` : '自定义时间范围'} className={`inline-flex min-h-7 [@media(pointer:coarse)]:min-h-11 items-center gap-1 rounded-base border px-1.5 tabular-nums transition-colors ${selectedPreset ? 'border-line text-ink-faint hover:border-primary hover:text-primary' : 'border-primary bg-primary-50 text-primary'}`} onClick={() => setPicker(true)}><CalendarClock size={13} aria-hidden="true" /><span className={selectedPreset ? 'sr-only' : ''}>{from && to ? `${formatRangeShort(from)} → ${formatRangeShort(to)}` : '自定义'}</span></button>
+        {kind === 'text' && <div className="ml-auto flex items-center gap-1" title="最低相似度">
+          <label htmlFor="search-minimum" className="text-ink-subtle"><span aria-hidden="true">≥</span><span className="sr-only">最低相似度</span></label>
+          <input id="search-minimum" type="number" inputMode="decimal" min="0" max="0.3" step="0.005" placeholder="不限" value={minimum} disabled={searching}
+            onChange={e => setMinimum(e.target.value)} aria-invalid={!validMinimum} aria-describedby="search-minimum-hint" title="数值越高结果越少；不是置信度或概率。0.08 为试用起点，点击“搜索录像”生效"
+            className="min-h-7 [@media(pointer:coarse)]:min-h-11 w-14 rounded-base border border-line bg-surface px-1.5 tabular-nums focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
+          <button type="button" disabled={searching} aria-pressed={minimum === ''} className={`min-h-7 [@media(pointer:coarse)]:min-h-11 rounded-base border px-1.5 ${minimum === '' ? 'border-primary bg-primary-50 text-primary' : 'border-line text-ink-subtle hover:border-primary hover:text-primary'}`} onClick={() => setMinimum('')}>不限</button>
         </div>}
-        {kind === 'image' && <p className="mt-2 max-w-xl text-xs text-ink-subtle">以图搜索按外观相近程度排序，不设最低相似度门槛；添加文字描述后可调整图片与文字的侧重。</p>}
-        {kind === 'text' && <div className="mt-2 max-w-xl space-y-1">
-        <label htmlFor="search-minimum" className="text-sm font-medium text-ink">最低相似度</label>
-        <div className="flex flex-wrap items-center gap-3">
-          <input type="range" aria-label="拖动最低相似度" aria-describedby="search-minimum-hint" min="0" max="10" step="0.005" value={minimum === '' ? 0 : Number(minimum) || 0} disabled={searching}
-            onChange={e => setMinimum(Number(e.target.value).toFixed(3))} className="h-11 min-w-32 flex-1 cursor-pointer accent-primary focus-visible:outline-primary" />
-          <input id="search-minimum" type="number" inputMode="decimal" min="0" max="10" step="0.005" placeholder="不限" value={minimum} disabled={searching}
-            onChange={e => setMinimum(e.target.value)} aria-invalid={!validMinimum} aria-describedby="search-minimum-hint"
-            className="h-11 w-24 rounded-base border border-line bg-surface px-3 text-sm tabular-nums focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
-          <button type="button" disabled={searching} className={button} onClick={() => setMinimum('')}>不限</button>
-        </div>
-        <p id="search-minimum-hint" className="text-xs text-ink-subtle">数值越高，结果越少；不是置信度或概率。0.035 为试用起点，可拖动或输入，点击“搜索录像”生效。</p>
-        {!validMinimum && <p role="alert" className="text-xs text-red-700">请输入 0 到 0.10 之间的数值，或选择不限。</p>}
-      </div>}
-        <p className="mt-2 text-xs text-ink-subtle">时间与位置以所选条件为准；描述中的“昨晚”等条件不会自动生效。</p>
-      </details>
+        {kind === 'image_text' && <div className="ml-auto flex gap-1" role="group" aria-label="图片与文字的侧重">{([[0.2, '文字为主'], [0.5, '均衡'], [0.8, '图片为主']] as const).map(([weight, label]) =>
+          <button key={label} type="button" disabled={searching} aria-pressed={imageWeight === weight} className={['min-h-7 [@media(pointer:coarse)]:min-h-11 rounded-base border px-1.5', imageWeight === weight ? 'border-primary bg-primary-50 text-primary' : 'border-line text-ink-subtle hover:border-primary hover:text-primary'].join(' ')} onClick={() => setImageWeight(weight)}>{label}</button>)}</div>}
       </div>
-
-
-      <span id="search-description-hint" className="sr-only">描述目标外观；时间与位置以所选条件为准，描述中的时间不会自动生效。</span>
-      {!data && !searching && !reference && <div className="flex flex-wrap items-center gap-2 text-xs text-ink-subtle"><span>试着描述</span>{['背黑色双肩包的人', '穿红色上衣的人', '白色汽车'].map(example => <button type="button" key={example} className="min-h-7 [@media(pointer:coarse)]:min-h-11 rounded-base border border-line bg-surface px-2 hover:bg-primary-50 hover:text-primary" onClick={() => { setQuery(example); descriptionInput.current?.focus() }}>{example}</button>)}</div>}
+      <span id="search-minimum-hint" className="sr-only">数值越高，结果越少；不是置信度或概率。0.08 为试用起点，点击“搜索录像”生效。时间与位置以所选条件为准；描述中的“昨晚”等条件不会自动生效。</span>
+      {kind === 'text' && !validMinimum && <p role="alert" className="text-xs text-red-700">请输入 0 到 0.30 之间的数值，或选择不限。</p>}
       {changedSinceSearch && <p role="status" className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">条件已修改，点击“搜索录像”应用；下方仍是上一次搜索结果。</p>}
             {selected.length > 100 && <p role="alert" className="text-sm text-red-600">单次最多选择 100 个通道，请缩小范围。</p>}
 
@@ -481,15 +470,17 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
     {refreshError && <p role="alert" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{refreshError}</p>}
     {evidenceNotice && data && <p role="status" className="rounded-base border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">部分候选证据已过期或不可访问，已停止更新这些候选；可通过已有录像链接核对，或重新搜索。</p>}
     {searching && <p role="status" className="text-sm text-ink-subtle">{submittedKind === 'text' ? `正在查找“${submitted}”的候选，可随时取消。` : submittedKind === 'image' ? '正在按参考图片查找相似候选，图片需要先经过识别，约需几秒，可随时取消。' : `正在按参考图片和“${submitted}”查找候选，可随时取消。`}</p>}
-    {data && <><div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg bg-surface-page text-xs text-ink-subtle">
+    {data && <>{(variant !== 'side' || changedSinceSearch) && <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg bg-surface-page text-xs text-ink-subtle">
       {submittedKind === 'text' || !submittedReference
         ? <p className="min-w-0 break-words"><span className="font-medium text-ink">本次描述：“{submitted}”</span><span className="ml-2">{data.scope.channel_ids.length} 个摄像头 · {formatRangeFull(new Date(data.scope.from))} — {formatRangeFull(new Date(Date.parse(data.scope.to) - 1))}</span></p>
         : <div className="flex min-w-0 items-center gap-3"><ReferenceThumbnail reference={submittedReference} className="h-12 w-12" />
           <p className="min-w-0 break-words"><span className="font-medium text-ink">本次搜索：参考图片{submittedReference.crop ? '（局部）' : ''}{submittedKind === 'image_text' ? ` ＋ “${submitted}”` : ''}</span>
             <span className="ml-2">{data.scope.channel_ids.length} 个摄像头 · {formatRangeFull(new Date(data.scope.from))} — {formatRangeFull(new Date(Date.parse(data.scope.to) - 1))}</span></p></div>}
-    </div>
-      <SearchCoveragePanel key={`coverage-${data.search_id}`} scope={data.scope} channels={channels} onDenied={setAccessError} />
-      <SearchResults key={data.search_id} data={data} compact={variant === 'side'} onPlay={onPlay} queryKind={submittedKind} moreLoading={moreLoading} readOnlyReason={accessError} onAccessDenied={setAccessError} onMore={() => void more()}
+    </div>}
+      {variant !== 'side' && <SearchCoveragePanel key={`coverage-${data.search_id}`} scope={data.scope} channels={channels} onDenied={setAccessError} />}
+      <SearchResults key={data.search_id} data={data} compact={variant === 'side'} wide={wide} onPlay={onPlay}
+        info={variant === 'side' ? <SearchCoveragePanel key={`coverage-${data.search_id}`} scope={data.scope} channels={channels} onDenied={setAccessError} /> : undefined}
+        onRetryUnlimited={variant === 'side' && submittedKind === 'text' ? () => { if (minimum === '') void run(); else { rerunUnlimited.current = true; setMinimum('') } } : undefined} queryKind={submittedKind} moreLoading={moreLoading} readOnlyReason={accessError} onAccessDenied={setAccessError} onMore={() => void more()}
         onUseImage={searching ? undefined : (item, frame) => void useResultPicture(item, frame)} pictureBusy={referenceBusy}
         onUpdate={item => setData(old => old && old.search_id === data.search_id ? { ...old, items: old.items.map(i => i.id === item.id ? { ...i, feedback: item.feedback } : i) } : old)} /></>}
     {picker && <DateTimeRangePicker open from={range.from} to={range.to} onClose={() => setPicker(false)}
