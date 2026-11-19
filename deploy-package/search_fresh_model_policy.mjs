@@ -2,12 +2,14 @@
 export const OLD_PACKAGE = 'siglip2-base-full-int8';
 export const NEW_PACKAGE = 'siglip-so400m-i18n-full-int8';
 export const QWEN_PACKAGE = 'qwen3vl-embedding-2b-o2';
+// FG-CLIP 2 base 384: same 4 x 768 scene layout as SigLIP2 (plus single-vector detector crops), about 20 ms per view.
+export const FGCLIP2_PACKAGE = 'fgclip2-base-384-o2';
 // 2048-d vectors: 62,500 samples fill the 128M-float exact projection, so the default cap is 60,000.
 export const QWEN_MAX_SAMPLES = 60000;
 // SigLIP2 base stores 4 view vectors per scene sample (whole frame + 3 short-edge squares, shared/cpp/search_views.hpp): 4 x 768 floats.
 // 4 x 768 floats per sample: the 128M-float exact working set holds about 41,600 samples.
 export const SIGLIP2_MAX_SAMPLES = 40000;
-const PACKAGE_DIMENSIONS = Object.freeze({[OLD_PACKAGE]:3072,[NEW_PACKAGE]:1152,[QWEN_PACKAGE]:2048});
+const PACKAGE_DIMENSIONS = Object.freeze({[OLD_PACKAGE]:3072,[NEW_PACKAGE]:1152,[QWEN_PACKAGE]:2048,[FGCLIP2_PACKAGE]:3072});
 // Both endpoints are explicit: a misspelled or same-model request must fail closed.
 export function freshModelTransition(sourcePackage, targetPackage) {
   if (!Object.hasOwn(PACKAGE_DIMENSIONS,sourcePackage) ||
@@ -28,8 +30,8 @@ export function freshModelSettings(settings, pin, models, transition) {
       models.some(model => model !== pin.model_version)) throw Error('fresh_switch_source_mismatch');
   const next = structuredClone(settings);
   next.model.package_id = targetPackage;
-  // Returning to SigLIP2 (~30 ms per image) undoes the Qwen-specific slowdowns: the product defaults for sampling rates; the sample cap follows the 4-view record size.
-  if (targetPackage === OLD_PACKAGE) {
+  // Returning to SigLIP2 (~30 ms per image) or moving to FG-CLIP 2 (same layout) undoes the Qwen-specific slowdowns: the product defaults for sampling rates; the sample cap follows the 4-view record size.
+  if (targetPackage === OLD_PACKAGE || targetPackage === FGCLIP2_PACKAGE) {
     next.sampling.object_interval_ms = Math.min(1000, next.sampling.object_interval_ms);
     next.sampling.scene_active_interval_ms = Math.min(10000, next.sampling.scene_active_interval_ms);
     next.sampling.scene_static_interval_ms = Math.min(60000, next.sampling.scene_static_interval_ms);

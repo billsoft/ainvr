@@ -127,3 +127,16 @@ test('returning to SigLIP2 from any source respects the four-view sample capacit
   assert.equal(out.limits.max_samples,40000,from);
  }
 });
+
+test("SigLIP2 to FG-CLIP 2 keeps the 4x768 scene layout and the SigLIP2-class sampling rates",async()=>{
+ const {FGCLIP2_PACKAGE,SIGLIP2_MAX_SAMPLES}=await import("../../deploy-package/search_fresh_model_policy.mjs");
+ assert.equal(FGCLIP2_PACKAGE,"fgclip2-base-384-o2");
+ const t=freshModelTransition(OLD_PACKAGE,FGCLIP2_PACKAGE);
+ assert.equal(t.sourceDimensions,3072);assert.equal(t.targetDimensions,3072);
+ const s=structuredClone(settings);s.sampling.object_interval_ms=5000;s.limits.max_samples=90000;s.limits.producer_queue=4;
+ const next=freshModelSettings(s,pin,[model],t);
+ assert.equal(next.model.package_id,FGCLIP2_PACKAGE);
+ assert.equal(next.sampling.object_interval_ms,1000);assert.equal(next.sampling.scene_active_interval_ms,10000);
+ assert.equal(next.limits.producer_queue,4);assert.equal(next.limits.max_samples,SIGLIP2_MAX_SAMPLES);
+ assert.deepEqual(next.sampling.channel_ids,["preserved"]);
+});
