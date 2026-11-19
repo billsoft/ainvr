@@ -19,7 +19,7 @@ const Profile& ProfileFor(const PackageSpec& spec) {
      "siglip_text", ainvr::text::kSiglipNormalizationSpec, kSo400mTextMeasuredSha256, kSo400mTextReservationBytes},
     // Same Gemma tokenizer, token ids, pad and eos as SigLIP2 (checked against the reference tokenizer, 2026-11-19).
     {"fgclip2-base-384-o2", 768, ainvr::text::kSiglip2EmbeddingRows, ainvr::text::kSiglip2PadId, ainvr::text::kSiglip2EosId,
-     "fgclip2_base_text", ainvr::text::kSiglip2NormalizationSpec, kFgClip2BaseTextMeasuredSha256, kFgClip2BaseTextReservationBytes}};
+     "fgclip2_base_text64", ainvr::text::kSiglip2NormalizationSpec, kFgClip2BaseTextMeasuredSha256, kFgClip2BaseTextReservationBytes}};
   for (const auto& profile : profiles) if (spec.id == profile.id) return profile;
   Invalid();
 }

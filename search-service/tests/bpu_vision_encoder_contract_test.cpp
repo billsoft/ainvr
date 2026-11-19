@@ -95,7 +95,7 @@ int main() {
         crop.source_region && *crop.source_region == std::array<float,4>{32.5,24.5,1200,700} &&
         crop.interpolation == ainvr::ImageInterpolation::Area, "fgclip2 crop is not a grey letterbox of the box");
       Check(!BpuVisionTransform(plan,spec,false,true,true).letterbox, "a squash space never letterboxes a box");
-      auto fgDescription = Description(); fgDescription["model"] = "fgclip2_base_vision";
+      auto fgDescription = Description(); fgDescription["model"] = "fgclip2_base_vision384";
       fgDescription["inputs"][0]["shape"] = {1,3,384,384}; fgDescription["inputs"][0]["byte_strides"] = {1769472,589824,1536,4};
       fgDescription["inputs"][0]["aligned_bytes"] = 1769472;
       ValidateBpuVisionDescription(fgDescription,fg); ++checks;

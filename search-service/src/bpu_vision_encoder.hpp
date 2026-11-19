@@ -16,10 +16,10 @@ inline constexpr const char* kSiglip2BaseVisionMeasuredSha256 =
 inline constexpr uint64_t kSo400mVisionReservationBytes = 576ULL * 1024 * 1024;
 inline constexpr const char* kSo400mVisionMeasuredSha256 =
     "cba12c5063090254bcd0e65f580f9eebd04cef336e7b643682b93041ddb9b71a";
-// FG-CLIP 2 base 384 vision HBM: NOT built yet. Empty = unmeasured, so the package cannot load (fails closed)
-// until the O2 file's sha256 and measured ION are written here.
-inline constexpr uint64_t kFgClip2BaseVisionReservationBytes = 0;
-inline constexpr const char* kFgClip2BaseVisionMeasuredSha256 = "";
+// Measured profile of the FG-CLIP 2 base 384 vision HBM (2026-11-19, 189): ion peak 131465216 B, 20.1 ms, 116252624 B.
+inline constexpr uint64_t kFgClip2BaseVisionReservationBytes = 126ULL * 1024 * 1024;
+inline constexpr const char* kFgClip2BaseVisionMeasuredSha256 =
+    "9ae6c992a2b8ebbaed60e6161961968d4250cd4dc6df0d0cf5519cd4aedf6fa3";
 struct BpuVisionLoadOptions {
   std::string reservation_directory = "/run/ainvr";
   uint64_t total_bytes = UINT64_MAX;  // optional cap; the real budget is read from the SDK (ReadBpuIonBudgetBytes)

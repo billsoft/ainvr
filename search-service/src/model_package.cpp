@@ -186,7 +186,7 @@ PackageSpec Spec(bool so400m, bool pruned) {
 }
 // FG-CLIP 2 base (SigLIP2 backbone, same Gemma tokenizer bytes and token ids) on one fixed 24x24 grid (384x384).
 // Scene samples keep whole + three short-edge squares; detector crops are letterboxed onto grey and stored as their
-// own single vector. HBM file names and sidecar programs are placeholders until the O2 build lands.
+// own single vector. O2 HBMs built and measured 2026-11-19.
 PackageSpec FgClip2Spec() {
   PackageSpec spec;
   spec.id = "fgclip2-base-384-o2";
@@ -194,8 +194,8 @@ PackageSpec FgClip2Spec() {
   spec.family = "fg-clip2-base";
   spec.embedding_vocab_size = 256000; spec.dimensions = 768; spec.pad_id = 0; spec.eos_id = 1;
   spec.vision_size = 384;
-  spec.vision = {"fgclip2-base-384-vision-o2.hbm", "fgclip2_base_vision", TS("pixel_values", "F32", {1,3,384,384}), TS("image_embedding", "F32", {1,768})};
-  spec.text = {"fgclip2-base-text64-tbl8-o2.hbm", "fgclip2_base_text", TS("input_ids", "S64", {1,64}), TS("text_embedding", "F32", {1,768})};
+  spec.vision = {"fgclip2-base-384-vision-o2.hbm", "fgclip2_base_vision384", TS("pixel_values", "F32", {1,3,384,384}), TS("image_embedding", "F32", {1,768})};
+  spec.text = {"fgclip2-base-text64-tbl8-o2.hbm", "fgclip2_base_text64", TS("input_ids", "S64", {1,64}), TS("text_embedding", "F32", {1,768})};
   spec.tokenizer = "fgclip2-base.tokenizer.model";
   spec.views = ainvr::search::kSceneViews;
   spec.object_crop = ObjectCrop::LetterboxGray127; spec.object_slots = 2; spec.object_min_short_edge_px = 30;
