@@ -149,7 +149,8 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
         className={`ml-auto inline-flex min-h-7 [@media(pointer:coarse)]:min-h-11 min-w-7 [@media(pointer:coarse)]:min-w-11 items-center justify-center rounded-base hover:bg-surface-page hover:text-primary ${explained ? 'text-primary' : ''}`}><Info size={15} aria-hidden="true" /></button>
       {aiOn && hasReview && <button type="button" className={action} onClick={reorder}>按复核状态重排已加载候选</button>}
     </div>
-    {explained && <div className="space-y-2 rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-subtle">{explanation}<p role="status">{aiOn ? 'AI 参考分析已开启' : 'AI 参考分析已暂停'}</p>{info}</div>}
+    {/* Always mounted, so the coverage of this search loads with the results (and a denied scope shows at once). */}
+    <div hidden={!explained} className="space-y-2 rounded-lg border border-line bg-surface p-3 text-xs leading-relaxed text-ink-subtle [&[hidden]]:hidden">{explanation}<p role="status">{aiOn ? 'AI 参考分析已开启' : 'AI 参考分析已暂停'}</p>{info}</div>
     {!data.items.length && <p className="flex flex-wrap items-center gap-2 text-sm text-ink-subtle"><span>{data.next_cursor ? '本批候选证据已过期或不可用' : data.min_similarity === undefined ? '所选范围内暂未找到相关候选' : `没有达到 ${data.min_similarity.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')} 的候选`}</span>
       {!data.next_cursor && data.min_similarity !== undefined && onRetryUnlimited && <button type="button" className="min-h-7 [@media(pointer:coarse)]:min-h-11 rounded-base border border-line px-2 text-xs text-primary hover:border-primary" onClick={onRetryUnlimited}>不限重搜</button>}</p>}
     </>}

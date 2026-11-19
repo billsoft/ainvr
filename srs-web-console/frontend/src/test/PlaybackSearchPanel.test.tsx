@@ -219,16 +219,18 @@ it('keeps the result head to one line and offers a search without the minimum wh
   vi.mocked(searchService.coverage).mockImplementation(async scope => ({ scope, state: 'partial', ranges: [] }))
   open('/playback/demo-detect?search=1')
   fireEvent.change(await screen.findByRole('textbox', { name: '想找什么？' }), { target: { value: '粉色围巾' } })
+  const coverageBefore = vi.mocked(searchService.coverage).mock.calls.length
   fireEvent.click(screen.getByRole('button', { name: '搜索录像' }))
   expect(await screen.findByText('没有达到 0.08 的候选')).toBeInTheDocument()
+  await waitFor(() => expect(vi.mocked(searchService.coverage).mock.calls.length).toBeGreaterThan(coverageBefore))
   expect(screen.getByRole('heading', { name: '0 条候选' })).toBeInTheDocument()
   // No repeated description line and no separate coverage bar: both live behind the ⓘ toggle.
   expect(screen.queryByText(/本次描述/)).toBeNull()
-  expect(screen.queryByText('采样覆盖')).toBeNull()
+  expect(await screen.findByText('采样覆盖')).not.toBeVisible()
   const info = screen.getByRole('button', { name: '结果说明' })
   fireEvent.click(info)
   expect(info).toHaveAttribute('aria-expanded', 'true')
-  expect(await screen.findByText('采样覆盖')).toBeInTheDocument()
+  expect(screen.getByText('采样覆盖')).toBeVisible()
   expect(screen.getByText(/本次最低相似度 0.08/)).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '不限重搜' }))
   await waitFor(() => expect(searchService.query).toHaveBeenCalledTimes(2))
@@ -236,3 +238,51 @@ it('keeps the result head to one line and offers a search without the minimum wh
   expect(vi.mocked(searchService.query).mock.calls[1]![0].query).toBe('粉色围巾')
   expect(screen.getByRole('spinbutton', { name: '最低相似度' })).toHaveValue(null)
 }, 15000)
+
+it('restores the channel list the widening folded even after a reload', async () => {
+  localStorage.setItem('playback.searchWide', '1')
+  localStorage.setItem('playback.searchWideFolded', '1')
+  localStorage.setItem('playback.columns', JSON.stringify({ left: false, right: true }))
+  vi.spyOn(recordingService, 'listSegments').mockResolvedValue([])
+  open('/playback/demo-detect?search=1')
+  await screen.findByRole('textbox', { name: '想找什么？' })
+  const left = () => document.querySelector('aside[aria-label="通道列表"]')!
+  expect(left()).toHaveAttribute('hidden')
+  fireEvent.click(screen.getByRole('button', { name: '还原搜索面板' }))
+  expect(left()).not.toHaveAttribute('hidden')
+  expect(localStorage.getItem('playback.searchWideFolded')).toBeNull()
+})
+
+it('keeps a channel list the person folded by hand folded when the panel is restored', async () => {
+  vi.spyOn(recordingService, 'listSegments').mockResolvedValue([])
+  open('/playback/demo-detect?search=1')
+  await screen.findByRole('textbox', { name: '想找什么？' })
+  const left = () => document.querySelector('aside[aria-label="通道列表"]')!
+  fireEvent.click(screen.getByRole('button', { name: '放大搜索面板' }))
+  expect(left()).toHaveAttribute('hidden')
+  // Opened and folded again by hand while wide: the list is the person's choice now.
+  fireEvent.click(screen.getByRole('button', { name: '显示通道列表' }))
+  expect(left()).not.toHaveAttribute('hidden')
+  fireEvent.click(screen.getByRole('button', { name: '收起通道列表' }))
+  expect(left()).toHaveAttribute('hidden')
+  fireEvent.click(screen.getByRole('button', { name: '还原搜索面板' }))
+  expect(left()).toHaveAttribute('hidden')
+})
+
+it('restoring on a page too narrow for three columns keeps the search panel and leaves the list folded', async () => {
+  const observers: ((e: { contentRect: { width: number } }[]) => void)[] = []
+  const resize = (width: number) => observers.forEach(cb => cb([{ contentRect: { width } }]))
+  vi.stubGlobal('ResizeObserver', class { constructor(cb: (e: { contentRect: { width: number } }[]) => void) { observers.push(cb) } observe() {} disconnect() {} })
+  vi.spyOn(recordingService, 'listSegments').mockResolvedValue([])
+  open('/playback/demo-detect?search=1')
+  await screen.findByRole('textbox', { name: '想找什么？' })
+  const left = () => document.querySelector('aside[aria-label="通道列表"]')!
+  const right = () => document.querySelector('aside[aria-label="智能搜索"]')!
+  act(() => resize(1700))
+  fireEvent.click(screen.getByRole('button', { name: '放大搜索面板' }))
+  act(() => resize(1000))
+  fireEvent.click(screen.getByRole('button', { name: '还原搜索面板' }))
+  expect(right()).not.toHaveAttribute('hidden')
+  expect(left()).toHaveAttribute('hidden')
+  vi.unstubAllGlobals()
+})

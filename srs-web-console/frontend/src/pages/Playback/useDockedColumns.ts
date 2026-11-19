@@ -71,5 +71,5 @@ export function useDockedColumns({ searchRequested }: { searchRequested: boolean
   function openRight() { chosen.current = true; setWantRight(true); setFocus('right'); save({ right: true }) }
   function closeRight() { chosen.current = true; setWantRight(false); save({ right: false }) }
   function toggleRight() { if (layout.showRight) closeRight(); else openRight() }
-  return { hostRef, stacked: layout.stacked, showLeft: layout.showLeft, showRight: layout.showRight, toggleLeft, toggleRight, closeRight }
+  return { hostRef, stacked: layout.stacked, showLeft: layout.showLeft, showRight: layout.showRight, fitsBoth: layout.fitsBoth, toggleLeft, toggleRight, closeRight }
 }

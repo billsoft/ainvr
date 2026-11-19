@@ -43,23 +43,32 @@ export default function PlaybackPage() {
   // Search hits shown on the timeline of the channel they were recorded on.
   const [hits, setHits] = useState<{ channelId: string; at: number }[]>([])
   // Three docked columns like an editor with a side assistant: channels | playback | search.
-  const { hostRef, stacked, showLeft, showRight: showSearch, toggleLeft, toggleRight: toggleSearch, closeRight: closeSearch } =
+  const { hostRef, stacked, showLeft, showRight: showSearch, fitsBoth, toggleLeft, toggleRight: toggleSearch, closeRight: closeSearch } =
     useDockedColumns({ searchRequested: searchParams.get('search') === '1' })
   // Widened search column for browsing many results; the player keeps its minimum width. Remembered per browser.
   const [searchWideWanted, setSearchWideWanted] = useState(() => { try { return localStorage.getItem('playback.searchWide') === '1' } catch { return false } })
   const searchWide = searchWideWanted && !stacked
   // Widening folds the channel list into its 44 px rail (the scope line can still show it); restoring reopens it only
   // when the widening folded it, never a list the person folded or reopened by hand.
-  const foldedByWide = useRef(false)
+  // The mark is remembered with the wide state, so a reload while wide still restores the list on the way back.
+  const foldedByWide = useRef((() => { try { return localStorage.getItem('playback.searchWideFolded') === '1' } catch { return false } })())
+  const markFoldedByWide = (folded: boolean) => {
+    foldedByWide.current = folded
+    try { if (folded) localStorage.setItem('playback.searchWideFolded', '1'); else localStorage.removeItem('playback.searchWideFolded') } catch { /* unsaved is fine */ }
+  }
   const SEARCH_WIDE_GROW = 'flex-[1.2_1_0%]'
-  const setSearchWide = (wide: boolean) => {
+  // Restoring reopens the list only where all three columns fit (else it would push the search panel out);
+  // closing the search reopens it anyway, since the search column is going away.
+  const setSearchWide = (wide: boolean, closing = false) => {
     setSearchWideWanted(wide)
     try { localStorage.setItem('playback.searchWide', wide ? '1' : '0') } catch { /* unsaved is fine */ }
-    if (wide && showLeft) { foldedByWide.current = true; toggleLeft() }
-    if (!wide && foldedByWide.current) { foldedByWide.current = false; if (!showLeft) toggleLeft() }
+    if (wide && showLeft) { markFoldedByWide(true); toggleLeft() }
+    if (!wide && foldedByWide.current) { markFoldedByWide(false); if (!showLeft && (closing || fitsBoth)) toggleLeft() }
   }
   const toggleSearchWide = () => setSearchWide(!searchWide)
-  const closeSearchPanel = () => { if (searchWide) setSearchWide(false); closeSearch() }
+  const closeSearchPanel = () => { if (searchWide) setSearchWide(false, true); closeSearch() }
+  // A list opened or folded by hand is the person's choice: restoring the panel leaves it as it is.
+  const toggleLeftByHand = () => { markFoldedByWide(false); toggleLeft() }
   // The panel is created the first time its column is shown, with the channel and window open at that moment.
   useEffect(() => {
     if (!showSearch || searchMounted) return
@@ -303,7 +312,7 @@ export default function PlaybackPage() {
       {/* ============ 左栏：通道列表（只列通道；看哪个时间在下面的时间轴上选）============ */}
       {!showLeft && (
         <div className={`flex shrink-0 rounded-panel border border-line bg-surface ${stacked ? 'min-h-11 w-full items-center px-2' : 'w-11 items-start justify-center pt-2'}`}>
-          <button type="button" aria-label="通道列表" aria-pressed={false} title="展开通道列表" onClick={toggleLeft}
+          <button type="button" aria-label="通道列表" aria-pressed={false} title="展开通道列表" onClick={toggleLeftByHand}
             className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-page hover:text-primary"><PanelLeft size={18} /></button>
         </div>
       )}
@@ -312,7 +321,7 @@ export default function PlaybackPage() {
         <div className="border-b border-line p-3">
           <div className="flex items-center justify-between gap-2">
             <h1 id="playback-title" className="page-title">录像回放</h1>
-            <button type="button" aria-label="收起通道列表" title="收起通道列表" onClick={toggleLeft}
+            <button type="button" aria-label="收起通道列表" title="收起通道列表" onClick={toggleLeftByHand}
               className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-page hover:text-primary"><PanelLeftClose size={18} /></button>
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
@@ -592,7 +601,7 @@ export default function PlaybackPage() {
           <div className="min-h-0 flex-1">
             <SearchPage variant="side" entryScope={searchEntry} onPlay={openEvidence}
               selected={searchSelected} onSelectedChange={setSearchSelected} onChannels={setSearchChannels}
-              listVisible={showLeft} onResults={setHits} onShowList={toggleLeft} wide={searchWide} />
+              listVisible={showLeft} onResults={setHits} onShowList={toggleLeftByHand} wide={searchWide} />
           </div>
         </aside>
       )}
