@@ -139,4 +139,7 @@ test("SigLIP2 to FG-CLIP 2 keeps the 4x768 scene layout and the SigLIP2-class sa
  assert.equal(next.sampling.object_interval_ms,1000);assert.equal(next.sampling.scene_active_interval_ms,10000);
  assert.equal(next.limits.producer_queue,4);assert.equal(next.limits.max_samples,SIGLIP2_MAX_SAMPLES);
  assert.deepEqual(next.sampling.channel_ids,["preserved"]);
+ // The point of this package is detector crops beside the scene views: object sampling is switched on.
+ s.sampling.object=false;assert.equal(freshModelSettings(s,pin,[model],t).sampling.object,true);
+ assert.equal(freshModelSettings({...structuredClone(settings),sampling:{...settings.sampling,object:false}},pin,[model],forward).sampling.object,false);
 });

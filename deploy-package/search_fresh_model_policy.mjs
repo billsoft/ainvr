@@ -37,6 +37,8 @@ export function freshModelSettings(settings, pin, models, transition) {
     next.sampling.scene_static_interval_ms = Math.min(60000, next.sampling.scene_static_interval_ms);
     next.sampling.scene_change_min_interval_ms = Math.min(3000, next.sampling.scene_change_min_interval_ms);
     if (Number.isFinite(next.limits.max_samples)) next.limits.max_samples = Math.min(next.limits.max_samples, SIGLIP2_MAX_SAMPLES);
+    // FG-CLIP 2 exists to store detector crops beside the scene views (2026-11-19 decision): object sampling on.
+    if (targetPackage === FGCLIP2_PACKAGE) next.sampling.object = true;
     return next;
   }
   // Search sampling only; never changes detector FPS or tracking timing.
