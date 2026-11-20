@@ -17,7 +17,7 @@ import { searchService, type SearchStatus, type SearchPageResult, type SearchCha
 import { SearchResults } from './SearchResults'
 import { FaceQueryConnected } from '@/features/faces/FaceQueryConnected'
 
-const button = 'min-h-9 [@media(pointer:coarse)]:min-h-11 rounded-base border border-line bg-surface px-3 py-1.5 text-sm text-ink-subtle transition-colors hover:border-primary hover:text-primary disabled:opacity-50'
+const button = 'min-h-11 rounded-base border border-line bg-surface px-3 py-1.5 text-sm text-ink-subtle transition-colors hover:border-primary hover:text-primary disabled:opacity-50'
 const searchRanges: RangePreset[] = [
   { label: '近1小时', unit: 'hour', n: 1 },
   { label: '近24小时', unit: 'hour', n: 24 },
@@ -32,7 +32,8 @@ function coverageAfter(current: SearchPageResult['coverage'], next: SearchPageRe
 }
 /** `page`: the stand-alone screen. `side`: the panel beside the recording player, where a result plays in the
  *  player instead of opening a new page, and the channel scope is one compact line. */
-export default function SearchPage({ variant = 'page', entryScope = null, onPlay, selected: selectedProp, onSelectedChange, onChannels, listVisible = true, onResults, onShowList, wide = false }: {
+export default function SearchPage({ variant = 'page', entryScope = null, onPlay, selected: selectedProp, onSelectedChange, onChannels, listVisible = true, onResults, onShowList, watching, wide = false }: {
+  watching?: { id: string; name: string } | null
   variant?: 'page' | 'side'
   entryScope?: SearchScope | null
   onPlay?: (channelId: string, at: number) => void
@@ -81,7 +82,8 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
   const [moreLoading, setMoreLoading] = useState(false)
   const [queryError, setQueryError] = useState('')
   const [descriptionError, setDescriptionError] = useState(false)
-  const descriptionInput = useRef<HTMLInputElement>(null)
+  const [scopeOpen,setScopeOpen] = useState(false)
+  const descriptionInput = useRef<HTMLTextAreaElement>(null)
   const [refreshError, setRefreshError] = useState('')
   const [evidenceNotice, setEvidenceNotice] = useState(false)
   const [accessError, setAccessError] = useState('')
@@ -121,6 +123,7 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
     selectedNow.current = next
     if (controlled) onSelectedChange?.(next); else setSelectedInner(next)
   }
+  const sourceListLoaded = useRef(false)
   const defaultSelectionApplied = useRef(!!inherited)
   const [channels, setChannels] = useState<SearchChannel[]>([])
   const [status, setStatus] = useState<SearchStatus | null>(null)
@@ -146,12 +149,14 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
         if (abort.signal.aborted) return
         setStatus(next); setChannels(sources.items); onChannels?.(sources.items)
         // First load without an inherited selection: all AI outputs (the page limit is 100 per search). Later reloads only prune.
+        const firstLoad = !sourceListLoaded.current
+        sourceListLoaded.current = true
         const apply = !defaultSelectionApplied.current
         defaultSelectionApplied.current = true
         setSelected(ids => {
           const kept = ids.filter(id => sources.items.some(c => c.id === id))
           // Beside the player the open channel may be an input camera, which has no AI output to search: use all.
-          return apply || (variant === 'side' && !kept.length) ? sources.items.slice(0, 100).map(c => c.id) : kept
+          return apply || (firstLoad && variant === 'side' && !kept.length) ? sources.items.slice(0, 100).map(c => c.id) : kept
         })
       })
       .catch(e => { if (!abort.signal.aborted) { setStatus(null); setError(e instanceof Error ? e.message : '读取搜索状态失败') } })
@@ -418,28 +423,33 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
       {inheritedVisible && variant === 'page' && <p className="text-sm text-ink-subtle">已继承入口的摄像头与时间；无权或不可搜索的摄像头不会被选中。<button type="button" className={`${button} ml-2`} onClick={() => {
         const now = new Date(); setSelected([]); setRange({ from: toDatetimeLocalValue(new Date(now.getTime() - 86400000)), to: toDatetimeLocalValue(now) }); setInheritedVisible(false); if (variant === 'page') setEntryParams({}, { replace: true })
       }}>清除继承范围</button></p>}
-      {/* Compact conditions (2026-11-19): one input row, one scope line, one row of time and threshold. No
-          drop-downs or expanders: the results below take the height. Every control keeps 44 px on touch. */}
-      <div className="flex min-w-0 items-center gap-1.5">
-      <div className="relative min-w-0 flex-1"><Search size={16} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint" />
-      <label className="sr-only" htmlFor="search-description">想找什么？</label>
-      <input ref={descriptionInput} id="search-description" value={query} onChange={e => {
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+      <div className="relative w-full"><label className="sr-only" htmlFor="search-description">想找什么？</label>
+      <textarea rows={2} ref={descriptionInput} id="search-description" value={query} onChange={e => {
         setQuery(e.target.value)
         if (descriptionError) { setDescriptionError(false); setQueryError('') }
       }} maxLength={256} aria-invalid={descriptionError || undefined}
         aria-describedby={`search-description-hint${descriptionError ? ' search-query-error' : ''}`}
-        onKeyDown={e => { if (e.key === 'Enter' && (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229)) e.preventDefault() }}
+        onKeyDown={e => {
+          if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
+          e.preventDefault()
+          const submit = e.currentTarget.form?.querySelector<HTMLButtonElement>('button[type="submit"]')
+          if (submit && !submit.disabled) submit.click()
+        }}
         placeholder={reference ? '补充描述（可选），例如：有人背着这个包' : variant === 'side' ? '描述要找的人或物，例如：背黑色双肩包的人' : '描述衣着、颜色或物品，也可以添加图片'}
-        className="min-h-9 [@media(pointer:coarse)]:min-h-11 w-full min-w-0 rounded-base border border-line bg-surface py-1.5 pl-8 pr-2 text-sm text-ink outline-none transition focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary/10" />
+        className="block w-full min-w-0 resize-none [field-sizing:content] min-h-[3.5rem] max-h-[6rem] rounded-base border border-line bg-surface px-2 py-1.5 text-sm text-ink outline-none transition focus:border-primary focus:bg-white focus:ring-2 focus:ring-primary/10" />
       </div>
-      {!reference && <button type="button" aria-label="添加图片" title="添加图片（也可粘贴或拖入）" className={`${button} inline-flex min-w-9 [@media(pointer:coarse)]:min-w-11 items-center justify-center px-2`} disabled={referenceBusy || searching} onClick={() => fileInput.current?.click()}
+      {!reference && <button type="button" aria-label="添加图片" title="添加图片（也可粘贴或拖入）" className={`${button} inline-flex min-h-11 min-w-11 items-center justify-center px-2`} disabled={referenceBusy || searching} onClick={() => fileInput.current?.click()}
         aria-describedby="search-reference-hint"><ImagePlus size={16} aria-hidden="true" />{referenceBusy && <span className="sr-only">正在读取…</span>}</button>}
-      <button type="submit" disabled={(minimumApplies && !validMinimum) || loading || !status?.ready || !validRange || !hasClue || referenceBusy || !selected.length || selected.length > 100 || searching} className="inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 shrink-0 items-center gap-1.5 rounded-base bg-primary px-3 py-1.5 text-sm text-white transition-colors hover:bg-primary/90 disabled:opacity-50"><Search size={16} aria-hidden="true" />{searching ? '正在搜索…' : '搜索录像'}</button>
+      {variant === 'side' && <button type="button" aria-expanded={scopeOpen} aria-label="选择搜索范围" onClick={() => setScopeOpen(v => !v)} className="min-h-11 min-w-11 flex-1 truncate text-left text-xs text-primary">{selected.length ? `${channels.find(c=>selected.includes(c.id))?.name ?? '已选'} 等 ${selected.length} 路` : '先选择要搜索的通道'} ▾</button>}
+      <button type="submit" disabled={(minimumApplies && !validMinimum) || loading || !status?.ready || !validRange || !hasClue || referenceBusy || !selected.length || selected.length > 100 || searching} className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-base bg-primary px-3 py-1.5 text-sm text-white transition-colors hover:bg-primary/90 disabled:opacity-50"><Search size={16} aria-hidden="true" />{searching ? '正在搜索…' : '搜索录像'}</button>
       {searching && <button type="button" className={`${button} shrink-0`} onClick={stop}>取消搜索</button>}
       </div>
       {variant === 'side' && <p aria-label="搜索范围" className="flex min-w-0 items-center gap-1.5 text-xs text-ink-subtle"><ListChecks size={14} aria-hidden="true" className="shrink-0" />
-        <span className="min-w-0 truncate">范围：{selected.length ? `左侧勾选的 ${selected.length} 个 AI 通道` : '请在左侧通道列表中勾选 AI 通道'}</span>
+        <span>{from && to ? `${formatRangeShort(from)} → ${formatRangeShort(to)}` : '请选择时间'}</span>
         {!listVisible && onShowList && <button type="button" className="ml-auto min-h-7 [@media(pointer:coarse)]:min-h-11 shrink-0 rounded-base px-1.5 text-primary hover:bg-primary-50" onClick={onShowList}>显示通道列表</button>}</p>}
+      {variant === 'side' && scopeOpen && <section aria-label="可搜索通道" className="max-h-52 overflow-auto">{pickerBody}</section>}
+      {variant === 'side' && watching && !selected.includes(watching.id) && <div className="rounded-base bg-amber-50 p-2 text-xs text-amber-900">正在看的「{watching.name}」不在搜索范围。{channels.some(c=>c.id===watching.id) ? <button type="button" className="min-h-11 min-w-11 text-primary" disabled={selectionAtLimit} onClick={()=>setSelected(ids=>[...new Set([...ids,watching.id])])}>加入</button> : '此路不能直接搜索，请选择对应的分析画面。'}</div>}
       <span id="search-reference-hint" className="sr-only">选择一张 JPEG 或 PNG 图片，也可以直接粘贴或拖入图片</span>
       {reference && <ReferenceImageStrip reference={reference} disabled={searching || referenceBusy}
         onCrop={() => setCropping(true)} onReplace={() => fileInput.current?.click()}
@@ -448,13 +458,13 @@ export default function SearchPage({ variant = 'page', entryScope = null, onPlay
       <div className="flex flex-wrap items-center gap-1.5 text-xs">
         <div className="flex gap-1" role="group" aria-label="快捷时间范围">{searchRanges.map(preset => <button key={preset.label} type="button" aria-pressed={selectedPreset === preset.label} className={['min-h-7 [@media(pointer:coarse)]:min-h-11 rounded-base border px-1.5 transition-colors', selectedPreset === preset.label ? 'border-primary bg-primary-50 text-primary' : 'border-line text-ink-subtle hover:border-primary hover:text-primary'].join(' ')} onClick={() => { setRange(presetRange(preset)); setSelectedPreset(preset.label) }}><span className="sr-only">近</span>{preset.label.replace(/^近/, '')}</button>)}</div>
         <button type="button" aria-label="选择时间范围" title={from && to ? `自定义时间范围（当前 ${formatRangeShort(from)} → ${formatRangeShort(to)}）` : '自定义时间范围'} className={`inline-flex min-h-7 [@media(pointer:coarse)]:min-h-11 items-center gap-1 rounded-base border px-1.5 tabular-nums transition-colors ${selectedPreset ? 'border-line text-ink-faint hover:border-primary hover:text-primary' : 'border-primary bg-primary-50 text-primary'}`} onClick={() => setPicker(true)}><CalendarClock size={13} aria-hidden="true" /><span className={selectedPreset ? 'sr-only' : ''}>{from && to ? `${formatRangeShort(from)} → ${formatRangeShort(to)}` : '自定义'}</span></button>
-        {kind === 'text' && <div className="ml-auto flex items-center gap-1" title="最低相似度">
+        {kind === 'text' && <details className="ml-auto" open={variant === 'page' || undefined}><summary className="min-h-11 cursor-pointer content-center">更多筛选</summary><div className="flex items-center gap-1" title="最低相似度">
           <label htmlFor="search-minimum" className="text-ink-subtle"><span aria-hidden="true">≥</span><span className="sr-only">最低相似度</span></label>
           <input id="search-minimum" type="number" inputMode="decimal" min="0" max="0.3" step="0.005" placeholder="不限" value={minimum} disabled={searching}
             onChange={e => setMinimum(e.target.value)} aria-invalid={!validMinimum} aria-describedby="search-minimum-hint" title="数值越高结果越少；不是置信度或概率。0.08 为试用起点，点击“搜索录像”生效"
             className="min-h-7 [@media(pointer:coarse)]:min-h-11 w-14 rounded-base border border-line bg-surface px-1.5 tabular-nums focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20" />
           <button type="button" disabled={searching} aria-pressed={minimum === ''} className={`min-h-7 [@media(pointer:coarse)]:min-h-11 rounded-base border px-1.5 ${minimum === '' ? 'border-primary bg-primary-50 text-primary' : 'border-line text-ink-subtle hover:border-primary hover:text-primary'}`} onClick={() => setMinimum('')}>不限</button>
-        </div>}
+        </div></details>}
         {kind === 'image_text' && <div className="ml-auto flex gap-1" role="group" aria-label="图片与文字的侧重">{([[0.2, '文字为主'], [0.5, '均衡'], [0.8, '图片为主']] as const).map(([weight, label]) =>
           <button key={label} type="button" disabled={searching} aria-pressed={imageWeight === weight} className={['min-h-7 [@media(pointer:coarse)]:min-h-11 rounded-base border px-1.5', imageWeight === weight ? 'border-primary bg-primary-50 text-primary' : 'border-line text-ink-subtle hover:border-primary hover:text-primary'].join(' ')} onClick={() => setImageWeight(weight)}>{label}</button>)}</div>}
       </div>

@@ -46,14 +46,17 @@ func (m *Manager) ptzHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(429, "ptz_capacity_exceeded")
 		return
 	}
-	var binding *Binding
-	for i := range runtime.config.Bindings {
-		if runtime.config.Bindings[i].ID == req.Binding {
-			binding = &runtime.config.Bindings[i]
+	runtime.mu.Lock()
+	revision := runtime.config.Revision
+	var binding Binding
+	for _, candidate := range runtime.config.Bindings {
+		if candidate.ID == req.Binding {
+			binding = candidate
 			break
 		}
 	}
-	if binding == nil || !binding.Enabled {
+	runtime.mu.Unlock()
+	if !binding.Enabled {
 		fail(409, "ptz_source_unavailable")
 		return
 	}
@@ -65,24 +68,46 @@ func (m *Manager) ptzHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/v1/ptz/prepare" {
 		kind := ""
 		runtime.server.mu.Lock()
-		for _, item := range runtime.server.states[binding.DeviceID].Catalog {
-			if item.ID == binding.ChannelID {
-				kind = item.Info.PTZType
-				break
-			}
+		st := runtime.server.states[binding.DeviceID]
+		item := t.positionChannel(st)
+		if item != nil {
+			kind = item.Info.PTZType
 		}
 		runtime.server.mu.Unlock()
+		if item == nil {
+			fail(409, "ptz_source_changed")
+			return
+		}
 		// A structural camera type is a hint, not proof of a motor or zoom lens.
 		// The console combines this with explicit per-camera capability confirmation.
-		json.NewEncoder(w).Encode(map[string]any{"resource": binding.DeviceID + "/" + binding.ChannelID, "revision": runtime.config.Revision, "generation": t.generation, "ptzType": kind, "evidence": "catalog_hint", "position": false, "serverTimeMs": time.Now().UnixMilli()})
+		json.NewEncoder(w).Encode(map[string]any{"resource": binding.DeviceID + "/" + binding.ChannelID, "revision": revision, "generation": t.generation, "ptzType": kind, "evidence": "catalog_hint", "position": false, "serverTimeMs": time.Now().UnixMilli()})
 		return
 	}
-	if req.Revision != runtime.config.Revision || req.Generation != t.generation {
+	if req.Revision != revision || req.Generation != t.generation {
 		fail(409, "ptz_source_changed")
 		return
 	}
 	var result any
 	switch r.URL.Path {
+	case "/v1/ptz/position":
+		result, e = t.position(r.Context(), revision)
+		m.mu.Lock()
+		runtime.mu.Lock()
+		current := m.runtime == runtime && runtime.config.Revision == revision
+		runtime.mu.Unlock()
+		m.mu.Unlock()
+		if !current || (e != nil && e.Error() == "ptz_source_changed") {
+			fail(409, "ptz_source_changed")
+			return
+		}
+		if e != nil && e.Error() == "ptz_query_timeout" {
+			fail(504, e.Error())
+			return
+		}
+		if e != nil && e.Error() == "ptz_query_busy" {
+			fail(429, e.Error())
+			return
+		}
 	case "/v1/ptz/command":
 		result, e = runtime.server.ptz.Execute(r.Context(), binding.DeviceID+"/"+binding.ChannelID, t, req.Command)
 	case "/v1/ptz/presets":

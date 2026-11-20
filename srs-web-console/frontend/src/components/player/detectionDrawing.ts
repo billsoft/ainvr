@@ -3,6 +3,7 @@ import { computeContainLayout, projectDetectionBox, projectLandmark } from './ov
 import { parsePoseAttribute, POSE_CONNECTIONS } from './poseAttributes'
 
 const BOX_COLOR = '#22c55e'
+const SELECTED_BOX_COLOR = '#7dd3fc'
 const LANDMARK_COLOR = '#ef4444'
 const LABEL_TEXT_COLOR = '#0a0a0a'
 
@@ -12,24 +13,28 @@ export function drawDetections(
   layout: ReturnType<typeof computeContainLayout>,
   frameW: number,
   frameH: number,
+  compact = false,
+  selectedId: string | null = null,
 ): void {
   if (!frameW || !frameH) return
-  ctx.lineWidth = 2
+  ctx.lineWidth = compact ? 1 : 2
   ctx.font = '13px sans-serif'
   ctx.textBaseline = 'alphabetic'
   for (const d of detections) {
     const box = projectDetectionBox(d, layout, frameW, frameH)
-    ctx.strokeStyle = BOX_COLOR
+    const color = selectedId && d.track_id === selectedId ? SELECTED_BOX_COLOR : BOX_COLOR
+    ctx.strokeStyle = color
     // 短时丢失的推算框用虚线，与真实检测区分。
     ctx.setLineDash?.(d.predicted || d.lowConfidence ? [6, 4] : [])
     ctx.strokeRect(box.x, box.y, box.w, box.h)
+    if (compact) continue
     const identity = d.track_id ? ` #${d.track_id.split(':').at(-1)}` : ''
     const label = d.predicted ? `${(typeof d.model_extra?.attributes?.plate_text?.value === 'string' ? d.model_extra.attributes.plate_text.value : d.class_name)}${identity} 推算`
       : d.lowConfidence ? `${(typeof d.model_extra?.attributes?.plate_text?.value === 'string' ? d.model_extra.attributes.plate_text.value : d.class_name)}${identity} 低置信`
       : (d.confidence === null ? (typeof d.model_extra?.attributes?.plate_text?.value === 'string' ? d.model_extra.attributes.plate_text.value : d.class_name) : `${(typeof d.model_extra?.attributes?.plate_text?.value === 'string' ? d.model_extra.attributes.plate_text.value : d.class_name)} ${(d.confidence * 100).toFixed(0)}%`) + identity
     const metrics = ctx.measureText(label)
     const labelY = box.y > 16 ? box.y - 4 : box.y + 16
-    ctx.fillStyle = BOX_COLOR
+    ctx.fillStyle = color
     ctx.fillRect(box.x, labelY - 13, metrics.width + 6, 15)
     ctx.fillStyle = LABEL_TEXT_COLOR
     ctx.fillText(label, box.x + 3, labelY)

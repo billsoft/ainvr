@@ -25,7 +25,8 @@ it('services all up but a channel interrupted: the bar says so instead of “all
   const status = await screen.findByText('2 路中断')
   expect(status.closest('a')).toHaveAttribute('title', expect.stringContaining('公司过道'))
   expect(status.closest('a')).toHaveAttribute('title', expect.stringContaining('10 分'))
-  expect(screen.queryByText(/服务正常/)).not.toBeInTheDocument()
+  expect(screen.getByText('1/1 服务正常').closest('a')).toHaveAttribute('href','/dashboard')
+  expect(status.closest('a')).toHaveAttribute('href','/channels')
 })
 
 it('no interruptions keeps the normal service summary', async () => {

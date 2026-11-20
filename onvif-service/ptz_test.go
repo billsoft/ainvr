@@ -273,3 +273,92 @@ func TestPTZHTTPAuthenticationLimitsAndStopPriority(t *testing.T) {
 		<-service.ptz.slots
 	}
 }
+
+func TestFocusOptionsAreIndependentAndMoveTimeIncludesResponse(t *testing.T) {
+	c := fixtureClient(t, false)
+	target := &PTZTarget{client: c, imaging: "http://192.0.2.10/imaging", source: "source-a"}
+	var actions []string
+	var moveBudget time.Duration
+	c.http.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		for _, action := range []string{"GetMoveOptions", "GetOptions", "Move", "Stop"} {
+			if !strings.Contains(string(body), "<m:"+action+" ") {
+				continue
+			}
+			actions = append(actions, action)
+			switch action {
+			case "GetOptions":
+				return response(envelope(imagingNS, action, `<m:ImagingOptions><tt:Focus><tt:AutoFocusModes>AUTO</tt:AutoFocusModes></tt:Focus></m:ImagingOptions>`)), nil
+			case "Move":
+				end, ok := r.Context().Deadline()
+				if !ok {
+					t.Fatal("missing move deadline")
+				}
+				moveBudget = time.Until(end)
+				<-r.Context().Done()
+				return nil, r.Context().Err()
+			case "Stop":
+				if r.Context().Err() != nil {
+					t.Fatal("Stop inherited expired Move context")
+				}
+			}
+			return response(envelope(imagingNS, action, "")), nil
+		}
+		t.Fatalf("unexpected SOAP request: %s", r.URL.Path)
+		return nil, nil
+	})
+	target.readFocusOptions(context.Background())
+	if target.caps.Focus || !target.caps.AutoFocus {
+		t.Fatalf("wrong focus options: %+v", target.caps)
+	}
+	target.caps.Focus = true
+	target.focusMax = 1
+	if err := target.LensAction(context.Background(), "far"); err == nil {
+		t.Fatal("lost acknowledgement reported success")
+	}
+	if strings.Join(actions, ",") != "GetMoveOptions,GetOptions,Move,Stop" || moveBudget <= 0 || moveBudget > 120*time.Millisecond {
+		t.Fatalf("actions=%v moveBudget=%s", actions, moveBudget)
+	}
+}
+
+func TestImageCenterUsesFOVCoordinatesAndExplicitLensSpeed(t *testing.T) {
+	c, wire := ptzFixture(t, false, true, true, true)
+	target, e := c.PreparePTZ(context.Background(), "media1", "main", "source-a")
+	if e != nil {
+		t.Fatal(e)
+	}
+	point := ptzcontrol.ImagePoint{X: 0.3, Y: -0.2}
+	if target.Center(context.Background(), point) == nil {
+		t.Fatal("device without FOV accepted a point")
+	}
+	original := c.http.Transport
+	c.http.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		if strings.Contains(r.Header.Get("Content-Type"), "/GetConfigurationOptions\"") {
+			const opts = `<m:PTZConfigurationOptions><tt:Spaces>
+				<tt:RelativePanTiltTranslationSpace><tt:URI>http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov</tt:URI>
+				<tt:XRange><tt:Min>-3</tt:Min><tt:Max>3</tt:Max></tt:XRange><tt:YRange><tt:Min>-2</tt:Min><tt:Max>2</tt:Max></tt:YRange></tt:RelativePanTiltTranslationSpace>
+				<tt:PanTiltSpeedSpace><tt:URI>http://www.onvif.org/ver10/tptz/PanTiltSpaces/GenericSpeedSpace</tt:URI>
+				<tt:XRange><tt:Min>0</tt:Min><tt:Max>1</tt:Max></tt:XRange></tt:PanTiltSpeedSpace>
+				</tt:Spaces></m:PTZConfigurationOptions>`
+			return response(envelope(ptzNS, "GetConfigurationOptions", opts)), nil
+		}
+		if strings.Contains(r.Header.Get("Content-Type"), "/GetNode\"") {
+			return response(envelope(ptzNS, "GetNode", `<m:PTZNode token="motor-a"/>`)), nil
+		}
+		return original.RoundTrip(r)
+	})
+	target, e = c.PreparePTZ(context.Background(), "media1", "main", "source-a")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !target.caps.PointCenter || target.caps.PanTilt || target.caps.Reason != "" {
+		t.Fatalf("FOV-only capabilities: %+v", target.caps)
+	}
+	if e := target.Center(context.Background(), point); e != nil {
+		t.Fatal(e)
+	}
+	last := (*wire)[len(*wire)-1]
+	if !strings.Contains(last, `x="0.3000000" y="-0.2000000"`) || !strings.Contains(last, `<m:Speed><tt:PanTilt x="0.5" y="0.5"/>`) {
+		t.Fatal("incorrect field-of-view wire command")
+	}
+}

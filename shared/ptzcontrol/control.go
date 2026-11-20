@@ -36,16 +36,24 @@ type Driver interface {
 	Stop(context.Context) error
 	Preset(context.Context, string) error
 }
+type ImagePoint struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+type centerDriver interface {
+	Center(context.Context, ImagePoint) error
+}
 type Command struct {
-	Session     string `json:"session"`
-	Sequence    uint64 `json:"sequence"`
-	Vector      Vector `json:"vector"`
-	Preset      string `json:"preset,omitempty"`
-	Stop        bool   `json:"stop,omitempty"`
-	KeepAlive   bool   `json:"keepAlive,omitempty"`
-	Emergency   bool   `json:"emergency,omitempty"`
-	TTLMS       int    `json:"ttlMs"`
-	ExpiresAtMS int64  `json:"expiresAtMs,omitempty"`
+	Center      *ImagePoint `json:"center,omitempty"`
+	Session     string      `json:"session"`
+	Sequence    uint64      `json:"sequence"`
+	Vector      Vector      `json:"vector"`
+	Preset      string      `json:"preset,omitempty"`
+	Stop        bool        `json:"stop,omitempty"`
+	KeepAlive   bool        `json:"keepAlive,omitempty"`
+	Emergency   bool        `json:"emergency,omitempty"`
+	TTLMS       int         `json:"ttlMs"`
+	ExpiresAtMS int64       `json:"expiresAtMs,omitempty"`
 }
 type State struct {
 	StopConfirmed bool `json:"stopConfirmed"`
@@ -57,6 +65,7 @@ type resource struct {
 	session   string
 	sequence  uint64
 	epoch     uint64
+	intent    uint64 // Latest non-renewal command; KeepAlive only advances the timer epoch.
 	deadline  time.Time
 	closed    bool
 	moving    bool
@@ -124,6 +133,11 @@ func (c *Controller) Execute(ctx context.Context, key string, d Driver, cmd Comm
 	if cmd.Preset != "" && !cmd.Vector.Zero() {
 		return State{}, errors.New("ptz_invalid_command")
 	}
+	if point := cmd.Center; point != nil {
+		if _, ok := d.(centerDriver); !ok || cmd.Preset != "" || cmd.Stop || cmd.KeepAlive || !cmd.Vector.Zero() || math.IsNaN(point.X) || math.IsNaN(point.Y) || math.Abs(point.X) > 1 || math.Abs(point.Y) > 1 {
+			return State{}, errors.New("ptz_invalid_command")
+		}
+	}
 	if cmd.Emergency && !cmd.Stop {
 		return State{}, errors.New("ptz_invalid_command")
 	}
@@ -179,6 +193,9 @@ func (c *Controller) Execute(ctx context.Context, key string, d Driver, cmd Comm
 	}
 	r.epoch++
 	epoch := r.epoch
+	if !cmd.KeepAlive {
+		r.intent = epoch
+	}
 	r.driver = d
 	r.touched = now
 	if r.timer != nil {
@@ -227,17 +244,21 @@ func (c *Controller) Execute(ctx context.Context, key string, d Driver, cmd Comm
 	}
 	if cmd.Stop {
 		e = d.Stop(wireCtx)
+	} else if cmd.Center != nil {
+		e = d.(centerDriver).Center(wireCtx, *cmd.Center)
 	} else if cmd.Preset != "" {
 		e = d.Preset(wireCtx, cmd.Preset)
 	} else {
 		e = d.Move(wireCtx, cmd.Vector, time.Until(deadline))
 	}
 	r.mu.Lock()
-	if cmd.Stop {
-		r.moving = false
-		r.uncertain = e != nil
-	} else if e != nil {
-		r.uncertain = true
+	if r.intent == epoch {
+		if cmd.Stop {
+			r.moving = false
+			r.uncertain = e != nil
+		} else if e != nil {
+			r.uncertain = true
+		}
 	}
 	result = state(r)
 	r.mu.Unlock()
@@ -256,6 +277,7 @@ func (c *Controller) expire(r *resource, epoch uint64) {
 	}
 	r.epoch++
 	stopEpoch := r.epoch
+	r.intent = stopEpoch
 	d := r.driver
 	r.mu.Unlock()
 	r.wire.Lock()
@@ -271,6 +293,10 @@ func (c *Controller) expire(r *resource, epoch uint64) {
 		e := d.Stop(ctx)
 		cancel()
 		r.mu.Lock()
+		if r.intent != stopEpoch {
+			r.mu.Unlock()
+			return
+		}
 		r.moving = false
 		r.uncertain = e != nil
 		r.touched = time.Now()

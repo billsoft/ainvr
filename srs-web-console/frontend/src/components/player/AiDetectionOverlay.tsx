@@ -1,20 +1,75 @@
 import { overlayHoldMs, overlayOpacity } from './overlayPresentation'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AiDetection } from '@/types/aiChannel'
 import { drawDetections } from './detectionDrawing'
 import { reportOverlayDiag } from '@/api/diagService'
 import { computeContainLayout } from './overlayGeometry'
 import { TrackTrailBuffer, drawTrackTrails, type TrackTrail } from './trackTrails'
 import { drawGroundingPoints, type GroundingOverlay } from './groundingPoints'
+import './AiDetectionOverlay.css'
 
 const TRAIL_IDLE_MS = 1000
 type DisplayResult = { detections: AiDetection[]; ptsNs?: number | null; displayAgeMs?: number; displayHoldMs?: number; grounding?: GroundingOverlay }
 
+export type ReadDisplayedTracks = () => readonly AiDetection[]
+export interface TrackPicking {
+  /** Full track ID, including the tracker generation. */
+  selectedId: string | null
+  pickEnabled?: boolean
+  onPick: (id: string) => void
+}
+
+// Keep the geometry and lease of the painted frame. A video-frame callback can
+// already have delivered the next SEI result before the canvas repaints.
+interface PaintedTracks {
+  detections: AiDetection[]
+  width: number
+  height: number
+  frameW: number
+  frameH: number
+  layout: ReturnType<typeof computeContainLayout>
+  expires: number
+  mediaExpires: number
+}
+
+function pickable(d: AiDetection): d is AiDetection & { track_id: string } {
+  return !!d.track_id && !d.predicted && !d.lowConfidence && d.bbox.w > 0 && d.bbox.h > 0
+}
+
+interface TrackMenu {
+  choices: { id: string; label: string }[]
+  bounds: React.CSSProperties
+  position: React.CSSProperties
+}
+
+// Percentages keep the menu in the canvas coordinate system even under digital zoom.
+function menuPlacement(rect: DOMRect, painted: PaintedTracks, event: React.MouseEvent<HTMLCanvasElement>) {
+  const { layout, width, height } = painted
+  const clip = event.currentTarget.closest('.overflow-hidden')?.getBoundingClientRect()
+  const left = Math.max(rect.left + layout.offsetX * rect.width / width, clip?.left ?? -Infinity)
+  const top = Math.max(rect.top + layout.offsetY * rect.height / height, clip?.top ?? -Infinity)
+  const right = Math.min(rect.left + (layout.offsetX + layout.dispW) * rect.width / width, clip?.right ?? Infinity)
+  const bottom = Math.min(rect.top + (layout.offsetY + layout.dispH) * rect.height / height, clip?.bottom ?? Infinity)
+  if (right <= left || bottom <= top) return null
+  const percent = (fraction: number) => `${fraction * 100}%`
+  const bounds = { left: percent((left - rect.left) / rect.width), top: percent((top - rect.top) / rect.height),
+    width: percent((right - left) / rect.width), height: percent((bottom - top) / rect.height) }
+  const x = (event.clientX - left) / (right - left)
+  const y = (event.clientY - top) / (bottom - top)
+  const position = { left: `min(${percent(x)}, max(0px, 100% - 13rem))`,
+    ...(y <= 0.5 ? { top: percent(y), maxHeight: percent(1 - y) } : { bottom: percent(1 - y), maxHeight: percent(y) }) }
+  return { bounds, position }
+}
+
 interface Props {
+  trackPicking?: TrackPicking | null
+  displayedTracks?: {current: ReadDisplayedTracks | null}
+
   drawFrame?: (ctx: CanvasRenderingContext2D, detections: AiDetection[], width: number, height: number, frameW: number, frameH: number, grounding?: GroundingOverlay, trails?: TrackTrail[]) => void
   /** The video element whose displayed frames are annotated. */
   video: HTMLVideoElement | null
   enabled: boolean
+  compact?: boolean
   showTrails?: boolean
   showDetections?: boolean
   channelId?: string
@@ -42,9 +97,14 @@ const DIAG_HEARTBEAT_MS = 15_000
  * - 不取未来帧；过期、断流和重建清框，不以墙钟猜视频时间。
  */
 export function AiDetectionOverlay({
-  video, enabled, channelId, protocol, resetKey, getSeiForFrame, getSeiApprox, getReceiveStats, diagnostics = false, onMode, drawFrame, showTrails = false, showDetections = true,
+  video, enabled, displayedTracks, trackPicking, channelId, protocol, resetKey, getSeiForFrame, getSeiApprox, getReceiveStats, diagnostics = false, onMode, drawFrame, compact = false, showTrails = false, showDetections = true,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const paintedRef = useRef<PaintedTracks | null>(null)
+  const picking = !!trackPicking && trackPicking.pickEnabled !== false && showDetections && !drawFrame
+  const selectedId = trackPicking?.selectedId ?? null
+  const [menu, setMenu] = useState<TrackMenu | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const frameRef = useRef<DisplayResult | null>(null)
   const expiresRef = useRef(0)
   const sourceAtRef = useRef(0)
@@ -65,8 +125,51 @@ export function AiDetectionOverlay({
   const modeSeenRef = useRef<'exact' | 'approx' | null>(null)
   const lastHeartbeatRef = useRef(0)
 
+  const readCurrentTracks = useCallback(() => {
+    if (!video || video.paused || video.ended || video.seeking || performance.now() >= expiresRef.current ||
+        video.currentTime >= mediaExpiresRef.current) return []
+    return frameRef.current?.detections ?? []
+  }, [video])
+
+  useEffect(() => {
+    if (!displayedTracks || !video || !enabled) return
+    displayedTracks.current = readCurrentTracks
+    return () => { displayedTracks.current = null }
+  }, [displayedTracks, video, enabled, readCurrentTracks])
+
+  useLayoutEffect(() => { setMenu(null) }, [picking, resetKey, video, enabled, channelId])
+
+  useLayoutEffect(() => {
+    if (!menu || !picking || !enabled) return
+    const previousFocus = document.activeElement
+    menuRef.current?.querySelector('button')?.focus({ preventScroll: true })
+    const cancel = () => setMenu(null)
+    const outside = (event: MouseEvent) => {
+      // The canvas consumes its own dismissing click so it cannot start a new pick.
+      if (event.target !== canvasRef.current && !menuRef.current?.contains(event.target as Node)) cancel()
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      cancel()
+      if (previousFocus instanceof HTMLElement) previousFocus.focus({ preventScroll: true })
+    }
+    document.addEventListener('click', outside, true)
+    document.addEventListener('keydown', escape, true)
+    video?.addEventListener('seeking', cancel)
+    video?.addEventListener('pause', cancel)
+    return () => {
+      document.removeEventListener('click', outside, true)
+      document.removeEventListener('keydown', escape, true)
+      video?.removeEventListener('seeking', cancel)
+      video?.removeEventListener('pause', cancel)
+    }
+  }, [menu, video, picking, enabled])
+
   useEffect(() => {
     frameRef.current = null
+    paintedRef.current = null
     modeSeenRef.current = null
     expiresRef.current = 0
     sourceAtRef.current = 0
@@ -137,6 +240,7 @@ export function AiDetectionOverlay({
     if (!hasRvfc && !getSeiApprox) return
     const clearForSeek = () => {
       frameRef.current = null
+      paintedRef.current = null
       expiresRef.current = 0
       lastPtsRef.current = null
       displayedIntervalsRef.current = []
@@ -251,6 +355,7 @@ export function AiDetectionOverlay({
     let animation = 0
     const draw = () => {
       animation = requestAnimationFrame(draw)
+      paintedRef.current = null
       const rect = video.getBoundingClientRect()
       const dpr = window.devicePixelRatio || 1
       if (!rect.width || !rect.height) return
@@ -281,7 +386,16 @@ export function AiDetectionOverlay({
         if (showTrails && !drawFrame && performance.now() - lastResultRef.current <= TRAIL_IDLE_MS) {
           drawTrackTrails(context, trails.current, layout, video.videoWidth, video.videoHeight)
         }
-        drawDetections(context, visibleDetections, layout, video.videoWidth, video.videoHeight)
+        const matches = selectedId ? visibleDetections.filter(d => d.track_id === selectedId) : []
+        const highlight = matches.length === 1 && pickable(matches[0]!) ? selectedId : null
+        drawDetections(context, visibleDetections, layout, video.videoWidth, video.videoHeight, compact, highlight)
+        if (picking && visibleDetections.length) {
+          paintedRef.current = {
+            detections: visibleDetections, layout, width: rect.width, height: rect.height,
+            frameW: video.videoWidth, frameH: video.videoHeight,
+            expires: expiresRef.current, mediaExpires: mediaExpiresRef.current,
+          }
+        }
         if (showDetections) {
           drawGroundingPoints(context, frame?.grounding, layout)
         }
@@ -289,8 +403,68 @@ export function AiDetectionOverlay({
       context.globalAlpha = 1
     }
     animation = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(animation)
-  }, [enabled, video, drawFrame, showTrails, showDetections])
+    return () => {
+      cancelAnimationFrame(animation)
+      paintedRef.current = null
+    }
+  }, [enabled, video, drawFrame, showTrails, showDetections, compact, picking, selectedId])
 
-  return enabled ? <><canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" data-testid="ai-detection-overlay" />{staleSeconds > 0 && <div role="status" className="pointer-events-none absolute bottom-12 left-2 z-20 max-w-[90%] rounded bg-black/75 px-2 py-1 text-xs text-amber-200">{videoStalled ? '播放画面暂时停滞，正在等待恢复' : `识别标注已 ${staleSeconds} 秒未与画面对齐，旧框已隐藏`}</div>}</> : null
+  function confirmTrack(id: string) {
+    if (!picking) return
+    setMenu(null)
+    if (readCurrentTracks().filter(d => pickable(d) && d.track_id === id).length === 1) trackPicking?.onPick(id)
+  }
+
+  function pickTrack(event: React.MouseEvent<HTMLCanvasElement>) {
+    event.stopPropagation()
+    if (menu) { setMenu(null); return }
+    const painted = paintedRef.current
+    if (!trackPicking || !painted || !video || video.paused || video.ended || video.seeking ||
+        performance.now() >= painted.expires || video.currentTime >= painted.mediaExpires) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (!rect.width || !rect.height) return
+    const { layout, frameW, frameH } = painted
+    const x = ((event.clientX - rect.left) * painted.width / rect.width - layout.offsetX) * frameW / layout.dispW
+    const y = ((event.clientY - rect.top) * painted.height / rect.height - layout.offsetY) * frameH / layout.dispH
+    if (x < 0 || x >= frameW || y < 0 || y >= frameH) return
+    const hits = painted.detections.filter(pickable).filter(({ bbox }) =>
+      x >= bbox.x && x <= bbox.x + bbox.w && y >= bbox.y && y <= bbox.y + bbox.h)
+    if (hits.length === 1) return confirmTrack(hits[0]!.track_id)
+    if (hits.length < 2) return
+    const placement = menuPlacement(rect, painted, event)
+    if (!placement) return
+    const choices = Array.from(new Map(hits.map(d => {
+      const plate = d.model_extra?.attributes?.plate_text?.value
+      return [d.track_id, typeof plate === 'string' ? plate : d.class_name] as const
+    })), ([id, label]) => ({ id, label }))
+    setMenu({ choices, ...placement })
+  }
+
+  return enabled ? <><canvas ref={canvasRef}
+    className={`absolute inset-0 h-full w-full ${picking ? 'cursor-crosshair' : 'pointer-events-none'}`}
+    onClick={picking ? pickTrack : undefined}
+    onDoubleClick={picking ? e => e.stopPropagation() : undefined}
+    data-testid="ai-detection-overlay" />
+    {picking && menu && <div className="ai-track-menu-bounds" style={menu.bounds}>
+      <div ref={menuRef} role="menu" aria-label="选择跟踪目标" className="ai-track-menu" style={menu.position}
+        onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}
+        onKeyDown={e => {
+          e.stopPropagation()
+          const buttons = Array.from(e.currentTarget.querySelectorAll('button'))
+          const index = buttons.indexOf(e.target as HTMLButtonElement)
+          const keys: Record<string, number> = { ArrowDown: (index + 1) % buttons.length,
+            ArrowUp: (index + buttons.length - 1) % buttons.length, Home: 0, End: buttons.length - 1 }
+          const next = keys[e.key]
+          if (next !== undefined) { e.preventDefault(); buttons[next]?.focus() }
+        }}>
+        {menu.choices.map(({ id, label }) => {
+          const short = id.split(':').at(-1) || id
+          const ambiguous = menu.choices.some(other => other.id !== id && other.label === label && other.id.split(':').at(-1) === short)
+          return <button type="button" role="menuitem" key={id} title={id} onClick={() => confirmTrack(id)}>
+            {label} #{ambiguous ? id : short}
+          </button>
+        })}
+      </div>
+    </div>}
+    {staleSeconds > 0 && <div role="status" className="pointer-events-none absolute bottom-12 left-2 z-20 max-w-[90%] rounded bg-black/75 px-2 py-1 text-xs text-amber-200">{compact ? (videoStalled ? '画面停滞' : '标注延迟') : videoStalled ? '播放画面暂时停滞，正在等待恢复' : `识别标注已 ${staleSeconds} 秒未与画面对齐，旧框已隐藏`}</div>}</> : null
 }

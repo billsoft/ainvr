@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { VideoPlayer } from '@/components/player/VideoPlayer'
+import type { TrackPicking } from '@/components/player/AiDetectionOverlay'
 import { attachWebRTC } from '@/components/player/webrtc'
 
 // 叠框状态提示必须稳定（设计 §8.2）：近似 / 设备不支持 / 未收到识别数据 这些已判定的
@@ -8,7 +9,9 @@ import { attachWebRTC } from '@/components/player/webrtc'
 // 回归：那段初始化以 overlaySync 为依赖，任何非 synced/syncing 的状态一设置就被改回
 // syncing——近似模式只上报一次，于是永远显示"同步中"；no_sei 的 3 次重试上限也失效。
 
-const overlayProps: Array<{ onMode?: (m: 'exact' | 'approx') => void }> = []
+const overlayProps: Array<{ onMode?: (m: 'exact' | 'approx') => void; trackPicking?: TrackPicking | null }> = []
+const panel = vi.fn<(_: { video: HTMLVideoElement | null; onTrackPickingChange: (p: TrackPicking | null) => void }) => null>(() => null)
+vi.mock('@/components/player/PtzPanel', () => ({ PtzPanel: (p: Parameters<typeof panel>[0]) => panel(p) }))
 vi.mock('@/components/player/AiDetectionOverlay', () => ({
   AiDetectionOverlay: (p: { onMode?: (m: 'exact' | 'approx') => void }) => {
     overlayProps.push(p)
@@ -52,6 +55,26 @@ afterEach(() => {
 })
 
 describe('VideoPlayer 叠框状态不被初始化覆盖', () => {
+  it('挂载后立即把真实 video 和稳定的点选回调交给面板', async () => {
+    vi.mocked(attachWebRTC).mockImplementation(async () => handle(true))
+    const ptz = { channelId: 'cam', open: true, onToggle: vi.fn() }
+    const view = render(<VideoPlayer {...props} ptz={ptz} />)
+    await waitFor(() => expect(attachWebRTC).toHaveBeenCalled())
+    const video = screen.getByTestId('video-player').querySelector('video')
+    expect(video).toBeInstanceOf(HTMLVideoElement)
+    expect(panel.mock.lastCall?.[0].video).toBe(video)
+    const change = panel.mock.lastCall![0].onTrackPickingChange
+    const picking = { selectedId: 'cam:2', onPick: vi.fn() }
+    act(() => change(picking))
+    expect(overlayProps.at(-1)?.trackPicking).toBe(picking)
+    expect(panel.mock.lastCall?.[0].onTrackPickingChange).toBe(change)
+    act(() => change(null))
+    expect(overlayProps.at(-1)?.trackPicking).toBeNull()
+    act(() => change(picking))
+    view.rerender(<VideoPlayer {...props} ptz={{ ...ptz, open: false }} />)
+    view.rerender(<VideoPlayer {...props} ptz={ptz} />)
+    expect(overlayProps.at(-1)?.trackPicking).toBeNull()
+  })
   it('无 SEI 时真正重建连接且最多三次；晚到的识别数据仍能恢复', async () => {
     vi.mocked(attachWebRTC).mockImplementation(async () => handle(true))
     vi.useFakeTimers()

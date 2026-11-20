@@ -17,7 +17,7 @@ import { ALL_DAY_HOURS } from '@/types/recording'
 export interface RecordingService {
   health(): Promise<RecorderHealth>
   stats(): Promise<RecorderStats>
-  listChannels(): Promise<RecorderChannel[]>
+  listChannels(range?: {from:number;to:number}): Promise<RecorderChannel[]>
   getConfig(): Promise<RecorderConfig>
   preparePlayback(segmentId: string, signal?: AbortSignal): Promise<void>
   listSegments(channelId: string, fromTs: number, toTs: number, signal?: AbortSignal): Promise<RecordingSegment[]>
@@ -52,8 +52,8 @@ export function createHttpRecordingService(): RecordingService {
     async stats() {
       return request<RecorderStats>('/v1/recorder/stats')
     },
-    async listChannels() {
-      return request<RecorderChannel[]>('/v1/recorder/channels')
+    async listChannels(range) {
+      return request<RecorderChannel[]>('/v1/recorder/channels' + (range ? `?from=${range.from}&to=${range.to}` : ''))
     },
     async getConfig() {
       return request<RecorderConfig>('/v1/recorder/config')

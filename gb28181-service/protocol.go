@@ -65,7 +65,8 @@ type CatalogItem struct {
 	Status       string `xml:"Status" json:"status"`
 }
 type BusinessMessage struct {
-	HasSumNum  bool `xml:"-"`
+	Position   PTZPosition `xml:"-"`
+	HasSumNum  bool        `xml:"-"`
 	PresetList struct {
 		Count int         `xml:"Num,attr"`
 		Items []PTZPreset `xml:"Item"`
@@ -150,7 +151,8 @@ func ParseBusinessMessage(body []byte, maxItems int) (BusinessMessage, error) {
 				// These fields control routing, correlation and directory completion.
 				// encoding/xml otherwise silently lets a later scalar overwrite one.
 				switch x.Name.Local {
-				case "CmdType", "SN", "DeviceID", "Status", "Result", "Online", "SumNum", "DeviceList", "PresetList":
+				case "CmdType", "SN", "DeviceID", "Status", "Result", "Online", "SumNum", "DeviceList", "PresetList",
+					"Pan", "Tilt", "Zoom", "HorizontalFieldAngle", "VerticalFieldAngle", "MaxViewDistance":
 					if rootFields[x.Name.Local] {
 						return m, errors.New("duplicate business field")
 					}
@@ -197,6 +199,12 @@ func ParseBusinessMessage(body []byte, maxItems int) (BusinessMessage, error) {
 		return m, errors.New("missing catalog total")
 	}
 	m.HasSumNum = rootFields["SumNum"]
+	if m.Command == "PTZPosition" {
+		if err := xmlDecoder(body).Decode(&m.Position); err != nil {
+			return m, errors.New("invalid position measurement")
+		}
+		return m, nil
+	}
 	if m.Command == "PresetQuery" {
 		if !rootFields["PresetList"] || !presetCountPresent || m.SumNum < 0 || m.SumNum > 255 || m.PresetList.Count != len(m.PresetList.Items) || len(m.PresetList.Items) > 255 {
 			return m, errors.New("invalid preset list")
@@ -240,7 +248,7 @@ func QueryXMLForProfile(command, id string, sn uint32, profile string) ([]byte, 
 		return nil, errors.New("invalid query identity")
 	}
 	switch command {
-	case "Catalog", "DeviceInfo", "DeviceStatus", "PresetQuery":
+	case "Catalog", "DeviceInfo", "DeviceStatus", "PresetQuery", "PTZPosition":
 	default:
 		return nil, errors.New("unsupported query")
 	}

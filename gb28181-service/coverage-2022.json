@@ -175,10 +175,10 @@
     },
     {
       "clause": "7.12;9.12",
-      "scope": "excluded",
-      "status": "excluded",
-      "requirement": "语音广播和双向对讲排除，不能与接收音频混淆。",
-      "evidence": "用户确认的实施范围"
+      "scope": "applicable",
+      "status": "tested",
+      "requirement": "单设备广播，接收设备回呼、ACK 后发送 G.711 RTP/UDP。现场监听使用原点播音轨。",
+      "evidence": "broadcast.go; broadcast_test.go; 190 海康设备广播建立、静音帧投递及关闭验证，扬声器听感未验收"
     },
     {
       "clause": "7.13;9.13",

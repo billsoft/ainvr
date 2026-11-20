@@ -59,7 +59,7 @@ const sceneContextSchema = z.object({
 }).strict();
 export type NativeSceneContext = z.infer<typeof sceneContextSchema>;
 const nativeMatchSchema = z.object({
-  model_version: model, partial: z.boolean(),
+  ranking_mode: z.enum(['combined','similarity']).optional(), model_version: model, partial: z.boolean(),
   // Whole-frame spaces store several view vectors per scene sample; the service names the layout and the view that matched.
   view_layout: z.string().min(1).max(64).optional(),
   items: z.array(z.object({
@@ -70,7 +70,7 @@ const nativeMatchSchema = z.object({
   }).passthrough()).max(60),
 }).strict();
 export interface NativeMatch {
-  model_version: string; partial: boolean;
+  ranking_mode?: 'combined' | 'similarity'; model_version: string; partial: boolean;
   items: (NativeSample & { similarity: number; evidence_refs?: z.infer<typeof evidenceRefsSchema>; matched_view?: number;
     scene_context?: NativeSceneContext })[];
 }
@@ -79,7 +79,7 @@ const rangeSchema = z.object({
 }).strict();
 export type NativeCoverageRange = z.infer<typeof rangeSchema>;
 export interface NativeSearchSession {
-  search_id: string; version: string; query: string; model_version: string;
+  ranking_mode?: 'combined' | 'similarity'; search_id: string; version: string; query: string; model_version: string;
   min_similarity?: number;
   verify: boolean; expires_ms: number; published: boolean;
   coverage: 'unknown' | 'partial' | 'sampled'; scope: SearchScope;
@@ -89,7 +89,7 @@ export interface NativeSearchSession {
 const actorSchema = z.string().min(1).max(128).refine(value => !/[\u0000-\u001f\u007f]/u.test(value));
 const versionSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const nativeSessionSchema = z.object({
-  search_id: identity, version: versionSchema, query: z.string().min(1).max(1024), model_version: model,
+  ranking_mode: z.enum(['combined','similarity']).optional(), search_id: identity, version: versionSchema, query: z.string().min(1).max(1024), model_version: model,
   min_similarity: z.number().finite().min(-1).max(1).optional(),
   verify: z.boolean(), expires_ms: integer, published: z.boolean(), coverage: z.enum(['unknown', 'partial', 'sampled']),
   scope: z.object({ channel_ids: z.array(identity).min(1).max(100), from_ms: integer, to_ms: integer, limit: z.literal(60) }).strict(),
@@ -383,14 +383,14 @@ export class SearchNativeClient {
     } catch (error) { if (error instanceof SearchNativeError) throw error; throw new SearchNativeError('invalid_response'); }
   }
   async publishSearch(id: string, actor: string, version: string, coverage: NativeSearchSession['coverage'],
-    items: { sample_id: string; similarity: number; fingerprint?: string; evidence_refs?: z.infer<typeof evidenceRefsSchema> }[]): Promise<boolean> {
+    items: { sample_id: string; similarity: number; fingerprint?: string; evidence_refs?: z.infer<typeof evidenceRefsSchema> }[], ranking_mode?: NativeMatch['ranking_mode']): Promise<boolean> {
     identity.parse(id); actorSchema.parse(actor); versionSchema.parse(version);
     z.enum(['unknown', 'partial', 'sampled']).parse(coverage);
     z.array(z.object({ sample_id: identity, similarity: z.number().finite().min(-1.00001).max(1.00001), fingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(), evidence_refs: evidenceRefsSchema.optional() }).strict()).max(60).parse(items);
     for(const item of items) if(item.evidence_refs && (!item.fingerprint || !item.evidence_refs.some(ref => ref.sample_id === item.sample_id && ref.fingerprint === item.fingerprint)))
       throw new SearchNativeError('invalid_response');
     try {
-      return z.object({ published: z.boolean() }).strict().parse(await this.json('/v1/searches/publish', { id, actor, version, coverage, items })).published;
+      return z.object({ published: z.boolean() }).strict().parse(await this.json('/v1/searches/publish', { id, actor, version, coverage, items, ...(ranking_mode ? { ranking_mode } : {}) })).published;
     } catch (error) { if (error instanceof SearchNativeError) throw error; throw new SearchNativeError('invalid_response'); }
   }
   async readSearch(id: string, actor: string, offset = 0, limit = 20): Promise<NativeSearchSession | null> {

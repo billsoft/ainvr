@@ -22,6 +22,7 @@
 #include "adapters/plate_runtime.hpp"
 #include "adapters/detection_decode.hpp"
 #include "face_identity/integration.hpp"
+#include "optical_flow/routes.hpp"
 #include <httplib.h>
 #include <atomic>
 #include <chrono>
@@ -110,6 +111,9 @@ int main(int argc, char** argv) {
       [&]{return !stopping&&license.IsLicensed();},model_residency,
       [store]{return store->LoadRawMerged().value("face_identity",nlohmann::json());},
       [store](const nlohmann::json& selection){store->SaveOverlay({{"face_identity",selection}});});
+    auto optical_flow=std::make_shared<ainvr::flow::Runtime>(
+      [manager]{return manager->CurrentApiKey().value_or("");},
+      [&]{return !stopping&&license.IsLicensed();},ainvr::flow::NativeFactory(argv[3]));
     httplib::Server server;
     server.set_pre_routing_handler([](const httplib::Request& q, httplib::Response&) {
       const_cast<httplib::Request&>(q).headers.erase("Accept-Encoding");
@@ -120,6 +124,7 @@ int main(int argc, char** argv) {
     server.set_payload_max_length(8 * 1024 * 1024);
     server.set_read_timeout(5); server.set_write_timeout(5);
     face_identity->Register(server);
+    ainvr::flow::Register(server,optical_flow);
     ai_service::api::RegisterRoutes(server, manager, [&] {
       auto space = std::filesystem::space(std::filesystem::path(argv[2]).parent_path());
       const auto applied=config_client?config_client->AppliedVersion():std::nullopt;
@@ -265,6 +270,7 @@ int main(int argc, char** argv) {
     if(config_client)config_client->Stop();
     stopping = 1; control.join(); search_owner->Stop(); search_hardware->Stop();
     face_identity->Stop();
+    optical_flow->Stop();
     ai_service::output::RetainConfiguredFaceEnhancers({});
     model_residency->SetBase({});
     ai_service::output::DrainRetiredFaceEnhancers();

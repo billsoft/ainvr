@@ -29,6 +29,7 @@ export interface SearchResult {
   feedback: 'relevant' | 'irrelevant' | null
 }
 export interface SearchPageResult {
+  ranking_mode?: 'combined' | 'similarity';
   min_similarity?: number
   search_id: string; scope: SearchScope; model_version: string
   coverage: 'unknown' | 'partial' | 'sampled'; items: SearchResult[]; next_cursor: string | null

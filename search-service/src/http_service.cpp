@@ -231,7 +231,9 @@ Json MatchEngine::Match(const std::string& text, const Scope& scope) {
   if (!lock.owns_lock()) throw std::runtime_error("search_busy");
   if (!encoder_.Healthy()) throw std::runtime_error("search_encoding_failed");
   auto matches = Ranked(TextVector(text), scope, RankRefineOptionsFor(dimensions_));
-  return ProjectedMatches(matches.items, matches.partial, views_, model_);
+  auto result = ProjectedMatches(matches.items, matches.partial, views_, model_);
+  result["ranking_mode"] = objects_ ? "combined" : "similarity";
+  return result;
 }
 ProjectionResult MatchEngine::Ranked(const std::vector<float>& query, const Scope& scope, const RankRefineOptions& options) {
   if (!objects_) {
@@ -259,10 +261,16 @@ Json MatchEngine::MatchVector(std::vector<float> picture, const std::string& tex
   // would cut almost everything after the best hit, so pictures keep the near-duplicate collapse only.
   RankRefineOptions picture_options; picture_options.relative_window = 0;
   auto by_picture = Ranked(picture, scope, picture_options);
-  if (text.empty()) return ProjectedMatches(by_picture.items, by_picture.partial, views_, model_);
+  if (text.empty()) {
+    auto result = ProjectedMatches(by_picture.items, by_picture.partial, views_, model_);
+    result["ranking_mode"] = objects_ ? "combined" : "similarity";
+    return result;
+  }
   auto by_text = Ranked(TextVector(text), scope, RankRefineOptionsFor(dimensions_));
-  return ProjectedMatches(FuseRankings(by_picture.items, by_text.items, image_weight, scope.limit),
+  auto result = ProjectedMatches(FuseRankings(by_picture.items, by_text.items, image_weight, scope.limit),
                           by_picture.partial || by_text.partial, views_, model_);
+  result["ranking_mode"] = "combined";
+  return result;
 }
 HttpService::HttpService(HistoryMongo* history, HttpAccess access, MatchEngine* engine)
     : history_(history), access_(std::move(access)), engine_(engine) {
@@ -637,7 +645,9 @@ void HttpService::Register(httplib::Server& server) {
     Send(response, {{"version", history_->BeginSearch(input)}});
   }));
   server.Post("/v1/searches/publish", Handle([this](const auto& request, auto& response) {
-    const Json body = Body(request); Keys(body, {"id", "actor", "version", "coverage", "items"});
+    const Json body = Body(request);
+    if (body.contains("ranking_mode")) Keys(body, {"id", "actor", "version", "coverage", "items", "ranking_mode"});
+    else Keys(body, {"id", "actor", "version", "coverage", "items"});
     const auto& items = body.at("items");
     if (!items.is_array() || items.size() > 60) throw std::invalid_argument("request_shortlist");
     std::vector<SearchSessionCandidate> candidates;
@@ -653,7 +663,7 @@ void HttpService::Register(httplib::Server& server) {
       candidates.push_back(std::move(candidate));
     }
     const bool published = history_->PublishSearch(Uuid(body.at("id")), Text(body.at("actor"), 128),
-      Text(body.at("version"), 64), candidates, Text(body.at("coverage"), 8));
+      Text(body.at("version"), 64), candidates, Text(body.at("coverage"), 8), body.value("ranking_mode", std::string{}));
     Send(response, {{"published", published}});
   }));
   server.Post("/v1/searches/read", Handle([this](const auto& request, auto& response) {
@@ -676,6 +686,7 @@ void HttpService::Register(httplib::Server& server) {
       {"verify", q.verify}, {"expires_ms", q.expires_ms}, {"published", page->published}, {"coverage", page->coverage},
       {"scope", {{"channel_ids", channels}, {"from_ms", q.scope.from_ms}, {"to_ms", q.scope.to_ms}, {"limit", 60}}},
       {"items", items}, {"next_offset", page->next_offset ? Json(*page->next_offset) : Json(nullptr)}};
+    if (!page->ranking_mode.empty()) result["ranking_mode"] = page->ranking_mode;
     if(q.min_similarity) result["min_similarity"] = *q.min_similarity;
     Send(response, result);
   }));

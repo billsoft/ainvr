@@ -50,7 +50,7 @@ struct SearchSessionCandidate { std::string sample_id; double similarity; std::s
 struct SearchSessionItem { Sample sample; double similarity; std::optional<bool> relevant; std::optional<nlohmann::json> verification{}; nlohmann::json frames = nlohmann::json::array(); int64_t started_ms = 0, ended_ms = 0; };
 struct SearchSessionPage {
   SearchSessionRequest request;
-  std::string version, coverage = "unknown";
+  std::string version, coverage = "unknown", ranking_mode;
   bool published = false;
   std::vector<SearchSessionItem> items;
   std::optional<size_t> next_offset;
@@ -147,7 +147,7 @@ class HistoryMongo {
   // storage; ordering never changes when feedback arrives or evidence expires.
   std::string BeginSearch(const SearchSessionRequest& request);
   bool PublishSearch(const std::string& id, const std::string& actor, const std::string& version,
-                     const std::vector<SearchSessionCandidate>& candidates, const std::string& coverage);
+                     const std::vector<SearchSessionCandidate>& candidates, const std::string& coverage, const std::string& ranking_mode = {});
   std::optional<SearchSessionPage> ReadSearch(const std::string& id, const std::string& actor,
                                             size_t offset = 0, size_t limit = 20);
   bool SearchFeedback(const std::string& id, const std::string& actor, const std::string& sample_id, bool relevant);

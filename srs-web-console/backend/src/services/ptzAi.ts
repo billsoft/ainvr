@@ -45,6 +45,10 @@ export function ptzAi(settings: () => Promise<AppSettings>, pg: PgConfigStore, f
     return limitedJson(r);
   };
   return {
+    latestFrame: async (id:string) => {
+      const value=await call('/api/v1/channels/'+encodeURIComponent(id)+'/results/latest') as {result?:unknown};
+      return value.result;
+    },
     list: async () =>
       z.object({ channels: z.array(ai).max(1024) }).parse(await call('/api/v1/channels')).channels,
     checkReset: async (ids: string[]) => {

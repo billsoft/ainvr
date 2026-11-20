@@ -241,3 +241,7 @@ describe('native picture query', () => {
     await expect(fixture(page).client.matchImage([NaN], '', undefined, scope, 'pair-v1')).rejects.toMatchObject({ code: 'image_invalid' });
   });
 });
+  it.each(['combined','similarity'])('keeps %s through native match and persisted page', async mode => {
+    expect((await fixture({...session,ranking_mode:mode}).client.readSearch(sessionId,'operator'))?.ranking_mode).toBe(mode);
+    expect((await fixture({...page,ranking_mode:mode}).client.match('person', scope, 'pair-v1')).ranking_mode).toEqual(mode);
+  });

@@ -23,6 +23,8 @@ export interface RecordingDrop {
 }
 
 export interface RecorderChannel {
+  rangeHasRecording?: boolean
+  latestSegmentTs?: number | null
   id: string
   name: string
   kind: RecorderChannelKind

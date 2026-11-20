@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import type {DownstreamProtocol} from '../types/channel.js';
 import type {ChannelService} from './channelService.js';
 import {GB28181Store,GBError} from '../store/gb28181Store.js';
+import {limitedBytes} from './internalServiceHttp.js';
 
 export class GB28181Sync {
   private pending:Promise<void>|null=null;
@@ -29,6 +30,35 @@ export class GB28181Sync {
       if(length>4*1024*1024)throw new GBError('网关响应超过容量限制',503);chunks.push(value);}
     }finally{await reader.cancel();}
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  }
+  async broadcastSink(binding: string, signal: AbortSignal) {
+    signal.throwIfAborted();
+    const {settings} = await this.store.readSettings();
+    const token = await this.store.pg.getSecret('gb28181/gateway-token');
+    if (!token || !settings.enabled) throw new GBError('国标广播网关未启用', 503);
+    const base = settings.gatewayUrl.replace(/\/$/, '') + '/v1/broadcast/';
+    const send = async (action: string, body: unknown) => {
+      const timeout = AbortSignal.timeout(action === 'start' ? 13000 : 2500);
+      const response = await fetch(base + action, {
+        method:'POST', redirect:'error', headers:{'Content-Type':'application/json','X-Service-Token':token},
+        body:JSON.stringify(body), signal:action === 'stop' ? timeout : AbortSignal.any([timeout, signal]),
+      });
+      if (!response.ok) {
+        if (action === 'stop' && response.status === 410) {
+          await response.body?.cancel();
+          return {}; // The gateway has already released this session.
+        }
+        const reason = (await limitedBytes(response, 4096)).toString('utf8').trim();
+        const known = ['设备离线或正在喊话', '设备未接受广播通知', '设备未完成广播协商', '设备结束了广播', '设备拒绝广播'];
+        throw new GBError(known.includes(reason) ? reason : '国标音频广播网关不可用', response.status === 422 ? 422 : 503);
+      }
+      return JSON.parse((await limitedBytes(response, 4096)).toString('utf8')) as {session?: string};
+    };
+    const {session} = await send('start', {binding});
+    if (typeof session !== 'string' || !/^[0-9a-f]{32}$/.test(session)) throw new GBError('国标广播会话无效',503);
+    const close = async () => { await send('stop', {session}); };
+    if (signal.aborted) { await close(); signal.throwIfAborted(); }
+    return { close, write: async (pcm: Buffer) => { await send('audio', {session,pcm:pcm.toString('base64')}); } };
   }
   async refresh(device:string){return this.call(`/v1/devices/${device}/catalog-refresh`,{});}
   synchronize(){

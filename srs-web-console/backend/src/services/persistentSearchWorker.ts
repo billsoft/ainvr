@@ -204,7 +204,7 @@ export class PersistentSearchWorker implements SearchWorker {
         // published after loss of a channel grant.
         await this.authorize(input.scope, actor);
         await this.options.native.publishSearch(input.request_id, actor, version, coverage,
-          hits.items.filter(item => input.min_similarity === undefined || item.similarity >= input.min_similarity).map(item => ({ sample_id: item.id, similarity: item.similarity, ...(item.fingerprint ? { fingerprint: item.fingerprint } : {}), ...(item.evidence_refs ? { evidence_refs: item.evidence_refs } : {}) })));
+          hits.items.filter(item => input.min_similarity === undefined || item.similarity >= input.min_similarity).map(item => ({ sample_id: item.id, similarity: item.similarity, ...(item.fingerprint ? { fingerprint: item.fingerprint } : {}), ...(item.evidence_refs ? { evidence_refs: item.evidence_refs } : {}) })), ...(hits.ranking_mode ? [hits.ranking_mode] as const : []));
       }
       const page = await this.options.native.readSearch(input.request_id, actor);
       if (!page) throw expired();
@@ -265,7 +265,7 @@ export class PersistentSearchWorker implements SearchWorker {
     for (const [index, sample] of snapshot.items.entries()) items.push(await this.resultProjection(sample, snapshot, actor, visible, signal, offset + index));
     const current = await this.authorize(snapshot.scope, actor);
     if (items.some(item => item.recording.channel_id && !current.has(item.recording.channel_id))) throw noAccess();
-    return projection(searchPageSchema, { min_similarity: snapshot.min_similarity, search_id: snapshot.search_id, scope: snapshot.scope, model_version: snapshot.model_version,
+    return projection(searchPageSchema, { ranking_mode: snapshot.ranking_mode, min_similarity: snapshot.min_similarity, search_id: snapshot.search_id, scope: snapshot.scope, model_version: snapshot.model_version,
       coverage: snapshot.coverage, items, next_cursor: snapshot.next_offset === null ? null : `v1.${snapshot.next_offset}` });
   }
   async page(id: string, cursor: string | undefined, actor: string): Promise<SearchPage | null> {

@@ -133,8 +133,8 @@ void RunSourceAdmissionCases(const std::string& uri,const std::string& database)
   try{
     HistoryMongo history(uri,database);history.Initialize();auto access=Access();
     access.source_admission=std::make_shared<SourceAdmission>();const auto admission=access.source_admission;
-    const RuntimeModelPin source{"siglip-so400m-i18n-full-int8",std::string(64,'b'),"search-v1-"+std::string(64,'b')};
-    const RuntimeModelPin target{"siglip2-base-full-int8",std::string(64,'c'),"search-v1-"+std::string(64,'c')};
+    const RuntimeModelPin source{"siglip2-base-full-int8",std::string(64,'b'),"search-v1-"+std::string(64,'b')};
+    const RuntimeModelPin target{"siglip-so400m-i18n-full-int8",std::string(64,'c'),"search-v1-"+std::string(64,'c')};
     access.ingestion_model=source.model_version;const auto at=Now()-2000;
     const auto sample=[&](int id,int64_t captured,bool scene){auto body=SampleJson(captured);body["id"]=Id(id);
       body["model_version"]=source.model_version;if(scene){body["kind"]="scene";body["track_id"]="";}return body;};
@@ -196,7 +196,7 @@ void RunSourceAdmissionCases(const std::string& uri,const std::string& database)
     Expect(client.Post("/v1/searches/feedback",auth,Json{{"id",Id(885)},{"actor","gate-operator"},{"sample_id",Id(880)},{"relevant",true}}.dump(),"application/json"),200);
     Json migration{{"job_id",Id(930)},{"worker",Id(931)},{"generation",3},{"actor","gate-operator"},{"payload_fingerprint",std::string(64,'a')},
       {"source",{{"sample_id",Id(880)},{"fingerprint",scene_ack.at("fingerprint")},{"jpeg_sha256",SampleSha256(std::string("\xff\xd8\xff\xd9",4))}}},{"target",pin(target)}};
-    std::vector<float> vector(768,0);vector[0]=1;migration["target"]["vector"]=vector;
+    std::vector<float> vector(1152,0);vector[0]=1;migration["target"]["vector"]=vector;
     const httplib::Headers management{{"x-service-token",std::string(48,'m')}};
     Expect(client.Post("/v1/model-migrations/write-target",management,migration.dump(),"application/json"),200);
     migration["target"].erase("vector");
@@ -328,6 +328,13 @@ int main() {
     Check(encoder.calls.load() == 0, "faulted encoder executed");
     encoder.healthy.store(true);
     auto matches = Expect(compute.Post("/v1/match", auth, query.dump(), "application/json"), 200);
+    Check(matches.at("ranking_mode") == "similarity", "text ranking metadata missing");
+    const Scope ranking_scope{{channel}, at - 1, at + 1, 20};
+    Check(engine.MatchVector({1, 0}, "", 0.5, ranking_scope).at("ranking_mode") == "similarity", "picture ranking metadata missing");
+    Check(engine.MatchVector({1, 0}, "person", 0.5, ranking_scope).at("ranking_mode") == "combined", "mixed ranking metadata missing");
+    MatchEngine objects_engine(history, encoder, 1, true);
+    objects_engine.Rebuild(ranking_scope);
+    Check(objects_engine.MatchVector({1, 0}, "", 0.5, ranking_scope).at("ranking_mode") == "combined", "object ranking metadata missing");
     Check(matches.at("items").size() == 1 && matches.at("items")[0].at("similarity") == 1 && !matches.at("partial").get<bool>(), "match/index projection");
     const auto encoded_once=encoder.calls.load();
     Expect(compute.Post("/v1/match", auth, query.dump(), "application/json"),200);
@@ -361,9 +368,16 @@ int main() {
     auto unpublished = Expect(compute.Post("/v1/searches/read", auth, read.dump(), "application/json"), 200);
     Check(!unpublished.at("published").get<bool>(), "query falsely complete");
     Json publish = {{"id", Id(40)}, {"actor", "fixture-operator"}, {"version", opened.at("version")},
-      {"coverage", "sampled"}, {"items", Json::array({{{"sample_id", Id(2)}, {"similarity", 1.0}}})}};
+      {"coverage", "sampled"}, {"ranking_mode","similarity"}, {"items", Json::array({{{"sample_id", Id(2)}, {"similarity", 1.0}}})}};
+    for (const auto& mode : {Json("unknown"), Json(3), Json(nullptr)}) {
+      auto invalid_publish=publish;invalid_publish["ranking_mode"]=mode;
+      Expect(compute.Post("/v1/searches/publish", auth, invalid_publish.dump(), "application/json"), 400);
+    }
     Check(Expect(compute.Post("/v1/searches/publish", auth, publish.dump(), "application/json"), 200).at("published"), "query not committed");
+    auto legacy_publish=publish;legacy_publish.erase("ranking_mode");
+    Check(!Expect(compute.Post("/v1/searches/publish", auth, legacy_publish.dump(), "application/json"), 200).at("published").get<bool>(), "legacy republish changed first acknowledged order");
     auto snapshot = Expect(compute.Post("/v1/searches/read", auth, read.dump(), "application/json"), 200);
+    Check(snapshot.at("ranking_mode") == "similarity", "published ranking mode missing");
     Check(snapshot.at("published") && snapshot.at("items").size() == 1 && snapshot.at("items")[0].at("feedback").is_null(), "query response mismatch");
     Json bound_image = {{"id", Id(40)}, {"actor", "fixture-operator"}, {"sample_id", Id(2)}, {"frame_id", Id(5)}};
     auto bound_bytes = compute.Post("/v1/searches/image", auth, bound_image.dump(), "application/json");

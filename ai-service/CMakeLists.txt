@@ -489,3 +489,5 @@ if(AINVR_S100P AND BUILD_TESTING)
 endif()
 
 include(cmake/pose_capabilities_tests.cmake)
+
+add_subdirectory(src/optical_flow)

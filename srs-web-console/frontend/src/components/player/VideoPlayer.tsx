@@ -28,7 +28,7 @@ import {
 } from './webrtc'
 import { connectionCapReached, mediaServerReachable, recoverFromConnectionCap, retryDelay } from './playerRecovery'
 import { inspectSeiDetections, SeiFrameCache, type SeiFrameDetections } from './seiDetections'
-import { AiDetectionOverlay } from './AiDetectionOverlay'
+import { AiDetectionOverlay, type ReadDisplayedTracks, type TrackPicking } from './AiDetectionOverlay'
 import { SavedZoneOverlay } from './SavedZoneOverlay'
 import type { ZonePreviewSource } from '@/features/zoneSourceGeometry'
 import { ArrivalTimeline, DisplayDelayEstimator, extractDecodeStatsRaw } from './approxAlign'
@@ -65,8 +65,10 @@ const FAILED_RETRY_MS = 5_000
 const VISIBILITY_RECONNECT_AFTER_MS = 10_000
 
 export interface VideoPlayerProps {
+  talkChannel?: string
   ptz?: {channelId:string;open:boolean;onToggle:()=>void}
   onArming?: (video: HTMLVideoElement) => void
+  overviewTile?: boolean
   compactZones?: boolean
   savedZoneSource?: ZonePreviewSource
   allowPanorama?: boolean
@@ -151,7 +153,9 @@ export function VideoPlayer({
   aiChannelId,
   savedZoneSource,
   onArming,
+  talkChannel,
   ptz,
+  overviewTile = false,
   compactZones = false,
   diagLabel,
   videoInfo,
@@ -159,6 +163,12 @@ export function VideoPlayer({
 }: VideoPlayerProps) {
   // 播放方式（设计 §8.3）：H.264 维持现状；H.265 按服务端（SRS 版本）+ 本机能力 + 码流档位
   // 选 WebRTC / HLS 兜底 / 明确不可播。服务端能力只在 H.265 时才去取。
+  const displayedTracks = useRef<ReadDisplayedTracks | null>(null)
+  const [trackPicking, setTrackPicking] = useState<TrackPicking | null>(null)
+  useEffect(() => {
+    if (!ptz?.open) setTrackPicking(null)
+  }, [ptz?.open])
+  const [armingHost,setArmingHost]=useState<HTMLDivElement|null>(null)
   const h265 = isH265(videoInfo?.codec)
   const serverRtcHevc = useServerRtcHevc(h265)
   const levelIdc = hevcLevelIdc(videoInfo)
@@ -207,6 +217,7 @@ export function VideoPlayer({
   const { panorama, panoramaReset, panoramaError, panoramaFailed, receivePanoramaCamera, drawPanoramaFrame, fullscreenError } = view
   const mountedRef = useRef(true)
   const cleanupRef = useRef<(() => void) | null>(null)
+  const [digitalZoom,setDigitalZoom] = useState(1)
   const [paused, setPaused] = useState(false)
   const [isMuted, setIsMuted] = useState(muted)
   // 叠框状态（设计 §8.2）：synced=逐帧；approx=近似；unsupported=播放方式没有 SEI 通道；
@@ -818,6 +829,7 @@ export function VideoPlayer({
       <div className="ptz-player-layout"><div className="ptz-player-main">
       <div className="relative min-h-0 flex-1 overflow-hidden">
       {fullscreenError && <div role="status" className="pointer-events-none absolute bottom-14 left-2 z-30 rounded bg-black/75 px-2 py-1 text-xs text-white">{fullscreenError}</div>}
+      <div className="absolute inset-0" style={{transform: !panorama && digitalZoom > 1 ? `scale(${digitalZoom})` : undefined}}>
       <video
         ref={videoRef}
         className="h-full w-full object-contain"
@@ -836,8 +848,11 @@ export function VideoPlayer({
       {savedZoneSource&&<SavedZoneOverlay key={savedZoneSource.id} video={videoEl} source={savedZoneSource} compact={compactZones} transformed={allowPanorama&&panorama} camera={view.camera} resetKey={state.generation}/>}
       {aiChannelId && (
         <AiDetectionOverlay
+          displayedTracks={ptz?.open ? displayedTracks : undefined}
+          trackPicking={ptz?.open && !panorama ? trackPicking : null}
           video={videoEl}
           enabled={true}
+          compact={overviewTile}
           showDetections={true}
           showTrails={true}
           drawFrame={panorama ? drawPanoramaFrame : undefined}
@@ -852,6 +867,14 @@ export function VideoPlayer({
         />
       )}
 
+      </div>
+      {overviewTile && (
+        <div className="pointer-events-none absolute inset-x-1 top-1 text-center text-[10px] text-white" role="status">
+          {(plan.kind === 'unsupported' || plan.kind === 'pending' || !videoHasSignal && state.status !== 'playing' || aiChannelId && overlaySync !== 'synced') &&
+            <span className="rounded bg-black/65 px-1.5 py-0.5">{plan.kind === 'unsupported' ? '编码暂不支持' : plan.kind === 'pending' ? '核对编码中' : !videoHasSignal && state.status === 'failed' ? '连接中断 · 重试中' : !videoHasSignal && state.status !== 'playing' ? '连接中' : overlaySync === 'approx' ? '标注近似对齐' : overlaySync === 'syncing' ? '标注同步中' : '标注暂不可用'}</span>}
+        </div>
+      )}
+      {!overviewTile && <>
       {aiChannelId && canConnect && overlaySync !== 'synced' && state.status === 'playing' && (
         <div className="pointer-events-none absolute bottom-10 left-2 z-10 rounded-base bg-black/65 px-2 py-1 text-xs text-white" role="status">
           {overlaySync === 'unsupported'
@@ -926,6 +949,7 @@ export function VideoPlayer({
         </div>
       )}
 
+      </>}
       {/* 标题角标（聚焦大画面场景传空串关闭，改用左下角 footerBadge） */}
       {title && (
         <div className="pointer-events-none absolute left-2 top-2 rounded-base bg-black/50 px-2 py-1 text-xs text-white">
@@ -948,11 +972,13 @@ export function VideoPlayer({
       {/* 控制栏 */}
       {showControls && (
         <LivePlayerToolbar
+          digitalZoom={digitalZoom} setDigitalZoom={setDigitalZoom} panoramaActive={panorama}
           paused={paused}
           isMuted={isMuted}
           togglePlay={togglePlay}
           toggleMute={toggleMute}
           onArming={onArming}
+          talkChannel={talkChannel}
           onPtz={ptz?.onToggle}
           ptzOpen={ptz?.open}
           chain={chain}
@@ -964,8 +990,12 @@ export function VideoPlayer({
           canConnect={canConnect}
         />
       )}
+      {aiChannelId && ptz?.open && <div className="bg-slate-900 px-2 text-slate-100" ref={setArmingHost}/>}
       </div>
-      {ptz?.open&&<PtzPanel key={ptz.channelId} channelId={ptz.channelId} onClose={ptz.onToggle}/>}
+      {ptz?.open && <PtzPanel key={ptz.channelId} channelId={ptz.channelId}
+        armingHost={armingHost} displayedTracks={displayedTracks} onTrackPickingChange={setTrackPicking}
+        followProcessor={!paused && !panorama && videoHasSignal ? aiChannelId : undefined}
+        isAiOutput={!!aiChannelId} video={panorama ? null : videoEl} onClose={ptz.onToggle}/>}
       </div>
     </div>
   )

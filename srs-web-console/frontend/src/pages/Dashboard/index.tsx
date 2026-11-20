@@ -1,3 +1,4 @@
+import {channelService} from '@/api/channelService'
 import {VehicleServiceStatus} from './VehicleServiceStatus'
 import {ServiceMemoryBudget} from './ServiceMemoryBudget'
 import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
@@ -17,6 +18,7 @@ import { names, bytes, percent, wholeHostCpu, time, input, button } from './form
 export default function DashboardPage(){
   const pollMs = useSettingsStore(s => s.settings?.pollIntervalMs ?? 5000)
   const [params,setParams]=useSearchParams(),tab=params.get('tab')==='logs'?'logs':'overview'
+  const [channelHealth,setChannelHealth]=useState('通道状态未知')
   const [summary,setSummary]=useState<Summary|null>(null),[history,setHistory]=useState<Snapshot[]>([])
   const [error,setError]=useState(''),[historyError,setHistoryError]=useState(''),[hours,setHours]=useState(1)
   const [metricService,setMetricService]=useState('host'),[settingsOpen,setSettingsOpen]=useState(false)
@@ -32,6 +34,10 @@ export default function DashboardPage(){
     let cancelled=false,timer:ReturnType<typeof setTimeout>
     const tick=async()=>{
       if(!document.hidden){try{const data=await api.summary();if(!cancelled){setSummary(data);setError('')}}catch(e){if(!cancelled)setError((e as Error).message)}}
+      if(!document.hidden && !cancelled){
+        try { const [rows,streams]=await Promise.all([channelService.list(),api.streamHealth()]); if(!cancelled)setChannelHealth(`通道 ${rows.filter(row=>row.status.online).length}/${rows.length} 在线 · ${streams.known ? streams.problems.length ? streams.problems.length+' 路中断' : '无中断' : '中断状态未知'}`) }
+        catch { if(!cancelled)setChannelHealth('通道状态未知') }
+      }
       if(!cancelled)timer=setTimeout(tick,pollMs)
     }
     void tick();return()=>{cancelled=true;clearTimeout(timer)}
@@ -200,7 +206,7 @@ export default function DashboardPage(){
     </nav>
     {tab==='logs'?<LogViewer initialSource={params.get('source')??''}/>:<>
       <div className="grid gap-4 xl:grid-cols-[1fr_2fr]">
-        <div className="rounded-2xl bg-slate-900 p-6 text-white"><p className="text-sm text-slate-300">设备 · 运行概况</p><h2 className="mt-3 text-2xl font-semibold">{!snap?'等待采集':stale?'数据已过期':unhealthy.length?`${unhealthy.length} 个服务需检查`:'核心服务运行正常'}</h2><p className="mt-3 text-sm text-slate-300">{services.length-unhealthy.length} / {services.length} 服务正常 · 最高温度 {snap?.host.temperatureC?.toFixed(1)??'—'}℃</p><p className="mt-4 text-xs leading-5 text-slate-400">先判断整机余量，再比较服务消耗；异常与日志联动，不用在多个页面之间查找。</p></div>
+        <div className="rounded-2xl bg-slate-900 p-6 text-white"><p className="text-sm text-slate-300">设备 · 运行概况</p><h2 className="mt-3 text-2xl font-semibold">{!snap?'等待采集':stale?'数据已过期':unhealthy.length?`${unhealthy.length} 个服务需检查`:'核心服务运行正常'} · {channelHealth}</h2><p className="mt-3 text-sm text-slate-300">{services.length-unhealthy.length} / {services.length} 服务正常 · 最高温度 {snap?.host.temperatureC?.toFixed(1)??'—'}℃</p><p className="mt-4 text-xs leading-5 text-slate-400">先判断整机余量，再比较服务消耗；异常与日志联动，不用在多个页面之间查找。</p></div>
         <div className="grid gap-3 sm:grid-cols-2">
           {[
             {label:'CPU · 整机利用率',color:'#2563eb',kind:'cpu' as const,unit:'%',stats:cpuCard,sparkPoints:recentSlice(hostSeries('cpu'),WINDOWS.cpu),scale:100,fallback:percent(snap?.host.cpuPercent,2),fallbackRatio:snap?.host.cpuPercent},

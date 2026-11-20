@@ -10,7 +10,7 @@ describe('tracking continuity and throughput are separate', () => {
       config: { stream: { url: 'rtmp://127.0.0.1/live/test' }, model: { name: 'yolo26x', adapter: 'yolo26_bpu' }, inference_fps: 2, publish: { enabled: false } },
       stats: { inference_fps_actual: 2, source_fps: 30, tracking_capability: { status: 'active', continuity_gap: gap, cadence: { meets_target: meets, measured_fps: 2, minimum_configured_fps: 2 } } },
     } as AiChannel
-    render(<AiChannelCard channel={channel} disabled={false} onStart={vi.fn()} onStop={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} onViewResult={vi.fn()} onPreview={vi.fn()} />)
+    render(<AiChannelCard channel={channel} disabled={false} onStart={vi.fn()} onStop={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()} />)
   }
   it('reports a cadence warning without claiming that tracking stopped', () => {
     show(false, false)

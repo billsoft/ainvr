@@ -10,6 +10,28 @@ import { GB28181Store } from '../store/gb28181Store.js';
 import { PtzGuardedSnapshot } from '../services/ptzGuardedSnapshot.js';
 import { runMigrations } from '../store/migrator.js';
 const enabled = process.env.AINVR_PTZ_TEST_PG === '1';
+it.skipIf(!enabled)('serializes calibration saves, version checks and shared motor epoch invalidations in PG', async () =>
+  isolated(async store => {
+    const motor = 'shared', scope = 'gb-view', other = 'onvif-view';
+    const snapshot = {version:1 as const, records:[{axis:'pan' as const,sign:-1 as const,
+      speed:0.2,durationMs:150,displacement:0.15,at:123}]};
+    expect(await store.calibration(motor,scope)).toEqual({epoch:0,revision:0,snapshot:null});
+    const save = (revision:number) => store.saveCalibration(motor,scope,0,revision,snapshot);
+    for (const revision of [0,1]) {
+      const results = await Promise.allSettled([save(revision),save(revision)]);
+      expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+    }
+    expect(await new PtzStore(store.pool).calibration(motor,scope)).toEqual({epoch:0,revision:2,snapshot});
+    await store.saveCalibration(motor,other,0,0,snapshot);
+    await store.saveCalibration('separate',other,0,0,snapshot);
+    await Promise.allSettled([store.invalidateCalibration(motor),save(2)]);
+    for (const key of [scope,other]) {
+      expect(await store.calibration(motor,key)).toEqual({epoch:1,revision:0,snapshot:null});
+      await expect(store.saveCalibration(motor,key,0,0,snapshot)).rejects.toThrow('ptz_calibration_stale');
+    }
+    expect(await store.calibration('separate',other)).toEqual({epoch:0,revision:1,snapshot});
+    expect(await store.saveCalibration(motor,scope,1,0,snapshot)).toEqual({revision:1});
+  }));
 async function isolated(run: (store: PtzStore, pg: PgConfigStore) => Promise<void>) {
   const schema = 'ptz_' + randomUUID().replaceAll('-', ''),
     connection = { host: '127.0.0.1', port: 25439, user: 'alarm_test', database: 'alarm_test' };
@@ -128,6 +150,40 @@ it.skipIf(!enabled)(
       await after.removePreset('motor', 'native-7', 'operator');
       expect(await after.presets('motor')).toEqual([]);
     }),
+);
+it.skipIf(!enabled)('metadata edits preserve positions and serialize shortcut claims across physical aliases', async () =>
+  isolated(async (store, pg) => {
+    const group = ['gb28181:device/channel','onvif:motor'];
+    const [gb, onvif] = group as [string,string];
+    const position = {zoom:0.25};
+    await store.savePreset(gb,'7','old',1,position,'operator',group);
+    await store.updatePresetMetadata(gb,'7','new',null,'operator',group);
+    expect(await store.presets(gb)).toEqual([expect.objectContaining({id:'7',name:'new',shortcut:null,position,deviceState:'delivery_accepted'})]);
+    // Separate connections model workers receiving different orderings. An
+    // external holder makes a mismatched lock key fail deterministically.
+    const reversed = [onvif, gb, onvif];
+    const holder = await pg.pool.connect();
+    const contender = new Pool({...pg.pool.options, options: pg.pool.options.options + ' -c lock_timeout=400ms'});
+    try {
+      await holder.query('BEGIN');
+      await holder.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', ['ptz-preset:' + gb]);
+      await expect(new PtzStore(contender).updatePresetMetadata(onvif,'7','alias',2,'operator',reversed))
+        .rejects.toMatchObject({code:'55P03'});
+    } finally {
+      await holder.query('ROLLBACK');
+      holder.release();
+      await contender.end();
+    }
+    const edits = await Promise.allSettled([
+      store.updatePresetMetadata(gb,'7','alias',2,'operator',group),
+      store.updatePresetMetadata(onvif,'7','alias',2,'operator',reversed),
+    ]);
+    expect(edits.filter(r => r.status==='fulfilled')).toHaveLength(1);
+    expect(edits.find(r => r.status==='rejected')).toMatchObject({reason:{code:'ptz_shortcut_in_use'}});
+    await store.updatePresetMetadata(onvif,'camera-token','display name',3,'operator',group);
+    expect(await store.presets(onvif)).toContainEqual(expect.objectContaining({id:'camera-token',position:null,deviceState:'device_reported'}));
+    expect((await pg.pool.query("SELECT count(*)::int AS n FROM config_audit_logs WHERE action='ptz-preset-metadata'")).rows[0].n).toBe(3);
+  }),
 );
 it.skipIf(!enabled)('GB batch camera preferences and input mappings save atomically', async () =>
   isolated(async (store, pg) => {

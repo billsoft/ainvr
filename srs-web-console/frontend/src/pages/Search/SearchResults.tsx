@@ -41,7 +41,7 @@ export function SearchSimilarity({ value, kind = 'text' }: { value?: number; kin
   // A picture-and-description ranking combines two orderings; its score is not a similarity and is not shown.
   if (kind === 'image_text') return <p className="text-xs text-ink-subtle" title="综合参考图片和文字描述的排序，不是概率或已确认匹配。">图文综合排序</p>
   const valid = typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1.00001
-  const label = kind === 'image' ? '外观相似度' : '相似度'
+  const label = kind === 'image' ? '外观相似度' : '图文相似度'
   return <p className="text-xs tabular-nums text-ink-subtle" title={kind === 'image' ? '与参考图片的外观相似程度，不是概率，也不代表是同一个人或同一件物品。' : '图文向量的余弦相似度，不是概率或已确认匹配；仅用于辅助比较本次候选。'}>{valid ? `${label} ${value.toFixed(kind === 'image' ? 3 : 4)}` : '相似度暂不可用'}</p>
 }
 const frameLabels = { match: '命中时刻', before: '较早采样', after: '较晚采样', context: '其他关键时刻' }
@@ -130,9 +130,9 @@ export function SearchResults({ data, onUpdate, onMore, moreLoading, readOnlyRea
     : data.coverage === 'partial' ? '所选范围有未分析或缺失时段，结果可能不完整。' : '覆盖情况暂未确认，未找到不代表事件没有发生。'
   const replay = !onPlay && selected?.recording.state === 'available'
     ? evidencePlaybackHref(selected.recording.channel_id, selected.started_at, selected.ended_at) : null
-  const order = rankedIds ? '按复核状态排序' : queryKind === 'image' ? '按外观相似度排序' : queryKind === 'image_text' ? '按相关性排序' : '按图文相似度排序'
+  const order = rankedIds ? '按复核状态排序' : queryKind === 'image' ? '按外观相似度排序' : queryKind === 'image_text' ? '按相关性排序' : data.ranking_mode === 'combined' ? '综合排序' : data.ranking_mode === 'similarity' ? '按图文相似度排序' : '候选排序'
   const explanation = <>
-        {queryKind === 'text' ? <p>按图文相似度返回最多 60 条候选，不代表均符合描述。分数不是概率；第一名也可能不匹配。{data.min_similarity === undefined ? '本次不限最低相似度。' : `本次最低相似度 ${data.min_similarity.toFixed(3).replace(/0$/, '')}，低于门槛的候选不显示。`}</p>
+        {queryKind === 'text' ? <p>{data.ranking_mode === 'combined' && '综合整幅画面和画面中目标两方面的匹配。'}返回最多 60 条候选，不代表均符合描述。分数不是概率；第一名也可能不匹配。{data.min_similarity === undefined ? '本次不限最低相似度。' : `本次最低相似度 ${data.min_similarity.toFixed(3).replace(/0$/, '')}，低于门槛的候选不显示。`}</p>
           : <p>按与参考图片的外观相近程度{queryKind === 'image_text' ? '并结合文字描述' : ''}返回最多 60 条相似候选，需人工确认。外观相似不代表是同一个人或同一件物品；同款衣物、物品会一起出现。</p>}
         <p>{coverage}</p>
         <p>{aiOn ? '本次搜索仅对前 5 条候选进行 AI 参考分析；其余候选尚未复核。参考分析未标定，不是概率，不会隐藏候选或代替人工判断。' : '让大模型优先处理告警审核；请人工核对候选与录像。'}</p>

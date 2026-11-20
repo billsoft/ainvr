@@ -26,7 +26,6 @@ function filterPatch(patch: Record<string, unknown>): Record<string, unknown> {
 }
 
 interface ChannelsListResponse { channels: AiChannel[] }
-interface LatestResultResponse { channel_id: string; has_result: boolean; result: AiFrameResult | null }
 interface HistoryResultsResponse { channel_id: string; count: number; results: AiFrameResult[] }
 interface StreamsResponse { streams: AiStreamOption[] }
 
@@ -70,11 +69,6 @@ export function createHttpAiChannelService(): AiChannelService {
 
     async stop(id) {
       await request<void>(`/ai/channels/${id}/stop`, { method: 'POST' })
-    },
-
-    async latestResult(id) {
-      const body = await request<LatestResultResponse>(`/ai/channels/${id}/results/latest`)
-      return { hasResult: body.has_result, result: body.result }
     },
 
     async resultHistory(id, limit = 30) {

@@ -148,3 +148,19 @@ legacy directories require an explicit ownership inventory before removal.
 Capability restrictions are shown in the PTZ panel. Duplicate ONVIF identity
 checks trim both identities and compare absent hardware IDs consistently; this
 remains a conservative refusal, not automatic camera merging.
+
+
+## Shared motor across protocol inputs
+
+When an ONVIF input and a GB/T 28181 input address the same physical PTZ
+motor, configure the console backend with `AINVR_PTZ_MOTOR_GROUPS`. Its value
+is a JSON array of disjoint arrays of native resource keys, for example
+`[["onvif:<node-key>","gb28181:<device-id>/<channel-id>"]]`.
+Use the resource keys of the verified inputs. One encoder or IP address can
+serve several different motors. Restart the backend after updating the mapping.
+
+Within a group, operator controls share one session and busy status. Other
+windows can continue viewing, and can acquire control after Stop is confirmed.
+Preset tokens, zoom spaces and position feedback remain protocol-specific.
+An external controller or a park action configured on the camera can still
+move the lens independently of this console.

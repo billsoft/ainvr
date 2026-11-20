@@ -106,6 +106,7 @@ export const searchResultSchema = z.object({
 });
 export type SearchResult = z.infer<typeof searchResultSchema>;
 export const searchPageSchema = z.object({
+  ranking_mode: z.enum(['combined','similarity']).optional(),
   // Raw cosine of description and picture (the page offers 0 to 0.3, default 0.08).
   min_similarity: z.number().finite().min(-1).max(1).optional(),
   search_id: z.string().uuid(), scope: searchRangeSchema,

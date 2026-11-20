@@ -72,7 +72,7 @@ export class OnvifManager {
     return this.call('/v1/ptz/prepare',{device,service:binding.service,token:binding.profileToken,videoSource:binding.videoSource});
   }
   async ptz(path:string,body:unknown) {
-    if (!['command','status','presets','preset-save','preset-remove'].includes(path)) throw new OnvifError('ptz_invalid_operation');
+    if (!['command','status','presets','lens','preset-save','preset-remove'].includes(path)) throw new OnvifError('ptz_invalid_operation');
     return this.call(`/v1/ptz/${path}`,body);
   }
   inputAllowed(channel: Channel) {

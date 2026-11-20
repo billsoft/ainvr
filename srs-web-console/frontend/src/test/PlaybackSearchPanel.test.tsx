@@ -43,6 +43,30 @@ const seg = (id: string, channelId: string, startTs: number): RecordingSegment =
   ({ id, channelId, startTs, endTs: startTs + 120_000, playable: true, sizeBytes: 1000, durationMs: 120_000 } as RecordingSegment)
 
 function Where() { const l = useLocation(); return <><output data-testid="where">{l.pathname}</output><output data-testid="query">{l.search}</output></> }
+
+it('opens the recorded source rather than the empty first channel on menu entry', async () => {
+  vi.spyOn(recordingService, 'listChannels').mockResolvedValue([
+    {id:'empty', name:'无录像', recording:false, kind:'source', sourceOnline:false, codec:null},
+    {id:'available', name:'有录像', recording:true, kind:'source', sourceOnline:true, codec:'h264', oldestSegmentTs:now-60000},
+  ])
+  vi.spyOn(recordingService, 'listSegments').mockResolvedValue([seg('evidence','available',now-30000)])
+  render(<RouterProvider router={createMemoryRouter([{path:'/playback/:channelId?',element:<><PlaybackPage/><Where/></>}],{initialEntries:['/playback']})}/>)
+  await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/playback/available'))
+})
+it('offers a multiline description and names the selected camera before searching', async () => {
+  open('/playback/demo-detect?search=1')
+  expect((await screen.findByRole('textbox',{name:'想找什么？'})).tagName).toBe('TEXTAREA')
+  await screen.findByText(/后门.*1 路/)
+  fireEvent.click(screen.getByRole('button',{name:'选择搜索范围'}))
+  const tick = within(screen.getByRole('region',{name:'可搜索通道'})).getByRole('checkbox',{name:'后门'})
+  fireEvent.click(tick)
+  expect(screen.getByRole('button',{name:'搜索录像'})).toBeDisabled()
+  fireEvent.click(tick)
+  fireEvent.change(screen.getByRole('textbox',{name:'想找什么？'}), {target:{value:'蓝色工作服'}})
+  vi.mocked(searchService.query).mockResolvedValue(hit())
+  fireEvent.click(screen.getByRole('button',{name:'搜索录像'}))
+  await waitFor(() => expect(vi.mocked(searchService.query).mock.lastCall?.[0].scope.channel_ids).toEqual(['a']))
+})
 function open(entry: string) {
   const router = createMemoryRouter([{ path: '/playback/:channelId', element: <><PlaybackPage /><Where /></> }], { initialEntries: [entry] })
   render(<RouterProvider router={router} />)
@@ -117,10 +141,10 @@ it('takes the channels to search from ticks in the left list, with no second lis
   // Only the searchable channel has a tick; the panel itself offers no channel picker.
   expect(screen.queryByRole('checkbox', { name: '搜索范围：大门口' })).toBeNull()
   expect(screen.queryByRole('checkbox', { name: '大门口_AI输出' })).toBeNull()
-  expect(screen.getByText(/左侧勾选的 1 个 AI 通道/)).toBeInTheDocument()
+  expect(screen.getByText(/大门口_AI输出 等 1 路/)).toBeInTheDocument()
   fireEvent.click(tick)
   expect(tick).not.toBeChecked()
-  expect(screen.getByText(/请在左侧通道列表中勾选 AI 通道/)).toBeInTheDocument()
+  expect(screen.getByText(/先选择要搜索的通道/)).toBeInTheDocument()
   fireEvent.click(within(screen.getByRole('group', { name: '搜索范围' })).getByRole('button', { name: '全部 AI' }))
   expect(tick).toBeChecked()
 })
@@ -162,8 +186,8 @@ it('never offers a second channel picker: with the list folded away it offers to
   act(() => resize(900))
   // The scope is only ever ticked in the channel list: no drop-down picker inside the panel.
   expect(screen.queryByRole('checkbox', { name: '大门口_AI输出' })).toBeNull()
-  expect(screen.getByLabelText('搜索条件').querySelector('details')).toBeNull()
-  expect(screen.getByText(/左侧勾选的 1 个 AI 通道/)).toBeInTheDocument()
+  expect(screen.getByLabelText('搜索条件').querySelector('details')).not.toHaveAttribute('open')
+  expect(screen.getByText(/大门口_AI输出 等 1 路/)).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: '显示通道列表' }))
   expect(document.querySelector('aside[aria-label="通道列表"]')).not.toHaveAttribute('hidden')
   vi.unstubAllGlobals()

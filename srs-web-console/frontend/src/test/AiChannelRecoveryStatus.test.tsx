@@ -15,7 +15,7 @@ describe('AI input recovery status', () => {
     } as AiChannel
     render(<AiChannelCard channel={channel} disabled={false}
       onStart={vi.fn()} onStop={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()}
-      onViewResult={vi.fn()} onPreview={vi.fn()} />)
+      />)
     expect(screen.getByText(/输出已停止/)).toBeInTheDocument()
     expect(screen.getByText(/缓存超过设备容量/)).toBeInTheDocument()
     expect(screen.queryByText(/重连中|SEI ✓/)).not.toBeInTheDocument()
@@ -38,7 +38,7 @@ describe('AI input recovery status', () => {
     } as AiChannel
     render(<AiChannelCard channel={channel} disabled={false}
       onStart={vi.fn()} onStop={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()}
-      onViewResult={vi.fn()} onPreview={vi.fn()} />)
+      />)
     expect(screen.getByTestId('ai-card-last-error')).toHaveTextContent('本次结果已拒绝')
     expect(screen.getByTestId('ai-card-frames')).toHaveTextContent('每 15.0 秒采集')
   })
@@ -55,7 +55,7 @@ describe('AI input recovery status', () => {
     } as AiChannel
     render(<AiChannelCard channel={channel} disabled={false}
       onStart={vi.fn()} onStop={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()}
-      onViewResult={vi.fn()} onPreview={vi.fn()} />)
+      />)
     expect(screen.getByTestId('ai-card-last-error')).toHaveTextContent('本次识别未完成')
   })
   it('shows source failure and hides old FPS, latency and SEI success while reconnecting', () => {
@@ -74,7 +74,7 @@ describe('AI input recovery status', () => {
     } as AiChannel
     render(<AiChannelCard channel={channel} disabled={false}
       onStart={vi.fn()} onStop={vi.fn()} onEdit={vi.fn()} onDelete={vi.fn()}
-      onViewResult={vi.fn()} onPreview={vi.fn()} />)
+      />)
     expect(screen.getByText(/等待处理恢复/)).toBeInTheDocument()
     expect(screen.getByTestId('ai-card-last-error')).toHaveTextContent('实际 SPS 无效或截断')
     expect(screen.getByText(/SEI 尚未输出/)).toBeInTheDocument()

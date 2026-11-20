@@ -28,6 +28,9 @@ func TestPTZCodesAgainstAnnexBytes(t *testing.T) {
 		{ptzcontrol.Vector{Pan: -.5}, "A50F000280000036"},
 		{ptzcontrol.Vector{Tilt: 1}, "A50F000800FF00BB"},
 		{ptzcontrol.Vector{Zoom: 1}, "A50F00100000F0B4"},
+		{ptzcontrol.Vector{Zoom: .35}, "A50F001000005014"},
+		{ptzcontrol.Vector{Zoom: .0001}, "A50F0010000010D4"},
+		{ptzcontrol.Vector{Zoom: -.0001}, "A50F0020000010E4"},
 		{ptzcontrol.Vector{Pan: .5, Tilt: -.5, Zoom: -.5}, "A50F002580808059"},
 	} {
 		got, e := PTZCode(tc.v)
@@ -122,7 +125,7 @@ func TestPresetResponsesAreCorrelatedAndVersioned(t *testing.T) {
 func TestPTZSocketDeliveryAndIndependentWatchdog(t *testing.T) {
 	for _, network := range []string{"udp", "tcp"} {
 		for _, version := range []string{"2016", "2022"} {
-			t.Run(network+"/"+version, func(t *testing.T) {
+			exercise := func(t *testing.T, vector ptzcontrol.Vector, expected string, button bool) {
 				var peer net.PacketConn
 				var tcpPeer net.Conn
 				var err error
@@ -272,13 +275,25 @@ func TestPTZSocketDeliveryAndIndependentWatchdog(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, err = server.ptz.Execute(ctx, sampleID+"/"+channel, target, ptzcontrol.Command{Session: "session-111111111111", Sequence: 1, Vector: ptzcontrol.Vector{Pan: 1}, TTLMS: 150, ExpiresAtMS: time.Now().Add(150 * time.Millisecond).UnixMilli()})
+				ttl := 150 * time.Millisecond
+				if button {
+					ttl = 1200 * time.Millisecond
+				}
+				const session = "session-111111111111"
+				_, err = server.ptz.Execute(ctx, sampleID+"/"+channel, target, ptzcontrol.Command{Session: session, Sequence: 1, Vector: vector, TTLMS: int(ttl.Milliseconds()), ExpiresAtMS: time.Now().Add(ttl).UnixMilli()})
 				if err != nil {
 					t.Fatal(err)
 				}
+				if button {
+					time.Sleep(900 * time.Millisecond)
+					_, err = server.ptz.Execute(ctx, sampleID+"/"+channel, target, ptzcontrol.Command{Session: session, Sequence: 2, Stop: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
 				select {
 				case wires := <-packets:
-					for i, code := range []string{"A50F0001FF0000B4", "A50F0000000000B4"} {
+					for i, code := range []string{expected, "A50F0000000000B4"} {
 						if !strings.HasPrefix(wires[i], "MESSAGE sip:"+sampleID+"@") || !strings.Contains(wires[i], "<DeviceID>"+channel+"</DeviceID>") || !strings.Contains(wires[i], "<PTZCmd>"+code+"</PTZCmd>") {
 							t.Fatal(fmt.Sprintf("wrong NVR target or code: %s", wires[i]))
 						}
@@ -301,6 +316,15 @@ func TestPTZSocketDeliveryAndIndependentWatchdog(t *testing.T) {
 					t.Fatal("Stop response was not processed")
 				}
 
+			}
+			t.Run(network+"/"+version+"/watchdog", func(t *testing.T) {
+				exercise(t, ptzcontrol.Vector{Pan: 1}, "A50F0001FF0000B4", false)
+			})
+			t.Run(network+"/"+version+"/zoom-in", func(t *testing.T) {
+				exercise(t, ptzcontrol.Vector{Zoom: 8.0 / 15}, "A50F001000008044", true)
+			})
+			t.Run(network+"/"+version+"/zoom-out", func(t *testing.T) {
+				exercise(t, ptzcontrol.Vector{Zoom: -8.0 / 15}, "A50F002000008054", true)
 			})
 		}
 	}

@@ -266,7 +266,7 @@ func (c *Client) endpoints(ctx context.Context) error {
 				continue
 			}
 			namespace := s.text("Namespace")
-			if namespace == media1NS || namespace == media2NS || namespace == ptzNS {
+			if namespace == media1NS || namespace == media2NS || namespace == ptzNS || namespace == imagingNS {
 				c.services[namespace] = s.text("XAddr")
 			}
 		}

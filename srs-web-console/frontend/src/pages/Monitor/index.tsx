@@ -1,4 +1,3 @@
-import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, History, Maximize2, X } from 'lucide-react'
@@ -44,7 +43,7 @@ export default function MonitorPage() {
   const outputs = state.selectedOutputs
   const gridRef = useRef<HTMLDivElement | null>(null)
   const [visibleIds, setVisibleIds] = useState<Set<string> | null>(null)
-  const [gridSize, setGridSize] = useState({ width: 960, height: 640 })
+  const [gridWidth, setGridWidth] = useState(960)
   const softWarned = useRef(false)
   const defaults = useMemo(() => allChannels.map(c => c.id), [allChannels])
   const byId = useMemo(() => new Map(allChannels.map(c => [c.id, c])), [allChannels])
@@ -66,7 +65,7 @@ export default function MonitorPage() {
     const grid = gridRef.current
     if (!grid) return
     setVisibleIds(null)
-    const resize = () => setGridSize({ width: grid.clientWidth || 960, height: grid.clientHeight || 640 })
+    const resize = () => setGridWidth(grid.clientWidth || 960)
     resize()
     const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize)
     ro?.observe(grid)
@@ -82,8 +81,7 @@ export default function MonitorPage() {
     grid.querySelectorAll('[data-channel-id]').forEach(tile => observer?.observe(tile))
     return () => { ro?.disconnect(); observer?.disconnect() }
   }, [catalogueKey, focusedChannelId])
-  const columns = Math.max(1, Math.min(Math.ceil(Math.sqrt(capacity)), Math.floor(gridSize.width / 240)))
-  const rowHeight = Math.max(190, (gridSize.height - 8 * (Math.ceil(capacity / columns) - 1)) / Math.ceil(capacity / columns))
+  const columns = Math.max(1, Math.min(Math.ceil(Math.sqrt(capacity)), Math.floor((gridWidth + 6) / 208)))
   const chosenOutput = (id: string) => Object.hasOwn(outputs, id) ? outputs[id]! : id
   const resolved = (id: string) => {
     const selected = chosenOutput(id)
@@ -115,24 +113,34 @@ export default function MonitorPage() {
     setPtz({slot:requestedPtz,channel})
   },[ready,requestedPtz,byId,outputs,state.enterFocus])
   const focus = focusedChannelId ? resolved(focusedChannelId) : undefined
+  const focusProcessor = focus && outputIds.get(`${focus.upstream.app}/${focus.upstream.stream}`)
   const used = slots.filter(Boolean).length
   const filtered = allChannels.filter(c => `${c.name} ${c.upstream.app}/${c.upstream.stream}`.toLowerCase().includes(search.toLowerCase()))
 
   function player(id: string) {
     const c = resolved(id)
     if (!c) return <div className="p-4 text-center text-sm text-slate-300">通道暂不可用，位置已保留</div>
-    if (!c.status.online) return <div className="flex h-full min-h-0 flex-col"><div className="flex flex-1 items-center justify-center gap-3 p-4 text-center text-sm text-slate-300">{c.name} · 离线{ptzCandidates.has(c.id)&&<button className={button} onClick={()=>setPtz(p=>p?.slot===id&&p.channel===c.id?null:{slot:id,channel:c.id})}>云台状态</button>}</div>{ptz?.slot===id&&ptz.channel===c.id&&<PtzPanel channelId={c.id} onClose={()=>setPtz(null)}/>}</div>
-    if (!settings) return <div className="p-4 text-center text-sm text-slate-300">正在读取监看上限，请稍候</div>
     const processorId=outputIds.get(`${c.upstream.app}/${c.upstream.stream}`)
+    const single = focusedChannelId === id
+    const togglePtz = () => {
+      if (ptz?.slot === id && ptz.channel === c.id) { setPtz(null); return; }
+      if (focusedChannelId !== id) state.enterFocus(id);
+      setPtz({slot:id,channel:c.id});
+    };
+    if (!c.status.online) return <div className="flex h-full min-h-0 flex-col"><div className="flex flex-1 items-center justify-center gap-3 p-4 text-center text-sm text-slate-300">{c.name} · 离线{ptzCandidates.has(c.id)&&<button className={button} onClick={togglePtz}>云台状态</button>}</div>{ptz?.slot===id&&ptz.channel===c.id&&<PtzPanel channelId={c.id} isAiOutput={!!processorId} onClose={()=>setPtz(null)}/>}</div>
+    if (!settings) return <div className="p-4 text-center text-sm text-slate-300">正在读取监看上限，请稍候</div>
     const parents=processorId?allChannels.filter(source=>variants.get(source.id)?.some(output=>output.id===c.id)):[]
     const original=parents.length===1?parents[0]:undefined
     const zoneSource=processorId&&original&&original.registered!==false?{id:original.id,processorId,updatedAt:original.updatedAt,createdAt:original.createdAt,inputGeneration:original.inputGeneration}:undefined
     return <VideoPlayer key={c.id} title="" protocols={c.downstream.protocols} primary={c.downstream.primary}
-      ptz={ptzCandidates.has(c.id)?{channelId:c.id,open:ptz?.slot===id&&ptz.channel===c.id,onToggle:()=>setPtz(p=>p?.slot===id&&p.channel===c.id?null:{slot:id,channel:c.id})}:undefined}
+      overviewTile={!single}
+      showControls={single}
+      talkChannel={single && ((original ?? c).onvif || gbBindings?.some(b => b.input_id === (original ?? c).id)) ? (original ?? c).id : undefined}
+      ptz={single && ptzCandidates.has(c.id)?{channelId:c.id,open:ptz?.slot===id&&ptz.channel===c.id,onToggle:togglePtz}:undefined}
       savedZoneSource={zoneSource} compactZones={focusedChannelId!==id}
-      onArming={zoneSource&&original&&processorId?video=>setArming({channel:original,processorId,outputName:c.name,video}):undefined}
+      onArming={single&&zoneSource&&original&&processorId?video=>setArming({channel:original,processorId,outputName:c.name,video}):undefined}
       stream={{ host: window.location.hostname, app: c.upstream.app, stream: c.upstream.stream }}
-      muted allowPanorama className="h-full w-full" aiChannelId={outputIds.get(`${c.upstream.app}/${c.upstream.stream}`)}
+      muted allowPanorama className="h-full w-full" aiChannelId={processorId}
       videoInfo={{ codec: c.status.videoCodec, level: c.status.videoLevel, width: c.status.videoWidth, height: c.status.videoHeight }}
       diagLabel={`${c.upstream.app}/${c.upstream.stream}`} />
   }
@@ -149,7 +157,7 @@ export default function MonitorPage() {
     </select>
   }
   return <section aria-labelledby="monitor-title" className="flex h-full min-h-0 flex-col gap-4 md:flex-row">
-    <aside className="ui-panel flex max-h-52 shrink-0 flex-col md:max-h-none md:w-52 xl:w-60">
+    <aside className="ui-panel flex max-h-52 shrink-0 flex-col md:max-h-none md:w-44 xl:w-52">
       <div className="border-b border-line p-3"><h2 className="text-sm font-semibold">通道列表</h2>
         <input aria-label="搜索监看通道" className="form-input mt-2" placeholder="搜索通道…" value={search} onChange={e => setSearch(e.target.value)} />
       </div>
@@ -157,7 +165,8 @@ export default function MonitorPage() {
         {filtered.map(c => {
           const index = slots.indexOf(c.id)
           const isOutput = outputIds.has(`${c.upstream.app}/${c.upstream.stream}`)
-          return <li key={c.id}><button className={`flex w-full items-center gap-2 rounded-base p-2 text-left text-sm ${index >= 0 ? 'bg-primary-50 text-primary-600' : 'text-ink-subtle hover:bg-surface-page'}`}
+          return <li key={c.id}><button className="channel-choice flex w-full items-center gap-2 rounded-base p-2 text-left text-sm"
+            aria-current={focusedChannelId === c.id ? true : undefined}
             title={`${c.name}：放大查看`}
             disabled={!!zoneChannelId} data-testid={`monitor-item-${c.id}`} onClick={() => state.enterFocus(c.id)}>
             <span className={`h-2 w-2 shrink-0 rounded-full ${c.status.online ? 'bg-success' : 'bg-ink-faint'}`} />
@@ -166,46 +175,42 @@ export default function MonitorPage() {
           </button></li>
         })}
       </ul>{!filtered.length && <p className="p-3 text-xs text-ink-subtle">{ready ? '没有匹配的通道' : '正在加载通道…'}</p>}</div>
-      <p className="border-t border-line p-3 text-xs leading-5 text-ink-subtle">按通道顺序自动排列。点击通道放大查看，新增或删除通道后布局自动调整。</p>
     </aside>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-      <PtzProtectionNotice/>
-      <header className="flex flex-wrap items-center justify-between gap-3">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <h1 id="monitor-title" className="page-title">实时监看</h1>
-        {focusedChannelId && <button className={button} disabled={!!zoneChannelId} onClick={state.exitFocus} data-testid="focus-back"><ArrowLeft size={14} className="mr-1 inline" />返回总览</button>}
-
+        <span className="text-xs text-ink-subtle" data-testid="monitor-usage">共 {used} 路 · 自动 {capacity} 宫格 · {focusedChannelId ? (focus?.status.online && settings ? 1 : 0) : active.size} 路播放中</span>
+        {focusedChannelId && <button className={button + ' ml-auto'} disabled={!!zoneChannelId} onClick={state.exitFocus} data-testid="focus-back"><ArrowLeft size={14} className="mr-1 inline" />返回总览</button>}
       </header>
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-subtle">
-        <span data-testid="monitor-usage">共 {used} 路 · 自动 {capacity} 宫格 · {focusedChannelId ? (focus?.status.online && settings ? 1 : 0) : active.size} 路播放中</span>
-      </div>
       {(error || state.persistenceUnavailable || !settings) && <p role="status" className="rounded-base bg-amber-50 p-3 text-xs text-amber-800">{error || (state.persistenceUnavailable ? '浏览器无法保存播放来源选择，本次选择仅在当前会话有效。' : '监看参数尚未就绪，暂不建立播放连接。')} {!settings && <button className="underline" onClick={() => void fetchSettings()}>重试读取</button>}</p>}
-      {!focusedChannelId && playable.length > hardLimit && <p className="text-xs text-amber-800">优先播放可见画面，滚动时自动释放屏外连接；未播放的通道可点击放大查看。</p>}
+      {!focusedChannelId && playable.length > hardLimit && <p className="text-xs text-amber-800">优先播放可见画面，滚动时自动释放屏外连接；点击画面可单路查看。</p>}
       {heavyH265 >= 2 && <p role="note" className="text-xs text-amber-800">当前有 {heavyH265} 路 4K H.265 同时播放，受本机硬件解码路数限制可能卡顿或黑屏；可单独放大查看。</p>}
       {focusedChannelId ? <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-panel bg-slate-950">
-        <div className="flex shrink-0 items-center justify-between gap-2 p-3 text-white"><div className="min-w-0 flex-1"><span className="block truncate" data-testid="focus-title">{focus?.name ?? byId.get(focusedChannelId)?.name ?? '通道暂不可用'}</span><SourceLabel value={focus && sourceInfo.get(focus.id)} /></div><div className="flex shrink-0 items-center gap-2">{!zoneChannelId&&variantSelect(focusedChannelId)}<button aria-label="关闭聚焦画面" disabled={!!zoneChannelId} onClick={state.exitFocus} data-testid="focus-close"><X size={16} /></button></div></div>
+        <div className="flex shrink-0 items-center justify-between gap-2 p-3 text-white"><div className="min-w-0 flex-1"><span className="block truncate" data-testid="focus-title">{focus?.name ?? byId.get(focusedChannelId)?.name ?? '通道暂不可用'}</span><SourceLabel value={focus && sourceInfo.get(focus.id)} /></div><div className="flex shrink-0 items-center gap-2">{focusProcessor && !zoneChannelId && <button aria-label="识别历史" title="识别历史" className="p-2" onClick={() => navigate(`/recognition-history/${focusProcessor}`)}><History size={16} /></button>}{!zoneChannelId&&variantSelect(focusedChannelId)}<button aria-label="关闭聚焦画面" disabled={!!zoneChannelId} onClick={state.exitFocus} data-testid="focus-close"><X size={16} /></button></div></div>
         <div className="relative flex min-h-0 flex-1 items-center justify-center">{player(focusedChannelId)}</div>
-      </div> : <div ref={gridRef} className="grid min-h-0 flex-1 gap-2 overflow-y-auto" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gridAutoRows: `${rowHeight}px` }} data-testid="monitor-grid">
-        {slots.map((id, offset) => {
-          const index = offset
+      </div> : <div ref={gridRef} className="grid min-h-0 flex-1 content-start gap-1.5 overflow-y-auto" style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }} data-testid="monitor-grid">
+        {slots.map((id, index) => {
           const c = id ? resolved(id) : undefined
-          const aiId = c && outputIds.get(`${c.upstream.app}/${c.upstream.stream}`)
+          const name = c?.name ?? (id ? byId.get(id)?.name ?? '通道暂不可用' : '空位')
+          const status = !id ? '暂无通道' : !c ? '来源不可用' : !c.status.online ? '离线' : !settings ? '等待读取监看上限' : '点击单路查看'
           return <div key={id ?? `empty:${index}`} data-channel-id={id ?? undefined} data-slot-index={index}
-            className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-panel border border-line bg-slate-950">
-            <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-1 px-2 py-1 text-xs text-white">
-              <div className="min-w-0 flex-1"><span className="block truncate" title={c?.name}>{index + 1} · {c?.name ?? (id ? byId.get(id)?.name ?? '通道暂不可用' : '空位')}</span><SourceLabel value={c && sourceInfo.get(c.id)} /></div>
-              {id && <>
-                {variantSelect(id)}
-                {aiId && <button aria-label="识别历史" onClick={() => navigate(`/recognition-history/${aiId}`)}><History size={14} /></button>}
-                <button aria-label={`放大 ${c?.name ?? '通道'}`} data-testid={`slot-focus-${index}`} onClick={() => state.enterFocus(id)}><Maximize2 size={14} /></button>
-              </>}
+            className="relative isolate aspect-video min-w-0 overflow-hidden rounded-base bg-slate-950">
+            <div className="absolute inset-0 flex items-center justify-center" data-testid={`slot-tile-${index}`}>
+              {id && active.has(id) ? player(id) : <span className="text-xs text-slate-400">{status}</span>}
             </div>
-            <div className="relative flex min-h-0 flex-1 items-center justify-center" data-testid={`slot-tile-${index}`} onDoubleClick={e => { if (id && !(e.target as HTMLElement).closest('button,select,input')) state.enterFocus(id) }}>
-              {id ? active.has(id) || (!!c && !c.status.online && ptzCandidates.has(c.id)) ? player(id) : <p className="p-3 text-center text-xs text-slate-300">{!c ? '通道暂不可用，位置已保留' : !c.status.online ? '通道离线，位置已保留' : !settings ? '等待读取监看上限' : '点击右上角放大查看'}</p> : <p className="p-3 text-center text-xs text-slate-400">暂无通道</p>}
-            </div>
+            {id && <button type="button" aria-label={`放大 ${name}`} title={`放大 ${name}`} data-testid={`slot-focus-${index}`}
+              className="group/wall absolute inset-0 z-30 text-white focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-400"
+              onClick={() => state.enterFocus(id)}>
+              <span className="absolute bottom-1 left-1 max-w-[calc(100%-0.5rem)] truncate rounded bg-black/65 px-1.5 py-0.5 text-left text-[11px] leading-4">
+                <span className="mr-1.5 tabular-nums text-white/75">{index + 1}</span>{name}
+              </span>
+              <span className="absolute right-1 top-1 rounded bg-black/60 p-1 opacity-0 group-hover/wall:opacity-100 group-focus-visible/wall:opacity-100 [@media(hover:none)]:opacity-100">
+                <Maximize2 size={14} aria-hidden="true" />
+              </span>
+            </button>}
           </div>
         })}
       </div>}
-      <p className="text-xs leading-5 text-ink-subtle">布局随通道数量自动调整，无需选择宫格或翻页。双击画面放大，返回后恢复总览；布防、云台和识别历史仍在对应画面中操作。</p>
     </div>
     {arming&&<ArmingLauncher outputName={arming.outputName} processorId={arming.processorId} channel={arming.channel} video={arming.video} onClose={()=>setArming(null)} onSaved={()=>{toast.success("布防已保存，应用状态将在配置同步后更新");window.dispatchEvent(new Event("ainvr-arming-saved"))}}/>}
     <Toaster />

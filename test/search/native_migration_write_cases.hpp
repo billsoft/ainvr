@@ -10,8 +10,9 @@ inline void RunMigrationWriteCases(const std::string& uri,const std::string& dat
   try {
     HistoryBudget budget;budget.max_samples=2;HistoryMongo history(uri,database,budget);history.Initialize();
     auto access=Access();const auto at=Now()-2000;
-    const RuntimeModelPin old{"siglip-so400m-i18n-full-int8",std::string(64,'b'),"search-v1-"+std::string(64,'b')};
-    const RuntimeModelPin target{"siglip2-base-full-int8",std::string(64,'c'),"search-v1-"+std::string(64,'c')};
+    const RuntimeModelPin old{"siglip2-base-full-int8",std::string(64,'b'),"search-v1-"+std::string(64,'b')};
+    // Full SigLIP2 now stores multiple views; migration intentionally supports only single-view targets.
+    const RuntimeModelPin target{"siglip-so400m-i18n-full-int8",std::string(64,'c'),"search-v1-"+std::string(64,'c')};
     const auto pin=[](const RuntimeModelPin& value){return Json{{"package_id",value.package_id},{"package_sha256",value.package_sha256},{"model_version",value.model_version}};};
     const auto create=[&](int id,int64_t captured,bool slot){
       Sample sample;sample.record={Id(id),channel,"fixture-processor","fixture-session","fixture-track",old.model_version,captured,false,{1,0}};
@@ -25,7 +26,7 @@ inline void RunMigrationWriteCases(const std::string& uri,const std::string& dat
     Json body{{"job_id",Id(900)},{"worker",Id(901)},{"generation",2},{"actor","fixture-actor"},{"payload_fingerprint",std::string(64,'a')},
       {"source",{{"sample_id",source.record.id},{"fingerprint",source.fingerprint},{"jpeg_sha256",source_sha}}},
       {"target",pin(target)}};
-    std::vector<float> vector(768,0);vector[0]=1;body["target"]["vector"]=vector;
+    std::vector<float> vector(1152,0);vector[0]=1;body["target"]["vector"]=vector;
     int authorizations=0;bool revoke=false,delete_before_commit=false,replace_before_commit=false,wrong_grant=false,low_watermark=false;
     int64_t active_time=at;
     access.migration_authorization=[&](const Json& request)->Json {
@@ -47,7 +48,7 @@ inline void RunMigrationWriteCases(const std::string& uri,const std::string& dat
           history.ReplaceTrackSlot(replacement,0,expected,"source-late-replacement");
         }
       }
-      auto selected=target;if(wrong_grant)selected.package_id="siglip-so400m-i18n-full-int8";
+      auto selected=target;if(wrong_grant)selected.package_id="siglip2-base-full-int8";
       return {{"grant",{{"job_id",Id(900)},{"worker",Id(901)},{"generation",2},{"payload_fingerprint",std::string(64,'a')},
         {"source",pin(old)},{"target",pin(selected)},{"scope",{{"channel_ids",{channel}},{"from_ms",at-1},{"to_ms",at+5000}}},
         {"source_high_watermark",low_watermark?"0":"9223372036854775807"},{"lease_until_ms",Now()+10000},
@@ -61,13 +62,15 @@ inline void RunMigrationWriteCases(const std::string& uri,const std::string& dat
     Expect(client.Post("/v1/model-migrations/write-target",{},body.dump(),"application/json"),401);
     Expect(client.Post("/v1/model-migrations/write-target",auth,body.dump(),"application/json"),403);
     Expect(client.Post("/v1/model-migrations/write-target",producer,body.dump(),"application/json"),403);
+    auto multiview=body;multiview["target"]["package_id"]="siglip2-base-full-int8";
+    Check(post(multiview,409).at("error")=="migration_multiview_unsupported","multi-view migration guard changed");
     auto lookup=body;lookup["target"].erase("vector");
     Expect(client.Post("/v1/model-migrations/target-receipt",auth,lookup.dump(),"application/json"),403);
     Expect(client.Post("/v1/model-migrations/target-receipt",producer,lookup.dump(),"application/json"),403);
     Check(receipt().at("status")=="not_found","receipt invented a committed target");
     auto bad=body;bad["source"]["scope"]={};post(bad,400);
-    bad=body;bad["target"]["vector"]=std::vector<float>(767,0);post(bad,400);
-    bad=body;bad["target"]["vector"]=std::vector<float>(768,0);post(bad,400);
+    bad=body;bad["target"]["vector"]=std::vector<float>(1151,0);post(bad,400);
+    bad=body;bad["target"]["vector"]=std::vector<float>(1152,0);post(bad,400);
     bad=body;bad["actor"]="different-actor";post(bad,409);
     bad=body;bad["source"]["jpeg_sha256"]=std::string(64,'0');post(bad,409);
     wrong_grant=true;post(body,409);wrong_grant=false;

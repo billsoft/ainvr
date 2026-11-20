@@ -40,12 +40,12 @@ describe('source-aware AI state', () => {
   })
   it('shows an actionable waiting message, retains diagnostics, and recovers on new status', () => {
     const props = { channel: ai, disabled: false, sourceAvailability: 'offline' as const,
-      onStart: vi.fn(), onStop: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(), onViewResult: vi.fn(), onPreview: vi.fn() }
+      onStart: vi.fn(), onStop: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn() }
     const { rerender } = render(<AiChannelCard {...props} />)
     expect(screen.getByRole('status')).toHaveTextContent('系统正在自动重试')
     expect(screen.getByText('诊断详情')).toBeInTheDocument()
     expect(screen.queryByTestId('ai-card-last-error')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '播放衍生流' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: '播放衍生流' })).not.toBeInTheDocument()
     rerender(<AiChannelCard {...props} sourceAvailability="online" />)
     expect(screen.getByTestId('ai-card-last-error')).toHaveTextContent('Open media')
     rerender(<AiChannelCard {...props} channel={{ ...ai, state: 'running' }} sourceAvailability="online" />)

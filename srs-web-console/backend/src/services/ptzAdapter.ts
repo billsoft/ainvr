@@ -16,6 +16,10 @@ export const ONVIF_IDENTITY_QUERY = `SELECT d.version, EXISTS (
              )
            ) AS identity_conflict FROM onvif_devices d WHERE d.device_id=$1`;
 export interface PtzCaps {
+  pointCenter?: boolean;
+  focus?: boolean;
+  autoFocus?: boolean;
+  auxiliary?: string[];
   panTilt: boolean;
   zoom: boolean;
   presets: boolean;
@@ -39,6 +43,10 @@ export interface PtzAdapter {
   call: (action: string, body?: Record<string, unknown>) => Promise<any>;
 }
 const capabilities = z.object({
+  pointCenter: z.boolean().optional(),
+  focus: z.boolean().optional(),
+  autoFocus: z.boolean().optional(),
+  auxiliary: z.array(z.string().max(64)).max(32).optional(),
   // A fixed camera reports an empty resource with all motor capabilities false.
   resource: z.string().max(256).optional(),
   videoSources: z.array(z.string().min(1).max(256)).min(1).max(256).optional(),

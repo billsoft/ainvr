@@ -165,7 +165,7 @@ describe('AiChannelWizard 并行防冲突', () => {
 
 describe('AiChannelCard 抽帧与过载', () => {
   const noop = () => {}
-  const cardProps = { disabled: false, onStart: noop, onStop: noop, onEdit: noop, onDelete: noop, onViewResult: noop, onPreview: noop }
+  const cardProps = { disabled: false, onStart: noop, onStop: noop, onEdit: noop, onDelete: noop }
 
   it('正常抽帧不再显示成"丢帧",并标注源帧率→推理帧率', () => {
     const ch = makeAi('door', 'rtmp://h/live/cam1', null, {
@@ -229,7 +229,7 @@ describe('推理帧率下限(与 ai-service 校验一致)', () => {
 
 describe('AiChannelCard H.265（设计 §8.4③）', () => {
   const noop = () => {}
-  const cardProps = { disabled: false, onStart: noop, onStop: noop, onEdit: noop, onDelete: noop, onViewResult: noop, onPreview: noop }
+  const cardProps = { disabled: false, onStart: noop, onStop: noop, onEdit: noop, onDelete: noop }
 
   it('显示 ai-service 实测的源编码；H.264 与旧版（无字段）不出输入异常告警', () => {
     const { rerender } = render(<AiChannelCard channel={makeAi('a', 'rtmp://h/live/c', null, { video_codec: 'h265' })} {...cardProps} />)

@@ -20,6 +20,10 @@ const panTranslation = "http://www.onvif.org/ver10/tptz/PanTiltSpaces/Translatio
 const zoomTranslation = "http://www.onvif.org/ver10/tptz/ZoomSpaces/TranslationGenericSpace"
 
 type PTZCapabilities struct {
+	PointCenter       bool     `json:"pointCenter,omitempty"`
+	Focus             bool     `json:"focus,omitempty"`
+	AutoFocus         bool     `json:"autoFocus,omitempty"`
+	Auxiliary         []string `json:"auxiliary,omitempty"`
 	Resource          string   `json:"resource"`
 	VideoSources      []string `json:"videoSources,omitempty"`
 	PanTilt           bool     `json:"panTilt"`
@@ -39,6 +43,10 @@ type ptzSpace struct {
 	XMin, XMax, YMin, YMax float64
 }
 type PTZTarget struct {
+	fovSpeed                                                 string
+	fov                                                      *ptzSpace
+	imaging, source                                          string
+	focusMin, focusMax                                       float64
 	client                                                   *Client
 	endpoint, token, node                                    string
 	caps                                                     PTZCapabilities
@@ -220,6 +228,21 @@ func (c *Client) PreparePTZ(ctx context.Context, service, token, source string) 
 	}
 	options := opts.child("PTZConfigurationOptions")
 	spaces := options.child("Spaces")
+	t.fov = selectSpace(spaces, "RelativePanTiltTranslationSpace", "http://www.onvif.org/ver10/tptz/PanTiltSpaces/TranslationSpaceFov", true)
+	t.caps.PointCenter = t.fov != nil
+	if t.fov != nil && spaces != nil {
+		for _, s := range spaces.Children {
+			if s.Name.Local != "PanTiltSpeedSpace" || s.Name.Space != schemaNS || s.text("URI") != "http://www.onvif.org/ver10/tptz/PanTiltSpaces/GenericSpeedSpace" {
+				continue
+			}
+			lo, a := ptzNumber(s.path("XRange").text("Min"))
+			hi, b := ptzNumber(s.path("XRange").text("Max"))
+			if a && b && lo >= 0 && hi > 0 && hi >= lo {
+				t.fovSpeed = strconv.FormatFloat(lo+(hi-lo)*0.5, 'f', -1, 64)
+				break
+			}
+		}
+	}
 	t.continuousPan = selectSpace(spaces, "ContinuousPanTiltVelocitySpace", panVelocity, true)
 	t.continuousZoom = selectSpace(spaces, "ContinuousZoomVelocitySpace", zoomVelocity, false)
 	t.relativePan = selectSpace(spaces, "RelativePanTiltTranslationSpace", panTranslation, true)
@@ -248,13 +271,23 @@ func (c *Client) PreparePTZ(ctx context.Context, service, token, source string) 
 	t.caps.Zoom = t.caps.ContinuousZoom || t.caps.RelativeZoom
 	t.caps.Presets = number(node, "MaximumNumberOfPresets") > 0
 	t.caps.PresetWrite = t.caps.Presets
+	t.source, t.imaging = source, c.services[imagingNS]
+	for _, elem := range node.Children {
+		if elem.Name.Space == schemaNS && elem.Name.Local == "AuxiliaryCommands" && standardAux(strings.TrimSpace(elem.Text)) {
+			t.caps.Auxiliary = append(t.caps.Auxiliary, strings.TrimSpace(elem.Text))
+		}
+	}
+	if t.imaging != "" {
+		t.readFocusOptions(ctx)
+	}
 	serviceCaps, err := c.soap(ctx, t.endpoint, ptzNS, "GetServiceCapabilities", "", false)
 	if err == nil {
 		caps := serviceCaps.child("Capabilities")
 		t.caps.Position = caps.attr("StatusPosition") == "true"
 		t.caps.MoveStatus = caps.attr("MoveStatus") == "true"
 	}
-	if !t.caps.PanTilt && !t.caps.Zoom && !t.caps.Presets {
+	if !t.caps.PanTilt && !t.caps.Zoom && !t.caps.Presets && !t.caps.PointCenter &&
+		!t.caps.Focus && !t.caps.AutoFocus && len(t.caps.Auxiliary) == 0 {
 		if t.caps.Reason == "" {
 			t.caps.Reason = "ptz_spaces_unsupported"
 		}
@@ -279,6 +312,20 @@ func xyTag(s *ptzSpace, x, y float64) string {
 }
 func zTag(s *ptzSpace, z float64) string {
 	return fmt.Sprintf(`<tt:Zoom x="%.8f" space="%s"/>`, scalePTZ(z, s.XMin, s.XMax), escape(s.URI))
+}
+func (t *PTZTarget) Center(ctx context.Context, point ptzcontrol.ImagePoint) error {
+	s := t.fov
+	if s == nil || point.X < s.XMin || point.X > s.XMax || point.Y < s.YMin || point.Y > s.YMax {
+		return failure("ptz_operation_unsupported")
+	}
+	// ONVIF A.3.2: the upper right image corner is (1,1), independent of reported maximum travel.
+	translation := fmt.Sprintf(`<tt:PanTilt x="%.7f" y="%.7f" space="%s"/>`, point.X, point.Y, escape(s.URI))
+	args := "<m:Translation>" + translation + "</m:Translation>"
+	if t.fovSpeed != "" {
+		args += "<m:Speed><tt:PanTilt x=\"" + t.fovSpeed + "\" y=\"" + t.fovSpeed + "\"/></m:Speed>"
+	}
+	_, err := t.action(ctx, "RelativeMove", args)
+	return err
 }
 func (t *PTZTarget) Move(ctx context.Context, v ptzcontrol.Vector, ttl time.Duration) error {
 	if !v.Valid() || v.Zero() {
@@ -346,7 +393,7 @@ func (t *PTZTarget) Presets(ctx context.Context) ([]PTZPreset, error) {
 		if id == "" || len(id) > 256 {
 			return nil, failure("ptz_invalid_preset")
 		}
-		if len(out) >= 256 {
+		if len(out) >= 1024 {
 			return nil, failure("ptz_preset_limit")
 		}
 		out = append(out, PTZPreset{ID: id, Name: p.text("Name")})

@@ -13,8 +13,7 @@ interface Props {
   onDeleteOne: (imageId: string) => void
 }
 
-/** 一句话摘要——单个目标直接给类别+置信度；多个目标给"这一刻识别到N个"，
- * 跟 AiResultModal.tsx 的 summarize() 是同一套文案思路。 */
+/** 单个目标显示类别和置信度，多个目标显示总数和各自的置信度。 */
 function summarize(items: SnapshotFrameGroup['items']): string {
   const [first, ...rest] = items
   if (!first) return '未检测到目标'

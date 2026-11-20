@@ -4,9 +4,9 @@ import { SearchSimilarity } from '@/pages/Search/SearchResults'
 afterEach(cleanup)
 it('shows signed cosine without a percent or a confidence claim', () => {
   const { rerender } = render(<SearchSimilarity value={0.13} />)
-  expect(screen.getByText('相似度 0.1300')).toBeInTheDocument()
+  expect(screen.getByText('图文相似度 0.1300')).toBeInTheDocument()
   rerender(<SearchSimilarity value={-0.08} />)
-  expect(screen.getByText('相似度 -0.0800')).toBeInTheDocument()
+  expect(screen.getByText('图文相似度 -0.0800')).toBeInTheDocument()
 })
 it('does not fabricate a score for old or malformed results', () => {
   const { rerender } = render(<SearchSimilarity />)

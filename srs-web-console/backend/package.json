@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc -b && mkdir -p dist/store/migrations && cp -r src/store/migrations/. dist/store/migrations/",
+    "build": "tsc -b && mkdir -p dist/store/migrations dist/helpers && cp -r src/store/migrations/. dist/store/migrations/ && cp helpers/onvif_audio.py dist/helpers/",
     "start": "node dist/server.js",
     "test": "vitest",
     "test:run": "vitest run",

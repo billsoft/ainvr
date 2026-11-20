@@ -117,21 +117,25 @@ func (st *DeviceState) reconcileDeviceFault() {
 }
 
 type Server struct {
-	ptz           *ptzcontrol.Controller
-	ptzSlots      chan struct{}
-	ptzStopSlots  chan struct{}
-	presetQueries map[string]*presetQuery
-	config        Config
-	ua            *sipgo.UserAgent
-	sip           *sipgo.Server
-	client        *sipgo.Client
-	auth          *Authenticator
-	mu            sync.Mutex
-	devices       map[string]DeviceConfig
-	states        map[string]*DeviceState
-	sequence      atomic.Uint32
-	queries       chan struct{}
-	dialogs       map[string]*sipgo.DialogClientCache
+	broadcast       *broadcast
+	broadcastClosed bool
+	audioDialogs    map[string]*sipgo.DialogServerCache
+	ptz             *ptzcontrol.Controller
+	ptzSlots        chan struct{}
+	ptzStopSlots    chan struct{}
+	presetQueries   map[string]*presetQuery
+	positionQueries map[string]*positionQuery
+	config          Config
+	ua              *sipgo.UserAgent
+	sip             *sipgo.Server
+	client          *sipgo.Client
+	auth            *Authenticator
+	mu              sync.Mutex
+	devices         map[string]DeviceConfig
+	states          map[string]*DeviceState
+	sequence        atomic.Uint32
+	queries         chan struct{}
+	dialogs         map[string]*sipgo.DialogClientCache
 	// Recent registrations from identities nobody provisioned: on site this is
 	// almost always a typo in the device number, so the console can show it.
 	strangers map[string]UnknownDevice
@@ -247,9 +251,11 @@ func NewServer(config Config) (*Server, error) {
 	s.ptz = ptzcontrol.New()
 	s.ptzSlots = make(chan struct{}, 8)
 	s.ptzStopSlots = make(chan struct{}, 2)
+	s.audioDialogs = make(map[string]*sipgo.DialogServerCache)
 	s.dialogs = make(map[string]*sipgo.DialogClientCache)
 	for _, transport := range []string{"UDP", "TCP"} {
 		s.dialogs[transport] = sipgo.NewDialogClientCache(client, sip.ContactHeader{Address: sip.Uri{Scheme: "sip", User: config.ServerID, Host: config.AdvertiseIP, Port: p, UriParams: sip.HeaderParams{{K: "transport", V: strings.ToLower(transport)}}}})
+		s.audioDialogs[transport] = sipgo.NewDialogServerCache(client, sip.ContactHeader{Address: sip.Uri{Scheme: "sip", User: config.ServerID, Host: config.AdvertiseIP, Port: p, UriParams: sip.HeaderParams{{K: "transport", V: strings.ToLower(transport)}}}})
 	}
 	for _, d := range config.Devices {
 		s.devices[d.ID] = d
@@ -257,7 +263,12 @@ func NewServer(config Config) (*Server, error) {
 	}
 	srv.OnRegister(s.register)
 	srv.OnMessage(s.message)
+	srv.OnInvite(s.broadcastInvite)
+	srv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) { s.broadcastDialog(req, tx, true) })
 	srv.OnBye(func(req *sip.Request, tx sip.ServerTransaction) {
+		if s.broadcastDialog(req, tx, false) {
+			return
+		}
 		cache := s.dialogs[req.Transport()]
 		if cache == nil {
 			s.respond(req, tx, 481, "Call Does Not Exist")
@@ -274,6 +285,11 @@ func NewServer(config Config) (*Server, error) {
 	return s, nil
 }
 func (s *Server) Close() {
+	s.mu.Lock()
+	s.broadcastClosed = true
+	b := s.broadcast
+	s.mu.Unlock()
+	s.finishBroadcast(b, true)
 	if s.ptz != nil {
 		s.ptz.Close()
 	}
@@ -501,6 +517,10 @@ func (s *Server) message(req *sip.Request, tx sip.ServerTransaction) {
 	s.mu.Lock()
 	st := s.states[id]
 	allowed := s.online(st, now) && st.source == req.Source() && st.transport == req.Transport()
+	var generation uint64
+	if allowed {
+		generation = st.Generation
+	}
 	s.mu.Unlock()
 	if !allowed {
 		s.respond(req, tx, 403, "Forbidden")
@@ -511,18 +531,33 @@ func (s *Server) message(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 	m, e := ParseBusinessMessage(req.Body(), s.config.MaxCatalogItems)
-	if e != nil || (m.DeviceID != id && m.Command != "PresetQuery") {
+	if e != nil || (m.DeviceID != id && m.Command != "PresetQuery" && m.Command != "Broadcast" && m.Command != "PTZPosition") {
 		s.respond(req, tx, 400, "Bad Request")
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Parsing runs outside the lock; registration may have changed meanwhile.
-	if !s.online(st, time.Now()) || st.source != req.Source() || st.transport != req.Transport() {
+	if s.states[id] != st || !s.online(st, time.Now()) || st.Generation != generation || st.source != req.Source() || st.transport != req.Transport() {
 		s.respond(req, tx, 403, "Forbidden")
 		return
 	}
 	switch m.Command {
+	case "PTZPosition":
+		if !s.acceptPosition(id, st, m, req.Source(), req.Transport()) {
+			s.respond(req, tx, 400, "Invalid Position Response")
+			return
+		}
+	case "Broadcast":
+		b := s.broadcast
+		if !s.broadcastCurrent(b, time.Now()) || b.device != id || (m.DeviceID != b.device && m.DeviceID != b.target) || b.sn != m.SN || m.XMLName.Local != "Response" || (m.Result != "OK" && m.Result != "ERROR") {
+			s.respond(req, tx, 400, "Unsolicited Broadcast Response")
+			return
+		}
+		select {
+		case b.result <- m.Result == "OK":
+		default:
+		}
 	case "PresetQuery":
 		if s.acceptPresets(id, st, m) != nil {
 			s.respond(req, tx, 400, "Invalid Preset Response")

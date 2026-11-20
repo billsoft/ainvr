@@ -1,12 +1,17 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Channel } from '../types/channel.js';
-import { PtzError, PtzStore } from '../store/ptzStore.js';
+import { calibrationSnapshot, PtzError, PtzStore } from '../store/ptzStore.js';
 import { ptzCameraKey } from '../services/ptzSources.js';
 import { PtzManager } from '../services/ptzManager.js';
+import { flowBodyLimit, flowFrames, type PtzFlow } from '../services/ptzFlow.js';
 const channelId = z.string().uuid();
 const seq = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const native = z.string().min(1).max(256);
+const presetMetadata = z.object({
+  name: z.string().trim().min(1).max(100),
+  shortcut: z.number().int().min(1).max(9).nullable(),
+}).strict();
 const session = z.string().uuid();
 const vector = z
   .object({
@@ -16,6 +21,7 @@ const vector = z
   })
   .strict();
 interface Options {
+  flow?: PtzFlow;
   manager: PtzManager | null;
   store: PtzStore | null;
   principal: (r: FastifyRequest) => Promise<string | null>;
@@ -30,9 +36,14 @@ export async function ptzRoutes(app: FastifyInstance, opts: Options) {
     if (!opts.store || !opts.manager)
       return reply.code(503).send({ error: '云台控制参数库尚未就绪' });
   });
-  app.setErrorHandler((e, _req, reply) => {
+  app.setErrorHandler((e, req, reply) => {
+    const error = e as {code?: string; statusCode?: number};
+    if (req.routeOptions.url?.endsWith('/ptz/flow') && error.code?.startsWith('FST_ERR_CTP_')) {
+      if (error.statusCode === 413) return reply.code(413).send({error:'ptz_flow_too_large'});
+      if (error.statusCode === 400 || error.statusCode === 415)
+        return reply.code(error.statusCode).send({error:'ptz_flow_invalid'});
+    }
     if (e instanceof z.ZodError) return reply.code(400).send({ error: '云台操作参数无效' });
-    const error = e as any;
     const code =
       e instanceof PtzError
         ? e.code
@@ -137,12 +148,42 @@ export async function ptzRoutes(app: FastifyInstance, opts: Options) {
     return { ...result, application: await opts.manager!.invalidateCamera(c.key) };
   });
   app.get('/channels/:id/ptz', (req) => opts.manager!.inspect(id(req)));
+  const digest = z.string().regex(/^[a-f0-9]{64}$/);
+  const dimension = z.number().int().min(1).max(16384);
+  const counter = z.number().int().nonnegative().safe();
+  const calibrationView = z.object({identity: digest, width: dimension, height: dimension,
+    estimator: z.literal('neuflow-v1').optional()}).strict();
+  const flowRequest = flowFrames.extend({identity: digest, epoch: counter});
+  app.post('/channels/:id/ptz/flow', {bodyLimit: flowBodyLimit}, async req => {
+    const channel = id(req);
+    const parsed = flowRequest.safeParse(req.body);
+    if (!parsed.success) throw new PtzError('ptz_flow_invalid', 400);
+    if (!opts.flow) throw new PtzError('ptz_flow_unavailable', 503);
+    const {identity, epoch, frame0, frame1} = parsed.data;
+    return opts.flow.measure({frame0, frame1}, () => opts.manager!.checkFlowContext(channel, identity, epoch));
+  });
+  const calibrationWrite = calibrationView.extend({
+    scope: digest, epoch: counter, revision: counter, snapshot: calibrationSnapshot,
+  });
+  app.post('/channels/:id/ptz/center-calibration/read', req =>
+    opts.manager!.readCalibration(id(req), calibrationView.parse(req.body)));
+  app.put('/channels/:id/ptz/center-calibration', req =>
+    opts.manager!.writeCalibration(id(req), calibrationWrite.parse(req.body)));
+  app.post('/channels/:id/ptz/follow-session', req => {
+    const b=z.object({identity:z.string().regex(/^[a-f0-9]{64}$/),processor:z.string().min(1).max(128)}).strict().parse(req.body);
+    return opts.manager!.acquire(id(req),actor(req),b.identity,b.processor);
+  });
+  app.post('/channels/:id/ptz/follow-step',req=>{
+    const b=z.object({sessionId:session,track:z.string().min(1).max(256).optional(),
+      brakeOnly:z.boolean().optional(),displayEpoch:z.number().int().nonnegative().safe().optional()}).strict().parse(req.body);
+    return opts.manager!.followStep(id(req),b.sessionId,actor(req),b.track,b.brakeOnly,b.displayEpoch);
+  });
   app.post('/channels/:id/ptz/control-session', (req) => {
     const b = z
-      .object({ identity: z.string().regex(/^[a-f0-9]{64}$/) })
+      .object({ identity: digest, calibrationEpoch: counter.optional() })
       .strict()
       .parse(req.body);
-    return opts.manager!.acquire(id(req), actor(req), b.identity);
+    return opts.manager!.acquire(id(req), actor(req), b.identity, undefined, b.calibrationEpoch);
   });
   app.put('/channels/:id/ptz/control-session/:sessionId', (req) => {
     const b = z
@@ -159,26 +200,34 @@ export async function ptzRoutes(app: FastifyInstance, opts: Options) {
       b.keepAlive,
     );
   });
+  app.post('/channels/:id/ptz/center', (req) => {
+    const coord = z.number().finite().min(-1).max(1);
+    const b = z.object({sessionId:session,sequence:seq,x:coord,y:coord}).strict().parse(req.body);
+    return opts.manager!.command(id(req),b.sessionId,actor(req),b.sequence,{pan:0,tilt:0,zoom:0},
+      undefined,false,{x:b.x,y:b.y});
+  });
   app.post('/channels/:id/ptz/stop', (req) => {
     const b = z.object({ sessionId: session.nullable() }).strict().parse(req.body);
     return b.sessionId
       ? opts.manager!.stop(id(req), b.sessionId, actor(req))
       : opts.manager!.emergencyStop(id(req), actor(req));
   });
+  app.post('/channels/:id/ptz/lens', (req) => {
+    const { lens } = z.object({ lens: z.string().min(1).max(64) }).strict().parse(req.body);
+    return opts.manager!.lens(id(req), actor(req), lens);
+  });
   app.get('/channels/:id/ptz/presets', (req) => opts.manager!.presets(id(req)));
   app.post('/channels/:id/ptz/presets', (req) => {
-    const b = z
-      .object({
-        id: native.optional(),
-        name: z.string().trim().min(1).max(100),
-        shortcut: z.number().int().min(1).max(9).nullable(),
-      })
-      .strict()
-      .parse(req.body);
+    const b = presetMetadata.extend({ id: native.optional() }).parse(req.body);
     return opts.manager!.savePreset(id(req), actor(req), b);
   });
   app.delete('/channels/:id/ptz/presets/:presetId', (req) =>
     opts.manager!.removePreset(id(req), actor(req), native.parse((req.params as any).presetId)),
+  );
+  app.put('/channels/:id/ptz/presets/:presetId', (req) =>
+    opts.manager!.updatePresetMetadata(
+      id(req), actor(req), native.parse((req.params as any).presetId), presetMetadata.parse(req.body),
+    ),
   );
   app.post('/channels/:id/ptz/presets/:presetId/goto', (req) => {
     const b = z.object({ sessionId: session, sequence: seq }).strict().parse(req.body);

@@ -520,10 +520,8 @@ function SnapshotHistoryPage() {
                     <button
                       type="button"
                       onClick={() => navigate(`/recognition-history/${c.id}`)}
-                      className={[
-                        'flex min-w-0 flex-1 flex-col gap-1.5 rounded-base px-2.5 py-2 text-left text-sm transition-colors',
-                        active ? 'bg-primary-50 text-primary' : 'text-ink-subtle hover:bg-surface-page hover:text-ink',
-                      ].join(' ')}
+                      aria-current={active ? true : undefined}
+                      className="channel-choice flex min-w-0 flex-1 flex-col gap-1.5 rounded-base px-2.5 py-2 text-left text-sm"
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="flex min-w-0 flex-1 items-center gap-1">

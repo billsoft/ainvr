@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Plus, ScanFace, AlertTriangle, Video } from 'lucide-react'
 import { useAiChannelsStore } from '@/store/aiChannels'
@@ -18,9 +18,7 @@ import { ConfirmDialog } from '@/components/modals/ConfirmDialog'
 import { EmptyState } from '@/components/common/EmptyState'
 import { AiChannelWizard } from './AiChannelWizard'
 import { AiChannelCard } from './AiChannelCard'
-import { AiResultModal } from './AiResultModal'
-import { AiPreviewModal } from './AiPreviewModal'
-import type { AiChannel, AiChannelCreatePatch, AiChannelUpdatePatch, AiFrameResult, AiStreamOption } from '@/types/aiChannel'
+import type { AiChannel, AiChannelCreatePatch, AiChannelUpdatePatch, AiStreamOption } from '@/types/aiChannel'
 
 export default function AiChannelsPage() {
   const { channels, loading, serviceUnreachable, fetchChannels, checkHealth, createChannel, updateChannel, deleteChannel, startChannel, stopChannel } = useAiChannelsStore()
@@ -30,10 +28,6 @@ export default function AiChannelsPage() {
   const aiCapabilities = useAiServiceCapabilities(wizardOpen)
   const [editing, setEditing] = useState<AiChannel | null>(null)
   const [deleting, setDeleting] = useState<AiChannel | null>(null)
-  const [viewingResult, setViewingResult] = useState<AiChannel | null>(null)
-  const [resultLoading, setResultLoading] = useState(false)
-  const [resultData, setResultData] = useState<AiFrameResult | null>(null)
-  const [previewing, setPreviewing] = useState<AiChannel | null>(null)
   const [streams, setStreams] = useState<AiStreamOption[]>([])
   const [streamsLoading, setStreamsLoading] = useState(false)
   const [streamsReady, setStreamsReady] = useState(false)
@@ -212,28 +206,6 @@ export default function AiChannelsPage() {
     })
   }, [channels, statusFilter, modelFilter, sourceFilter, sourceChannelMap, sourceSnapshot, serviceUnreachable])
 
-  // 请求发起时记下这次是给哪个通道查的；响应回来时比对是否还是"当前
-  // 正在等的那一次"，不一致就丢弃——防止快速切换查看目标（A 还没返回就
-  // 点开 B）时，A 的迟到响应盖掉 B 已经打开的弹窗内容。
-  const viewResultRequestIdRef = useRef(0)
-
-  async function handleViewResult(ch: AiChannel) {
-    const requestId = ++viewResultRequestIdRef.current
-    setViewingResult(ch)
-    setResultLoading(true)
-    setResultData(null)
-    try {
-      const { result } = await aiChannelService.latestResult(ch.id)
-      if (viewResultRequestIdRef.current !== requestId) return
-      setResultData(result)
-    } catch {
-      if (viewResultRequestIdRef.current !== requestId) return
-      setResultData(null)
-    } finally {
-      if (viewResultRequestIdRef.current === requestId) setResultLoading(false)
-    }
-  }
-
   return (
     <section aria-labelledby="ai-channels-title" className="mx-auto max-w-6xl">
       <div className="flex items-center justify-between">
@@ -347,8 +319,6 @@ export default function AiChannelsPage() {
                     onStop={() => stopChannel(ch.id).catch((e) => toast.error(e?.message || '停止失败'))}
                     onEdit={() => { setEditing(ch); setWizardOpen(true) }}
                     onDelete={() => setDeleting(ch)}
-                    onViewResult={() => handleViewResult(ch)}
-                    onPreview={() => setPreviewing(ch)}
                   />
                 ))}
               </div>
@@ -386,25 +356,6 @@ export default function AiChannelsPage() {
         onConfirm={handleConfirmDelete}
         onClose={() => setDeleting(null)}
       />
-
-      {viewingResult && (
-        <AiResultModal
-          channelName={viewingResult.name}
-          loading={resultLoading}
-          result={resultData}
-          onClose={() => setViewingResult(null)}
-        />
-      )}
-
-      {previewing && (
-        <AiPreviewModal
-          channelId={previewing.id}
-          channelName={previewing.name}
-          effectiveTargetUrl={previewing.config.publish.effective_target_url}
-          videoCodec={previewing.stats.publish?.codec ?? previewing.stats.video_codec}
-          onClose={() => setPreviewing(null)}
-        />
-      )}
 
       <Toaster />
     </section>

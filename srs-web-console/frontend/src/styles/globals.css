@@ -37,6 +37,12 @@
   .page-description { @apply mt-1 text-sm leading-6 text-ink-subtle; }
   .form-input { @apply w-full rounded-base border border-line bg-surface px-3 py-2 text-sm text-ink focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20; }
   .ui-panel { @apply rounded-panel border border-line bg-surface; }
+  .channel-choice { @apply text-ink-subtle transition-colors; }
+  .channel-choice:hover { @apply bg-surface-page text-ink; }
+  .channel-choice[aria-current="true"] {
+    @apply bg-primary-50 text-primary-600;
+    box-shadow: inset 3px 0 0 currentColor;
+  }
   /* 通用按钮（与配置页其他按钮同一外观）；未定义时按钮会显示成普通文字 */
   .btn-primary { @apply inline-flex items-center justify-center gap-1.5 rounded-base bg-primary px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-primary-600 disabled:cursor-not-allowed disabled:opacity-50; }
   .btn-secondary { @apply inline-flex items-center justify-center gap-1.5 rounded-base border border-line bg-surface px-4 py-2 text-sm font-medium text-ink shadow-sm transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50; }

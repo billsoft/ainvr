@@ -9,6 +9,7 @@ RUN npm ci --no-audit --no-fund
 # 拷贝源码编译
 COPY tsconfig.json ./
 COPY src/ ./src/
+COPY helpers/ ./helpers/
 RUN npm run build
 
 # ===== 运行阶段 =====
@@ -22,6 +23,7 @@ ENV NODE_ENV=production \
 # 只装生产依赖
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
+RUN apk add --no-cache py3-gst gst-plugins-good
 
 # 编译产物
 COPY --from=builder /app/dist ./dist

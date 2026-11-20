@@ -14,11 +14,188 @@
  * canvas 2D context 在 jsdom 下不可用，所以这里不校验像素，而是校验
  * "叠加层向 getSeiForFrame 要的是哪一帧的结果"——这正是本次改动的核心语义。
  */
-import { render, cleanup, act, screen } from '@testing-library/react'
+import { render, cleanup, act, screen, fireEvent } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiDetectionOverlay } from '@/components/player/AiDetectionOverlay'
 
 afterEach(cleanup)
+
+describe('点选已绘制的 SEI 识别框', () => {
+  it.each([
+    { w: 3840, h: 1920, nested: [140, 170], outer: [220, 210], bar: [140, 90] },
+    { w: 1920, h: 3840, nested: [170, 140], outer: [210, 220], bar: [90, 140] },
+  ])('按 $w × $h 原图命中、消歧并校验当前帧', async ({ w, h, nested, outer, bar }) => {
+    const user = userEvent.setup()
+    let now = 1000
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const callbacks = new Map<number, FrameRequestCallback>()
+    let next = 0
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { callbacks.set(++next, cb); return next })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => callbacks.delete(id))
+    const draw = () => {
+      const pending = [...callbacks.values()]
+      callbacks.clear()
+      pending.forEach(cb => cb(now))
+    }
+    const colors: string[] = []
+    const ctx = { strokeStyle: '', setTransform: vi.fn(), clearRect: vi.fn(),
+      strokeRect() { colors.push(this.strokeStyle) }, measureText: () => ({ width: 20 }),
+      fillRect: vi.fn(), fillText: vi.fn(), setLineDash: vi.fn() }
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx as unknown as CanvasRenderingContext2D)
+    try {
+      const v = makeVideo()
+      Object.defineProperties(v.el, { videoWidth: { value: w }, videoHeight: { value: h }, paused: { value: false } })
+      const rect = { left: -50, top: 70, width: 400, height: 400 } as DOMRect
+      vi.spyOn(v.el, 'getBoundingClientRect').mockReturnValue(rect)
+      const box = (at: number, size: number) => ({ x: w * at, y: h * at, w: w * size, h: h * size })
+      const base = { class_id: 1, class_name: 'object', confidence: 1 }
+      const selected = 'cam:model:4:1'
+      const detections = [
+        { ...base, track_id: 'cam:outer', bbox: box(-1, 2) },
+        { ...base, track_id: selected, bbox: box(0.3, 0.1) },
+        { ...base, track_id: 'pred', predicted: true, bbox: box(0.34, 0.02) },
+        { ...base, track_id: 'low', lowConfidence: true, bbox: box(0.34, 0.02) },
+        { ...base, bbox: box(0.34, 0.02) },
+      ]
+      const innerDetection = detections[1]!
+      const frames = [[], detections, [], [{ ...innerDetection, track_id: 'cam:model:5:1' }],
+        [innerDetection, innerDetection], [{ ...innerDetection, predicted: true }],
+        [{ ...innerDetection, lowConfidence: true }]]
+      const getSeiForFrame = (rtp: number) => ({ detections: frames[rtp] ?? [] })
+      const onPick = vi.fn()
+      const overlay = (selectedId?: string | null, pickEnabled?: boolean) => <AiDetectionOverlay video={v.el} enabled
+        getSeiForFrame={getSeiForFrame} trackPicking={selectedId === undefined ? null : { selectedId, pickEnabled, onPick }} />
+      const playerClick = vi.fn()
+      const player = (id?: string | null, pickEnabled?: boolean) => <div onClick={playerClick}>{overlay(id, pickEnabled)}</div>
+      const view = render(player(null))
+      const canvas = screen.getByTestId('ai-detection-overlay')
+      vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(rect)
+      const click = ([x = 0, y = 0]: number[]) => fireEvent.click(canvas, { clientX: rect.left + x, clientY: rect.top + y })
+      v.present(1)
+      click(nested)
+      expect(onPick).not.toHaveBeenCalled()
+      draw()
+      click(bar)
+      expect(onPick).not.toHaveBeenCalled()
+      click(nested)
+      const popup = () => screen.getByRole('menu', { name: '选择跟踪目标' })
+      const inner = () => screen.getByRole('menuitem', { name: 'object #1' })
+      expect(screen.getAllByRole('menuitem')).toHaveLength(2)
+      expect(onPick).not.toHaveBeenCalled()
+      expect(popup().parentElement).toHaveStyle(w > h
+        ? { left: '0%', top: '25%', width: '100%', height: '50%' }
+        : { left: '25%', top: '0%', width: '50%', height: '100%' })
+      expect(screen.getByRole('menuitem', { name: 'object #outer' })).toHaveFocus()
+      await user.keyboard('{ArrowDown}')
+      expect(inner()).toHaveFocus()
+      await user.keyboard('{Enter}')
+      expect(onPick).toHaveBeenLastCalledWith(selected)
+      expect(screen.queryByRole('menu')).toBeNull()
+      view.rerender(player(selected))
+      draw()
+      expect(colors.slice(-5)).toEqual(['#22c55e', '#7dd3fc', '#22c55e', '#22c55e', '#22c55e'])
+      click(nested)
+      await user.keyboard('{Escape}')
+      expect(screen.queryByRole('menu')).toBeNull()
+      click(nested)
+      fireEvent.click(document.body)
+      expect(screen.queryByRole('menu')).toBeNull()
+      click(nested)
+      click(outer) // Dismiss only, even when the outside click hits a single box.
+      expect(screen.queryByRole('menu')).toBeNull()
+      expect(onPick).toHaveBeenCalledTimes(1)
+      click(nested)
+      await user.pointer([{ keys: '[TouchA>]', target: inner() }, { keys: '[/TouchA]' }])
+      expect(onPick).toHaveBeenCalledTimes(2)
+      expect(onPick).toHaveBeenLastCalledWith(selected)
+      onPick.mockClear()
+      for (const nextFrame of [2, 3, 4, 5, 6]) {
+        v.present(1)
+        draw()
+        click(nested)
+        v.present(nextFrame) // New metadata before the next canvas paint.
+        fireEvent.click(inner())
+        expect(screen.queryByRole('menu')).toBeNull()
+        expect(onPick).not.toHaveBeenCalled()
+      }
+      v.present(2)
+      click(outer)
+      expect(onPick).not.toHaveBeenCalled()
+      v.present(1)
+      draw()
+      click(outer)
+      expect(onPick).toHaveBeenLastCalledWith('cam:outer')
+      v.present(2)
+      draw()
+      click(outer)
+      expect(onPick).toHaveBeenCalledTimes(1)
+      view.rerender(player('cam:outer'))
+      v.present(1)
+      draw()
+      expect(colors.slice(-5, -3)).toEqual(['#7dd3fc', '#22c55e'])
+      click(nested)
+      v.el.currentTime += 2
+      fireEvent.click(inner())
+      expect(onPick).toHaveBeenCalledTimes(1)
+      v.present(1)
+      draw()
+      click(nested)
+      now += 1001
+      fireEvent.click(inner())
+      click(outer)
+      expect(onPick).toHaveBeenCalledTimes(1)
+      view.rerender(player(selected))
+      v.present(1)
+      draw()
+      click(nested)
+      expect(popup()).toBeVisible()
+      const staleItem = inner()
+      view.rerender(player(selected, false))
+      draw()
+      expect(colors.slice(-5)[1]).toBe('#7dd3fc')
+      expect(screen.queryByRole('menu')).toBeNull()
+      expect(canvas).toHaveClass('pointer-events-none')
+      fireEvent.click(staleItem)
+      click(nested)
+      click(outer)
+      expect(screen.queryByRole('menu')).toBeNull()
+      expect(playerClick).toHaveBeenCalledTimes(2)
+      expect(onPick).toHaveBeenCalledTimes(1)
+      expect(fireEvent.keyDown(document, { key: 'Escape' })).toBe(true)
+      playerClick.mockClear()
+
+      // Missing, reused short ID, duplicate ID, prediction, low confidence, then reacquisition.
+      for (const frame of [2, 3, 4, 5, 6, 1]) {
+        colors.length = 0
+        v.present(frame)
+        draw()
+        expect(colors).toHaveLength(frames[frame]!.length)
+        expect(colors.filter(color => color === '#7dd3fc')).toHaveLength(frame === 1 ? 1 : 0)
+      }
+      now += 1001
+      colors.length = 0
+      draw()
+      expect(colors).toEqual([])
+      view.rerender(player(selected, true))
+      expect(screen.queryByRole('menu')).toBeNull()
+      view.rerender(player())
+      expect(screen.queryByRole('menu')).toBeNull()
+      v.present(1)
+      draw()
+      expect(colors.slice(-5)).toEqual(Array(5).fill('#22c55e'))
+      expect(canvas).toHaveClass('pointer-events-none')
+      expect(playerClick).not.toHaveBeenCalled()
+      click(nested)
+      expect(playerClick).toHaveBeenCalledTimes(1)
+      expect(onPick).toHaveBeenCalledTimes(1)
+    } finally {
+      cleanup()
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    }
+  })
+})
 
 describe('live overlay expiry', () => {
   it('distinguishes a stalled video from missing overlays and ignores user pause', () => {

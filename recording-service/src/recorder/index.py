@@ -337,6 +337,15 @@ class SegmentIndex:
             r = cur.fetchone()
         return int(r["d"]), int(r["b"])
 
+    def playback_hints(self, channels: list[str], start: int, end: int):
+        with self._lock:
+            return {channel: (bool(row[0]), row[1]) for channel in channels
+                    for row in self.conn.execute(
+                        "SELECT EXISTS(SELECT 1 FROM active_segments WHERE channel_id=? AND complete=1 "
+                        "AND start_ts<? AND end_ts>? ORDER BY start_ts DESC LIMIT 1), "
+                        "(SELECT MAX(start_ts) FROM active_segments WHERE channel_id=? AND complete=1)",
+                        (channel, end, start, channel))}
+
     def oldest_ts(self, channel_id: str | None = None) -> int | None:
         with self._lock:
             if channel_id:

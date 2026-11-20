@@ -52,6 +52,7 @@ func (p *ptzHTTP) Serve(w http.ResponseWriter, r *http.Request, settings Setting
 		VideoSource string             `json:"videoSource"`
 		Context     string             `json:"context"`
 		Command     ptzcontrol.Command `json:"command"`
+		Lens        string             `json:"lens"`
 		PresetID    string             `json:"presetId"`
 		Name        string             `json:"name"`
 	}
@@ -165,6 +166,9 @@ func (p *ptzHTTP) Serve(w http.ResponseWriter, r *http.Request, settings Setting
 		result, e = p.control.Execute(r.Context(), t.caps.Resource, t, req.Command)
 	case "/v1/ptz/presets":
 		result, e = t.Presets(r.Context())
+	case "/v1/ptz/lens":
+		e = t.LensAction(r.Context(), req.Lens)
+		result = map[string]bool{"applied": e == nil}
 	case "/v1/ptz/status":
 		result, e = t.Status(r.Context())
 	case "/v1/ptz/preset-save":

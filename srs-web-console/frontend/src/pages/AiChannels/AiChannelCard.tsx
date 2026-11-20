@@ -1,7 +1,7 @@
 import { AnalyticsEvents } from './AnalyticsEvents'
 import { ANALYTICS_PHASE } from '@/features/analyticsPhase'
 import { useRef, useState } from 'react'
-import { MoreVertical, Play, Square, Eye, Pencil, Trash2 } from 'lucide-react'
+import { MoreVertical, Play, Square, Pencil, Trash2 } from 'lucide-react'
 import { AiChannelStatusBadge } from '@/components/common/AiChannelStatusBadge'
 import { getAiModelDisplayName, type AiChannel } from '@/types/aiChannel'
 import { aiPresentationState, type SourceAvailability } from '@/features/aiSourceState'
@@ -16,11 +16,10 @@ interface Props {
   onStop: () => void
   onEdit: () => void
   onDelete: () => void
-  onViewResult: () => void
-  onPreview: () => void
+
 }
 
-export function AiChannelCard({ channel, disabled, sourceChannelName, sourceAvailability = 'unknown', onStart, onStop, onEdit, onDelete, onViewResult, onPreview }: Props) {
+export function AiChannelCard({ channel, disabled, sourceChannelName, sourceAvailability = 'unknown', onStart, onStop, onEdit, onDelete }: Props) {
   const [eventsOpen,setEventsOpen]=useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const menuButton=useRef<HTMLButtonElement>(null)
@@ -213,21 +212,7 @@ export function AiChannelCard({ channel, disabled, sourceChannelName, sourceAvai
         )
       })()}
 
-      <div className="mt-4 flex gap-2">
-        <button type="button" onClick={onViewResult} className="rounded-base border border-line px-3.5 py-2 text-sm text-ink-subtle hover:bg-surface-page">
-          <Eye size={14} className="mr-1 inline" aria-hidden />查看结果
-        </button>
-        {ANALYTICS_PHASE.rulesAndEvents && <button type="button" onClick={()=>setEventsOpen(true)} className="text-sm text-primary">区域事件</button>}
-        <button
-          type="button"
-          onClick={onPreview}
-          disabled={disabled || !config.publish.enabled || !receiving}
-          title={!config.publish.enabled ? '该通道未开启推流' : !receiving ? '识别流尚未就绪' : undefined}
-          className="rounded-base border border-line px-3.5 py-2 text-sm text-ink-subtle hover:bg-surface-page disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <Play size={14} className="mr-1 inline" aria-hidden />播放衍生流
-        </button>
-      </div>
+      {ANALYTICS_PHASE.rulesAndEvents && <button type="button" onClick={()=>setEventsOpen(true)} className="mt-4 text-sm text-primary">区域事件</button>}
       {modelNodes.map(n=>n.model).some(m=>m.adapter==='plate_bpu')&&<div className="mt-4 flex flex-wrap gap-3 border-t border-line pt-3 text-xs text-ink-subtle"><span>车牌已纳入联合识别 · 现场准确率待验证</span><a className="text-primary" href="/recognition-history?view=vehicles">车辆通行</a><a className="text-primary" href="/config-center?category=vehicles">关注名单</a></div>}
     </div>
   )

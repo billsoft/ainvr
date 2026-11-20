@@ -1,8 +1,97 @@
 .ptz-player-container { container-type: inline-size; }
 .ptz-player-layout { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .ptz-player-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; flex: 1; }
-.ptz-panel { width: 100%; max-height: 55%; flex: 0 0 auto; }
-@container (min-width: 640px) {
+.ptz-panel { width: 100%; max-height: none; flex: 0 0 auto; }
+@container (min-width: 420px) {
  .ptz-player-layout { flex-direction: row; }
- .ptz-panel { width: 288px; height: 100%; max-height: none; }
+ .ptz-panel { width: 172px; height: 100%; max-height: none; }
 }
+.ptz-section { display: grid; align-content: start; gap: 8px; margin-top: 8px; min-width: 0; font-size: 12px; }
+.ptz-section p { overflow-wrap: anywhere; }
+:is(.ptz-section, .ptz-presets) label { display: grid; gap: 3px; color: #cbd5e1; }
+:is(.ptz-section, .ptz-presets) :is(select, input) {
+  width: 100%; min-width: 0; min-height: 32px; border-radius: 5px;
+  padding: 4px 7px; background: #1e293b; border: 1px solid #475569; color: #f1f5f9;
+}
+.ptz-tools { display: flex; flex-wrap: wrap; gap: 4px; }
+.ptz-tools:empty { display: none; }
+.ptz-tool {
+  display: inline-grid; place-items: center; position: relative; width: 34px; height: 34px;
+  background: #1e293b; border: 1px solid #475569; border-radius: 6px;
+}
+.ptz-tool:hover:enabled { background: #334155; }
+.ptz-tool:disabled { opacity: .45; }
+.ptz-tool span {
+  position: absolute; z-index: 10; left: 0; top: calc(100% + 3px); width: max-content;
+  max-width: 145px; padding: 4px 6px; border-radius: 4px; background: #020617; color: white;
+  pointer-events: none; visibility: hidden; font-size: 11px;
+}
+.ptz-tool:last-child:not(:first-child) span { left: auto; right: 0; }
+.ptz-tool:hover span, .ptz-tool:focus-visible span { visibility: visible; }
+.ptz-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px;
+  padding: 2px; background: #020617; border-radius: 7px; }
+.ptz-modes button { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  min-height: 40px; gap: 2px; border-radius: 5px; color: #cbd5e1; font-size: 11px; white-space: nowrap; }
+.ptz-modes button[aria-pressed="true"] { background: #1e40af; color: white; }
+.ptz-modes button:disabled:not([aria-pressed="true"]) { color: #64748b; }
+.ptz-modes button:focus-visible { outline: 2px solid #93c5fd; }
+@media (pointer: coarse) { .ptz-modes button { min-height: 44px; } }
+@container (max-width: 419px) { .ptz-modes { grid-column: 1 / -1; } }
+@media (pointer: coarse) {
+  .ptz-tool { width: auto; min-width: 44px; height: auto; min-height: 44px; padding: 4px; }
+  .ptz-tool span {
+    position: static; visibility: visible; width: auto; max-width: 76px;
+    background: transparent; padding: 0; font-size: 10px;
+  }
+
+}
+
+.ptz-panel { display: flex; flex-direction: column; gap: 3px; }
+.ptz-panel > :not(.ptz-presets) { flex-shrink: 0; }
+.ptz-motion { display: flex; align-items: center; gap: 6px; justify-content: center; }
+.ptz-pad { display: grid; grid-template-columns: repeat(3, 32px); gap: 2px; }
+.ptz-zoom { display: grid; gap: 3px; }
+.ptz-motion .ptz-zoom button { font-size: 11px; padding: 2px; gap: 1px; }
+.ptz-panel .ptz-section { gap: 4px; margin: 0; }
+.ptz-presets { display: flex; flex: 1 0 auto; min-height: 0; flex-direction: column; gap: 4px;
+  border-top: 1px solid #334155; padding-top: 6px; margin-top: 3px; font-size: 12px; }
+.ptz-presets header { display: flex; align-items: center; gap: 5px; font-weight: 600; }
+.ptz-presets header .ptz-tools { margin-left: auto; flex-wrap: nowrap; gap: 2px; }
+.ptz-presets header .ptz-tool { width: 27px; height: 30px; }
+.ptz-preset-grid { display: grid; align-content: start; flex: 1 1 0; min-height: 32px;
+  grid-template-columns: repeat(2, minmax(0,1fr)); grid-auto-rows: 32px; gap: 3px; }
+.ptz-panel details:not([open]) > :not(summary) { display: none; }
+@container (max-width: 419px) {
+  .ptz-panel { display: grid; min-height: 0; grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+  .ptz-presets { grid-column: 1 / -1; }
+  .ptz-preset-grid { height: 32px; flex: none; }
+}
+
+.ptz-tools:empty { display: none; }
+.ptz-tool span { display: none; }
+.ptz-tool:is(:hover,:focus-visible) span { display: block; }
+.ptz-pages .ptz-tool span { top: auto; bottom: calc(100% + 3px); }
+.ptz-preset-grid button[aria-current="true"] { outline: 2px solid #60a5fa; outline-offset: -2px; }
+.ptz-preset-grid button { padding: 0 3px; gap: 2px; min-width: 0; font-size: 12px; }
+@media (max-height: 740px) {
+  .ptz-presets > label { grid-template-columns: 48px minmax(0, 1fr); align-items: center; }
+  .ptz-presets:has(> label) header { display: none; }
+  .ptz-panel:has(.ptz-presets > label) .ptz-section[aria-label="镜头与辅助设备"] { display: none; }
+  .ptz-panel { gap: 2px; padding: 5px; }
+  .ptz-panel .ptz-pad { grid-template-columns: repeat(3, 26px); }
+  .ptz-panel button, .ptz-panel input, .ptz-panel select { min-height: 25px; }
+  .ptz-panel .ptz-pad button { min-width: 0; padding: 0; }
+  .ptz-panel p[data-idle="true"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .ptz-panel .ptz-tool { width: 27px; height: 26px; }
+  .ptz-panel button[aria-pressed] { margin-top: 1px; }
+  .ptz-presets { margin-top: 1px; padding-top: 2px; gap: 2px; }
+  .ptz-preset-grid { min-height: 26px; grid-auto-rows: 26px; gap: 2px; }
+}
+@media (pointer: coarse) {
+  .ptz-tool span { display: block; }
+  .ptz-presets header { flex-wrap: wrap; }
+  .ptz-presets header .ptz-tool { width: auto; height: auto; }
+}
+
+.ptz-panel .ptz-lens-actions button { min-height: 38px; padding: 3px 2px; gap: 1px; white-space: nowrap; line-height: 15px; }
+@media (pointer: coarse) { .ptz-panel .ptz-lens-actions button { min-height: 44px; } }

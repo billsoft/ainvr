@@ -7,7 +7,7 @@ import { useMonitorStore } from '@/store/monitor'
 import MonitorPage from '@/pages/Monitor'
 import { autoMonitorCapacity } from '@/pages/Monitor/autoLayout'
 
-vi.mock('@/components/player/VideoPlayer', () => ({ VideoPlayer: (props:{onArming?:(video:HTMLVideoElement)=>void;savedZoneSource?:{id:string;createdAt?:string;inputGeneration?:string}}) => <div data-testid="vp" data-zone-source={JSON.stringify(props.savedZoneSource)}>{props.onArming&&<button onClick={()=>props.onArming!(document.createElement('video'))}>布防</button>}</div> }))
+vi.mock('@/components/player/VideoPlayer', () => ({ VideoPlayer: (props:{showControls?:boolean;onArming?:(video:HTMLVideoElement)=>void;savedZoneSource?:{id:string;createdAt?:string;inputGeneration?:string}}) => <div data-testid="vp" data-controls={props.showControls} data-zone-source={JSON.stringify(props.savedZoneSource)}>{props.onArming&&<button onClick={()=>props.onArming!(document.createElement('video'))}>布防</button>}</div> }))
 vi.mock('@/pages/AlarmCenter/ArmingLauncher',()=>({ArmingLauncher:({onClose}:{onClose:()=>void})=><div role="dialog" aria-label="布防"><button onClick={onClose}>取消布防</button></div>}))
 vi.mock('@/pages/Monitor/useMonitorCatalog', () => ({ useMonitorCatalog: () => ({
   allChannels: mockChannels, outputIds: new Map([[`${mockChannels[1]!.upstream.app}/${mockChannels[1]!.upstream.stream}`,"processor-one"]]), variants: new Map([[mockChannels[0]!.id,[mockChannels[1]!]]]), gbBindings: [], ready: true, error: '',
@@ -30,21 +30,27 @@ beforeEach(() => {
 })
 const renderPage = () => render(<MemoryRouter><MonitorPage /></MemoryRouter>)
 
-it('shows the original camera and ingest protocol for an AI output in grid and focus', async () => {
+it('keeps operational controls out of the wall and shows the source in single-channel view', async () => {
   const user = userEvent.setup()
   renderPage()
   const label = `原始输入：${mockChannels[0]!.name}；接入协议：RTMP；视频流：live/cam_main_door`
-  await waitFor(() => expect(screen.getAllByLabelText(label)).toHaveLength(2))
+  expect(screen.queryByLabelText(label)).not.toBeInTheDocument()
+  expect(screen.queryByRole('button',{name:'布防'})).not.toBeInTheDocument()
+  expect(screen.queryByRole('button',{name:'识别历史'})).not.toBeInTheDocument()
+  expect(screen.getAllByTestId('vp').every(p=>p.dataset.controls === 'false')).toBe(true)
   await user.click(screen.getByTestId('slot-focus-1'))
   expect(screen.getByLabelText(label)).toHaveTextContent(`来源：${mockChannels[0]!.name}`)
   expect(screen.getByLabelText(label)).toHaveTextContent('RTMP')
+  expect(screen.getByRole('button',{name:'识别历史'})).toBeInTheDocument()
+  expect(screen.getByTestId('vp')).toHaveAttribute('data-controls','true')
 })
 
 it('updates the source label when the selected playback switches to AI output', async () => {
   const user = userEvent.setup()
   renderPage()
+  await user.click(screen.getByTestId('slot-focus-0'))
   await user.selectOptions(screen.getByLabelText(`播放来源 ${mockChannels[0]!.name}`), mockChannels[1]!.id)
-  expect(screen.getAllByText(`来源：${mockChannels[0]!.name}`)).toHaveLength(2)
+  expect(screen.getByText(`来源：${mockChannels[0]!.name}`)).toBeInTheDocument()
   expect(useMonitorStore.getState().initialized).toBe(true)
   expect(useMonitorStore.getState().slots.filter(Boolean)).toEqual(mockChannels.map(c => c.id))
   expect(useMonitorStore.getState().selectedOutputs[mockChannels[0]!.id]).toBe(mockChannels[1]!.id)
@@ -56,6 +62,7 @@ describe('MonitorPage stable layout', () => {
     const source = mockChannels[0]!
     useMonitorStore.setState({ slots: [source.id, null, null, null], initialized: true, selectedOutputs: { [source.id]: 'removed-ai-output' } })
     renderPage()
+    await user.click(screen.getByTestId('slot-focus-0'))
     const selector = screen.getByLabelText(`播放来源 ${source.name}`)
     expect(selector).toHaveValue('removed-ai-output')
     expect(screen.getByLabelText(`播放来源 ${source.name}`)).toHaveValue('removed-ai-output')
@@ -80,10 +87,17 @@ describe('MonitorPage stable layout', () => {
   it('focus unmounts grid and returning restores it', async () => {
     const user = userEvent.setup()
     renderPage()
+    const rows = screen.getAllByTestId(/^monitor-item-/)
+    const currentRows = () => rows.filter(row => row.getAttribute('aria-current') === 'true')
+    expect(currentRows()).toEqual([])
     await user.click(await screen.findByTestId('slot-focus-0'))
     expect(screen.queryByTestId('monitor-grid')).not.toBeInTheDocument()
+    expect(currentRows()).toEqual([rows[0]])
+    await user.click(rows[1]!)
+    expect(currentRows()).toEqual([rows[1]])
     await user.click(screen.getByTestId('focus-back'))
     expect(screen.getByTestId('monitor-grid')).toBeInTheDocument()
+    expect(currentRows()).toEqual([])
   })
 })
 

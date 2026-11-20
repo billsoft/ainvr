@@ -33,7 +33,7 @@ export function GBConfigForm(){
     <p className="mt-2">默认网关运行在本机，无需额外转发。使用其他主机上的网关时，请先由管理员配置受信任的 HTTPS 管理连接，以及返回本机流媒体服务的安全转发；只修改管理地址不能完成外置接入。</p>
     <p className="mt-2">信令和媒体地址应填写外置网关上摄像头可达的地址。设备账号仍在新建通道向导中配置，不在此处填写。</p>
    </details>
-   <p className="text-sm text-ink-subtle">支持 2016／2022 摄像头和 NVR 的实时视频、录像、AI 识别与云台控制；不含语音对讲、读取设备端录像和向上级平台级联。各厂商真机兼容性及持续运行验证尚未完成。</p>
+   <p className="text-sm text-ink-subtle">支持 2016／2022 摄像头和 NVR 的实时视频、录像、AI 识别、云台控制和单设备语音广播。喊话需要安全浏览器连接和设备音频输出。不含读取设备端录像和向上级平台级联。各厂商真机兼容性及持续运行验证尚未完成。</p>
    <button className="min-h-11 rounded-base bg-primary px-4 text-white hover:bg-primary-600" onClick={()=>void save()}>{busy?'保存中…':'保存国标配置'}</button>
   </fieldset>}
  </section><p className="mt-4 text-sm text-ink-subtle">每台摄像头或 NVR 的登记、密码、启停和删除，在 <a className="text-primary underline" href="/channels">接入管理</a> 的新建或编辑通道向导中完成；此处只设置整个国标网关共用的参数。</p><PtzGlobalSettings/></>

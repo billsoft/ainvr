@@ -1487,7 +1487,8 @@ std::string HistoryMongo::BeginSearch(const SearchSessionRequest& request) {
   return version;
 }
 bool HistoryMongo::PublishSearch(const std::string& id, const std::string& actor, const std::string& version,
-                                const std::vector<SearchSessionCandidate>& candidates, const std::string& coverage) {
+                                const std::vector<SearchSessionCandidate>& candidates, const std::string& coverage, const std::string& ranking_mode) {
+  if (!ranking_mode.empty() && ranking_mode != "combined" && ranking_mode != "similarity") throw std::invalid_argument("invalid_ranking_mode");
   const auto key = SearchKey(id, actor);
   if (version.size() != 64 || candidates.size() > 60 || (coverage != "unknown" && coverage != "partial" && coverage != "sampled"))
     throw std::invalid_argument("invalid_search_shortlist");
@@ -1558,6 +1559,7 @@ bool HistoryMongo::PublishSearch(const std::string& id, const std::string& actor
     slots.push_back({{"id", candidate.sample_id}, {"score", candidate.similarity}, {"fingerprint", sample->second.fingerprint},{"frames",frames}});
   }
   Json shortlist = {{"version", version}, {"coverage", actual_coverage}, {"slots", slots}};
+  if (!ranking_mode.empty()) shortlist["ranking_mode"] = ranking_mode;
   if (shortlist.dump().size() > 65536) throw std::invalid_argument("search_shortlist_size");
   if (state_->Update(c, "search_sessions", {{"_id", key}, {"version", version}, {"cancelled", false}, {"expires_at", {{"$gt", Date(Now())}}}},
     {{"$set", {{"shortlist", shortlist}, {"shortlist_sha", Sha(shortlist.dump())}}}}, false) != 1)
@@ -1574,6 +1576,7 @@ std::optional<SearchSessionPage> HistoryMongo::ReadSearch(const std::string& id,
   if (!row.contains("shortlist")) return page;
   const auto shortlist = ReadShortlist(doc.get()); const auto& slots = shortlist.at("slots");
   page.published = true; page.coverage = shortlist.at("coverage");
+  page.ranking_mode = shortlist.value("ranking_mode", std::string{});
   Json ids = Json::array(); for (const auto& slot : slots) { const auto sample_id = slot.at("id").get<std::string>(); Uuid(sample_id); ids.push_back(sample_id); }
   auto available = state_->VisibleSamples(c, ids, page.request.scope);
   for (const auto& slot : slots) {

@@ -1,5 +1,27 @@
 import type { Pool } from 'pg';
 import { z } from 'zod';
+const calibrationRecord = z.object({
+  axis: z.enum(['pan', 'tilt']),
+  sign: z.union([z.literal(-1), z.literal(1)]),
+  speed: z.number().finite().min(0.08).max(1),
+  durationMs: z.number().finite().min(60).max(1250),
+  displacement: z.number().finite().positive().max(2),
+  at: z.number().int().positive().safe(),
+}).strict();
+export const calibrationSnapshot = z.object({
+  version: z.literal(1),
+  records: z.array(calibrationRecord).max(24),
+}).strict().refine(({records}) => {
+  const counts = new Map<string, number>();
+  for (const {axis, sign} of records) {
+    const key = axis + sign;
+    const count = (counts.get(key) ?? 0) + 1;
+    if (count > 6) return false;
+    counts.set(key, count);
+  }
+  return true;
+});
+export type CalibrationSnapshot = z.infer<typeof calibrationSnapshot>;
 export const ptzSettingsSchema = z
   .object({
     enabled: z.boolean(),
@@ -30,6 +52,47 @@ export class PtzError extends Error {
 }
 export class PtzStore {
   constructor(public pool: Pool) {}
+  async calibrationEpoch(motor: string) {
+    const {rows} = await this.pool.query('SELECT epoch FROM ptz_calibration_epochs WHERE motor=$1', [motor]);
+    return Number(rows[0]?.epoch ?? 0);
+  }
+  async calibration(motor: string, scope: string) {
+    const {rows} = await this.pool.query(
+      `SELECT e.epoch, p.revision, p.snapshot FROM ptz_calibration_epochs e
+       LEFT JOIN ptz_center_calibrations p ON p.motor=e.motor AND p.scope=$2 WHERE e.motor=$1`,
+      [motor, scope],
+    );
+    const row = rows[0];
+    return {epoch: Number(row?.epoch ?? 0), revision: Number(row?.revision ?? 0),
+      snapshot: row?.snapshot ? calibrationSnapshot.parse(row.snapshot) : null};
+  }
+  async invalidateCalibration(motor: string) {
+    await this.transaction(async c => {
+      await c.query(`INSERT INTO ptz_calibration_epochs(motor,epoch) VALUES($1,1)
+        ON CONFLICT(motor) DO UPDATE SET epoch=ptz_calibration_epochs.epoch+1`, [motor]);
+      await c.query('DELETE FROM ptz_center_calibrations WHERE motor=$1', [motor]);
+    });
+  }
+  async saveCalibration(motor: string, scope: string, epoch: number, revision: number,
+    snapshot: CalibrationSnapshot) {
+    const document = calibrationSnapshot.parse(snapshot);
+    return this.transaction(async c => {
+      await c.query('INSERT INTO ptz_calibration_epochs(motor) VALUES($1) ON CONFLICT DO NOTHING', [motor]);
+      const lock = await c.query('SELECT epoch FROM ptz_calibration_epochs WHERE motor=$1 FOR UPDATE', [motor]);
+      if (Number(lock.rows[0].epoch) !== epoch) throw new PtzError('ptz_calibration_stale');
+      if (revision === 0) {
+        const result = await c.query(`INSERT INTO ptz_center_calibrations(motor,scope,snapshot)
+          SELECT $1,$2,$3 WHERE (SELECT count(*) FROM ptz_center_calibrations WHERE motor=$1)<32
+          ON CONFLICT DO NOTHING RETURNING revision`, [motor, scope, document]);
+        if (!result.rowCount) throw new PtzError('ptz_calibration_conflict');
+        return {revision: 1};
+      }
+      const result = await c.query(`UPDATE ptz_center_calibrations SET snapshot=$3,revision=revision+1
+        WHERE motor=$1 AND scope=$2 AND revision=$4 RETURNING revision`, [motor, scope, document, revision]);
+      if (!result.rowCount) throw new PtzError('ptz_calibration_conflict');
+      return {revision: Number(result.rows[0].revision)};
+    });
+  }
   async settings() {
     const { rows } = await this.pool.query(
       'SELECT revision,document FROM ptz_settings WHERE singleton',
@@ -211,6 +274,14 @@ export class PtzStore {
       )
     ).rows;
   }
+  async checkPresetShortcut(group: string[], resource: string, id: string, shortcut: number,
+    db: Pick<Pool, 'query'> = this.pool) {
+    const { rows } = await db.query(
+      'SELECT 1 FROM ptz_presets WHERE resource_key=ANY($1::text[]) AND shortcut=$2 AND (resource_key,preset_id) <> ($3,$4) LIMIT 1',
+      [group, shortcut, resource, id],
+    );
+    if (rows.length) throw new PtzError('ptz_shortcut_in_use');
+  }
   async savePreset(
     resource: string,
     id: string,
@@ -218,11 +289,25 @@ export class PtzStore {
     shortcut: number | null,
     position: unknown,
     actor: string,
+    group = [resource],
   ) {
+    return this.writePreset(resource, id, name, shortcut, actor, group, { position });
+  }
+  async updatePresetMetadata(resource: string, id: string, name: string, shortcut: number | null,
+    actor: string, group: string[]) {
+    return this.writePreset(resource, id, name, shortcut, actor, group);
+  }
+  private async writePreset(
+    resource: string, id: string, name: string, shortcut: number | null,
+    actor: string, group: string[], snapshot?: { position: unknown },
+  ) {
+    // Every process must select the same lock for the same set of motor aliases.
+    const resources = [...new Set([resource, ...group])].sort();
     return this.transaction(async (c) => {
       await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
-        `ptz-preset:${resource}`,
+        `ptz-preset:${resources[0]}`,
       ]);
+      if (shortcut !== null) await this.checkPresetShortcut(resources, resource, id, shortcut, c);
       const count = Number(
         (await c.query('SELECT count(*) n FROM ptz_presets WHERE resource_key=$1', [resource]))
           .rows[0].n,
@@ -237,11 +322,21 @@ export class PtzStore {
         ).rows.length
       )
         throw new PtzError('ptz_preset_capacity');
-      await c.query(
-        `INSERT INTO ptz_presets(resource_key,preset_id,name,shortcut,position) VALUES($1,$2,$3,$4,$5) ON CONFLICT(resource_key,preset_id) DO UPDATE SET name=$3,shortcut=$4,position=$5,updated_at=now()`,
-        [resource, id, name, shortcut, position],
-      );
-      await this.audit(c, actor, 'ptz-preset-save');
+      if (snapshot) {
+        await c.query(
+          `INSERT INTO ptz_presets(resource_key,preset_id,name,shortcut,position) VALUES($1,$2,$3,$4,$5) ON CONFLICT(resource_key,preset_id) DO UPDATE SET name=$3,shortcut=$4,position=$5,updated_at=now()`,
+          [resource, id, name, shortcut, snapshot.position],
+        );
+      } else {
+        // A device-only preset can acquire an alias; an existing snapshot and
+        // its device operation state survive local metadata edits.
+        await c.query(
+          `INSERT INTO ptz_presets(resource_key,preset_id,name,shortcut,device_state)
+           VALUES($1,$2,$3,$4,'device_reported') ON CONFLICT(resource_key,preset_id)
+           DO UPDATE SET name=$3,shortcut=$4,updated_at=now()`, [resource, id, name, shortcut],
+        );
+      }
+      await this.audit(c, actor, snapshot ? 'ptz-preset-save' : 'ptz-preset-metadata');
     });
   }
   async removePreset(resource: string, id: string, actor: string) {

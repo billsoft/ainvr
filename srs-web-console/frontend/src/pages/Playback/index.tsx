@@ -106,6 +106,9 @@ export default function PlaybackPage() {
   const playhead = cursorScope === scope ? playheadTs : null
   const pointerSegment = previewTs != null ? findSegmentAt(rangeSegments, previewTs)
     : currentSegment ?? (playhead != null ? findSegmentAt(rangeSegments, playhead) : null)
+  useEffect(() => {
+    if (channelId && currentSegment) try { localStorage.setItem('playback.lastRecorded', channelId) } catch { /* storage unavailable */ }
+  }, [channelId, currentSegment])
   const filteredChannels = channels.filter(c => c.name.toLowerCase().includes(search.trim().toLowerCase()))
   // 读不到的段：全部读不到时整块换成原因说明（一排点不动的灰条目会让人以为
   // "有录像却看不了"）；部分读不到时保留可播的段并说明灰色的是什么。
@@ -116,24 +119,41 @@ export default function PlaybackPage() {
     ? `这些录像保存在${storageLabel(otherStorage.storage)}上，当前录像存储已切换为${storageLabel(stats.poolKind)}，切回后即可播放`
     : storageIssue || '录像所在存储暂时无法访问'
 
+  const baseGeneration = useRef(0)
+  const baseWindow = useRef('')
   const loadBase = useCallback(async () => {
+    const generation = ++baseGeneration.current
     try {
-      const [health, st, list] = await Promise.all([recordingService.health(), recordingService.stats(), recordingService.listChannels()])
+      const [health, st, list] = await Promise.all([recordingService.health(), recordingService.stats(), recordingService.listChannels({from:range.from,to:range.to})])
+      if (generation !== baseGeneration.current) return
+      baseWindow.current = `${range.from}:${range.to}`
       setStats(st); setChannels(list); setHealthState(health.ok ? 'ok' : 'down')
       setStorageIssue(health.storageHealthy === false ? health.message || '录像存储不可用' : '')
-    } catch { setHealthState('down') }
-  }, [])
+    } catch { if (generation === baseGeneration.current) setHealthState('down') }
+  }, [range.from,range.to])
   useEffect(() => {
-    void loadBase()
-    const timer = window.setInterval(() => { void loadBase() }, 5000)
-    return () => { window.clearInterval(timer) }
+    let active = true
+    let timer: number | undefined
+    const poll = async () => {
+      await loadBase()
+      if (active) timer = window.setTimeout(poll, 5000)
+    }
+    void poll()
+    return () => { active = false; ++baseGeneration.current; window.clearTimeout(timer) }
   }, [loadBase])
   useEffect(() => {
     if (searchParams.get('schedule') === '1' && healthState !== 'loading') setScheduleOpen(true)
   }, [searchParams, healthState])
   useEffect(() => {
-    if (!channelId && channels[0]) navigate(`/playback/${channels[0].id}${searchParams.toString() ? `?${searchParams}` : ''}`, { replace: true })
-  }, [channelId, channels, navigate, searchParams])
+    if (channelId || !channels.length || baseWindow.current !== `${range.from}:${range.to}`) return
+    let last = ''
+    try { last = localStorage.getItem('playback.lastRecorded') ?? '' } catch { /* storage unavailable */ }
+    const possible = channels.filter(c => c.rangeHasRecording ?? (c.oldestSegmentTs != null && c.oldestSegmentTs >= range.from && c.oldestSegmentTs < range.to))
+    const picked = possible.find(c => c.id === last)
+      ?? possible.find(c => c.recording && c.kind === 'source') ?? possible.find(c => c.recording)
+      ?? possible[0] ?? channels[0]!
+    navigate(`/playback/${picked.id}${searchParams.toString() ? `?${searchParams}` : ''}`, { replace: true })
+  }, [channelId, channels, navigate, searchParams, range.from, range.to])
   // A link followed while this page is open (a search result on another channel or day) moves the
   // window too; the range is otherwise only read from the address once, at mount.
   const appliedQuery = useRef(`${channelId}|${searchParams.get('from')}|${searchParams.get('to')}`)
@@ -403,12 +423,8 @@ export default function PlaybackPage() {
                     <button
                       type="button"
                       onClick={() => selectChannel(c.id)}
-                      className={[
-                        'flex min-w-0 flex-1 items-center gap-2 rounded-base px-2 py-2 text-left text-sm transition-colors',
-                        active
-                          ? 'bg-primary-50 text-primary'
-                          : 'text-ink-subtle hover:bg-surface-page hover:text-ink',
-                      ].join(' ')}
+                      aria-current={active ? true : undefined}
+                      className="channel-choice flex min-w-0 flex-1 items-center gap-2 rounded-base px-2 py-2 text-left text-sm"
                     >
                       <span
                         className={[
@@ -420,6 +436,7 @@ export default function PlaybackPage() {
                         title={c.recordingDetail ?? (c.recording ? '正在录制' : '未开启录像')}
                       />
                       <span className="min-w-0 flex-1 truncate font-medium">{c.name}</span>
+                      <span className="text-[11px] text-ink-subtle">{c.rangeHasRecording === false ? '此时段无录像' : c.recording ? '录制中' : '停录'}</span>
                       {c.kind === 'ai' && (
                         <span className="shrink-0 rounded-full border border-primary/30 px-1 text-[10px] text-primary">AI</span>
                       )}
@@ -490,7 +507,9 @@ export default function PlaybackPage() {
           </p>
         )}
         {selectedChannel && !catalogue.loading && !catalogue.error && rangeSegments.length === 0 && (
-          <p role="status" className="text-xs text-ink-faint">所选时间范围内没有录像</p>
+          <p role="status" className="text-xs text-ink-faint">这一路在此时段没有录像{selectedChannel?.recording ? '' : '（未在录制）'}
+            {selectedChannel?.latestSegmentTs != null && <button className="ml-2 min-h-11 text-primary" onClick={() => setRange({from:selectedChannel.latestSegmentTs!,to:Math.min(Date.now(),selectedChannel.latestSegmentTs! + 3600000),preset:null})}>跳到最近录像 · {new Date(selectedChannel.latestSegmentTs).toLocaleString()}</button>}
+            {channels.filter(c => c.id !== channelId && c.rangeHasRecording === true).slice(0,3).map(c => <button key={c.id} className="ml-2 min-h-11 text-primary" onClick={() => navigate(`/playback/${encodeURIComponent(c.id)}?from=${range.from}&to=${range.to}`)}>切换到{c.name}</button>)}</p>
         )}
         {!selectedChannel ? (
           <div className="flex h-full items-center justify-center rounded-panel border border-dashed border-line bg-surface text-sm text-ink-faint">
@@ -507,7 +526,7 @@ export default function PlaybackPage() {
             <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden">
               <div className="flex h-full max-h-full w-full max-w-full items-center justify-center">
                 <RecordingPlayer
-                  initiallyMuted={searchParams.get('autoplay')==='1'}
+                  initiallyMuted
                   channelName={selectedChannel.name}
                   channelMeta={{
                     kind: selectedChannel.kind,
@@ -594,13 +613,13 @@ export default function PlaybackPage() {
             <h2 className="sr-only">智能搜索</h2>
             <div className="flex items-center">
             {!stacked && <button type="button" aria-label={searchWide ? '还原搜索面板' : '放大搜索面板'} aria-pressed={searchWide} title={searchWide ? '还原搜索面板宽度' : '放大搜索面板，多列浏览结果'}
-              className="inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 min-w-9 [@media(pointer:coarse)]:min-w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-page hover:text-primary" onClick={toggleSearchWide}>{searchWide ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>}
+              className="inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 min-w-9 [@media(pointer:coarse)]:min-w-11 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-page hover:text-primary" onMouseDown={e => { if (document.activeElement?.id === 'search-description') e.preventDefault() }} onClick={toggleSearchWide}>{searchWide ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>}
             <button type="button" aria-label="收起智能搜索" className="inline-flex min-h-9 [@media(pointer:coarse)]:min-h-11 min-w-9 [@media(pointer:coarse)]:min-w-11 items-center justify-center rounded-base hover:bg-surface-page" onClick={closeSearchPanel}><X size={18} /></button>
             </div>
           </div>
           <div className="min-h-0 flex-1">
             <SearchPage variant="side" entryScope={searchEntry} onPlay={openEvidence}
-              selected={searchSelected} onSelectedChange={setSearchSelected} onChannels={setSearchChannels}
+              watching={selectedChannel} selected={searchSelected} onSelectedChange={setSearchSelected} onChannels={setSearchChannels}
               listVisible={showLeft} onResults={setHits} onShowList={toggleLeftByHand} wide={searchWide} />
           </div>
         </aside>

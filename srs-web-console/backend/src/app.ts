@@ -26,12 +26,14 @@ import { osHelperConfigFromEnv, storageRequest } from './services/osHelperClient
 import { storageRoutes } from './routes/storage.js';
 import {onvifRoutes} from './routes/onvif.js';
 import {ptzRoutes} from './routes/ptz.js';
+import {PtzFlow, ptzFlowTimeoutMs} from './services/ptzFlow.js';
 import {PtzStore} from './store/ptzStore.js';
 import {PtzManager} from './services/ptzManager.js';
 import {preparePtzAdapter} from './services/ptzAdapter.js';
 import {PtzGuardedSnapshot} from './services/ptzGuardedSnapshot.js';
 import {ptzAi} from './services/ptzAi.js';
 import {OnvifStore} from './store/onvifStore.js';
+import {talkbackRoutes, onvifSink, TalkError, type AudioSink} from './routes/talkback.js';
 import {OnvifManager} from './services/onvifManager.js';
 import {alarmTriggerRoutes} from './routes/alarmTriggerRoutes.js';
 import {VehicleRuntime} from './services/vehicleRuntime.js';
@@ -83,7 +85,7 @@ import { alarmZoneRoutes } from './routes/alarmZoneRoutes.js';
 import { AlarmZoneStore } from './store/alarmZones.js';
 import { recorderProxyRoutes } from './routes/recorderProxy.js';
 import { diagOverlayRoutes } from './routes/diagOverlay.js';
-import { AppSettings, DEFAULT_SETTINGS } from './types/channel.js';
+import { AppSettings, DEFAULT_SETTINGS, sameOnvifBinding } from './types/channel.js';
 import { PgConfigStore } from './store/pgStore.js';
 import { initPgStoreWithRetry } from './store/pgStartup.js';
 import { configRoutes } from './routes/config.js';
@@ -151,6 +153,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   fastify.addHook('onResponse', async (req, reply) => {
     const route = req.routeOptions.url ?? 'unmatched';
     if (route.includes('/diag/') || route.includes('/observability/browser-error')) return;
+    if (route.endsWith('/talkback/:id/audio/:seq') && reply.statusCode === 204) return;
     const mutation = !['GET','HEAD','OPTIONS'].includes(req.method);
     if (mutation || reply.statusCode >= 400) {
       operationalLog(reply.statusCode >= 500 ? 'ERROR' : reply.statusCode >= 400 ? 'WARN' : 'INFO',
@@ -488,13 +491,36 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const ptzAI=pgStore?ptzAi(()=>settingsStore.read(),pgStore,aiServiceBaseUrl):null;
     const ptzManager=ptzStore&&ptzAI?new PtzManager(ptzStore,{
       channels:async()=>(await channelStore.read()).channels,
-      ai:()=>ptzAI.list(),prepare:root=>preparePtzAdapter(root,ptzStore,onvifManager,gbSync),
+      latestFrame:id=>ptzAI.latestFrame(id),ai:()=>ptzAI.list(),prepare:root=>preparePtzAdapter(root,ptzStore,onvifManager,gbSync),
       synchronize:()=>ruleSync?.synchronize()??Promise.resolve({state:'unavailable'}),
       resetProcessors:ids=>ptzAI.reset(ids),checkProcessors:ids=>ptzAI.checkReset(ids),
     }):null;
     await instance.register(onvifRoutes,{store:onvifStore,manager:onvifManager,principal:alarmPrincipal,ptzStore,ptzManager});
     ptzManager?.start();
-    await instance.register(ptzRoutes,{manager:ptzManager,store:ptzStore,principal:alarmPrincipal,channels:async()=>(await channelStore.read()).channels});
+    await instance.register(talkbackRoutes, {principal: alarmPrincipal, open: async (id, signal) => {
+      const channel = (await channelStore.read()).channels.find(c => c.id === id);
+      if (!channel || channel.inputEnabled === false) throw new TalkError(409, '源通道已停用或不存在');
+      let sink: AudioSink | undefined;
+      if (channel.onvif && onvifManager) {
+        sink = await onvifSink((await onvifManager.connectSource(channel)).source, signal);
+      } else if (pgStore && gbSync && channel.upstreamProtocol === 'rtmp' && (channel.app || 'live') === 'live') {
+        const {rows} = await pgStore.pool.query('SELECT binding_id FROM gb28181_bindings WHERE input_id=$1 AND stream_name=$2 AND enabled', [id,channel.streamName]);
+        if (rows.length === 1) sink = await gbSync.broadcastSink(rows[0].binding_id, signal);
+      }
+      if (!sink) throw new TalkError(422, '此通道没有可用的摄像头音频回传协议');
+      return {...sink, current: async () => {
+        const c = (await channelStore.read()).channels.find(c => c.id === id);
+        return !!c && c.inputEnabled !== false && c.inputGeneration === channel.inputGeneration &&
+          c.streamName === channel.streamName && c.upstreamProtocol === channel.upstreamProtocol &&
+          sameOnvifBinding(c.onvif, channel.onvif) && (!c.onvif || !!onvifManager?.inputAllowed(c));
+      }};
+    }});
+    const ptzFlow = new PtzFlow(async () => {
+      const settings = await settingsStore.read();
+      return {baseUrl: settings.aiService.baseUrl || aiServiceBaseUrl,
+        apiToken: await resolveAiApiKey(settings, pgStore), timeoutMs: ptzFlowTimeoutMs};
+    });
+    await instance.register(ptzRoutes,{manager:ptzManager,store:ptzStore,flow:ptzFlow,principal:alarmPrincipal,channels:async()=>(await channelStore.read()).channels});
     if(onvifManager){let stopped=false;let timer:ReturnType<typeof setTimeout>|undefined;
       const poll=async()=>{await onvifManager?.synchronize();if(!stopped){timer=setTimeout(poll,5000);timer.unref()}};
       instance.addHook('onReady',async()=>{void poll()});instance.addHook('onClose',async()=>{stopped=true;clearTimeout(timer)});

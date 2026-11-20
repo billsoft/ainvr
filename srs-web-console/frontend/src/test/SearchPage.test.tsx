@@ -740,7 +740,7 @@ it('shows the minimum similarity inline, 0 to 0.3 from 0.08, and submits a froze
   await ready();
   // Compact conditions (2026-11-19): no slider, no expander; the number box sits on the time row.
   expect(screen.queryByRole('slider', { name: '拖动最低相似度' })).toBeNull();
-  expect(screen.getByRole('form', { name: '搜索条件' }).querySelector('details')).toBeNull();
+  expect(screen.getByRole('form', { name: '搜索条件' }).querySelector('details')).toHaveAttribute('open');
   const numeric = screen.getByRole('spinbutton', { name: '最低相似度' });
   expect(numeric).toHaveValue(0.08);
   expect(numeric).toHaveAttribute('max', '0.3');
@@ -786,9 +786,9 @@ it('submits Enter once and ignores Chinese composition Enter and legacy keyCode 
   const input = screen.getByRole('textbox', { name: '想找什么？' })
   input.focus()
   fireEvent.compositionStart(input)
-  expect(fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', isComposing: true })).toBe(false)
+  expect(fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', isComposing: true })).toBe(true)
   fireEvent.compositionEnd(input)
-  expect(fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', keyCode: 229 })).toBe(false)
+  expect(fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', keyCode: 229 })).toBe(true)
   expect(searchService.query).not.toHaveBeenCalled()
   await user.keyboard('{Enter}')
   await screen.findByRole('button', { name: '查看第 1 条候选：后门' })

@@ -136,6 +136,7 @@ func (m *Manager) Close() {
 }
 func (m *Manager) Handler(lifetime context.Context, token string) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/broadcast/", m.broadcastHTTP)
 	mux.HandleFunc("POST /v1/ptz/", func(w http.ResponseWriter, r *http.Request) {
 		m.ptzHTTP(w, r)
 	})

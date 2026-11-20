@@ -23,6 +23,10 @@ function fixture() {
   };
   const log: string[] = [];
   const store = {
+    invalidateCalibration: vi.fn(async () => undefined),
+    calibrationEpoch: vi.fn(async () => 0),
+    calibration: vi.fn(async () => ({epoch: 0, revision: 0, snapshot: null})),
+    saveCalibration: vi.fn(async () => ({revision: 1})),
     settings: vi.fn(async () => ({ settings: { enabled: true, capacity: 4, leaseMs: 1200 } })),
     camera: vi.fn(async () => ({
       revision: 0,
@@ -37,6 +41,8 @@ function fixture() {
     watch: vi.fn(async () => undefined),
     stopped: vi.fn(async () => undefined),
     presets: vi.fn(async () => []),
+    checkPresetShortcut: vi.fn(async () => undefined),
+    updatePresetMetadata: vi.fn(async () => undefined),
     savePreset: vi.fn(async () => undefined),
     removePreset: vi.fn(async () => undefined),
     restore: vi.fn(async () => undefined),
@@ -75,6 +81,171 @@ function fixture() {
   };
   return { manager: new PtzManager(store, deps), store, adapter, deps, root, log };
 }
+it('isolates NeuFlow and legacy records on the same motor epoch', async () => {
+  const f = fixture();
+  try {
+    const identity = (await f.manager.inspect('root')).identity!;
+    const legacy = {identity, width:1920, height:1080};
+    const flow = {...legacy, estimator:'neuflow-v1' as const};
+    const original = await f.manager.readCalibration('root', legacy);
+    const knownSnapshot = {version:1 as const, records:[]};
+    vi.mocked(f.store.calibration).mockImplementation(async (_motor, scope) => scope === original.scope
+      ? {epoch:0, revision:2, snapshot:knownSnapshot} : {epoch:0, revision:0, snapshot:null});
+    const separate = await f.manager.readCalibration('root', flow);
+    expect(separate).toMatchObject({epoch:original.epoch, revision:0, snapshot:null, estimator:'neuflow-v1'});
+    expect(separate.scope).not.toBe(original.scope);
+    const write = {...flow, epoch:0, revision:0, snapshot:knownSnapshot};
+    await expect(f.manager.writeCalibration('root', {...write, scope:original.scope})).rejects.toThrow('ptz_calibration_stale');
+    await expect(f.manager.writeCalibration('root', {...write, scope:separate.scope})).resolves.toEqual({revision:1, estimator:'neuflow-v1'});
+    const again = await f.manager.readCalibration('root', legacy);
+    expect(again).toMatchObject({scope:original.scope, revision:2, snapshot:knownSnapshot});
+    expect(again).not.toHaveProperty('estimator');
+    expect(new Set(vi.mocked(f.store.calibrationEpoch).mock.calls.map(([motor]) => motor)).size).toBe(1);
+  } finally { await f.manager.close(); }
+});
+it('checks the displayed source, binding and epoch during motion and after release without motor commands', async () => {
+  const f = fixture();
+  try {
+    const identity = (await f.manager.inspect('root')).identity!;
+    const {sessionId} = await f.manager.acquire('root','operator',identity);
+    await f.manager.command('root',sessionId,'operator',1,{pan:0.2,tilt:0,zoom:0});
+    const calls = vi.mocked(f.adapter.call).mock.calls.length;
+    await f.manager.checkFlowContext('root',identity,0);
+    expect(f.adapter.call).toHaveBeenCalledTimes(calls);
+    await f.manager.stop('root',sessionId,'operator');
+    vi.mocked(f.adapter.call).mockClear();
+    await f.manager.checkFlowContext('root',identity,0);
+    await expect(f.manager.checkFlowContext('root',identity,1)).rejects.toThrow('ptz_calibration_stale');
+    await expect(f.manager.checkFlowContext('root','old',0)).rejects.toThrow('ptz_source_changed');
+    f.adapter.verify = vi.fn(async () => { throw new Error('binding changed'); });
+    await expect(f.manager.checkFlowContext('root',identity,0)).rejects.toThrow('binding changed');
+    expect(f.adapter.call).not.toHaveBeenCalled();
+  } finally { await f.manager.close(); }
+});
+it('isolates scopes by actual zoom, space and geometry and checks identity before accessing status', async () => {
+  const f = fixture();
+  const identity = (await f.manager.inspect('root')).identity!;
+  const view = {identity,width:1920,height:1080};
+  try {
+    const unknown = await f.manager.readCalibration('root',view);
+    expect(unknown.zoomEvidence).toBe('unknown');
+    expect(f.adapter.call).not.toHaveBeenCalled();
+    f.adapter.caps.position = true;
+    f.adapter.caps.moveStatus = true;
+    const status = {position:{Zoom:0 as number|null, ZoomSpace:'generic'}, zoom:'IDLE'};
+    vi.mocked(f.adapter.call).mockImplementation(async () => status);
+    const measured = await f.manager.readCalibration('root',view);
+    expect(measured.zoomEvidence).toBe('measured');
+    expect(measured.scope).not.toBe(unknown.scope);
+    expect((await f.manager.readCalibration('root',{...view,width:1280})).scope).not.toBe(measured.scope);
+    status.position.ZoomSpace = 'other';
+    expect((await f.manager.readCalibration('root',view)).scope).not.toBe(measured.scope);
+    status.position.ZoomSpace = 'generic';
+    status.position.Zoom = 0.1;
+    const write = {...view,...measured,snapshot:{version:1 as const,records:[]}};
+    await expect(f.manager.writeCalibration('root',write)).rejects.toThrow('ptz_calibration_stale');
+    expect(f.store.saveCalibration).not.toHaveBeenCalled();
+    status.position.Zoom = null;
+    await expect(f.manager.readCalibration('root',view)).rejects.toThrow('ptz_calibration_zoom_unavailable');
+    status.position.Zoom = 0;
+    status.zoom = 'MOVING';
+    await expect(f.manager.readCalibration('root',view)).rejects.toThrow('ptz_calibration_zoom_unavailable');
+    status.zoom = 'IDLE';
+    vi.mocked(f.store.calibrationEpoch).mockResolvedValueOnce(1);
+    await expect(f.manager.readCalibration('root',view)).rejects.toThrow('ptz_calibration_stale');
+    await expect(f.manager.writeCalibration('root',write)).resolves.toEqual({revision:1});
+    vi.mocked(f.adapter.call).mockClear();
+    await expect(f.manager.readCalibration('root',{...view,identity:'changed'})).rejects.toThrow('ptz_source_changed');
+    expect(f.adapter.call).not.toHaveBeenCalled();
+  } finally { await f.manager.close(); }
+});
+it('shares a stable epoch across protocol aliases and fences every field-of-view command before dispatch', async () => {
+  const motors:string[] = [], scopes:string[] = [];
+  const aliases = ['onvif:unit','gb28181:unit'];
+  for (const [index,protocol] of (['onvif','gb28181'] as const).entries()) {
+    const f = fixture();
+    f.adapter.protocol = protocol;
+    f.adapter.resource = aliases[index]!;
+    f.adapter.caps.pointCenter = true;
+    const manager = new PtzManager(f.store,f.deps,[index ? [...aliases].reverse() : aliases]);
+    try {
+      const identity = (await manager.inspect('root')).identity!;
+      const view = {identity,width:640,height:360};
+      scopes.push((await manager.readCalibration('root',view)).scope);
+      motors.push(vi.mocked(f.store.calibrationEpoch).mock.calls[0]![0]);
+      vi.mocked(f.store.invalidateCalibration).mockImplementation(async motor => {
+        expect(motor).toBe(motors[index]); f.log.push('epoch');
+      });
+      const {sessionId} = await manager.acquire('root','operator',identity);
+      const zero = {pan:0,tilt:0,zoom:0};
+      await manager.command('root',sessionId,'operator',1,{...zero,pan:0.2});
+      expect(f.store.invalidateCalibration).not.toHaveBeenCalled();
+      await manager.command('root',sessionId,'operator',2,{...zero,zoom:0.5});
+      await expect(manager.readCalibration('root',view)).rejects.toThrow('ptz_calibration_busy');
+      await manager.command('root',sessionId,'operator',3,zero,'preset');
+      await manager.command('root',sessionId,'operator',4,zero,undefined,false,{x:0.1,y:0.3});
+      expect(f.log.slice(-6)).toEqual(['epoch','move','epoch','move','epoch','move']);
+      await manager.stop('root',sessionId,'operator');
+      await expect(manager.readCalibration('root',view)).resolves.toHaveProperty('scope',scopes[index]);
+    } finally { await manager.close(); }
+  }
+  expect(motors[0]).toBe(motors[1]);
+  expect(scopes[0]).not.toBe(scopes[1]);
+});
+it('rejects history after an intervening zoom and permits a fresh visual-only lease', async () => {
+  const f = fixture();
+  let epoch = 0;
+  vi.mocked(f.store.calibrationEpoch).mockImplementation(async () => epoch);
+  vi.mocked(f.store.invalidateCalibration).mockImplementation(async () => { ++epoch; });
+  try {
+    const identity = (await f.manager.inspect('root')).identity!;
+    const view = await f.manager.readCalibration('root',{identity,width:1920,height:1080});
+    const zoom = await f.manager.acquire('root','window-b',identity);
+    await f.manager.command('root',zoom.sessionId,'window-b',1,{pan:0,tilt:0,zoom:0.2});
+    await f.manager.stop('root',zoom.sessionId,'window-b');
+    f.log.length = 0;
+    await expect(f.manager.acquire('root','window-a',identity,undefined,view.epoch))
+      .rejects.toMatchObject({code:'ptz_calibration_stale',statusCode:409});
+    expect(f.log).toEqual([]);
+    vi.mocked(f.store.calibrationEpoch).mockClear();
+    const fresh = await f.manager.acquire('root','window-a',identity);
+    expect(fresh.sessionId).toBeTruthy();
+    expect(f.store.calibrationEpoch).not.toHaveBeenCalled();
+  } finally { await f.manager.close(); }
+});
+it('reserves the motor during the epoch read and keeps it through lease issuance', async () => {
+  const f = fixture();
+  try {
+    const identity = (await f.manager.inspect('root')).identity!;
+    let finish!: (epoch:number)=>void, started!: ()=>void;
+    const held = new Promise<number>(resolve => {finish=resolve;});
+    const reading = new Promise<void>(resolve => {started=resolve;});
+    vi.mocked(f.store.calibrationEpoch).mockImplementationOnce(() => {started(); return held;});
+    const request = f.manager.acquire('root','window-a',identity,undefined,0);
+    await reading;
+    try { await expect(f.manager.acquire('root','window-b',identity)).rejects.toThrow('ptz_busy'); }
+    finally { finish(0); }
+    expect((await request).sessionId).toBeTruthy();
+    await expect(f.manager.acquire('root','window-b',identity)).rejects.toThrow('ptz_busy');
+  } finally { await f.manager.close(); }
+});
+it('a Stop overtaking a pending epoch commit prevents subsequent zoom dispatch', async () => {
+  const f = fixture();
+  try {
+    const identity = (await f.manager.inspect('root')).identity!;
+    const {sessionId} = await f.manager.acquire('root','operator',identity);
+    let unlock!: () => void, started!: () => void;
+    const pending = new Promise<void>(resolve => {unlock = resolve;});
+    const reached = new Promise<void>(resolve => {started = resolve;});
+    vi.mocked(f.store.invalidateCalibration).mockImplementation(async () => {started(); await pending;});
+    const command = f.manager.command('root',sessionId,'operator',1,{pan:0,tilt:0,zoom:1});
+    await reached;
+    await f.manager.stop('root',sessionId,'operator');
+    unlock();
+    await expect(command).rejects.toThrow('ptz_stale_command');
+    expect(f.log).not.toContain('move');
+  } finally { await f.manager.close(); }
+});
 it('persists and confirms protection before any move and enforces ownership', async () => {
   const f = fixture();
   try {
@@ -205,6 +376,29 @@ it('preset administration cannot steal another operator control', async () => {
     await f.manager.close();
   }
 });
+it('edits only reported native preset metadata, scoped to its resource and physical motor group', async () => {
+  const f = fixture();
+  const group = ['gb28181:device/channel','onvif:motor'];
+  f.adapter.resource = group[1]!;
+  const manager = new PtzManager(f.store, f.deps, [group]);
+  const input = {name:'后门', shortcut:2};
+  const edit = () => manager.updatePresetMetadata('root','operator','native-8',input);
+  try {
+    vi.mocked(f.adapter.call).mockResolvedValue([{id:'native-8',name:'old'}]);
+    await expect(edit()).resolves.toEqual({id:'native-8',...input});
+    expect(f.store.updatePresetMetadata).toHaveBeenCalledWith(group[1],'native-8','后门',2,'operator',group);
+    vi.mocked(f.adapter.call).mockResolvedValueOnce([]);
+    await expect(edit()).rejects.toThrow('ptz_preset_not_found');
+    vi.mocked(f.adapter.call).mockRejectedValueOnce(Error('offline'));
+    await expect(edit()).rejects.toThrow('ptz_preset_query_required');
+    f.adapter.caps.presetWrite = false;
+    await expect(edit()).rejects.toThrow('ptz_presets_unsupported');
+    expect(vi.mocked(f.adapter.call).mock.calls.map(([op])=>op)).toEqual(['presets','presets','presets']);
+    expect(f.store.updatePresetMetadata).toHaveBeenCalledTimes(1);
+    expect(f.store.savePreset).not.toHaveBeenCalled();
+    expect(f.store.block).not.toHaveBeenCalled();
+  } finally { await manager.close(); }
+});
 it('device-accepted preset with failed metadata is reported as partial success', async () => {
   const f = fixture();
   vi.mocked(f.adapter.call).mockResolvedValue({ id: 'native-gate' });
@@ -249,6 +443,7 @@ it('restart recovery stops only a recorded local unfinished control', async () =
       revision: 3,
     },
   ]);
+  vi.mocked(f.store.guard).mockResolvedValue({revision:3,stop_pending:true} as never);
   try {
     await f.manager.observe();
     expect(f.adapter.call).toHaveBeenCalledWith(
@@ -316,6 +511,7 @@ it('unknown feedback and a disconnected device never clear a persistent view gua
       revision: 3,
     },
   ]);
+  vi.mocked(f.store.guard).mockResolvedValue({revision:3,stop_pending:true} as never);
   vi.mocked(f.adapter.call).mockRejectedValue(Error('offline'));
   try {
     await f.manager.observe();
@@ -357,6 +553,86 @@ it('rearming stores the new view baseline instead of immediately invalidating it
   }
 });
 
+it('brakes the admitted motor without discovery or guard storage and never acknowledges an unconfirmed stop', async () => {
+  const f = fixture();
+  try {
+    const identity = (await f.manager.inspect('root')).identity!;
+    const {sessionId} = await f.manager.acquire('root','operator',identity);
+    await f.manager.command('root',sessionId,'operator',1,{pan:.2,tilt:0,zoom:0});
+    f.deps.ai.mockRejectedValue(Error('analytics offline'));
+    const wire = Promise.withResolvers<{stopConfirmed:boolean}>();
+    vi.mocked(f.adapter.call).mockClear().mockReturnValueOnce(wire.promise);
+    vi.mocked(f.store.block).mockRejectedValue(Error('guard offline'));
+    const emergency = f.manager.emergencyStop('root','operator');
+    const second = f.manager.emergencyStop('root','operator');
+    const release = f.manager.stop('root',sessionId,'operator');
+    const outcomes = Promise.allSettled([emergency,second,release]);
+    await vi.waitFor(() => expect(f.adapter.call).toHaveBeenCalledExactlyOnceWith('command',{
+      command:expect.objectContaining({stop:true,emergency:true}),
+    }));
+    wire.resolve({stopConfirmed:false});
+    for (const value of await outcomes) {
+      expect(value).toMatchObject({status:'rejected',reason:{code:'ptz_stop_unconfirmed'}});
+    }
+    await expect(f.manager.emergencyStop('root','operator')).rejects.toThrow('ptz_arming_pause_pending');
+    expect(f.adapter.call).toHaveBeenCalledTimes(2);
+  } finally { await f.manager.close(); }
+});
+it('rejects moves from a disabled derived channel while retaining the ability to release its lease', async () => {
+  const f = fixture();
+  const derived = {...f.root,id:'derived',streamName:'derived',onvif:undefined,inputEnabled:true};
+  f.deps.channels.mockResolvedValue([f.root,derived]);
+  f.deps.ai.mockResolvedValue([{id:'processor',config:{stream:{url:'rtmp://127.0.0.1/live/gate'},
+    publish:{enabled:true,target_url:'rtmp://127.0.0.1/live/derived'}}}] as never);
+  try {
+    const identity = (await f.manager.inspect('derived')).identity!;
+    const {sessionId} = await f.manager.acquire('derived','operator',identity);
+    await f.manager.command('derived',sessionId,'operator',1,{pan:.2,tilt:0,zoom:0});
+    derived.inputEnabled=false;
+    vi.mocked(f.adapter.call).mockClear();
+    await expect(f.manager.command('derived',sessionId,'operator',2,{pan:.2,tilt:0,zoom:0})).rejects.toThrow('ptz_source_changed');
+    expect(f.adapter.call).toHaveBeenCalledExactlyOnceWith('command',{command:expect.objectContaining({stop:true})});
+    await expect(f.manager.stop('derived',sessionId,'operator')).resolves.toMatchObject({stopConfirmed:true});
+    await expect(f.manager.acquire('derived','operator',identity)).rejects.toThrow('ptz_source_changed');
+    expect(f.adapter.call).toHaveBeenCalledTimes(1);
+  } finally { await f.manager.close(); }
+});
+it('brakes a running command on lost verification but ignores an obsolete verification failure', async () => {
+  const f=fixture(), vector={pan:.2,tilt:0,zoom:0};
+  try {
+    const identity=(await f.manager.inspect('root')).identity!;
+    const {sessionId}=await f.manager.acquire('root','operator',identity);
+    const command=(seq:number)=>f.manager.command('root',sessionId,'operator',seq,vector);
+    await command(1);
+    const late=Promise.withResolvers<never>();
+    f.deps.ai.mockReturnValueOnce(late.promise);
+    const old=expect(command(2)).rejects.toThrow('ptz_stale_command');
+    await command(3);
+    vi.mocked(f.adapter.call).mockClear();
+    late.reject(Error('discovery unavailable'));
+    await old;
+    expect(f.adapter.call).not.toHaveBeenCalled();
+    f.deps.ai.mockRejectedValueOnce(Error('discovery unavailable'));
+    await expect(command(4)).rejects.toThrow('discovery unavailable');
+    expect(f.adapter.call).toHaveBeenCalledExactlyOnceWith('command',{command:expect.objectContaining({stop:true})});
+  } finally { await f.manager.close(); }
+});
+it('a late failed session Stop cannot undo a confirmed priority Stop', async () => {
+  const f=fixture();
+  try {
+    const identity=(await f.manager.inspect('root')).identity!;
+    const {sessionId}=await f.manager.acquire('root','operator',identity);
+    await f.manager.command('root',sessionId,'operator',1,{pan:.2,tilt:0,zoom:0});
+    const old=Promise.withResolvers<never>();
+    vi.mocked(f.adapter.call).mockClear().mockReturnValueOnce(old.promise);
+    const released=f.manager.stop('root',sessionId,'operator');
+    await expect(f.manager.emergencyStop('root','operator')).resolves.toMatchObject({stopConfirmed:true});
+    old.reject(Error('old session gone'));
+    await expect(released).resolves.toMatchObject({stopConfirmed:true});
+    expect((await f.manager.inspect('root')).stopUnconfirmed).toBe(false);
+    expect(f.adapter.call).toHaveBeenCalledTimes(2);
+  } finally { await f.manager.close(); }
+});
 it('emergency Stop cancels an acquisition waiting for analytics readiness', async () => {
   const f = fixture();
   let finish!: () => void;
@@ -509,3 +785,29 @@ for (const feedback of ['IDLE', 'MOVING', 'UNKNOWN', 'missing', 'error']) {
     }
   });
 }
+
+it('arbitrates confirmed ONVIF and GB aliases even for two windows with the same login', async () => {
+  const f = fixture();
+  const gbRoot = {...f.root, id:'gb', onvif:undefined, upstreamProtocol:'rtmp' as const};
+  const gb = {...f.adapter, resource:'gb28181:device/channel', protocol:'gb28181' as const,
+    identity:JSON.stringify(['binding','device','channel']), call:vi.fn(async () => ({stopConfirmed:true}))};
+  f.adapter.resource = 'onvif:motor';
+  f.deps.channels.mockResolvedValue([f.root,gbRoot]);
+  const manager = new PtzManager(f.store, {...f.deps, prepare:async root => root.id === 'gb' ? gb : f.adapter},
+    [[f.adapter.resource,gb.resource]]);
+  try {
+    const first = await manager.inspect('root');
+    const lease = await manager.acquire('root','same-login', first.identity!);
+    const alias = await manager.inspect('gb');
+    expect(alias.busy).toBe(true);
+    await expect(manager.acquire('gb','same-login',alias.identity!)).rejects.toThrow('ptz_busy');
+    await expect(manager.removePreset('gb','same-login','1')).rejects.toThrow('ptz_busy');
+    await expect(manager.updatePresetMetadata('gb','same-login','7',{name:'alias',shortcut:null})).rejects.toThrow('ptz_busy');
+    expect(gb.call).not.toHaveBeenCalled();
+    await manager.stop('root',lease.sessionId,'same-login');
+    const second = await manager.acquire('gb','same-login',alias.identity!);
+    await expect(manager.stop('root',lease.sessionId,'same-login')).rejects.toThrow('ptz_session_expired');
+    expect((await manager.inspect('root')).busy).toBe(true);
+    await manager.stop('gb',second.sessionId,'same-login');
+  } finally {await manager.close();}
+});

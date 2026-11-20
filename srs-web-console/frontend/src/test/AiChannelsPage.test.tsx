@@ -208,14 +208,16 @@ describe('AiChannelsPage', () => {
     expect(screen.getByRole('link', { name: '去配置中心' })).toHaveAttribute('href', '/config-center?category=ai-service')
   })
 
-  it('未开启推流的通道"播放衍生流"按钮禁用', async () => {
-    reseed([makeChannel('c1')]) // 默认 publish.enabled: false
+  it('AI 通道配置页不提供播放、查看结果或跟踪操作', async () => {
+    reseed([makeChannel('c1')])
     await renderPage()
-    const btn = await screen.findByText(/播放衍生流/)
-    expect(btn.closest('button')).toBeDisabled()
+    await screen.findByText('共 1 个通道，0 个运行中')
+    await userEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    expect(screen.getByRole('button', { name: '编辑' })).toBeVisible()
+    expect(screen.queryByText(/^(测试云台跟踪|查看结果|播放衍生流)$/)).not.toBeInTheDocument()
   })
 
-  it('开启推流的通道卡片展示推流地址信息，"播放衍生流"按钮可用', async () => {
+  it('开启推流的通道卡片展示推流地址信息', async () => {
     const ch = makeChannel('c1', { state: 'running' })
     ch.config.publish = { ...ch.config.publish, enabled: true }
     ch.stats.publish = {
@@ -227,8 +229,9 @@ describe('AiChannelsPage', () => {
     reseed([ch])
     await renderPage()
     expect(await screen.findByText(/推流.*SEI ✓/)).toBeInTheDocument()
-    const btn = screen.getByText(/播放衍生流/)
-    expect(btn.closest('button')).toBeEnabled()
+    await userEvent.click(screen.getByRole('button', { name: '更多操作' }))
+    expect(screen.getByRole('button', { name: '停止' })).toBeVisible()
+    expect(screen.queryByText(/^(测试云台跟踪|查看结果|播放衍生流)$/)).not.toBeInTheDocument()
   })
 
   it('发布链路真实断流场景（reconnecting=false，但 last_error_at 够新）时卡片仍要显示"推流异常"', async () => {
@@ -293,42 +296,6 @@ describe('AiChannelsPage', () => {
     expect(await screen.findByText(/编辑 AI 通道/)).toBeInTheDocument()
     expect(screen.getByTestId('wizard-id')).toHaveValue('c1')
     expect(screen.getByTestId('wizard-id')).toBeDisabled()
-  })
-
-  it('回归：快速切换"查看结果"目标时，先发出的慢响应不能盖掉后打开的通道数据', async () => {
-    const user = userEvent.setup()
-    reseed([makeChannel('a', { name: '通道A' }), makeChannel('b', { name: '通道B' })])
-    await renderPage()
-
-    const fakeResultA = {
-      schema_version: '1.2', channel_id: 'a', stream_url: '', stream_protocol: 'rtmp',
-      timestamp: 0, frame_pts_ns: 0, frame_index: 1, frame_width: 640, frame_height: 480,
-      model: { name: 'x', format: 'engine', provider: 'tensorrt', input_size: [640, 640], end2end: true, version: '1' },
-      timing_ms: { decode: 0, preprocess: 0, inference: 0, postprocess: 0, total: 1 },
-      task_type: 'object_detection',
-      detections: [{ class_id: 0, class_name: 'person', confidence: 0.9, bbox: { x: 0, y: 0, w: 1, h: 1 } }],
-      model_extra: {},
-    }
-    let resolveA: (v: { hasResult: boolean; result: any }) => void = () => {}
-    const pendingA = new Promise((r) => { resolveA = r })
-    aiChannelService.latestResult = vi.fn((id: string) => {
-      if (id === 'a') return pendingA as any
-      return Promise.resolve({ hasResult: false, result: null }) // 通道B：暂无结果
-    })
-
-    await user.click(screen.getAllByText('查看结果')[0]!) // 先点通道A（慢，挂起不返回）
-    await user.click(screen.getAllByText('查看结果')[1]!) // 再点通道B（快，立即 resolve → 暂无结果）
-    expect(await screen.findByText('该通道暂无检测结果（可能尚未启动或还没推理出第一帧）')).toBeInTheDocument()
-
-    // 通道A的响应这时才姗姗来迟——若没有请求防串扰，这一步会把"通道B"弹窗
-    // 的内容错误地替换成通道A的检测数据（弹窗标题仍显示"通道B"，内容却是
-    // "person×1"，标题与数据对不上，这正是审计发现里描述的那种数据串扰）。
-    resolveA({ hasResult: true, result: fakeResultA })
-    await new Promise((r) => setTimeout(r, 0))
-
-    expect(screen.getByText(/通道B · 最新检测结果/)).toBeInTheDocument()
-    expect(screen.queryByText(/person×1/)).not.toBeInTheDocument()
-    expect(screen.getByText('该通道暂无检测结果（可能尚未启动或还没推理出第一帧）')).toBeInTheDocument()
   })
 
   it('顶部统计文案正确反映通道总数与运行中数量', async () => {

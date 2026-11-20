@@ -149,6 +149,47 @@ func TestSequenceKeepAliveAndFailureCannotResurrect(t *testing.T) {
 	c.Execute(context.Background(), "node", d, a)
 }
 
+type centerUntilCancelled struct{ driver }
+
+func (d *centerUntilCancelled) Center(ctx context.Context, _ ImagePoint) error {
+	close(d.start)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestSupersededCenterDoesNotMarkNextMoveUncertain(t *testing.T) {
+	c := New()
+	defer c.Close()
+	d := &centerUntilCancelled{driver{start: make(chan struct{})}}
+	next := &driver{}
+	cmd := command(1)
+	cmd.TTLMS = 1200
+	cmd.ExpiresAtMS = time.Now().Add(1200 * time.Millisecond).UnixMilli()
+	cmd.Center = &ImagePoint{X: .2}
+	cmd.Vector = Vector{}
+	done := make(chan error, 1)
+	go func(first Command) {
+		_, err := c.Execute(context.Background(), "camera", d, first)
+		done <- err
+	}(cmd)
+	select {
+	case <-d.start:
+	case <-time.After(time.Second):
+		t.Fatal("center did not start")
+	}
+	cmd.Center = nil
+	cmd.Vector = Vector{Pan: .3}
+	for _, seq := range []uint64{2, 3} {
+		cmd.Sequence = seq
+		if _, err := c.Execute(context.Background(), "camera", next, cmd); err != nil {
+			t.Fatalf("replacement sequence %d: %v", seq, err)
+		}
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("superseded center returned %v", err)
+	}
+}
+
 type delayedPreset struct {
 	started   chan struct{}
 	cancelled chan struct{}

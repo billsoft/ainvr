@@ -488,9 +488,17 @@ def create_app(store: ConfigStore, data_dir: str, guard_factory=build_guard) -> 
         }
 
     @app.get("/v1/recorder/channels")
-    async def list_channels(_: None = Depends(require_console_token)):
-        return [{**channel, **supervisor.recording_status(channel["id"])}
-                for channel in channels.to_api()]
+    async def list_channels(start: int | None = Query(None, alias="from"), to: int | None = Query(None),
+                            _: None = Depends(require_console_token)):
+        rows = [{**channel, **supervisor.recording_status(channel["id"])} for channel in channels.to_api()]
+        if start is None and to is None:
+            return rows
+        if start is None or to is None or not 0 <= start < to <= 2**53 - 1:
+            raise HTTPException(status_code=400, detail="录像时间范围无效")
+        hints = await index.run(index.playback_hints, [row["id"] for row in rows], start, to)
+        for row in rows:
+            row["rangeHasRecording"], row["latestSegmentTs"] = hints[row["id"]]
+        return rows
 
     @app.get("/v1/recorder/config")
     async def get_config(_: None = Depends(require_console_token)):

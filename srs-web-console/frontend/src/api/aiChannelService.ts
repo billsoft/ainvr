@@ -14,10 +14,7 @@ export interface AiChannelService {
   remove(id: string): Promise<void>
   start(id: string): Promise<void>
   stop(id: string): Promise<void>
-  latestResult(id: string): Promise<{ hasResult: boolean; result: AiFrameResult | null }>
-  /** 最近 N 条推理结果（按时间升序），供浏览器端叠加层按时间戳对齐画面用——
-   * 单条 latestResult 只有"最新一条"，可能跟当前画面对不上时间点；一小段
-   * 历史窗口能挑出跟画面播放时钟最接近的那条，画出来的框不会飘。 */
+  /** 按时间升序返回推理结果，供叠加层按播放时间对齐。 */
   resultHistory(id: string, limit?: number): Promise<AiFrameResult[]>
   /** ai-service 不可达时返回 null（不抛错）——降级横幅靠这个判断，不是
    * catch 异常来判断，两者语义不同：null 明确表示"探测完成，结果是不可达" */
@@ -213,11 +210,6 @@ export function createMockAiChannelService(seed: AiChannel[] = []): AiChannelSer
       const cur = store.get(id)
       if (!cur) throw Object.assign(new Error(`通道不存在: ${id}`), { status: 404 })
       store.set(id, { ...cur, state: 'idle', stats: { ...cur.stats, state: 'idle' } })
-    },
-
-    async latestResult(_id) {
-      await delay()
-      return { hasResult: false, result: null }
     },
 
     async resultHistory(_id, _limit) {

@@ -49,6 +49,7 @@ export function AiPreviewModal({ channelId, channelName, effectiveTargetUrl, vid
           {target ? (
             <VideoPlayer
               title=""
+              className="h-full w-full"
               // 含 hls：H.265 输出在本机/服务端不能 WebRTC 时按 §8.3 以 HLS 兜底；
               // H.264 有 webrtc 时播放器仍只走 WebRTC，行为不变
               protocols={['webrtc', 'flv', 'hls']}
