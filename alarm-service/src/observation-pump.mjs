@@ -116,11 +116,26 @@ export class ObservationPump {
           const info=await lstat(file);if(!info.isFile()||info.isSymbolicLink()||info.size>1024*1024)throw Error('Invalid journal file');
           sample=JSON.parse(await readFile(file,'utf8'));
           if(name!==sample.offset.padStart(20,'0')+'.json'||rawHash(sample.channel_id)!==directory.name)throw Error('Journal identity mismatch');
+          const required=await this.repository.ruleSnapshots.requiredForChannel?.(sample.channel_id)??[];
+          const requiredInputs=new Set(required.map(s=>s.input_stream_id));
+          if(snapshot.rules.some(r=>r.channel_id===sample.channel_id&&requiredInputs.has(r.input_stream_id)&&
+            !snapshot.motion_admission?.scopes.some(s=>s.channel_id===sample.channel_id&&s.input_stream_id===r.input_stream_id))){
+            reason='motion_metadata_missing';throw Error('Registered channel requires motion metadata');
+          }
           step='convert';
           const converted=observationEnvelope(sample,snapshot.rules);
           if(converted.waiting){reason=converted.waiting;throw Error('Source binding not configured');}
           if(converted.envelope){step='consume';const result=await this.consumer.consume(converted.envelope,{deferAcknowledgement:true,...(later?{deferDurability:true}:{})});if(result.durable!==true&&!(later&&result.deferred===true))throw Error('Consumption not durable');this.status.consumed++;this.status.last_persisted_at=new Date().toISOString();}
           else {this.status.ignored++;this.status.last_ignored_reason=converted.ignored;
+            // Do not erase the replay carrier of a legacy pending outcome during
+            // an upgrade or pause. It needs an explicit migration, not a new permit.
+            if(required.length&&await this.repository.checkpoints.findOne({channel_id:sample.channel_id,pending:{$ne:null}})){
+              reason='motion_pending_requires_replay';
+              if(!this.consumer.replayPrepared)throw Error('Pending outcome requires replay before journal deletion');
+              const replay=await this.consumer.replayPrepared(sample.channel_id,{deferAcknowledgement:true,...(later?{deferDurability:true}:{})});
+              if(replay&&replay.durable!==true&&!(later&&replay.deferred===true))throw Error('Prepared replay not durable');
+              reason=null;
+            }
             if(this.repository.reviewContext?.root)await new EvidenceSpool(this.repository.reviewContext.root).acknowledge(sample,{defer:true});
           }
           if(converted.ignored==='source_binding_mismatch')this.rememberIssue(directory.name,sample,'source_binding_mismatch','ignored');

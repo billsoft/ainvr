@@ -1,5 +1,6 @@
 import {endpoint,limitedJson,type AlarmConnection} from '../routes/alarmProxy.js';
-interface Snapshot {schema_version:string;revision:string;rules:unknown[]}
+import type {MotionSnapshot, PtzMotionAdmission} from './ptzMotionAdmission.js';
+type Snapshot=MotionSnapshot;
 interface Source {snapshot:()=>Promise<Snapshot>}
 export interface RuleApplication {
   state:'applied'|'pending'|'unavailable';desired_revision:string|null;applied_revision:string|null
@@ -17,7 +18,7 @@ export class AlarmRuleSync {
    * most once per `reconcileIntervalMs` (the rule poll runs every few seconds), and it never stops rule publication:
    * a failed repair keeps the last known result and is retried on the next interval. */
   constructor(private source:Source,private connection:()=>Promise<AlarmConnection|null>,private reconcile?:Reconcile,
-    private options:{reconcileIntervalMs?:number;now?:()=>number}={}){}
+    private options:{reconcileIntervalMs?:number;now?:()=>number;motionAdmission?:PtzMotionAdmission}={}){}
   synchronize():Promise<RuleApplication>{
     if(this.running)return this.running;
     this.running=this.apply().finally(()=>{this.running=null});return this.running;
@@ -32,7 +33,7 @@ export class AlarmRuleSync {
       await response.body?.cancel().catch(()=>undefined);
       throw new RuleExchangeError(response.status);
     }
-    return await limitedJson(response) as {state?:string;applied?:boolean;revision?:string;digest?:string};
+    return await limitedJson(response) as {state?:string;applied?:boolean;revision?:string;digest?:string;motion_admission?:unknown};
   }
   private async apply():Promise<RuleApplication>{
     let desired:string|null=null,applied:string|null=null;
@@ -43,15 +44,17 @@ export class AlarmRuleSync {
       await this.repair();
       // A concurrent save may advance PG during the network round trip. Catch up boundedly.
       for(let attempt=0;attempt<3;attempt++){
-        const snapshot=await this.source.snapshot();desired=snapshot.revision;
+        const snapshot=await (this.options.motionAdmission?.snapshot(this.source)??this.source.snapshot());desired=snapshot.revision;
         const accepted=await this.exchange(config,'POST',snapshot);
         if(accepted.applied!==true||accepted.revision!==desired||typeof accepted.digest!=='string')return status('pending','服务尚未确认当前规则版本');
         const live=await this.exchange(config,'GET');applied=live.revision??null;
         const latest=await this.source.snapshot();desired=latest.revision;
         // Rules are applied even when some bindings could not follow a catalog change: those keep their old version and
         // are refused by the alarm service until re-armed. Report them without failing callers that need the rules applied.
-        if(live.state==='applied'&&live.revision===desired&&live.digest===accepted.digest)return this.blocked?
-          status('applied',`${this.blocked} 项布防或计数的来源已变化，请重新选择目标并布防`):status('applied');
+        if(live.state==='applied'&&live.revision===desired&&live.digest===accepted.digest){
+          await this.options.motionAdmission?.acknowledge(snapshot,live.motion_admission);
+          return this.blocked?status('applied',`${this.blocked} 项布防或计数的来源已变化，请重新选择目标并布防`):status('applied');
+        }
       }
       return status('pending','配置正在变化，等待下一次同步');
     }catch(error){

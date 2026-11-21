@@ -1,5 +1,5 @@
 """Downgrade preflight tests; no production service/database access."""
-import importlib.util,json,tempfile,unittest
+import importlib.util,json,sys,tempfile,unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 from pathlib import Path
@@ -86,4 +86,51 @@ class RollbackGuard(unittest.TestCase):
    try:
     with self.assertRaisesRegex(RuntimeError,'Preset-aware target is incomplete'):guard.preflight(ROOT,self.target,self.state(scenes=1,presets=1))
    finally:p.write_text('// compiled fixture')
+class MotionPublicationGuard(unittest.TestCase):
+ def setUp(self):
+  tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
+  self.root=Path(tmp.name);self.live=self.root/'srs-web-console/backend/dist'
+  self.candidate=self.root/'candidate';self.backup=self.root/'backup'
+  spec=importlib.util.spec_from_file_location('publisher',ROOT/'deploy-package/deploy_ptz_release.py')
+  self.publisher=importlib.util.module_from_spec(spec)
+  with patch.object(sys,'path',[str(ROOT/'deploy-package'),*sys.path]):spec.loader.exec_module(self.publisher)
+  self.publisher.ROOT=self.root
+ def motion(self,path):
+  for name in guard.REQUIRED+guard.SCENE_REQUIRED+guard.PRESET_REQUIRED+guard.MOTION_REQUIRED:
+   file=path/name;file.parent.mkdir(parents=True,exist_ok=True);file.write_text('fixture')
+  (path/'ptz-compatibility.json').write_text(json.dumps(guard.MOTION_COMPATIBILITY))
+ def test_complete_motion_marker_requires_all_motion_artifacts(self):
+  self.motion(self.live)
+  self.assertTrue(guard.supports_motion_admission(self.live))
+  self.assertEqual(guard.capabilities(self.live),(True,True,True))
+  for name in guard.MOTION_REQUIRED:
+   file=self.live/name;file.unlink()
+   with self.subTest(name=name),self.assertRaisesRegex(RuntimeError,'incomplete'):guard.supports_motion_admission(self.live)
+   file.symlink_to(self.live/'app.js')
+   with self.assertRaisesRegex(RuntimeError,'incomplete'):guard.supports_motion_admission(self.live)
+   file.unlink();file.write_text('fixture')
+ def test_motion_files_with_removed_or_old_marker_are_refused(self):
+  self.motion(self.live);marker=self.live/'ptz-compatibility.json'
+  marker.unlink()
+  with self.assertRaisesRegex(RuntimeError,'deploy_ptz_motion'):guard.require_ordinary_release(self.root,self.candidate)
+  marker.write_text(json.dumps(guard.COMPATIBILITY))
+  with self.assertRaisesRegex(RuntimeError,'deploy_ptz_motion'):guard.require_ordinary_release(self.root,self.candidate)
+  for v in [True,'1',2]:
+   marker.write_text(json.dumps({**guard.MOTION_COMPATIBILITY,'motionAdmissionVersion':v}))
+   with self.assertRaisesRegex(RuntimeError,'Invalid'):guard.supports_motion_admission(self.live)
+ def test_motion_live_blocks_old_apply_and_rollback_before_preparation(self):
+  self.motion(self.live)
+  with patch.object(self.publisher,'require_ssd',side_effect=AssertionError('unexpected preparation')),patch.object(self.publisher,'validate',side_effect=AssertionError('unexpected validation')):
+   for action,path in [(self.publisher.apply,self.candidate),(self.publisher.rollback,self.backup)]:
+    with self.subTest(action=action.__name__),self.assertRaisesRegex(RuntimeError,'deploy_ptz_motion'):action(path)
+ def test_motion_target_blocks_apply_and_rollback_on_legacy_live(self):
+  self.motion(self.candidate/'backend');self.motion(self.backup/'dist')
+  for action,path in [(self.publisher.apply,self.candidate),(self.publisher.rollback,self.backup)]:
+   with self.subTest(action=action.__name__),self.assertRaisesRegex(RuntimeError,'deploy_ptz_motion'):action(path)
+ def test_motion_alarm_alone_cannot_be_paired_with_legacy_backend(self):
+  guard.require_ordinary_release(self.root,self.candidate/'backend')
+  alarm=self.candidate/'ptz-alarm/src';alarm.mkdir(parents=True)
+  (alarm/'motion-admission.mjs').touch()
+  with self.assertRaisesRegex(RuntimeError,'deploy_ptz_motion'):self.publisher.apply(self.candidate)
+
 if __name__=='__main__':unittest.main()

@@ -1,5 +1,6 @@
 import type { Pool } from 'pg';
 import { z } from 'zod';
+import { PhysicalPtzGuards } from './physicalPtzGuards.js';
 const calibrationRecord = z.object({
   axis: z.enum(['pan', 'tilt']),
   sign: z.union([z.literal(-1), z.literal(1)]),
@@ -51,7 +52,55 @@ export class PtzError extends Error {
   }
 }
 export class PtzStore {
-  constructor(public pool: Pool) {}
+  private readonly physicalGuards: PhysicalPtzGuards;
+  constructor(public pool: Pool, motorGroups?: unknown) {
+    this.physicalGuards = new PhysicalPtzGuards(motorGroups);
+  }
+  guardResource(resource: string) { return this.physicalGuards.key(resource); }
+
+  // Called after migrations, before servicing requests or publishing execution rules.
+  async reconcilePhysicalGuards() {
+    if (!this.physicalGuards.groups.length) return;
+    await this.transaction(async c => {
+      await c.query('SELECT revision FROM alarm_configuration_revision WHERE singleton FOR UPDATE');
+      const mergedKeys: string[] = [];
+      const mergedMembers: string[] = [];
+      for (const members of this.physicalGuards.groups) {
+        const canonical = this.guardResource(members[0]);
+        const result = await c.query(`
+          WITH previous AS (
+            SELECT * FROM ptz_view_guards WHERE resource_key=ANY($2::text[]) FOR UPDATE
+          )
+          INSERT INTO ptz_view_guards(resource_key,revision,source_ids,blocked,stop_pending,restored_at,actor)
+          SELECT $1::text, max(revision)+1,
+            ARRAY(SELECT DISTINCT unnest(source_ids) AS id FROM previous ORDER BY id),
+            true, bool_or(stop_pending), max(restored_at), 'ptz-physical-guard-merge'
+          FROM previous HAVING bool_or(resource_key<>$1)
+          ON CONFLICT(resource_key) DO UPDATE SET revision=EXCLUDED.revision,
+            source_ids=EXCLUDED.source_ids, blocked=true, stop_pending=EXCLUDED.stop_pending,
+            baseline=NULL, restored_at=EXCLUDED.restored_at, changed_at=clock_timestamp(), actor=EXCLUDED.actor`,
+          [canonical, members]);
+        if (result.rowCount) {
+          await c.query('DELETE FROM ptz_view_guards WHERE resource_key=ANY($1::text[]) AND resource_key<>$2',
+            [members, canonical]);
+          mergedKeys.push(canonical);
+          mergedMembers.push(...members);
+        }
+      }
+      if (mergedKeys.length) {
+        const { rows: [config] } = await c.query(
+          'UPDATE alarm_configuration_revision SET revision=revision+1 WHERE singleton RETURNING revision',
+        );
+        // Fence late acknowledgements even before a publisher builds the first merged snapshot.
+        await c.query(`UPDATE ptz_motion_scopes SET installed=false, snapshot_revision=$1, updated_at=clock_timestamp()
+          WHERE source_id IN (SELECT unnest(source_ids) FROM ptz_view_guards WHERE resource_key=ANY($2::text[]))`,
+          [config.revision, mergedKeys]);
+        await c.query(`UPDATE ptz_motion_guard_installations SET installed=false,snapshot_revision=$1
+          WHERE resource_key=ANY($2::text[])`, [config.revision, mergedMembers]);
+        await this.audit(c, 'ptz-startup', 'ptz-physical-guard-merge');
+      }
+    });
+  }
   async calibrationEpoch(motor: string) {
     const {rows} = await this.pool.query('SELECT epoch FROM ptz_calibration_epochs WHERE motor=$1', [motor]);
     return Number(rows[0]?.epoch ?? 0);
@@ -205,18 +254,27 @@ export class PtzStore {
       )
     ).rows;
   }
+  async groupGbInputs(resources: string[]) {
+    const {rows} = await this.pool.query<{input_id: string; stream_name: string; resource: string}>(
+      `SELECT input_id::text,stream_name,'gb28181:' || device_id || '/' || channel_id AS resource
+       FROM gb28181_bindings WHERE enabled AND input_id IS NOT NULL
+       AND ('gb28181:' || device_id || '/' || channel_id)=ANY($1::text[])`, [resources]);
+    return rows;
+  }
   async watch(resource: string, sources: string[], baseline: unknown) {
     await this.pool.query(
       `INSERT INTO ptz_view_guards(resource_key,source_ids,baseline,blocked,actor) VALUES($1,$2,$3,false,'ptz-observer') ON CONFLICT(resource_key) DO NOTHING`,
-      [resource, sources, baseline],
+      [this.guardResource(resource), [...new Set(sources)], this.guardResource(resource) === resource ? baseline : null],
     );
   }
   async guard(resource: string) {
     return (
       (
         await this.pool.query(
-          'SELECT resource_key,revision,blocked,stop_pending,source_ids,baseline,changed_at,restored_at FROM ptz_view_guards WHERE resource_key=$1',
-          [resource],
+          `SELECT resource_key,revision,blocked,stop_pending,source_ids,
+             CASE WHEN resource_key=$2 THEN baseline END AS baseline,changed_at,restored_at
+           FROM ptz_view_guards WHERE resource_key=$1`,
+          [this.guardResource(resource), resource],
         )
       ).rows[0] ?? null
     );
@@ -232,10 +290,14 @@ export class PtzStore {
       await c.query('SELECT revision FROM alarm_configuration_revision WHERE singleton FOR UPDATE');
       const result = await c.query(
         `INSERT INTO ptz_view_guards(resource_key,source_ids,actor,baseline,stop_pending) VALUES($1,$2,$3,$4,$5)
-   ON CONFLICT(resource_key) DO UPDATE SET blocked=true,source_ids=EXCLUDED.source_ids,
+   ON CONFLICT(resource_key) DO UPDATE SET blocked=true,
+   source_ids=CASE WHEN $6 THEN ARRAY(SELECT DISTINCT id FROM
+     unnest(ptz_view_guards.source_ids || EXCLUDED.source_ids) id ORDER BY id) ELSE EXCLUDED.source_ids END,
    revision=ptz_view_guards.revision+1,changed_at=now(),actor=$3,stop_pending=ptz_view_guards.stop_pending OR $5,
-   baseline=CASE WHEN ptz_view_guards.blocked THEN ptz_view_guards.baseline ELSE $4 END RETURNING revision`,
-        [resource, [...new Set(sources)], actor, baseline, needsStop],
+   baseline=CASE WHEN ptz_view_guards.blocked OR $7 THEN ptz_view_guards.baseline ELSE $4 END RETURNING revision`,
+        [this.guardResource(resource), [...new Set(sources)], actor,
+          this.guardResource(resource) === resource ? baseline : null, needsStop, this.physicalGuards.grouped(resource),
+          this.guardResource(resource) !== resource],
       );
       await c.query('UPDATE alarm_configuration_revision SET revision=revision+1 WHERE singleton');
       await this.audit(c, actor, 'ptz-view-block');
@@ -245,10 +307,12 @@ export class PtzStore {
   async stopped(resource: string, revision: number) {
     await this.pool.query(
       'UPDATE ptz_view_guards SET stop_pending=false WHERE resource_key=$1 AND revision=$2',
-      [resource, revision],
+      [this.guardResource(resource), revision],
     );
   }
   async observeBaseline(resource: string, revision: number, baseline: unknown) {
+    // A pose is valid only in the reporting adapter's coordinate space.
+    if (this.guardResource(resource) !== resource) return;
     await this.pool.query(
       'UPDATE ptz_view_guards SET baseline=$3 WHERE resource_key=$1 AND revision=$2 AND NOT blocked AND baseline IS NULL',
       [resource, revision, baseline],
@@ -256,12 +320,21 @@ export class PtzStore {
   }
   async restore(resource: string, expected: number, actor: string, baseline: unknown = null,
     validate?: (c: import('pg').PoolClient) => Promise<void>) {
+    return this.restoreGuard(resource, expected, actor, false, baseline, validate);
+  }
+  async restoreUnissued(resource: string, expected: number, actor: string) {
+    return this.restoreGuard(resource, expected, actor, true, null);
+  }
+  private async restoreGuard(resource: string, expected: number, actor: string, keepBaseline: boolean,
+    baseline: unknown, validate?: (c: import('pg').PoolClient) => Promise<void>) {
     return this.transaction(async (c) => {
       await c.query('SELECT revision FROM alarm_configuration_revision WHERE singleton FOR UPDATE');
       if(validate)await validate(c);
       const result = await c.query(
-        'UPDATE ptz_view_guards SET blocked=false,revision=revision+1,restored_at=now(),actor=$3,baseline=$4 WHERE resource_key=$1 AND revision=$2 AND NOT stop_pending RETURNING resource_key',
-        [resource, expected, actor, baseline],
+        `UPDATE ptz_view_guards SET blocked=false,revision=revision+1,restored_at=now(),actor=$3,
+         baseline=CASE WHEN $5 THEN baseline ELSE $4::jsonb END
+         WHERE resource_key=$1 AND revision=$2 AND NOT stop_pending RETURNING resource_key`,
+        [this.guardResource(resource), expected, actor, this.guardResource(resource) === resource ? baseline : null, keepBaseline],
       );
       if (!result.rows.length) throw new PtzError('version_conflict');
       await c.query('UPDATE alarm_configuration_revision SET revision=revision+1 WHERE singleton');

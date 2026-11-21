@@ -10,7 +10,7 @@ type Item = {
   changedAt: string;
 };
 /** Read-only persistent protection status. Never silently clears warnings on a failed poll. */
-export function PtzProtectionNotice({sourceId}: {sourceId: string}) {
+export function PtzProtectionNotice({sourceId,inlineRestore=false}: {sourceId: string;inlineRestore?:boolean}) {
   const [items, setItems] = useState<Item[]>([]),
     [stale, setStale] = useState(false);
   useEffect(() => {
@@ -59,7 +59,7 @@ export function PtzProtectionNotice({sourceId}: {sourceId: string}) {
           </span>
         </div>
       ))}
-      <span className="text-xs">保存后到云台「布防待核对」恢复普通区域。</span>
+      {!inlineRestore&&<span className="text-xs">保存后到云台「布防待核对」恢复普通区域。</span>}
       {stale && <p className="text-xs">保护状态暂未更新，请检查服务连接；上次记录仍保留。</p>}
     </div>
   );

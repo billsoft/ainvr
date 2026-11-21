@@ -15,9 +15,9 @@ function bound(matched=true):SceneEditingContext {
   current_points:matched?[[.2,.2],[.6,.2],[.6,.6]]:null,state:matched?'matched':'unmatched',reference_frame_id:'reference-0',binding_mode:'preset',preset_id:'32'}]}}
 }
 const result={saved:true,sourceId:'cam',revision:2,application:{state:'pending'}}
-function mount(context:SceneEditingContext|undefined=frame,send=vi.fn().mockResolvedValue(result)) {
+function mount(context:SceneEditingContext|undefined=frame,send=vi.fn().mockResolvedValue(result),restoreAfterSave?:()=>Promise<void>) {
  const saved=vi.fn(),close=vi.fn()
- const props={sourceId:'cam',sourceName:'门',base,reference,sceneContext:context,definitions:[],sources:[],send,onSaved:saved,onClose:close}
+ const props={sourceId:'cam',sourceName:'门',base,reference,sceneContext:context,definitions:[],sources:[],send,restoreAfterSave,onSaved:saved,onClose:close}
  const ui=render(<ArmingModal {...props}/>);return{ui,props,send,saved,close}
 }
 afterEach(()=>{cleanup();vi.restoreAllMocks()})
@@ -36,6 +36,39 @@ it('explicitly confirms unchanged ordinary geometry on its frozen frame without 
  expect(request.currentViewConfirmation).toEqual({frame_id:'frame-1'})
  expect(request.zones).toEqual(base.zones)
  expect(request.sceneEdits).toBeUndefined()
+})
+const ordinary={...frame,guardBlocked:true,frame:{...frame.frame,binding_mode:'current' as const}}
+const review=()=>fireEvent.click(screen.getByRole('checkbox',{name:/已核对本次冻结画面/}))
+it('restores only after explicit review and acknowledged save; pending application still needs its own restore ACK',async()=>{
+ let finish!:(r:typeof result)=>void
+ const send=vi.fn().mockImplementation(()=>new Promise(resolve=>{finish=resolve})),restore=vi.fn().mockResolvedValue(undefined)
+ const f=mount(ordinary,send,restore)
+ const combined=screen.getByRole('button',{name:'保存并恢复布防'})
+ expect(combined).toBeDisabled();review();fireEvent.click(combined);fireEvent.click(combined)
+ expect(send).toHaveBeenCalledOnce();expect(restore).not.toHaveBeenCalled()
+ finish(result);await waitFor(()=>expect(f.close).toHaveBeenCalledOnce())
+ expect(f.saved).toHaveBeenCalledWith(result,true);expect(restore).toHaveBeenCalledOnce()
+ expect(send.mock.calls[0]![0].currentViewConfirmation.frame_id).toBe('frame-1')
+})
+it('offers save alone to confirm one output without requesting restore',async()=>{
+ const restore=vi.fn(),f=mount(ordinary,vi.fn().mockResolvedValue(result),restore)
+ review();fireEvent.click(screen.getByRole('button',{name:'仅保存'}))
+ await waitFor(()=>expect(f.saved).toHaveBeenCalledWith(result));expect(restore).not.toHaveBeenCalled()
+})
+it('keeps the saved result on partial failure and retries only restore',async()=>{
+ const restore=vi.fn().mockRejectedValueOnce(Error('ptz_view_rearming_required')).mockResolvedValueOnce(undefined)
+ const f=mount(ordinary,vi.fn().mockResolvedValue(result),restore)
+ review();fireEvent.click(screen.getByRole('button',{name:'保存并恢复布防'}))
+ expect(await screen.findByRole('dialog',{name:'布防已保存'})).toHaveTextContent('各关联 AI 输出')
+ expect(screen.queryByRole('button',{name:'取消'})).not.toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'仅重试恢复'}));await waitFor(()=>expect(f.close).toHaveBeenCalledOnce())
+ expect(restore).toHaveBeenCalledTimes(2);expect(f.send).toHaveBeenCalledOnce();expect(f.saved).toHaveBeenCalledOnce()
+})
+it('retries an ambiguous save with its original key before considering restore; rejects stale saves without restoring',async()=>{
+ const restore=vi.fn(),send=vi.fn().mockRejectedValueOnce(Error('timeout')).mockRejectedValueOnce(Object.assign(Error('stale'),{status:409}))
+ const f=mount(ordinary,send,restore);review();fireEvent.click(screen.getByRole('button',{name:'保存并恢复布防'}))
+ fireEvent.click(await screen.findByRole('button',{name:'重试确认保存并恢复'}));await screen.findByText(/当前画面核对未生效/)
+ expect(send.mock.calls[1]).toEqual(send.mock.calls[0]);expect(restore).not.toHaveBeenCalled();expect(f.saved).not.toHaveBeenCalled()
 })
 it('edits only ordinary zones in a mixed current view and preserves bound geometry, versions and selections',async()=>{
  const ctx=bound(true);ctx.guardBlocked=true;ctx.frame.binding_mode='current'

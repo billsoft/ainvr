@@ -1,3 +1,5 @@
+import {PtzMotionAdmission} from './services/ptzMotionAdmission.js';
+import {ptzMotionRoutes} from './routes/ptzMotionRoutes.js';
 import {SearchModelMigrationPlanArtifacts} from './services/searchModelMigrationPlanArtifacts.js';
 import {SearchModelMigrationCoordinator} from './services/searchModelMigrationCoordinator.js';
 import {SearchReencodeRunner} from './services/searchReencodeRunner.js';
@@ -157,6 +159,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const route = req.routeOptions.url ?? 'unmatched';
     if (route.includes('/diag/') || route.includes('/observability/browser-error')) return;
     if (route.endsWith('/talkback/:id/audio/:seq') && reply.statusCode === 204) return;
+    if (route==='/api/internal/ptz-motion/admit' && reply.statusCode===200) return;
     const mutation = !['GET','HEAD','OPTIONS'].includes(req.method);
     if (mutation || reply.statusCode >= 400) {
       operationalLog(reply.statusCode >= 500 ? 'ERROR' : reply.statusCode >= 400 ? 'WARN' : 'INFO',
@@ -260,7 +263,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     if (boundService === 'recorder' && req.method === 'GET' &&
         ['/api/channels', '/api/ai/channels'].includes(pathname)) return;
     if(boundService==='alarm-service'&&req.method==='GET'&&/^\/api\/internal\/vehicle-watchlist\/\d+$/.test(pathname))return;
-    if(boundService==='alarm-service'&&req.method==='POST'&&['/api/internal/alarm-review','/api/internal/alarm-recording-evidence','/api/internal/vehicle-recognize'].includes(pathname))return;
+    if(boundService==='alarm-service'&&req.method==='POST'&&['/api/internal/alarm-review','/api/internal/alarm-recording-evidence','/api/internal/vehicle-recognize','/api/internal/ptz-motion/admit'].includes(pathname))return;
     if(boundService==='alarm-service'&&req.method==='POST'&&pathname==='/api/internal/faces/captures')return;
     if(boundService==='alarm-service'&&req.method==='GET'&&pathname==='/api/internal/faces/capture-sources')return;
     if(boundService==='alarm-service'&&req.method==='GET'&&pathname==='/api/internal/faces/watchlist-outbox')return;
@@ -486,14 +489,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const sceneStore=pgStore&&alarmConfigurationReady?new ArmingScenes(pgStore.pool):null;
     if(sceneStore)await sceneStore.invalidate(true);
     const armingStore=pgStore&&alarmConfigurationReady?new AlarmArmingStore(pgStore.pool,()=>sceneRuntime):null;
+    const ptzStore=pgStore&&alarmConfigurationReady?new PtzStore(pgStore.pool):null;
+    await ptzStore?.reconcilePhysicalGuards();
+    const motionAdmission=pgStore&&alarmConfigurationReady?new PtzMotionAdmission(pgStore.pool):null;
+    await instance.register(ptzMotionRoutes,{admission:motionAdmission,principal:req=>resolveServiceByToken(serviceTokens,req.headers['x-service-token'])==='alarm-service'});
     const ruleSync=triggerStore&&armingStore&&pgStore?new AlarmRuleSync(new PtzGuardedSnapshot(new AlarmCombinedSnapshot(triggerStore,armingStore),pgStore.pool,async()=>({channels:(await channelStore.read()).channels,ai:await ptzAI!.list()}),sceneStore??undefined,async()=>{await sceneRuntime?.checkBindings();}),alarmConnection,
-      async()=>armingStore.reconcileCatalogs(async id=>readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore))):null;
+      async()=>armingStore.reconcileCatalogs(async id=>readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore)),{motionAdmission:motionAdmission??undefined}):null;
     const gbStore=pgStore?new GB28181Store(pgStore,async()=>new Set((await channelStore.read()).channels.map(c=>c.id))):null;
     gbSync=gbStore?new GB28181Sync(gbStore,channelService):null;
     await instance.register(gb28181Routes,{store:gbStore,sync:gbSync,principal:alarmPrincipal,onPtzChanged:async key=>ptzManager?.invalidateCamera(key)});
     const onvifStore=pgStore?new OnvifStore(pgStore):null;
     onvifManager=onvifStore?new OnvifManager(onvifStore,channelService):null;
-    const ptzStore=pgStore&&alarmConfigurationReady?new PtzStore(pgStore.pool):null;
     const ptzAI=pgStore?ptzAi(()=>settingsStore.read(),pgStore,aiServiceBaseUrl):null;
     const ptzManager=ptzStore&&ptzAI?new PtzManager(ptzStore,{
       presetBindings:true,
@@ -501,6 +507,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       latestFrame:id=>ptzAI.latestFrame(id),ai:()=>ptzAI.list(),prepare:root=>preparePtzAdapter(root,ptzStore,onvifManager,gbSync),
       synchronize:()=>ruleSync?.synchronize()??Promise.resolve({state:'unavailable'}),
       resetProcessors:ids=>ptzAI.reset(ids),checkProcessors:ids=>ptzAI.checkReset(ids),
+      motionAdmissionReady:(sources,processors)=>motionAdmission?.ready(sources,processors)??Promise.resolve(false),
     }):null;
     await instance.register(onvifRoutes,{store:onvifStore,manager:onvifManager,principal:alarmPrincipal,ptzStore,ptzManager});
     ptzManager?.start();

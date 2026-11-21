@@ -5,7 +5,7 @@ Never resets customer configuration, changes SRS or restarts recording/ingest.
 import argparse,ctypes,fcntl,hashlib,json,os,re,shutil,subprocess,time,urllib.request,uuid,sys
 from pathlib import Path
 from release_common import validate as validate_console,files,ready as backend_ready,atomic_bytes
-from ptz_rollback_guard import preflight as ptz_preflight
+from ptz_rollback_guard import preflight as downgrade_preflight,require_ordinary_release
 ROOT=Path(__file__).resolve().parents[1]
 NODE='/opt/node-v26.13.0-linux-arm64/bin/node'
 SSD=Path('/mnt/ainvr-ssd');BACKUPS=SSD/'ainvr-rollback'
@@ -166,11 +166,17 @@ def restore_alarm_runtime(state,backup):
  except BaseException:
   shutil.rmtree(release);raise
 
+def ptz_preflight(root,target):
+ require_ordinary_release(root,target)
+ downgrade_preflight(root,target)
+
 def rollback(backup):
+ require_ordinary_release(ROOT,backup/'dist')
  require_ssd();backup=backup.resolve(strict=True)
  if backup.parent!=BACKUPS/'backend':raise RuntimeError('Expected backend SSD rollback transaction')
  state=json.loads((backup/'deployment.json').read_text());paths={k:Path(v)for k,v in state['backups'].items()}
  check_rollback(state,paths)
+ require_ordinary_release(ROOT,paths['backend']/'dist',paths['alarm-service']/'src')
  ptz_preflight(ROOT,paths['backend']/'dist')
  restored,alarm_config=restore_alarm_runtime(state,paths['alarm-service'])
  run(['systemctl','stop','ainvr-backend'])
@@ -191,6 +197,7 @@ def rollback(backup):
  return {'rolledBack':True,'configurationRestored':False,'schemaRetained':True}
 
 def apply(candidate):
+ require_ordinary_release(ROOT,candidate/'backend',candidate/'ptz-alarm/src')
  candidate=validate(candidate);require_ssd();backend_ready()
  subprocess.run([sys.executable, '-I', '-B', candidate/'deploy-package/prepare-scene-storage.py',
                  '--backend-env', ROOT/'deploy/s100p/runtime/backend.env', '--if-configured'], check=True, timeout=40)
@@ -278,6 +285,9 @@ def main():
  if os.geteuid()!=0:raise RuntimeError('Board administrator required')
  with Path('/run/lock/ainvr-ptz-deploy.lock').open('w')as lock:
   fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  if search:
+   target=a.apply/'backend' if a.apply else a.rollback/'dist'
+   require_ordinary_release(ROOT,target)
   result=(search_apply(publisher,a.apply)if a.apply else search_rollback(publisher,a.rollback))if search else(apply(a.apply)if a.apply else rollback(a.rollback))
   print(json.dumps(result))
 if __name__=='__main__':main()

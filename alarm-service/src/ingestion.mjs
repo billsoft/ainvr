@@ -1,5 +1,6 @@
 // Copyright AINVR. Durable prepare/materialize/checkpoint protocol for standalone Mongo.
 import {observationBarrier} from './observation-barrier.mjs';
+import {admitFrame,validatePendingPermit} from './motion-admission.mjs';
 import {EvidenceSpool} from './evidence-spool.mjs';
 import {randomUUID,createHash} from 'node:crypto';
 import {digest,fail,identity,integerText,validateFrame} from './domain.mjs';
@@ -46,6 +47,29 @@ export class ObservationConsumer {
     const release=observationBarrier(this.repository).enter();
     try{return await this.consumeFrame(envelope,options);}finally{release();}
   }
+  // A paused snapshot may have no convertible new input, but an immutable
+  // pre-motion result still owns its original authorization. Replay at most one
+  // pending record under the same durable channel lease; never evaluate/sign.
+  async replayPrepared(channel,options={}){
+    identity(channel,'channel_id');
+    const release=observationBarrier(this.repository).enter(),token=randomUUID(),now=this.now();
+    const defer={defer:options.deferAcknowledgement===true,later:options.deferDurability===true};
+    let doc,lease={held:true},fence;
+    try{
+      doc=await this.collection.findOneAndUpdate({channel_id:channel,pending:{$ne:null},lease_until:{$lte:now}},
+        {$set:{lease_token:token,lease_until:now+this.leaseMs},$inc:{generation:1}},{returnDocument:'after'});
+      if(!doc){
+        if(await this.collection.findOne({channel_id:channel,pending:{$ne:null}}))fail('consumer_busy','Pending outcome is being processed',503);
+        return null;
+      }
+      fence={channel_id:channel,lease_token:token,generation:doc.generation};
+      validatePendingPermit(doc.pending,channel,doc.producer_id);
+      const saved=await this.finish(doc,()=>({...fence,lease_until:{$gt:this.now()}}),false,defer,lease);
+      return {replayed:true,durable:!defer.later,deferred:defer.later,offset:saved.offset};
+    }finally{
+      try{if(fence&&lease.held)await this.collection.updateOne(fence,{$set:{lease_until:0},$unset:{lease_token:''}});}finally{release();}
+    }
+  }
   async flushAcknowledgements(){await this.spool?.flushAcknowledgements();}
   // One journaled write makes every earlier commit durable (Mongo has one
   // sequential journal). Returns false when nothing was waiting.
@@ -86,22 +110,33 @@ export class ObservationConsumer {
     const lease={held:true};
     try {
       if(doc.producer_id!==producer)fail('producer_changed','Producer identity changed; explicit migration required',409);
+      const execution=this.repository.executionRules?await this.repository.executionRules(channel):
+        {rules:await this.repository.listRules(channel),scopes:[],required:[]};
       // Complete a previously prepared outcome before reading current rules.
       // Old/stale workers can only materialize this same immutable outcome.
       // The lease stays held: this input itself is still to be consumed.
-      if(doc.pending)doc=await this.finish(doc,validFence,false,defer);
+      if(doc.pending){
+        if(execution.required.length||doc.pending.motion_permit)validatePendingPermit(doc.pending,channel,producer);
+        doc=await this.finish(doc,validFence,false,defer);
+      }
       if(doc.offset!==null&&offset<=BigInt(doc.offset)) {
         if(offset===BigInt(doc.offset)&&doc.fingerprint!==fingerprint)fail('offset_conflict','Same offset has different content',409);
         // The stored offset may itself still await the barrier.
         if(defer.later)this.deferred.acks.push(frame);else await this.spool?.acknowledge(frame,defer);
         return {durable:!defer.later,deferred:defer.later,outcome:'already_consumed',offset:envelope.offset,events:[]};
       }
-      const gap=doc.offset!==null&&offset!==BigInt(doc.offset)+1n;
-      const baseRules=(await this.repository.listRules(channel)).map(({history,...r})=>r);
+      const scope=execution.scopes.find(s=>s.input_stream_id===frame.input_stream_id);
+      if(execution.required.some(s=>s.input_stream_id===frame.input_stream_id)&&!scope)fail('motion_admission_required','Registered scope requires matching motion metadata',503);
+      const admission=scope?await admitFrame(this.repository.motionAdmission,scope,{...envelope,frame},fingerprint):null;
+      const motionChanged=!!scope&&doc.checkpoint?.motion_guard_epoch!==scope.guard_epoch;
+      const previous=motionChanged&&doc.checkpoint?{...doc.checkpoint,ptz_view_epoch:'motion_fence_changed'}:doc.checkpoint;
+      const gap=motionChanged||doc.offset!==null&&offset!==BigInt(doc.offset)+1n;
+      const baseRules=execution.rules.map(({history,...r})=>r);
       const rules=this.repository.vehicles?this.repository.vehicles.rules(baseRules,channel):baseRules;
-      const result=evaluate(doc.checkpoint,{...frame,...(gap?{gap:true}:{})},rules);
+      const result=evaluate(previous,{...frame,...(gap?{gap:true}:{})},rules);
+      if(scope)result.checkpoint.motion_guard_epoch=scope.guard_epoch;
       for(const entry of result.checkpoint.dwell_gaps??[])if(entry.to===null&&entry.stream_session_id!==frame.stream_session_id)entry.to=frame.captured_at;
-      const duplicate=result.issues.includes('duplicate_or_old_seq'),options={gap,previous:doc.checkpoint,restart:!this.dwellStarted.has(channel)};
+      const duplicate=result.issues.includes('duplicate_or_old_seq'),options={gap,previous:doc.checkpoint,restart:motionChanged||!this.dwellStarted.has(channel)};
       const heat=duplicate||!this.repository.heat?null:beginRegionHeat(doc.checkpoint?.region_heat,frame,options);
       const optional=callback=>value=>{try{callback(value);}catch{heat.suspend('heat_derivation_error');}};
       const dwell=duplicate?{facts:[],issues:[]}:dwellStep(doc.checkpoint?.dwell,frame,rules,{...options,...(heat?{onPair:optional(heat.add),onRegions:optional(heat.regions)}:{})});
@@ -110,6 +145,7 @@ export class ObservationConsumer {
       if(heat)result.checkpoint.region_heat=heatResult.state;
       result.issues.push(...dwell.issues,...heatResult.issues);
       const pending={offset:envelope.offset,fingerprint,checkpoint:result.checkpoint,dwell_facts:dwell.facts,heat_facts:heatResult.facts,capture_intents:result.capture_intents??[],events:result.events,coverage:result.coverage??[],ended_episodes:result.ended_episodes??[],issues:result.issues};
+      if(admission){pending.motion_input=admission.input;pending.motion_permit=admission.permit;}
       if(frame.evidence_delivery)pending.source_frame={channel_id:channel,stream_session_id:frame.stream_session_id,source_pts_ns:frame.source_pts_ns,source_frame_index:frame.source_frame_index,evidence_delivery:frame.evidence_delivery};
       pending.active_episodes=result.active_episodes??[];
       // Drop optional heat before touching dwell, alarm evidence or base state.
@@ -201,6 +237,7 @@ export class ObservationConsumer {
   }
   async finish(doc,fence,protectedInThisAttempt=false,defer={},lease=null) {
     const p=doc.pending;
+    if(p.motion_permit)validatePendingPermit(p,doc.channel_id,doc.producer_id);
     // Prepared outcomes can be recovered by a different lease generation.
     // The normal path already fsynced these exact immutable pending keys before
     // storing pending. Recovery in a new attempt/generation must protect again.

@@ -13,14 +13,21 @@ import type {ArmingDocument} from '@/features/armingDocument'
 import type {TriggerDefinition} from '@/features/alarmDefinitions'
 import {zoneSourceGeometry} from '@/features/zoneSourceGeometry'
 import {ArmingModal} from './ArmingModal'
+import {ptzService,type PtzInfo} from '@/api/ptzService'
 import {armingSceneService,type ArmingScenes,type PresetArmingSelection} from '@/api/armingSceneService'
 import {PresetArmingEntry} from './PresetArmingEntry'
 import type {SceneEditingContext} from '@/features/armingSceneDraft'
+function restoreTarget(info:PtzInfo,sourceId:string){
+ const guard=info.guard,revision=Number(guard?.revision)
+ if(!info.supported||info.source?.id!==sourceId||!info.identity||!guard?.blocked||!guard.resource_key||
+  !guard.source_ids.includes(sourceId)||!Number.isSafeInteger(revision)||revision<1)return null
+ return {revision,resource:guard.resource_key,identity:info.identity}
+}
 interface Reference {url:string;width:number;height:number;geometryRevision:string;capturedAt:string}
-interface Props {outputName?:string;processorId?:string;channel:ChannelWithStatus;video:HTMLVideoElement;onClose:()=>void;onSaved:()=>void}
+interface Props {outputName?:string;processorId?:string;channel:ChannelWithStatus;video:HTMLVideoElement;onClose:()=>void;onSaved:(restoring?:boolean)=>void}
 export function ArmingLauncher({channel,processorId,outputName,video,onClose,onSaved}:Props){
  const portalHost=useFullscreenPortalHost()
- const [data,setData]=useState<{reference:Reference;sceneContext?:SceneEditingContext;base:ArmingDocument|null;definitions:TriggerDefinition[];counters:Counter[];sources:AlarmSource[];legacyZones:AlarmZone[];warning:string;panoramic:boolean}|null>(null)
+ const [data,setData]=useState<{reference:Reference;restoreAfterSave?:()=>Promise<void>;sceneContext?:SceneEditingContext;base:ArmingDocument|null;definitions:TriggerDefinition[];counters:Counter[];sources:AlarmSource[];legacyZones:AlarmZone[];warning:string;panoramic:boolean}|null>(null)
  const [error,setError]=useState(''),[retry,setRetry]=useState(0)
  const [resetGeometry,setResetGeometry]=useState(false)
  const [selection,setSelection]=useState<{scope:string;value:PresetArmingSelection|null}>()
@@ -45,12 +52,29 @@ export function ArmingLauncher({channel,processorId,outputName,video,onClose,onS
      return
     }
     let sceneContext:SceneEditingContext|undefined,blob:Blob,width:number,height:number,capturedAt:string
+    let restoreAfterSave:(()=>Promise<void>)|undefined
     if(sceneStatus.eligible&&processorId){
+     // Pin the resource and guard revision before freezing the editor frame.
+     const target=!choice&&sceneStatus.guard_blocked===true
+      ?await ptzService.inspect(channel.id).then(info=>restoreTarget(info,channel.id)).catch(()=>null):null
+     if(!alive)return
      const frozen=await armingSceneService.freeze(channel.id,processorId,choice??undefined)
      if(choice&&(frozen.binding_mode!=='preset'||frozen.preset_id!==choice.preset_id||frozen.preset_fingerprint!==choice.preset_fingerprint))throw Error('布防预置位已变化，请退出后重新选择；原配置未改变。')
      if(choice===null&&frozen.binding_mode!=='current')throw Error('未取得普通区域核对画面，请退出后重试。')
      if(!frozen.frame_id||!frozen.identity||!frozen.epoch||frozen.geometry_revision!==geometryRevision||
        !Number.isSafeInteger(frozen.width)||!Number.isSafeInteger(frozen.height)||frozen.width<=0||frozen.height<=0||!Array.isArray(frozen.items))throw Error('冻结参考与当前来源不一致，请重试。')
+     if(target&&frozen.binding_mode==='current'){
+      restoreAfterSave=async()=>{
+       if(!alive)throw Error('ptz_source_changed')
+       const latest=await ptzService.inspect(channel.id)
+       const current=restoreTarget(latest,channel.id)
+       if(!alive||!current||current.identity!==target.identity||current.resource!==target.resource||current.revision!==target.revision)
+        throw Error('version_conflict')
+       if(latest.busy||latest.stopUnconfirmed||latest.guard?.stop_pending)throw Error('ptz_busy')
+       const result=await ptzService.restore(channel.id,target.revision,'rearmed')
+       if(result?.restored!==true)throw Error('ptz_restore_unconfirmed')
+      }
+     }
      sceneContext={processorId,frame:frozen,guardBlocked:sceneStatus.guard_blocked};blob=await armingSceneService.image(frozen.image_url)
      width=frozen.width;height=frozen.height;capturedAt=frozen.captured_at
     }else{
@@ -69,7 +93,7 @@ export function ArmingLauncher({channel,processorId,outputName,video,onClose,onS
     const results=await Promise.allSettled(channels.filter(c=>!processorId||c.id===processorId).map(c=>alarmTriggerService.source(c.id)))
     if(!alive)return
     url=URL.createObjectURL(blob)
-    setData({base:arming.arming,sceneContext,definitions:definitions.items,counters,legacyZones,
+    setData({base:arming.arming,sceneContext,restoreAfterSave,definitions:definitions.items,counters,legacyZones,
      sources:results.flatMap(r=>r.status==='fulfilled'&&r.value.input_stream_id===channel.id?[r.value]:[]),
      panoramic:channels.filter(c=>!processorId||c.id===processorId).some((c,i)=>{const r=results[i];return r?.status==='fulfilled'&&r.value.input_stream_id===channel.id&&c.config.snapshot?.projection_mode==='erp_equirect'}),
      warning:[results.some(r=>r.status==='rejected')?'部分处理器信息暂不可用；仅能选用已就绪的处理器，已有配置会保留。':'',
@@ -86,6 +110,6 @@ export function ArmingLauncher({channel,processorId,outputName,video,onClose,onS
    <button aria-label="关闭" className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-muted" onClick={onClose}><X size={18}/></button><h2 className="pr-10 text-base font-semibold">画面规格已变化</h2><p className="my-4">原热区不能直接用于当前画面。重新布防将从空白草稿开始，需重新绘制热区和选用告警规则。只有最后点击保存，才会替换原配置；取消不会修改。</p>
    <div className="flex flex-wrap gap-3"><button autoFocus className="btn-secondary" onClick={onClose}>取消</button><button className="btn-secondary" onClick={()=>setResetGeometry(true)}>按当前画面重新布防</button></div>
   </div></div>,portalHost)
- if(data)return <ArmingModal sceneContext={data.sceneContext} send={processorId?(input,key)=>alarmArmingService.save(input,key,processorId):undefined} sourceId={channel.id} sourceName={outputName??channel.name} base={data.base} reference={data.reference} definitions={data.definitions} counters={data.counters} sources={data.sources} legacyZones={legacyMismatch?[]:data.legacyZones} panoramic={data.panoramic} warning={data.warning} resetGeometry={resetGeometry&&!legacyMismatch} resetLegacyGeometry={resetGeometry&&legacyMismatch} onClose={onClose} onSaved={()=>{onSaved();onClose()}}/>
+ if(data)return <ArmingModal restoreAfterSave={data.restoreAfterSave} sceneContext={data.sceneContext} send={processorId?(input,key)=>alarmArmingService.save(input,key,processorId):undefined} sourceId={channel.id} sourceName={outputName??channel.name} base={data.base} reference={data.reference} definitions={data.definitions} counters={data.counters} sources={data.sources} legacyZones={legacyMismatch?[]:data.legacyZones} panoramic={data.panoramic} warning={data.warning} resetGeometry={resetGeometry&&!legacyMismatch} resetLegacyGeometry={resetGeometry&&legacyMismatch} onClose={onClose} onSaved={(_,restoring)=>{onSaved(restoring);if(!restoring)onClose()}}/>
  return createPortal(<div role="dialog" aria-modal="true" aria-label="读取布防" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div className="relative rounded-panel bg-surface p-5 pr-14 text-sm text-ink shadow-modal"><button aria-label="关闭" className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-lg text-muted hover:bg-surface-muted" onClick={onClose}><X size={18}/></button><p role={error?'alert':'status'}>{error||'正在读取布防与参考画面…'}</p><div className="mt-4 flex gap-3">{error&&<button className="btn-secondary" onClick={()=>setRetry(n=>n+1)}>重试读取布防</button>}<button className="btn-secondary" onClick={onClose}>取消</button></div></div></div>,portalHost)
 }

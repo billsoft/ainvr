@@ -134,7 +134,11 @@ export function createApp({repository,apiToken,producerToken,consumer,readiness=
   });
   app.get('/v1/rules',async req=>({items:await scoped(req).listRules(req.query.channel_id)}));
   app.get('/v1/configuration/rules',async()=>repository.ruleSnapshots.status());
-  app.post('/v1/configuration/rules',async req=>observationBarrier(repository).configure(()=>repository.ruleSnapshots.apply(req.body,actor(req))));
+  app.post('/v1/configuration/rules',async req=>observationBarrier(repository).configure(async()=>{
+    const apply=()=>repository.ruleSnapshots.apply(req.body,actor(req));
+    return !repository.ruleSnapshots.needsMotionDrain||await repository.ruleSnapshots.needsMotionDrain(req.body)?
+      observationBarrier(repository).drain(apply):apply();
+  }));
   app.post('/v1/rules',async(req,reply)=>reply.code(405).header('Allow','GET').send({error:{code:'configuration_authority',message:'Save monitors in the configuration service; direct rule writes are disabled'}}));
   app.post('/v1/dry-runs',async req=>{
     actor(req);const body=req.body;

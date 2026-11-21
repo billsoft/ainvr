@@ -44,7 +44,7 @@ export interface PtzInfo {
   busy?: boolean;
   stopUnconfirmed?: boolean;
   reason?: string;
-  guard?: { revision: number; blocked: boolean; baseline?: unknown; source_ids: string[] } | null;
+  guard?: { revision: number; blocked: boolean; baseline?: unknown; resource_key?:string; stop_pending?:boolean; source_ids: string[] } | null;
 }
 export interface PtzPreset {
   id: string;
@@ -136,7 +136,7 @@ export const ptzService = {
   remove: (id: string, presetId: string) =>
     request(`${path(id)}/presets/${encodeURIComponent(presetId)}`, { method: 'DELETE' }),
   restore: (id: string, expectedRevision: number, mode: 'position' | 'rearmed') =>
-    send(`${path(id)}/restore-view`, { expectedRevision, mode }),
+    send<{restored:boolean}>(`${path(id)}/restore-view`, { expectedRevision, mode }),
 };
 const reasons: Record<string, string> = {
   ptz_position_unavailable: '设备未提供可核验的巡航坐标。',

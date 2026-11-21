@@ -155,7 +155,7 @@ function harness(moveStatus=false) {
   const store = {
     settings: async () => ({settings:{enabled:true, capacity:4, leaseMs:1200}}),
     camera: async () => ({settings:{enabled:true}}), guard: async () => null,
-    block: vi.fn(async () => 1), record: vi.fn(), stopped: vi.fn(), restore: vi.fn(),
+    block: vi.fn(async () => 1), record: vi.fn(), stopped: vi.fn(), restoreUnissued: vi.fn(), restore: vi.fn(),
   };
   const input = {id:'in',streamName:'cam',onvif:{deviceId:'nvr',videoSource:'camera'}} as Channel;
   const output = {id:'out',streamName:'detected'} as Channel;

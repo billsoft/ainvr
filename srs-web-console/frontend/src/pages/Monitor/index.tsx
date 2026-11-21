@@ -212,7 +212,7 @@ export default function MonitorPage() {
         })}
       </div>}
     </div>
-    {arming&&<ArmingLauncher outputName={arming.outputName} processorId={arming.processorId} channel={arming.channel} video={arming.video} onClose={()=>setArming(null)} onSaved={()=>{toast.success("布防已保存，应用状态将在配置同步后更新");window.dispatchEvent(new Event("ainvr-arming-saved"))}}/>}
+    {arming&&<ArmingLauncher outputName={arming.outputName} processorId={arming.processorId} channel={arming.channel} video={arming.video} onClose={()=>setArming(null)} onSaved={restoring=>{if(!restoring)toast.success("布防已保存，应用状态将在配置同步后更新");window.dispatchEvent(new Event("ainvr-arming-saved"))}}/>}
     <Toaster />
   </section>
 }

@@ -38,7 +38,7 @@ export async function loadConfig(path) {
   catch{throw Error('Invalid service configuration');} // Never echo credentials or parsed input.
 }
 
-export async function startService(input,{evidenceSource,reviewInvoke,recoverEvidence,vehicleInvoke,faceOutbox}={}) {
+export async function startService(input,{evidenceSource,reviewInvoke,recoverEvidence,vehicleInvoke,faceOutbox,motionAdmission}={}) {
   const config=validateConfig(input),instanceId=randomUUID(),startedAt=new Date().toISOString();
   const client=new MongoClient(config.mongo_uri,{serverSelectionTimeoutMS:3000,connectTimeoutMS:3000,socketTimeoutMS:10000,maxPoolSize:8});
   let app,heartbeat,pump,vault,review,context,vehicles,faces,closing=false,healthy=false,checkedAt=null;
@@ -48,6 +48,7 @@ export async function startService(input,{evidenceSource,reviewInvoke,recoverEvi
   try{
     await client.connect();
     const db=client.db(config.database),repository=new AlarmRepository(db);
+    repository.motionAdmission=motionAdmission;
     await repository.initialize();
     if(config.evidence){
       if(config.evidence.enabled&&!evidenceSource)throw Error('Evidence source transport required');
@@ -72,7 +73,7 @@ export async function startService(input,{evidenceSource,reviewInvoke,recoverEvi
     };
     if(!await probe())throw Error('Alarm storage not writable');
     const consumer=new ObservationConsumer(repository);
-    const observedConsumer={flushAcknowledgements:()=>consumer.flushAcknowledgements(),makeDurable:()=>consumer.makeDurable(),consume:async(envelope,options)=>{
+    const observedConsumer={replayPrepared:(channel,options)=>consumer.replayPrepared(channel,options),flushAcknowledgements:()=>consumer.flushAcknowledgements(),makeDurable:()=>consumer.makeDurable(),consume:async(envelope,options)=>{
       counters.received++;lastInputAt=new Date().toISOString();
       try{
         const result=await consumer.consume(envelope,options);

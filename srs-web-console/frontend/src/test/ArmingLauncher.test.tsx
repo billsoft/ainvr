@@ -1,6 +1,7 @@
 import {render,screen,fireEvent} from '@testing-library/react'
 import {beforeEach,it,expect,vi} from 'vitest'
 import {ArmingLauncher} from '@/pages/AlarmCenter/ArmingLauncher'
+import {ptzService} from '@/api/ptzService'
 import {armingSceneService} from '@/api/armingSceneService'
 import {alarmArmingService} from '@/api/alarmArmingService'
 import {alarmDefinitionService} from '@/api/alarmDefinitionService'
@@ -8,17 +9,19 @@ import {alarmZoneService} from '@/api/alarmZoneService'
 import {aiChannelService} from '@/api/aiChannelService'
 import {mockChannels} from '@/mock/channels'
 import {zoneSourceGeometry} from '@/features/zoneSourceGeometry'
+vi.mock('@/api/ptzService',()=>({ptzService:{inspect:vi.fn(),restore:vi.fn()}}))
+const editor=vi.hoisted(()=>vi.fn())
 vi.mock('@/api/alarmArmingService',()=>({alarmArmingService:{read:vi.fn()}}))
 vi.mock('@/api/armingSceneService',()=>({armingSceneService:{read:vi.fn(),freeze:vi.fn(),image:vi.fn()}}))
 vi.mock('@/api/alarmDefinitionService',()=>({alarmDefinitionService:{list:vi.fn()}}))
 vi.mock('@/api/alarmZoneService',()=>({alarmZoneService:{list:vi.fn()}}))
 vi.mock('@/api/aiChannelService',()=>({aiChannelService:{list:vi.fn()}}))
 vi.mock('@/pages/AlarmCenter/PresetArmingEntry',()=>({PresetArmingEntry:({onSelect,hasOrdinary}:{onSelect:(x:unknown)=>void;hasOrdinary?:boolean})=><>{hasOrdinary&&<button onClick={()=>onSelect(null)}>核对当前普通区域</button>}<button onClick={()=>onSelect({binding_mode:'preset',preset_id:'32',preset_fingerprint:'a'.repeat(64)})}>选择并确认到位</button></> }))
-vi.mock('@/pages/AlarmCenter/ArmingModal',()=>({ArmingModal:(props:unknown)=><div data-testid="arming-props">{JSON.stringify(props)}</div>}))
+vi.mock('@/pages/AlarmCenter/ArmingModal',()=>({ArmingModal:(props:unknown)=>{editor(props);return <div data-testid="arming-props">{JSON.stringify(props)}</div>}}))
 const channel=mockChannels[0]!
 let video:HTMLVideoElement
 beforeEach(()=>{
- vi.resetAllMocks()
+ vi.resetAllMocks();vi.mocked(ptzService.inspect).mockRejectedValue(Error('offline'))
  vi.mocked(armingSceneService.read).mockResolvedValue({eligible:false,identity:null,epoch:'0',items:[]})
  video=document.createElement('video')
  Object.defineProperties(video,{readyState:{value:3},paused:{value:false},videoWidth:{value:1920},videoHeight:{value:1080}})
@@ -55,6 +58,29 @@ it('uses an authenticated server-frozen reference and the matching scene snapsho
  expect(props.reference).toMatchObject({url:'blob:reference',width:1280,height:720,capturedAt:'frozen-time'})
  expect(armingSceneService.image).toHaveBeenCalledWith('/api/frozen-frame')
  expect(HTMLCanvasElement.prototype.toBlob).not.toHaveBeenCalled()
+})
+it('pins the ordinary restore to the reviewed motor and revision, requires a positive receipt and drops stale callbacks',async()=>{
+ const geometry=zoneSourceGeometry(channel,1920,1080)!
+ const guard={blocked:true,resource_key:'motor',source_ids:[channel.id],revision:7}
+ const info={supported:true,source:{id:channel.id,name:'cam'},identity:'device',guard}
+ vi.mocked(ptzService.inspect).mockResolvedValue(info)
+ vi.mocked(armingSceneService.read).mockResolvedValue({eligible:true,guard_blocked:true,identity:'physical',epoch:'e',items:[]})
+ vi.mocked(armingSceneService.freeze).mockResolvedValue({frame_id:'f1',image_url:'/api/image',binding_mode:'current',
+  width:1280,height:720,captured_at:'t',geometry_revision:geometry,identity:'physical',epoch:'e',items:[]})
+ vi.mocked(armingSceneService.image).mockResolvedValue(new Blob(['frame']))
+ const ui=render(<ArmingLauncher channel={channel} processorId="ai" video={video} onClose={vi.fn()} onSaved={vi.fn()}/>)
+ await screen.findByTestId('arming-props')
+ const restore=editor.mock.lastCall![0].restoreAfterSave as ()=>Promise<void>
+ expect(ptzService.restore).not.toHaveBeenCalled()
+ for(const changed of [{...info,identity:'other'},{...info,guard:{...guard,revision:8}},{...info,guard:{...guard,resource_key:'other'}}]){
+  vi.mocked(ptzService.inspect).mockResolvedValueOnce(changed);await expect(restore()).rejects.toThrow('version_conflict')
+ }
+ expect(ptzService.restore).not.toHaveBeenCalled()
+ vi.mocked(ptzService.restore).mockResolvedValueOnce({restored:false}).mockResolvedValueOnce({restored:true})
+ await expect(restore()).rejects.toThrow('ptz_restore_unconfirmed');await restore()
+ expect(ptzService.restore).toHaveBeenCalledWith(channel.id,7,'rearmed')
+ ui.unmount();await expect(restore()).rejects.toThrow('ptz_source_changed')
+ expect(ptzService.restore).toHaveBeenCalledTimes(2)
 })
 it('does not silently render old bound coordinates when scene status cannot be read',async()=>{
  vi.mocked(armingSceneService.read).mockRejectedValue(new Error('场景服务暂不可用'))
@@ -108,6 +134,7 @@ it('finds whole-frame ordinary arming alongside preset zones and freezes without
  render(<ArmingLauncher channel={channel} processorId="ai" video={video} onClose={vi.fn()} onSaved={vi.fn()}/>)
  fireEvent.click(await screen.findByRole('button',{name:'核对当前普通区域'}))
  expect(await screen.findByTestId('arming-props')).toHaveTextContent('f1')
+ expect(editor.mock.lastCall![0].restoreAfterSave).toBeUndefined()
  expect(armingSceneService.freeze).toHaveBeenCalledWith(channel.id,'ai',undefined)
 })
 it('waits for explicit preset selection and refuses a different frozen home',async()=>{

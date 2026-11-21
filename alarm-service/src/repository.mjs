@@ -85,6 +85,7 @@ export class AlarmRepository {
     await this.events.createIndex({fold_ids:1},{sparse:true});
     await this.rules.createIndex({id:1},{unique:true});
     await this.checkpoints.createIndex({channel_id:1},{unique:true});
+    await this.ruleSnapshots.required.createIndex({channel_id:1});
     await this.captureJobs.createIndex({state:1,next_at:1,created_at:1});
     await this.captureJobs.createIndex({finished_at:1},{expireAfterSeconds:86400});
   }
@@ -311,6 +312,12 @@ export class AlarmRepository {
     for(const row of rows){const summary=this.faceAccess===false?undefined:boundedFaceSummary(row.face_summary);delete row.face_summary;if(summary)row.face_summary=summary;}
     const more=rows.length>limit;const items=rows.slice(0,limit),last=items.at(-1);
     return {items,next_cursor:more?Buffer.from(JSON.stringify({signature,as_of:page.as_of,occurred_at:last.occurred_at,alarm_id:last.alarm_id})).toString('base64url'):null,as_of:page.as_of};
+  }
+  async executionRules(channel_id){
+    const required=await this.ruleSnapshots.requiredForChannel(channel_id);
+    const snapshot=await this.ruleSnapshots.current();
+    return {rules:snapshot?snapshot.rules.filter(r=>r.channel_id===channel_id):await this.listRules(channel_id),
+      scopes:snapshot?.motion_admission?.scopes.filter(s=>s.channel_id===channel_id)??[],required};
   }
   async listRules(channel_id,{limit=1000,maxTimeMS}={}) {
     const displayFields=['id','trigger_id','channel_id','zone_id','zone_name','name','behavior','alarm_enabled','event_kind','region_state.event_kind'];

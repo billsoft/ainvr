@@ -34,6 +34,7 @@ function fixture() {
       settings: { enabled: true, panTilt: null, zoom: null, presets: null },
     })),
     guard: vi.fn(async () => null),
+    groupGbInputs: vi.fn(async () => []),
     block: vi.fn(async () => {
       log.push('persist-block');
     }),
@@ -47,6 +48,7 @@ function fixture() {
     savePreset: vi.fn(async () => undefined),
     removePreset: vi.fn(async () => undefined),
     restore: vi.fn(async () => undefined),
+    restoreUnissued: vi.fn(async () => undefined),
     observeBaseline: vi.fn(async () => undefined),
     pool: { query: vi.fn(async () => ({ rows: [] })) },
   } as unknown as PtzStore;
@@ -98,6 +100,170 @@ function patrolFixture() {
   call.mockImplementation(async () => ({position, panTilt: 'MOVING'}));
   return {...f, base, position, call};
 }
+it('installed motion admission acquires and stops without waiting for alarm or resetting target IDs',async()=>{
+ const f=fixture();let release!:()=>void;
+ const pending=new Promise<{state:string}>(resolve=>{release=()=>resolve({state:'pending'});});
+ (f.deps as any).motionAdmissionReady=vi.fn(async()=>true);
+ f.deps.synchronize.mockImplementation(()=>pending);
+ f.deps.resetProcessors.mockRejectedValue(Error('AI reset unavailable'));
+ try{
+  const info=await f.manager.inspect('root');
+  const lease=await f.manager.acquire('root','operator',info.identity!);
+  expect(lease.sessionId).toBeTruthy();expect(f.store.block).toHaveBeenCalled();
+  expect(f.deps.resetProcessors).not.toHaveBeenCalled();
+  await f.manager.command('root',lease.sessionId,'operator',1,{pan:.3,tilt:0,zoom:0});
+  await f.manager.stop('root',lease.sessionId,'operator');
+  expect(f.adapter.call).toHaveBeenCalled();
+ }finally{release();await f.manager.close();}
+});
+it('uninstalled or newly changed motion scopes retain the synchronous protection barrier',async()=>{
+ const f=fixture();(f.deps as any).motionAdmissionReady=vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+ f.deps.synchronize.mockResolvedValue({state:'pending'});
+ try{
+  const info=await f.manager.inspect('root');
+  await expect(f.manager.acquire('root','operator',info.identity!)).rejects.toThrow('ptz_arming_pause_pending');
+  expect(f.log).not.toContain('move');
+ }finally{await f.manager.close();}
+});
+it('failed durable motion fence never dispatches a movement',async()=>{
+ const f=fixture();(f.deps as any).motionAdmissionReady=vi.fn(async()=>true);
+ vi.mocked(f.store.block).mockRejectedValue(Error('PG unavailable'));
+ try{
+  const info=await f.manager.inspect('root');
+  await expect(f.manager.acquire('root','operator',info.identity!)).rejects.toThrow('PG unavailable');
+  expect(f.log).not.toContain('move');expect(f.deps.resetProcessors).not.toHaveBeenCalled();
+ }finally{await f.manager.close();}
+});
+it('emergency braking returns its confirmed result while alarm synchronization is unavailable',async()=>{
+ const f=fixture();let release!:()=>void;
+ (f.deps as any).motionAdmissionReady=vi.fn(async()=>true);
+ f.deps.synchronize.mockImplementation(()=>new Promise(resolve=>{release=()=>resolve({state:'pending'});}));
+ try{expect(await f.manager.emergencyStop('root','operator')).toEqual({stopConfirmed:true});
+  expect(f.store.stopped).toHaveBeenCalled();
+ }finally{release?.();await f.manager.close();}
+});
+it('ONVIF control and restoration include the linked GB source and its counter processor',async()=>{
+ const f=fixture();f.adapter.resource='onvif:one';
+ const gb={...f.root,id:'gb',streamName:'gb',onvif:undefined,upstreamProtocol:'rtmp'} as Channel;
+ const gbAdapter={...f.adapter,resource:'gb28181:one/channel',protocol:'gb28181',identity:JSON.stringify(['gateway','one','channel'])} as PtzAdapter;
+ f.deps.channels.mockResolvedValue([f.root,gb]);
+ f.deps.ai.mockResolvedValue([{id:'gb-ai',config:{stream:{url:'rtmp://127.0.0.1/live/gb'},publish:{enabled:false}}}] as never);
+ f.deps.prepare.mockImplementation(async root=>root.id==='gb'?gbAdapter:f.adapter);
+ vi.mocked(f.store.guard).mockResolvedValue({revision:2,blocked:true,source_ids:['root']} as any);
+ vi.mocked(f.store.groupGbInputs).mockResolvedValue([{input_id:'gb',stream_name:'gb',resource:gbAdapter.resource}]);
+ const admission=vi.fn(async()=>true);(f.deps as any).motionAdmissionReady=admission;
+ const manager=new PtzManager(f.store,f.deps,[['onvif:one','gb28181:one/channel']]);
+ const check=vi.spyOn(viewConfirmation,'assertCurrentViewConfirmations').mockResolvedValue();
+ vi.mocked(f.store.restore).mockImplementation(async(_r,_v,_a,_b,validate)=>{await validate?.({} as any);});
+ try{
+  const info=await manager.inspect('root'),lease=await manager.acquire('root','operator',info.identity!);
+  expect(admission).toHaveBeenCalledWith(['gb','root'],['gb-ai']);
+  expect(f.store.block).toHaveBeenCalledWith('onvif:one',['gb','root'],'operator',null);
+  await manager.stop('root',lease.sessionId,'operator');
+  await manager.restoreView('root','operator',2,'rearmed');
+  expect(f.deps.resetProcessors).toHaveBeenCalledWith(['gb-ai']);
+  expect(check.mock.calls.at(-1)![2]).toEqual(['gb','root']);
+  expect(check.mock.calls.at(-1)![4]).toEqual([expect.objectContaining({source:'gb',processors:['gb-ai'],resource:gbAdapter.resource})]);
+ }finally{check.mockRestore();await manager.close();await f.manager.close();}
+});
+function physicalFixture() {
+ const f=fixture(),on='onvif:one',gbKey='gb28181:one/channel';
+ f.adapter.resource=on;
+ const gb={...f.root,id:'gb',streamName:'gateway',onvif:undefined,upstreamProtocol:'rtmp' as const};
+ const profile={...f.root,id:'new',streamName:'new',onvif:{...f.root.onvif!,profileToken:'new',videoSource:'other-sensor'}};
+ const elsewhere={...profile,id:'unrelated',streamName:'unrelated',onvif:{...profile.onvif,deviceId:'unrelated'}};
+ const separateMotor={...f.root,id:'another-motor',streamName:'another-motor',onvif:{...f.root.onvif!,profileToken:'independent'}};
+ const output={...gb,id:'output',streamName:'output'};
+ const gw={...f.adapter,resource:gbKey,protocol:'gb28181' as const,identity:JSON.stringify(['binding','one','channel'])};
+ f.deps.channels.mockResolvedValue([f.root,gb,profile,separateMotor,elsewhere,output]);
+ f.deps.ai.mockResolvedValue([{id:'new-ai',config:{stream:{url:'rtmp://localhost/live/new'},
+   publish:{enabled:true,target_url:'rtmp://localhost/live/output'}}}] as never);
+ f.deps.prepare.mockImplementation(async c=>c.id==='gb'?gw:c.id==='another-motor'?{...f.adapter,resource:'onvif:another-motor'}:f.adapter);
+ vi.mocked(f.store.groupGbInputs).mockResolvedValue([{input_id:'gb',stream_name:'gateway',resource:gbKey}]);
+ vi.mocked(f.store.guard).mockResolvedValue({blocked:true,revision:1,source_ids:['root']} as any);
+ return {...f,manager:new PtzManager(f.store,f.deps,[[on,gbKey]]),gw};
+}
+it('sends emergency Stop before discovery and persists the new same-device profile and its AI output',async()=>{
+ const f=physicalFixture(), gate=Promise.withResolvers<Awaited<ReturnType<PtzStore['groupGbInputs']>>>();
+ vi.mocked(f.store.groupGbInputs).mockReturnValue(gate.promise);
+ try{
+  const emergency=f.manager.emergencyStop('gb','operator');
+  await vi.waitFor(()=>expect(f.gw.call).toHaveBeenCalledWith('command',{command:expect.objectContaining({stop:true,emergency:true})}));
+  expect(f.store.block).not.toHaveBeenCalled();
+  gate.resolve([{input_id:'gb',stream_name:'gateway',resource:f.gw.resource}]);
+  await emergency;
+  expect(f.store.block).toHaveBeenCalledWith(f.gw.resource,['gb','new','output','root'],'operator',null,true);
+  expect(f.deps.prepare.mock.calls.map(([c])=>c.id)).toContain('another-motor');
+  expect(f.deps.prepare.mock.calls.map(([c])=>c.id)).not.toContain('unrelated');
+ }finally{await f.manager.close();}
+});
+it.each(['GB binding','channel','AI link'])('stops an active lease when a %s changes after acquire, before dispatch',async change=>{
+ const f=physicalFixture();
+ vi.mocked(f.store.groupGbInputs).mockResolvedValue([]);
+ try{
+  const info=await f.manager.inspect('root');
+  const lease=await f.manager.acquire('root','operator',info.identity!);
+  const move=(seq:number)=>f.manager.command('root',lease.sessionId,'operator',seq,{pan:.2,tilt:0,zoom:0});
+  await move(1);
+  f.deps.prepare.mockClear();
+  const original=await f.deps.channels();
+  // Live telemetry and list order change between polls; source topology does not.
+  f.deps.channels.mockResolvedValue([...original].reverse().map(c=>({...c,fps:19,heartbeat:Date.now(),online:false})));
+  await move(2);
+  if(change==='GB binding'){
+   vi.mocked(f.store.groupGbInputs).mockResolvedValue([{input_id:'gb',stream_name:'gateway',resource:f.gw.resource}]);
+  }else if(change==='channel'){
+   f.deps.channels.mockResolvedValue([...original,{...f.root,id:'added',streamName:'added',onvif:undefined}]);
+  }else{
+   f.deps.ai.mockResolvedValue([{id:'new-ai',config:{stream:{url:'rtmp://localhost/live/gateway'},
+    publish:{enabled:true,target_url:'rtmp://localhost/live/output'}}}] as never);
+  }
+  vi.mocked(f.adapter.call).mockClear();
+  await expect(move(3)).rejects.toThrow('ptz_source_changed');
+  expect(f.adapter.call).toHaveBeenCalledExactlyOnceWith('command',{command:expect.objectContaining({stop:true})});
+  await expect(move(4)).rejects.toThrow();
+  expect(f.deps.prepare).not.toHaveBeenCalled();
+  expect(f.store.restoreUnissued).not.toHaveBeenCalled();
+ }finally{await f.manager.close();}
+});
+it('samples membership after a pending calibration write and keeps an unissued stale lease blocked',async()=>{
+ const f=physicalFixture(),started=Promise.withResolvers<void>(),done=Promise.withResolvers<void>();
+ vi.mocked(f.store.guard).mockResolvedValue({blocked:false,revision:3,source_ids:['root']} as any);
+ vi.mocked(f.store.block).mockResolvedValue(4);
+ vi.mocked(f.store.invalidateCalibration).mockImplementation(async()=>{started.resolve();await done.promise;});
+ try{
+  const lease=await f.manager.acquire('root','operator',(await f.manager.inspect('root')).identity!);
+  const cmd=f.manager.command('root',lease.sessionId,'operator',1,{pan:0,tilt:0,zoom:.5});
+  await started.promise;
+  vi.mocked(f.store.groupGbInputs).mockResolvedValue([]);
+  done.resolve();await expect(cmd).rejects.toThrow('ptz_source_changed');
+  expect(f.log).not.toContain('move');
+  expect(f.store.restoreUnissued).not.toHaveBeenCalled();
+ }finally{done.resolve();await f.manager.close();}
+});
+it('requires a verified ONVIF anchor before GB motion, and still brakes and fences known sources on discovery failure',async()=>{
+ const f=physicalFixture();
+ vi.mocked(f.store.guard).mockResolvedValue({blocked:true,source_ids:['gb']} as any);
+ try{
+  const info=await f.manager.inspect('gb');
+  await expect(f.manager.acquire('gb','operator',info.identity!)).rejects.toThrow('ptz_source_changed');
+  expect(f.deps.prepare.mock.calls.map(([c])=>c.id)).toEqual(['gb']);
+  expect(f.store.block).not.toHaveBeenCalled();
+  await expect(f.manager.emergencyStop('gb','operator')).rejects.toThrow('ptz_arming_pause_pending');
+  expect(f.gw.call).toHaveBeenCalledWith('command',{command:expect.objectContaining({emergency:true,stop:true})});
+  expect(f.store.block).toHaveBeenCalledWith(f.gw.resource,['gb'],'operator',null,true);
+  expect(f.log).not.toContain('move');
+ }finally{await f.manager.close();}
+});
+it('rejects a changed stream binding before a grouped camera can move',async()=>{
+ const f=physicalFixture();
+ vi.mocked(f.store.groupGbInputs).mockResolvedValue([{input_id:'gb',stream_name:'previous',resource:f.gw.resource}]);
+ try{
+  const info=await f.manager.inspect('root');
+  await expect(f.manager.acquire('root','operator',info.identity!)).rejects.toThrow('ptz_source_changed');
+  expect(f.store.block).not.toHaveBeenCalled();
+ }finally{await f.manager.close();}
+});
 it('rearmed restoration resolves main/sub identity and processor ownership separately on their shared motor',async()=>{
  const f=fixture(),sub={...f.root,id:'sub',streamName:'sub',onvif:{...f.root.onvif!,profileToken:'sub'}};
  f.deps.channels.mockResolvedValue([f.root,sub]);
@@ -286,12 +452,22 @@ it('isolates scopes by actual zoom, space and geometry and checks identity befor
 });
 it('shares a stable epoch across protocol aliases and fences every field-of-view command before dispatch', async () => {
   const motors:string[] = [], scopes:string[] = [];
-  const aliases = ['onvif:unit','gb28181:unit'];
+  const aliases = ['onvif:unit','gb28181:unit/channel'];
   for (const [index,protocol] of (['onvif','gb28181'] as const).entries()) {
     const f = fixture();
     f.adapter.protocol = protocol;
     f.adapter.resource = aliases[index]!;
     f.adapter.caps.pointCenter = true;
+    if (index) {
+      const anchor={...f.root,id:'anchor',streamName:'anchor'};
+      f.root.onvif=undefined;f.root.upstreamProtocol='rtmp';
+      f.adapter.identity=JSON.stringify(['binding','unit','channel']);
+      f.deps.channels.mockResolvedValue([f.root,anchor]);
+      f.deps.prepare.mockImplementation(async c=>c.id==='anchor'?
+        {...f.adapter,protocol:'onvif',resource:aliases[0]!}:f.adapter);
+      vi.mocked(f.store.guard).mockResolvedValue({blocked:true,source_ids:['anchor']} as any);
+      vi.mocked(f.store.groupGbInputs).mockResolvedValue([{input_id:'root',stream_name:'gate',resource:aliases[1]!}]);
+    }
     const manager = new PtzManager(f.store,f.deps,[index ? [...aliases].reverse() : aliases]);
     try {
       const identity = (await manager.inspect('root')).identity!;
@@ -557,8 +733,10 @@ it('concurrent preset operations are serialized with control acquisition', async
     await f.manager.close();
   }
 });
-it('restart recovery stops only a recorded local unfinished control', async () => {
+it.each([false,true])('restart recovery resolves a recorded unfinished control through its canonical guard (alias=%s)', async (alias) => {
   const f = fixture();
+  if(alias){f.adapter.resource='gb28181:linked/channel';f.adapter.protocol='gb28181';
+    f.store.guardResource=()=> 'motor-1';}
   vi.mocked(f.store.guards).mockResolvedValue([
     {
       resource_key: 'motor-1',
@@ -577,7 +755,7 @@ it('restart recovery stops only a recorded local unfinished control', async () =
         command: expect.objectContaining({ stop: true, emergency: true }),
       }),
     );
-    expect(f.store.stopped).toHaveBeenCalledWith('motor-1', 3);
+    expect(f.store.stopped).toHaveBeenCalledWith(f.adapter.resource, 3);
     expect(f.store.block).not.toHaveBeenCalled();
   } finally {
     await f.manager.close();
@@ -779,12 +957,13 @@ it('emergency Stop cancels an acquisition waiting for analytics readiness', asyn
 
 it('stopping a successful acquisition with no issued movement restores only its own new pause', async () => {
   const f = fixture();
+  vi.mocked(f.store.guard).mockResolvedValue({revision:'6',blocked:false} as any);
   vi.mocked(f.store.block).mockResolvedValue(7);
   try {
     const info = await f.manager.inspect('root');
     const lease = await f.manager.acquire('root', 'operator', info.identity!);
     await f.manager.stop('root', lease.sessionId, 'operator');
-    expect(f.store.restore).toHaveBeenCalledWith('motor-1', 7, 'operator', null);
+    expect(f.store.restoreUnissued).toHaveBeenCalledWith('motor-1', 7, 'operator');
     expect(f.deps.synchronize).toHaveBeenCalledTimes(2);
     expect(f.log).not.toContain('move');
   } finally {
@@ -799,7 +978,7 @@ it('an unused control lease never restores a pause that existed before acquisiti
     const info = await f.manager.inspect('root');
     const lease = await f.manager.acquire('root', 'operator', info.identity!);
     await f.manager.stop('root', lease.sessionId, 'operator');
-    expect(f.store.restore).not.toHaveBeenCalled();
+    expect(f.store.restoreUnissued).not.toHaveBeenCalled();
   } finally {
     await f.manager.close();
   }
@@ -913,11 +1092,13 @@ for (const feedback of ['IDLE', 'MOVING', 'UNKNOWN', 'missing', 'error']) {
 
 it('arbitrates confirmed ONVIF and GB aliases even for two windows with the same login', async () => {
   const f = fixture();
-  const gbRoot = {...f.root, id:'gb', onvif:undefined, upstreamProtocol:'rtmp' as const};
+  const gbRoot = {...f.root, id:'gb',streamName:'gb', onvif:undefined, upstreamProtocol:'rtmp' as const};
   const gb = {...f.adapter, resource:'gb28181:device/channel', protocol:'gb28181' as const,
     identity:JSON.stringify(['binding','device','channel']), call:vi.fn(async () => ({stopConfirmed:true}))};
   f.adapter.resource = 'onvif:motor';
   f.deps.channels.mockResolvedValue([f.root,gbRoot]);
+  vi.mocked(f.store.groupGbInputs).mockResolvedValue([{input_id:'gb',stream_name:'gb',resource:gb.resource}]);
+  vi.mocked(f.store.guard).mockResolvedValue({blocked:true,source_ids:['root']} as any);
   const manager = new PtzManager(f.store, {...f.deps, prepare:async root => root.id === 'gb' ? gb : f.adapter},
     [[f.adapter.resource,gb.resource]]);
   try {

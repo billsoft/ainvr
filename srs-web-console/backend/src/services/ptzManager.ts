@@ -41,9 +41,11 @@ interface Lease {
   presetIdleSamples?: number;
   presetCheckedAt?: number;
   guardRevision?: number;
+  priority?: boolean;
+  membershipFingerprint?: string;
   presetProof?: {home:PresetHome;arrived:boolean;at:number};
   // Only undo our own successful preparation when no command was issued.
-  unissuedBaseline?: { value: unknown };
+  undoPreparation?: boolean;
   follow?: FrameFollower;
   wireSession?: string;
   stopPending?: Promise<any>;
@@ -57,6 +59,7 @@ export interface PtzDependencies {
   latestFrame?: (id:string)=>Promise<unknown>;
   resetProcessors: (ids: string[]) => Promise<void>;
   checkProcessors?: (ids: string[]) => Promise<void>;
+  motionAdmissionReady?: (sources:string[],processors:string[]) => Promise<boolean>;
 }
 export class PtzManager {
   private leases = new Map<string, Lease>();
@@ -141,7 +144,9 @@ export class PtzManager {
         const motor = this.motor(resource);
         if (state.retry > Date.now() || this.acquiring.has(motor) || this.emergency.has(motor)) continue;
         const source = resolvePtzSource(id, channels, ai, a.videoSources);
-        const guard = guards.find((g) => g.resource_key === resource),
+        const guardKey = this.store.guardResource?.(resource) ?? resource;
+        const storedGuard = guards.find((g) => g.resource_key === guardKey);
+        const guard = storedGuard && guardKey!==resource ? {...storedGuard,baseline:null} : storedGuard,
           live = this.leases.get(motor);
         if (live && (!live.stopped || live.stopPending)) continue;
         if (
@@ -186,15 +191,9 @@ export class PtzManager {
             state.changed =
               moved || !samePtzPosition(guard.baseline, status) ? state.changed + 1 : 0;
             if (moved || state.changed >= 2) {
-              await this.store.block(
-                resource,
-                source.sourceIds,
-                'ptz-external-motion',
-                guard.baseline,
-                false,
-              );
+              const {scope} = await this.blockObservedScope(source,a,'ptz-external-motion',guard.baseline,false);
               await this.deps.synchronize();
-              await this.deps.resetProcessors(source.processorIds);
+              await this.deps.resetProcessors(scope.processorIds);
               state.recoveredRevision = 0;
               state.changed = 0;
             }
@@ -260,6 +259,88 @@ export class PtzManager {
       adapter = await this.adapter(base);
     const source = adapter?.videoSources ? await this.resolve(id, adapter.videoSources) : base;
     return { source, adapter };
+  }
+  private async physicalConfiguration(group: string[]) {
+    const gbKeys = group.filter(key=>key.startsWith('gb28181:'));
+    const [channels,ai,bindings] = await Promise.all([this.deps.channels(),this.deps.ai(),
+      gbKeys.length ? this.store.groupGbInputs(gbKeys) : []]);
+    // Only configuration that identifies inputs and links them to outputs.
+    // Serialize individual tuples before sorting so list order is immaterial.
+    const inputs = channels.map(c=>JSON.stringify([c.id,c.inputGeneration,c.inputEnabled!==false,
+      c.upstreamProtocol,c.app||'live',c.streamName,c.onvif && [c.onvif.deviceId,c.onvif.deviceVersion,
+      c.onvif.service,c.onvif.profileToken,c.onvif.videoSource]])).sort();
+    const links = ai.map(({id,config})=>JSON.stringify([id,localRtmpStreamPath(config.stream.url),
+      config.publish.enabled,config.publish.enabled && localRtmpStreamPath(
+        config.publish.effective_target_url||config.publish.target_url||'')])).sort();
+    const members = bindings.map(b=>JSON.stringify([b.resource,b.input_id,b.stream_name])).sort();
+    const fingerprint = createHash('sha256').update(JSON.stringify([inputs,links,members])).digest('hex');
+    return {channels,ai,bindings,fingerprint};
+  }
+  private async protectionScope(source: Resolved, adapter: PtzAdapter) {
+    if (!this.motorKeys.has(adapter.resource)) return {sourceIds:source.sourceIds,processorIds:source.processorIds};
+    const ids = new Set<string>(), processors = new Set<string>();
+    const group = this.presetGroup(adapter.resource);
+    const [{channels,ai,bindings,fingerprint},guard] = await Promise.all([
+      this.physicalConfiguration(group),this.store.guard(adapter.resource)]);
+    const roots = new Map(channels.filter(c=>c.inputEnabled!==false).map(c=>[c.id,c]));
+    const add = (member: Resolved) => {
+      member.sourceIds.forEach(id=>ids.add(id));
+      member.processorIds.forEach(id=>processors.add(id));
+    };
+    let gbEntryFound = adapter.protocol!=='gb28181';
+    for (const row of bindings) {
+      const channel = roots.get(row.input_id);
+      if (!channel) continue;
+      if (channel.onvif || channel.upstreamProtocol!=='rtmp' || (channel.app||'live')!=='live' ||
+          channel.streamName!==row.stream_name) throw new PtzError('ptz_source_changed');
+      const bound = resolvePtzSource(channel.id,channels,ai);
+      if (bound.root.id!==channel.id) throw new PtzError('ptz_source_ambiguous');
+      add(bound);
+      if (channel.id===source.root.id && row.resource===adapter.resource) gbEntryFound=true;
+    }
+    if (!gbEntryFound) throw new PtzError('ptz_source_changed');
+
+    const devices = new Set<string>(), verified = new Set<string>(), visited = new Set<string>();
+    const checkOnvif = async (channel:Channel) => {
+      if (!channel.onvif || visited.has(channel.id)) return;
+      visited.add(channel.id);
+      const member=resolvePtzSource(channel.id,channels,ai);
+      if (member.root.id!==channel.id) return;
+      const current=await this.adapter(member);
+      if (!current) throw new PtzError('ptz_source_changed');
+      if (channel.id===source.root.id && current.resource!==adapter.resource) throw new PtzError('ptz_source_changed');
+      if (current.protocol!=='onvif'||!group.includes(current.resource)) return;
+      await current.verify?.();
+      devices.add(channel.onvif.deviceId);
+      verified.add(current.resource);
+      // Include this verified root and its AI descendants. A second profile,
+      // even on the same video source, must independently verify its motor.
+      add(resolvePtzSource(channel.id,channels,ai,[]));
+    };
+    // A resource hash cannot identify a device/profile by itself. Start only
+    // with an entry or persisted root that still resolves to this physical group.
+    for (const id of new Set<string>([source.root.id,...(guard?.source_ids??[])])) {
+      const anchor=roots.get(id);
+      if (anchor?.onvif) await checkOnvif(anchor);
+    }
+    for (const channel of roots.values())
+      if (channel.onvif && devices.has(channel.onvif.deviceId)) await checkOnvif(channel);
+    if (group.some(key=>key.startsWith('onvif:')&&!verified.has(key))) throw new PtzError('ptz_source_changed');
+    return {sourceIds:[...ids].sort(),processorIds:[...processors].sort(),membershipFingerprint:fingerprint};
+  }
+  private async blockObservedScope(source: Resolved, adapter: PtzAdapter, actor: string,
+    baseline: unknown = null, needsStop = true) {
+    let scope;
+    try { scope=await this.protectionScope(source,adapter); }
+    catch (error) {
+      // Braking or an observed external move cannot be undone when discovery
+      // fails. Keep known sources fenced and report incomplete protection.
+      await this.store.block(adapter.resource,source.sourceIds,actor,baseline,needsStop);
+      void this.deps.synchronize().catch(()=>undefined);
+      throw error;
+    }
+    const revision=await this.store.block(adapter.resource,scope.sourceIds,actor,baseline,needsStop);
+    return {scope,revision};
   }
   async sceneSource(id:string,processor?:string,observe=false) {
     const {source,adapter}=await this.target(id);
@@ -612,8 +693,11 @@ export class PtzManager {
       const check = await this.resolve(id, adapter.videoSources);
       if (check.fingerprint !== source.fingerprint || !check.displayedEnabled || check.root.inputEnabled === false)
         throw new PtzError('ptz_source_changed');
-      // Capability-only preflight cannot reset media or pause rules.
-      await this.deps.checkProcessors?.(source.processorIds);
+      // Installed frame admission makes alarm/network readiness independent of
+      // urgent motion. New/legacy scopes retain the synchronous migration path.
+      const protectedScope = await this.protectionScope(source,adapter);
+      let priority = await this.deps.motionAdmissionReady?.(protectedScope.sourceIds,protectedScope.processorIds) ?? false;
+      if (!priority) await this.deps.checkProcessors?.(protectedScope.processorIds);
       const existing = await this.store.guard(adapter.resource);
       let baseline: unknown = existing?.baseline ?? null;
       if (!existing?.blocked && !baseline && adapter.caps.position) {
@@ -624,21 +708,24 @@ export class PtzManager {
       }
       const guardRevision = await this.store.block(
         adapter.resource,
-        source.sourceIds,
+        protectedScope.sourceIds,
         actor,
         baseline,
       );
-      let application: { state: string };
-      try {
-        application = await this.deps.synchronize();
-      } catch {
-        throw new PtzError('ptz_arming_pause_pending', 503);
-      }
-      if (application.state !== 'applied') throw new PtzError('ptz_arming_pause_pending', 503);
-      try {
-        await this.deps.resetProcessors(source.processorIds);
-      } catch {
-        throw new PtzError('ptz_tracking_reset_pending', 503);
+      // A new binding may have arrived while Stop/status were being processed.
+      // Once blocked, any subsequent publication is fenced by this generation.
+      if (priority) priority = await this.deps.motionAdmissionReady!(protectedScope.sourceIds,protectedScope.processorIds);
+      if (priority) {
+        // The committed guard rejects every new observation using the old
+        // scope. Do not reset native target IDs behind a new follow session.
+        void this.deps.synchronize().catch(() => undefined);
+      } else {
+        let application: { state: string };
+        try { application = await this.deps.synchronize(); }
+        catch { throw new PtzError('ptz_arming_pause_pending', 503); }
+        if (application.state !== 'applied') throw new PtzError('ptz_arming_pause_pending', 503);
+        try { await this.deps.resetProcessors(protectedScope.processorIds); }
+        catch { throw new PtzError('ptz_tracking_reset_pending', 503); }
       }
       // Stop invalidates an acquisition already waiting on rule/AI readiness.
       // Never mint a usable control session after the operator stopped it.
@@ -653,7 +740,9 @@ export class PtzManager {
         adapter,
         sequence: 0,
         guardRevision,
-        ...(!existing?.blocked ? { unissuedBaseline: { value: baseline } } : {}),
+        priority,
+        membershipFingerprint:protectedScope.membershipFingerprint,
+        undoPreparation: !existing?.blocked && guardRevision===Number(existing?.revision??0)+1,
         stopped: false,
         until: Date.now() + (processor ? followPickMs : 5000),
         follow: processor ? new FrameFollower(processor, Date.now()) : undefined,
@@ -697,18 +786,16 @@ export class PtzManager {
       l.stopPending = (async () => {
         if (l.guardRevision) {
           await this.store.stopped(l.adapter.resource, l.guardRevision);
-          if (l.unissuedBaseline) {
+          if (l.undoPreparation) {
             // CAS prevents undoing a newer external/manual protection event.
             // Failed preparations never create this successful lease, so their
             // fail-closed protection is deliberately not automatically restored.
-            await this.store.restore(
-              l.adapter.resource,
-              l.guardRevision,
-              l.actor,
-              l.unissuedBaseline.value,
-            );
-            const result = await this.deps.synchronize();
-            if (result.state !== 'applied') throw new PtzError('ptz_arming_restore_pending', 503);
+            await this.store.restoreUnissued(l.adapter.resource,l.guardRevision,l.actor);
+            if (l.priority) void this.deps.synchronize().catch(()=>undefined);
+            else {
+              const result = await this.deps.synchronize();
+              if (result.state !== 'applied') throw new PtzError('ptz_arming_restore_pending', 503);
+            }
           }
         }
         return { stopConfirmed: true };
@@ -758,9 +845,13 @@ export class PtzManager {
   }
   private async commandSettings(l: Lease, sequence: number) {
     try {
-      const current = await this.resolve(l.channel, l.adapter.videoSources);
-      if (current.fingerprint !== l.source.fingerprint || current.root.inputEnabled === false || !current.displayedEnabled)
-        throw new PtzError('ptz_source_changed');
+      let current=l.source;
+      if (!l.membershipFingerprint) {
+        const live = await this.resolve(l.channel, l.adapter.videoSources);
+        if (live.fingerprint !== l.source.fingerprint || live.root.inputEnabled === false || !live.displayedEnabled)
+          throw new PtzError('ptz_source_changed');
+        current=live;
+      }
       await l.adapter.verify?.();
       const [global, camera] = await Promise.all([this.store.settings(), this.camera(current, l.adapter)]);
       if (!global.settings.enabled || !camera.settings.enabled) throw new PtzError('ptz_disabled');
@@ -811,6 +902,24 @@ export class PtzManager {
         throw new PtzError('ptz_stale_command');
       l.changesCalibration = true;
       await this.store.invalidateCalibration(this.calibrationMotor(l.adapter.resource));
+    }
+    if (l.membershipFingerprint) {
+      try {
+        // Last asynchronous check before dispatch, including follow renewals.
+        // Reuse the command's channel/AI read here; siblings need no device prepare.
+        const config=await this.physicalConfiguration(this.presetGroup(l.adapter.resource));
+        if (config.fingerprint!==l.membershipFingerprint) throw new PtzError('ptz_source_changed');
+        const current=resolvePtzSource(l.channel,config.channels,config.ai,l.adapter.videoSources);
+        if (current.fingerprint!==l.source.fingerprint || current.root.inputEnabled===false ||
+            config.channels.find(c=>c.id===l.channel)?.inputEnabled===false)
+          throw new PtzError('ptz_source_changed');
+      } catch (error) {
+        if (l.stopped || l.sequence!==intent) throw new PtzError('ptz_stale_command');
+        this.prepared.clear();
+        l.undoPreparation=false;
+        await this.stopLease(l);
+        throw error;
+      }
     }
     if (l.stopped || l.sequence !== intent || Date.now() > l.until)
       throw new PtzError('ptz_stale_command');
@@ -1260,8 +1369,10 @@ export class PtzManager {
       const [wire, guard] = await Promise.allSettled([
         adapter.call('command', {command: {session: randomUUID(), sequence: 1, stop: true,
           emergency: true, vector: {pan: 0, tilt: 0, zoom: 0}, ttlMs: 0}}),
-        this.store.block(adapter.resource, l?.source.sourceIds ?? s.sourceIds, actor).then(async revision => {
-          if ((await this.deps.synchronize()).state !== 'applied') throw new PtzError('ptz_arming_pause_pending', 503);
+        this.blockObservedScope(l?.source??s,adapter,actor).then(async ({scope,revision}) => {
+          if(await this.deps.motionAdmissionReady?.(scope.sourceIds,scope.processorIds))
+            void this.deps.synchronize().catch(()=>undefined);
+          else if ((await this.deps.synchronize()).state !== 'applied') throw new PtzError('ptz_arming_pause_pending', 503);
           return revision;
         }),
       ]);
@@ -1305,7 +1416,8 @@ export class PtzManager {
           if (!samePtzPosition(guard.baseline, current))
             throw new PtzError('ptz_view_not_restored');
         }
-        await this.deps.resetProcessors(s.processorIds);
+        const protectedScope=await this.protectionScope(s,a);
+        await this.deps.resetProcessors(protectedScope.processorIds);
         let poseCheckedAt=0;
         if (mode === 'rearmed' && a.caps.position) {
           try {
@@ -1320,7 +1432,7 @@ export class PtzManager {
             const ai=await this.deps.ai();
             // Main/sub aliases share a motor, but their frame identities include
             // the root/profile. Never compare every receipt to the entry alias.
-            for(const sourceId of current.sourceIds){
+            for(const sourceId of protectedScope.sourceIds){
               const {source,adapter}=await this.target(sourceId);
               if(source.root.id!==sourceId||!source.displayedEnabled||source.root.inputEnabled===false)continue;
               const processors=ai.filter(p=>localRtmpStreamPath(p.config.stream.url)===`/${source.root.app||'live'}/${source.root.streamName}`).map(p=>p.id);
@@ -1343,7 +1455,7 @@ export class PtzManager {
         const validate=mode==='rearmed'?async(c:import('pg').PoolClient)=>{
           if(restoredBaseline&&Date.now()-poseCheckedAt>5000)throw new PtzError('ptz_view_rearming_required');
           await assertCurrentViewConfirmations(
-            c,a.resource,current.sourceIds,current.processorIds,sources);
+            c,a.resource,protectedScope.sourceIds,protectedScope.processorIds,sources);
         }:undefined;
         await this.store.restore(a.resource, revision, actor, restoredBaseline,validate);
         const result = await this.deps.synchronize();
