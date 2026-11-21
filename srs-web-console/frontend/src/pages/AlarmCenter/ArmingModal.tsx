@@ -1,6 +1,6 @@
 import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
 import {sceneStateLabel} from '@/api/armingSceneService'
-import {sceneEditorDocument,sceneFor,sceneViewPoints,withSceneEdits,type SceneEditingContext,type SceneIntents} from '@/features/armingSceneDraft'
+import {ordinaryEditorBase,sceneEditorDocument,sceneFor,sceneViewPoints,withSceneEdits,type SceneEditingContext,type SceneIntents} from '@/features/armingSceneDraft'
 import {ZoneHandles} from './ZoneHandles'
 import {ZoneDrawing} from './ZoneDrawing'
 import {zoneGeometryError,type ZonePoint} from '@/features/alarmGeometry'
@@ -47,7 +47,8 @@ interface Props {
 }
 export function ArmingModal({sourceId,sourceName,base:incomingBase,reference:incomingReference,sceneContext:incomingScene,definitions:initialDefinitions,sources,counters:initialCounters=[],onClose,onSaved,send=alarmArmingService.save,legacyZones=[],warning,resetGeometry=false,resetLegacyGeometry=false,panoramic=false}:Props){
  const [frozen]=useState(()=>({scene:incomingScene?structuredClone(incomingScene):undefined,reference:{...incomingReference},base:incomingBase?structuredClone(incomingBase):null}))
- const sceneContext=frozen.scene,reference=sceneContext?frozen.reference:incomingReference,base=sceneContext?frozen.base:incomingBase
+ const sceneContext=frozen.scene,reference=sceneContext?frozen.reference:incomingReference,base=sceneContext?ordinaryEditorBase(frozen.base,sceneContext):incomingBase
+ const hasProtectedRegions=base!==frozen.base&&!!sceneContext
  const portalHost=useFullscreenPortalHost()
  const replacingGeometry=resetGeometry||resetLegacyGeometry
  const [draft]=useState(()=>{
@@ -66,6 +67,10 @@ export function ArmingModal({sourceId,sourceName,base:incomingBase,reference:inc
  const [toolbarHost,setToolbarHost]=useState<HTMLDivElement|null>(null)
  const [localDiscard,setLocalDiscard]=useState(false)
  const [counting,setCounting]=useState<{zoneId:string;initial?:DraftCounterBinding}|null>(null),[pick,setPick]=useState<CountingPick|null>(null)
+ const [reviewExpired,setReviewExpired]=useState(false)
+ const canConfirmView=!reviewExpired&&sceneContext?.guardBlocked===true&&sceneContext.frame.binding_mode==='current'
+ const [viewReviewed,setViewReviewed]=useState(false)
+ const confirmView=canConfirmView&&viewReviewed
  const [session]=useState(()=>createArmingSaveSession(send,newAlarmOperationId))
  const [,refresh]=useState(0),[editZone,setEditZone]=useState<string|null>(null)
  const [select,setSelect]=useState<{zoneId:string|null;initial?:DraftAssignment}|null>(null)
@@ -120,20 +125,27 @@ export function ArmingModal({sourceId,sourceName,base:incomingBase,reference:inc
   if(dialog.current&&!dialog.current.contains(document.activeElement))dialog.current.focus()
  },[portalHost,editZone,select,counting,removeZone,discard,localDiscard])
  // One cancel leaves the whole arming, whatever is open inside; one confirmation if anything would be lost.
- const close=()=>{if(locked)return;if(draft.dirty()||replacingGeometry||editor.current?.dirty()||nameDirty()||drawingPoints.length)setDiscard(true);else onClose()}
+ const close=()=>{if(locked)return;if(confirmView||draft.dirty()||replacingGeometry||editor.current?.dirty()||nameDirty()||drawingPoints.length)setDiscard(true);else onClose()}
  const save=async()=>{
   if(busy)return
   if(reference.geometryRevision!==draft.read().geometryRevision){setError('来源画面已改变，请重新打开布防确认区域。');return}
   if(drawing){setError('请先完成绘制或取消绘制，再保存布防。');return}
   if(!session.hasPending()&&!leaveEditor(false))return
-  if(!session.hasPending()&&!replacingGeometry&&!draft.dirty())return
+  if(!session.hasPending()&&!confirmView&&!replacingGeometry&&!draft.dirty())return
   const snapshot=draft.read()
   if(!session.hasPending()&&(snapshot.assignments.some(a=>a.needsDirectionConfirmation)||snapshot.counterBindings.some(b=>b.needsConfirmation))){setError('请先处理标记为需重新确认的方向或计数线。');return}
   setBusy(true);setError('')
   try{
-   const result=session.hasPending()?await session.retry():await session.save(withSceneEdits(buildArmingRequest(draft.read(),base,{...currentLabelVersions(draft.read(),sources,id=>definitions.find(d=>d.trigger_id===id)?.labels.map(l=>l.label_id),id=>counters.find(c=>c.counter_id===id)?.labels.map(l=>l.label_id)),...Object.fromEntries(draft.read().assignments.flatMap(a=>labels.current[labelKey(a)]?[[a.id,labels.current[labelKey(a)]!]]:[])),...bindingLabels.current},resetGeometry),base,sceneContext,Object.fromEntries(draft.read().zones.filter(z=>z.sceneIntent).map(z=>[z.id,z.sceneIntent])) as SceneIntents))
+   const buildRequest=()=>withSceneEdits(buildArmingRequest(draft.read(),base,{...currentLabelVersions(draft.read(),sources,id=>definitions.find(d=>d.trigger_id===id)?.labels.map(l=>l.label_id),id=>counters.find(c=>c.counter_id===id)?.labels.map(l=>l.label_id)),...Object.fromEntries(draft.read().assignments.flatMap(a=>labels.current[labelKey(a)]?[[a.id,labels.current[labelKey(a)]!]]:[])),...bindingLabels.current},resetGeometry),sceneContext?frozen.base:base,sceneContext,Object.fromEntries(draft.read().zones.filter(z=>z.sceneIntent).map(z=>[z.id,z.sceneIntent])) as SceneIntents)
+   const result=session.hasPending()?await session.retry():await session.save({
+    ...buildRequest(),...(confirmView?{currentViewConfirmation:{frame_id:sceneContext.frame.frame_id}}:{}),
+   })
    onSaved(result)
-  }catch(e){setError((e as {status?:number})?.status===409?'场景或布防版本已改变，未覆盖服务端配置。冻结参考与全部草稿已保留；请回到原场景核对，或取消后重新打开并绘制。':e instanceof Error?e.message:'保存结果未确认，请保留草稿后重试')}
+  }catch(e){
+   if(confirmView&&(e as {status?:number})?.status===409){
+    setViewReviewed(false);setReviewExpired(true)
+    setError('当前画面核对未生效。视角或布防版本已变化，请取消后重新打开布防，核对新的冻结画面。')
+   }else setError((e as {status?:number})?.status===409?'场景或布防版本已改变，未覆盖服务端配置。冻结参考与全部草稿已保留；请回到原场景核对，或取消后重新打开并绘制。':e instanceof Error?e.message:'保存结果未确认，请保留草稿后重试')}
   finally{setBusy(false)}
  }
  const editing=editZone?current.zones.find(z=>z.id===editZone):undefined
@@ -159,7 +171,7 @@ export function ArmingModal({sourceId,sourceName,base:incomingBase,reference:inc
   else{const id=newAlarmOperationId();draft.addZone({id,name:value.name,points:value.points,erpWrap:value.erpWrap,edgeIds:value.points.map(()=>newAlarmOperationId()),version:0});setActiveZone(id)}
   changed()
  }
- const showSpace=panoramic||current.coordinateSpace==='erp'
+ const showSpace=!hasProtectedRegions&&(panoramic||current.coordinateSpace==='erp')
  const openTrigger=(a:DraftAssignment)=>{if(select?.initial?.id===a.id)return;if(!leaveEditor())return;setApproach(null);setApproachEdit(undefined);setActiveZone(a.zoneId??FRAME);setHighlight({entry:a.entryEdges,exit:a.exitEdges});setSelect({zoneId:a.zoneId,initial:a})}
  const targets:MarkerTarget[]=[
   {id:FRAME,name:'整个画面',frame:true,counters:[],triggers:current.assignments.filter(a=>!a.zoneId).map(a=>({id:a.id,name:triggerName(a.triggerId),label:`调整 ${triggerName(a.triggerId)} · 整个画面`,muted:definitions.find(t=>t.trigger_id===a.triggerId)?.state!=='enabled'}))},
@@ -204,15 +216,17 @@ export function ArmingModal({sourceId,sourceName,base:incomingBase,reference:inc
      {showSpace&&!editZone&&<><ToolDivider/><ToolSelect icon={<Globe size={20} aria-hidden="true"/>} label={current.coordinateSpace==='erp'?'360° 全景':'普通平面'} name="布防画面类型" disabled={locked||busyPanel||!!editZone||!!drawing} value={current.coordinateSpace??'planar'} onChange={v=>{try{draft.setCoordinateSpace(v as 'planar'|'erp');changed()}catch(err){setError((err as Error).message)}}}><option value="planar">普通平面</option><option value="erp">360° 全景（左右相连）</option></ToolSelect></>}
      </>}
     </div>
-    {(draft.dirty()||nameDirty()||replacingGeometry)&&!busy&&<span className="hidden shrink-0 text-xs text-ink-faint lg:inline">有未保存的修改</span>}
+    {(confirmView||draft.dirty()||nameDirty()||replacingGeometry)&&!busy&&<span className="hidden shrink-0 text-xs text-ink-faint lg:inline">有未保存的修改</span>}
 
     <button type="button" className="btn-secondary shrink-0" disabled={locked||!!removeZone} onClick={editZone?discardEditor:close}>{editZone?'取消本处修改':'取消'}</button>
-    {editZone?<button type="button" className="btn-primary shrink-0" disabled={locked} onClick={()=>leaveEditor(false)}>完成编辑</button>:<button type="button" className="btn-primary shrink-0" disabled={busy||!!drawing||!!removeZone||(!replacingGeometry&&!draft.dirty()&&!nameDirty()&&!session.hasPending()&&!editZone&&!busyPanel)} onClick={()=>void save()}><Save size={16} aria-hidden="true"/>{busy?'正在保存…':session.hasPending()?'重试确认保存':'保存布防'}</button>}
+    {editZone?<button type="button" className="btn-primary shrink-0" disabled={locked} onClick={()=>leaveEditor(false)}>完成编辑</button>:<button type="button" className="btn-primary shrink-0" disabled={busy||!!drawing||!!removeZone||(!confirmView&&!replacingGeometry&&!draft.dirty()&&!nameDirty()&&!session.hasPending()&&!editZone&&!busyPanel)} onClick={()=>void save()}><Save size={16} aria-hidden="true"/>{busy?'正在保存…':session.hasPending()?'重试确认保存':'保存布防'}</button>}
     <button type="button" aria-label="关闭" title="取消并关闭" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover" disabled={locked||!!removeZone} onClick={close}><X size={20} aria-hidden="true"/></button>
    </div>
    {sceneContext?.frame.binding_mode!=='preset'&&<PtzProtectionNotice sourceId={sourceId}/>}
    {sceneContext&&<div className="shrink-0 border-b border-line px-4 py-2 text-xs text-ink-subtle" role="status">
-    {sceneContext.frame.binding_mode==='preset'?`布防视角：${sceneContext.frame.preset_name||'预置位 '+sceneContext.frame.preset_id}。绑定区域离开后暂停，回位核验后恢复；未绑定区域仍需人工核对。`:'当前画面布防：转动后需核对视角或重新布防。'}
+    {sceneContext.frame.binding_mode==='preset'?`布防视角：${sceneContext.frame.preset_name||'预置位 '+sceneContext.frame.preset_id}。绑定区域离开后暂停，回位核验后恢复；未绑定区域仍需人工核对。`:!canConfirmView&&'当前画面布防：转动后需核对视角或重新布防。'}
+    {hasProtectedRegions&&<p>仅显示普通区域，预置位绑定区域请从预置位入口编辑。</p>}
+    {canConfirmView&&<label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={viewReviewed} disabled={locked||!!drawing||!!editZone||busyPanel} onChange={e=>setViewReviewed(e.target.checked)}/>已核对本次冻结画面中的普通布防区域与计数线</label>}
     {hiddenZones.size>0&&<div className="mt-1 flex flex-wrap items-center gap-2"><span>以下区域尚未匹配，旧坐标不叠加到当前画面：</span>{current.zones.filter(z=>hiddenZones.has(z.id)).map(z=><button type="button" className="btn-secondary" disabled={locked} key={z.id} onClick={()=>chooseTarget(z.id)}>{z.name}</button>)}</div>}
    </div>}
    {(replacingGeometry||warning)&&<div className="shrink-0 space-y-1 border-b border-line px-4 py-2 text-sm">

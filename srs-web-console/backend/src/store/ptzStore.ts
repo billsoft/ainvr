@@ -254,9 +254,11 @@ export class PtzStore {
       [resource, revision, baseline],
     );
   }
-  async restore(resource: string, expected: number, actor: string, baseline: unknown = null) {
+  async restore(resource: string, expected: number, actor: string, baseline: unknown = null,
+    validate?: (c: import('pg').PoolClient) => Promise<void>) {
     return this.transaction(async (c) => {
       await c.query('SELECT revision FROM alarm_configuration_revision WHERE singleton FOR UPDATE');
+      if(validate)await validate(c);
       const result = await c.query(
         'UPDATE ptz_view_guards SET blocked=false,revision=revision+1,restored_at=now(),actor=$3,baseline=$4 WHERE resource_key=$1 AND revision=$2 AND NOT stop_pending RETURNING resource_key',
         [resource, expected, actor, baseline],

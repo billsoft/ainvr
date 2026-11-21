@@ -17,6 +17,7 @@ it('requires explicit preset choice and confirmed arrival before opening the edi
  expect(screen.getByRole('button',{name:'转到预置位并编辑'})).toBeDisabled()
  fireEvent.change(screen.getByRole('combobox',{name:'布防预置位'}),{target:{value:'32'}})
  fireEvent.click(screen.getByRole('button',{name:'转到预置位并编辑'}));expect(select).not.toHaveBeenCalled()
+ expect(control.begin.mock.calls[0]![1]).toEqual({id:'32',fingerprint:'rev-1'})
  const complete=control.begin.mock.calls[0]![2];complete(false);expect(select).not.toHaveBeenCalled()
  complete(true);expect(select).toHaveBeenCalledWith({binding_mode:'preset',preset_id:'32',preset_fingerprint:'rev-1'})
 })
@@ -31,6 +32,16 @@ it('cancel and the close control stop movement and never save',async()=>{
  await screen.findByRole('option',{name:'入口'})
  fireEvent.click(screen.getByRole('button',{name:'关闭'}));await waitFor(()=>expect(close).toHaveBeenCalledOnce())
  expect(select).not.toHaveBeenCalled();expect(control.stopConfirmed).toHaveBeenCalledOnce()
+})
+it('opens an ordinary mixed-view review without moving or implicitly choosing an overwritten home',async()=>{
+ const select=vi.fn()
+ const items=[{zone_id:'z',processor_id:'ai',revision:1,reference_points:[],current_points:null,state:'pending' as const,
+  reference_frame_id:'f',binding_mode:'preset' as const,preset_id:'32',preset_fingerprint:'previous'}]
+ render(<PresetArmingEntry sourceId="cam" status={{...status,items}} hasOrdinary onSelect={select} onClose={vi.fn()}/>)
+ await screen.findByRole('option',{name:'入口'})
+ expect(screen.getByRole('button',{name:'转到预置位并编辑'})).toBeDisabled()
+ fireEvent.click(screen.getByRole('button',{name:'核对当前普通区域'}))
+ expect(select).toHaveBeenCalledWith(null);expect(control.begin).not.toHaveBeenCalled()
 })
 it('does not fall back to unverified ordinary editing for a bound preset',async()=>{
  const items=[{zone_id:'z',processor_id:'ai',revision:1,reference_points:[[0,0],[1,0],[1,1]] as [number,number][],current_points:null,state:'pending' as const,reference_frame_id:'f',binding_mode:'preset' as const,preset_id:'32'}]

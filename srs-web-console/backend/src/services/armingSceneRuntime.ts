@@ -7,6 +7,7 @@ import {projectScene,sameProjection,type ScenePoint} from './sceneProjection.js'
 import type {CaptureContext,SceneImage} from './sceneCapture.js';
 import {projectPresetView} from './presetView.js';
 import type {PresetHome,PresetSelection} from './presetHome.js';
+import type {CurrentViewProof} from '../store/armingViewConfirmation.js';
 
 type Camera={identity:string;resource:string;app:string;stream:string;idle:boolean;pose:unknown};
 interface Dependencies{
@@ -145,7 +146,7 @@ export class ArmingSceneRuntime{
     catch(error){homes.set(key,presetFailure(error)??{reason:'等待预置位状态核验',state:'pending'});}
    }
   }
-  return {eligible:!!p&&supported,presetBindingAvailable:!!p&&!!capability?.presetBindingAvailable,presetBindingReason:capability?.presetBindingReason||(!capability?'当前来源缺少预置位到位核验证据':''),experimentalProjectionEnabled:!!this.deps.experimentalProjection,identity:camera?.identity??null,epoch:s.epoch,
+  return {guard_blocked:s.guard_blocked===true,eligible:!!p&&supported,presetBindingAvailable:!!p&&!!capability?.presetBindingAvailable,presetBindingReason:capability?.presetBindingReason||(!capability?'当前来源缺少预置位到位核验证据':''),experimentalProjectionEnabled:!!this.deps.experimentalProjection,identity:camera?.identity??null,epoch:s.epoch,
    items:rows.map(r=>{
     const failure=homes.get(JSON.stringify([r.preset_home,r.pose]));
     if(failure)return displayItem(r,null,failure.state,failure.reason);
@@ -179,6 +180,19 @@ export class ArmingSceneRuntime{
  private async reference(frameId:string){
   const {rows:[r]}=await this.store.pool.query('SELECT image FROM arming_scene_frames WHERE frame_id=$1 AND image_retired_at IS NULL',[frameId]);
   if(!r)throw stale();return this.deps.images.read(r.image);
+ }
+ async confirmCurrentView(id:string,p:string,actor:string,manual:number,frameId:string):Promise<CurrentViewProof>{
+  const invalid=()=>new AlarmConfigError('current_view_confirmation_stale','当前画面核对已失效，请停止云台并重新打开画面核对；草稿已保留',409);
+  const {rows:[frame]}=await this.store.pool.query(`SELECT * FROM arming_scene_frames WHERE frame_id=$1 AND source_id=$2
+   AND processor_id=$3 AND actor=$4 AND manual_revision=$5 AND binding_mode='current' AND image_retired_at IS NULL
+   AND captured_at>clock_timestamp()-interval '5 minutes' AND captured_at<=clock_timestamp()`,[frameId,id,p,actor,manual]);
+  if(!frame)throw invalid();
+  const current=await this.context(id,p);
+  if(frame.epoch!==current.epoch||frame.manual_revision!==current.manual||frame.identity!==current.identity||
+   frame.resource!==current.resource||frame.geometry_revision!==current.geometry_revision||
+   Boolean(frame.pose)!==Boolean(current.pose)||frame.pose&&!samePtzPosition(frame.pose,current.pose))throw invalid();
+  return {frame_id:frame.frame_id,identity:current.identity,resource:current.resource,epoch:current.epoch,
+   geometry_revision:current.geometry_revision,at:Date.now()};
  }
  async freeze(id:string,p:string,actor:string,selection?:PresetSelection){
   const started=Date.now(),deadline=started+36000;

@@ -82,8 +82,9 @@ export class ArmingScenes{
  async stamp(id:string,c:Pool|PoolClient=this.pool){
   const {rows:[r]}=await c.query(`SELECT arming_scene_epoch($1) AS epoch, EXISTS(SELECT 1 FROM ptz_view_guards
    WHERE $1=ANY(source_ids) AND stop_pending) AS moving,
+   EXISTS(SELECT 1 FROM ptz_view_guards WHERE $1=ANY(source_ids) AND blocked) AS guard_blocked,
    COALESCE((SELECT revision FROM alarm_arming_sources WHERE source_id=$1),0) AS manual`,[id]);
-  return r as {epoch:string;moving:boolean;manual:number};
+  return r as {epoch:string;moving:boolean;guard_blocked:boolean;manual:number};
  }
  async rows(id:string,p?:string,c:Pool|PoolClient=this.pool){
   return (await c.query<SceneRow>('SELECT * FROM arming_scene_zones WHERE source_id=$1 AND ($2::text IS NULL OR processor_id=$2) ORDER BY zone_id',[id,p??null])).rows;

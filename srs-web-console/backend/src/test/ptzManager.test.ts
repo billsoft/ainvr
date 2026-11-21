@@ -1,5 +1,6 @@
 import { it, expect, vi } from 'vitest';
 import { PtzManager, samePtzPosition } from '../services/ptzManager.js';
+import * as viewConfirmation from '../store/armingViewConfirmation.js';
 import type { PtzStore } from '../store/ptzStore.js';
 import type { PtzAdapter } from '../services/ptzAdapter.js';
 import type { Channel } from '../types/channel.js';
@@ -97,6 +98,44 @@ function patrolFixture() {
   call.mockImplementation(async () => ({position, panTilt: 'MOVING'}));
   return {...f, base, position, call};
 }
+it('rearmed restoration resolves main/sub identity and processor ownership separately on their shared motor',async()=>{
+ const f=fixture(),sub={...f.root,id:'sub',streamName:'sub',onvif:{...f.root.onvif!,profileToken:'sub'}};
+ f.deps.channels.mockResolvedValue([f.root,sub]);
+ f.deps.ai.mockResolvedValue([
+  {id:'main-ai',config:{stream:{url:'rtmp://127.0.0.1/live/gate'},publish:{enabled:false}}},
+  {id:'sub-ai',config:{stream:{url:'rtmp://127.0.0.1/live/sub'},publish:{enabled:false}}},
+ ] as never);
+ vi.mocked(f.store.guard).mockResolvedValue({revision:1,blocked:true} as any);
+ const check=vi.spyOn(viewConfirmation,'assertCurrentViewConfirmations').mockResolvedValue();
+ vi.mocked(f.store.restore).mockImplementation(async(_r,_v,_a,_b,validate)=>{await validate?.({} as any);});
+ try{
+  const main=await f.manager.sceneSource('root'),other=await f.manager.sceneSource('sub');
+  expect(main!.identity).not.toBe(other!.identity);
+  for(const entry of ['root','sub']){
+   await f.manager.restoreView(entry,'operator',1,'rearmed');
+   const evidence=check.mock.calls.at(-1)![4];
+   expect(evidence).toEqual(expect.arrayContaining([
+    expect.objectContaining({source:'root',processors:['main-ai'],identity:main!.identity}),
+    expect.objectContaining({source:'sub',processors:['sub-ai'],identity:other!.identity}),
+   ]));
+  }
+ }finally{check.mockRestore();await f.manager.close();}
+});
+it('preset goto rejects an overwritten expected fingerprint before motion and preserves ordinary goto compatibility',async()=>{
+  const f=fixture();(f.deps as any).presetBindings=true;
+  const home=vi.spyOn(f.manager as any,'presetHome').mockResolvedValue({preset_fingerprint:'b'.repeat(64)});
+  try{
+    const info=await f.manager.inspect('root'),lease=await f.manager.acquire('root','operator',info.identity!);
+    vi.mocked(f.adapter.call).mockClear();
+    await expect(f.manager.command('root',lease.sessionId,'operator',1,{pan:0,tilt:0,zoom:0},'1',false,undefined,undefined,'a'.repeat(64)))
+      .rejects.toMatchObject({code:'ptz_preset_changed',statusCode:409});
+    expect(f.adapter.call).not.toHaveBeenCalled();expect(home).toHaveBeenCalledTimes(1);
+    await f.manager.command('root',lease.sessionId,'operator',2,{pan:0,tilt:0,zoom:0},'1',false,undefined,undefined,'b'.repeat(64));
+    expect(f.adapter.call).toHaveBeenCalledTimes(1);
+    await f.manager.command('root',lease.sessionId,'operator',3,{pan:0,tilt:0,zoom:0},'1');
+    expect(f.adapter.call).toHaveBeenCalledTimes(2);
+  }finally{await f.manager.close();}
+});
 it('reads each native status afresh, normalizes angular units, and never claims mechanical wrap', async () => {
   const f = patrolFixture();
   try {
@@ -633,7 +672,7 @@ it('rearming stores the new view baseline instead of immediately invalidating it
   );
   try {
     await f.manager.restoreView('root', 'operator', 1, 'rearmed');
-    expect(f.store.restore).toHaveBeenCalledWith('motor-1', 1, 'operator', current);
+    expect(f.store.restore).toHaveBeenCalledWith('motor-1', 1, 'operator', current, expect.any(Function));
   } finally {
     await f.manager.close();
   }

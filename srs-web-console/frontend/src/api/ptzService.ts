@@ -126,8 +126,8 @@ export const ptzService = {
     request<{ items: PtzPreset[]; supported: boolean; reason?: string }>(`${path(id)}/presets`, {
       signal: AbortSignal.timeout(12000),
     }),
-  goto: (id: string, presetId: string, sessionId: string, sequence: number) =>
-    send(`${path(id)}/presets/${encodeURIComponent(presetId)}/goto`, { sessionId, sequence }),
+  goto: (id: string, presetId: string, sessionId: string, sequence: number, expectedPresetFingerprint?:string) =>
+    send(`${path(id)}/presets/${encodeURIComponent(presetId)}/goto`, { sessionId, sequence, ...(expectedPresetFingerprint?{expectedPresetFingerprint}:{}) }),
   save: (id: string, input: { id?: string; name: string; shortcut: number | null }) =>
     send<{ id: string }>(`${path(id)}/presets`, input),
   updatePreset: (id: string, presetId: string, input: { name: string; shortcut: number | null }) =>
@@ -179,6 +179,8 @@ const reasons: Record<string, string> = {
   ptz_arming_restore_pending: '摄像头已停止，正在同步计数与告警的恢复状态。',
   ptz_device_offline: '摄像头尚未注册或已离线。',
   ptz_not_supported: '此摄像头未提供云台控制能力。',
+  ptz_preset_changed: '布防预置位已被更改，请重新选择并核对。',
+  ptz_legacy_rearming_required: '仍有旧版监控规则。请回原视角恢复，或在告警中心停用旧监控规则后，通过布防编辑器重新关联并核对。',
   ptz_view_rearming_required: '请先在各关联 AI 输出中核对并重新保存布防。',
   ptz_view_not_restored: '摄像头尚未恢复原布防视角，请继续调整或重新布防。',
   ptz_disabled: '云台控制已关闭。',

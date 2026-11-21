@@ -4,7 +4,7 @@ import type {ArmingSaveRequest} from './armingSaveSession'
 import type {ZonePoint} from './alarmGeometry'
 
 export interface SceneEditingContext {
- processorId:string;frame:ArmingSceneFrame
+ guardBlocked?:boolean;processorId:string;frame:ArmingSceneFrame
 }
 export type SceneIntents=Record<string,'bind'|'edit'|'unbind'>
 /** Unknown or malformed geometry must never reveal the canonical reference. */
@@ -20,6 +20,14 @@ export function sceneViewPoints(context:SceneEditingContext|undefined,zone:strin
  const scene=sceneFor(context,zone)
  return scene?(scene.state==='matched'&&validScenePoints(scene.current_points,scene.reference_points.length)?scene.current_points:null):undefined
 }
+// Keep preset regions and their associations outside the ordinary editor's draft.
+export function ordinaryEditorBase(base:ArmingDocument|null,context?:SceneEditingContext):ArmingDocument|null {
+ if(!base||context?.frame.binding_mode!=='current'||!context.frame.items.length)return base
+ const bound=new Set(context.frame.items.map(s=>s.zone_id))
+ return {...base,zones:base.zones.filter(z=>!bound.has(z.zone_id)),
+  assignments:base.assignments.filter(a=>a.zone_id===null||!bound.has(a.zone_id)),
+  counter_bindings:base.counter_bindings?.filter(b=>!bound.has(b.zone_id))}
+}
 /** Project only for this frozen editor view. Keep the canonical base untouched. */
 export function sceneEditorDocument(base:ArmingDocument|null,context?:SceneEditingContext):ArmingDocument|null {
  if(!base||!context)return base
@@ -33,6 +41,16 @@ export function withSceneEdits(request:ArmingSaveRequest,base:ArmingDocument|nul
  context:SceneEditingContext|undefined,intents:SceneIntents):ArmingSaveRequest {
  if(!context)return request
  const result=structuredClone(request),edits:ArmingSceneEdit[]=[]
+ if(base&&context.frame.binding_mode==='current'&&context.frame.items.length){
+  const bound=new Set(context.frame.items.map(s=>s.zone_id))
+  const retain=(draft:unknown[],original:{zone_id:string|null}[])=>{
+   for(const [i,row] of original.entries())if(row.zone_id&&bound.has(row.zone_id))draft.splice(i,0,structuredClone(row))
+  }
+  retain(result.zones,base.zones)
+  retain(result.assignments,base.assignments)
+  retain(result.counterBindings,base.counter_bindings??[])
+  return result
+ }
  for(const value of result.zones){
   const zone=value as ArmingZoneDocument,old=base?.zones.find(z=>z.zone_id===zone.zone_id)
   const scene=sceneFor(context,zone.zone_id),projection=sceneViewPoints(context,zone.zone_id)

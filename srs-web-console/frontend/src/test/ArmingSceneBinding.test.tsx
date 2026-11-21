@@ -21,6 +21,60 @@ function mount(context:SceneEditingContext|undefined=frame,send=vi.fn().mockReso
  const ui=render(<ArmingModal {...props}/>);return{ui,props,send,saved,close}
 }
 afterEach(()=>{cleanup();vi.restoreAllMocks()})
+it('explicitly confirms unchanged ordinary geometry on its frozen frame without restoring the camera guard',async()=>{
+ const current={...frame,guardBlocked:true,frame:{...frame.frame,binding_mode:'current' as const}}
+ const f=mount(current)
+ const save=screen.getByRole('button',{name:'保存布防'}),review=screen.getByRole('checkbox',{name:/已核对本次冻结画面/})
+ expect(save).toBeDisabled()
+ fireEvent.click(review);expect(save).toBeEnabled();expect(f.send).not.toHaveBeenCalled()
+ fireEvent.click(screen.getByRole('button',{name:'取消'}))
+ expect(screen.getByRole('alertdialog',{name:'放弃布防修改'})).toBeVisible()
+ fireEvent.click(screen.getByRole('button',{name:'继续编辑'}))
+ f.ui.rerender(<ArmingModal {...f.props} sceneContext={{...current,frame:{...current.frame,frame_id:'later'}}}/>)
+ fireEvent.click(save);await waitFor(()=>expect(f.saved).toHaveBeenCalledOnce())
+ const request=f.send.mock.calls[0]![0]
+ expect(request.currentViewConfirmation).toEqual({frame_id:'frame-1'})
+ expect(request.zones).toEqual(base.zones)
+ expect(request.sceneEdits).toBeUndefined()
+})
+it('edits only ordinary zones in a mixed current view and preserves bound geometry, versions and selections',async()=>{
+ const ctx=bound(true);ctx.guardBlocked=true;ctx.frame.binding_mode='current'
+ const presetZone=base.zones[0]!,ordinary={...presetZone,zone_id:'ordinary',name:'普通区'}
+ const assignment={assignment_id:'a',trigger_id:'t',processor_id:'ai',input_stream_id:'cam',zone_id:'z',zone_version:1,
+  geometry_revision:'g',label_map_version:'original-labels',entry_edges:['a'],exit_edges:['b']}
+ const counter={binding_id:'b',counter_id:'c',processor_id:'ai',input_stream_id:'cam',zone_id:'z',zone_version:1,
+  geometry_revision:'g',label_map_version:'original-labels',direction:{kind:'line' as const,edge:'a',in_side:'inward' as const}}
+ const doc={...base,zones:[presetZone,ordinary],assignments:[assignment],counter_bindings:[counter]}
+ const send=vi.fn().mockResolvedValue(result)
+ render(<ArmingModal sourceId="cam" sourceName="mixed" base={doc} reference={reference} sceneContext={ctx} definitions={[]} sources={[]} send={send} onSaved={vi.fn()} onClose={vi.fn()}/>)
+ expect(screen.queryByRole('button',{name:'选择热区 门'})).not.toBeInTheDocument()
+ expect(screen.queryByRole('option',{name:'门'})).not.toBeInTheDocument()
+ fireEvent.click(screen.getByRole('button',{name:'选择热区 普通区'}))
+ fireEvent.change(screen.getByLabelText('热区名称'),{target:{value:'核对后的普通区'}});fireEvent.blur(screen.getByLabelText('热区名称'))
+ fireEvent.click(screen.getByRole('checkbox',{name:/已核对本次冻结画面/}))
+ fireEvent.click(screen.getByRole('button',{name:'保存布防'}));await waitFor(()=>expect(send).toHaveBeenCalledOnce())
+ const saved=send.mock.calls[0]![0]
+ expect(saved.zones).toEqual([presetZone,{...ordinary,name:'核对后的普通区',version:2}])
+ expect(saved.assignments).toEqual([assignment]);expect(saved.counterBindings).toEqual([counter])
+ expect(saved.currentViewConfirmation).toEqual({frame_id:'frame-1'})
+ expect(saved.sceneEdits).toBeUndefined()
+ expect([saved.removedZoneIds,saved.removedAssignmentIds,saved.removedCounterBindingIds]).toEqual([[],[],[]])
+})
+it('rejects stale-view confirmation without claiming save or retrying the same frozen frame',async()=>{
+ const send=vi.fn().mockRejectedValue(Object.assign(Error('stale'),{status:409}))
+ const f=mount({...frame,guardBlocked:true,frame:{...frame.frame,binding_mode:'current'}},send)
+ fireEvent.click(screen.getByRole('checkbox',{name:/已核对本次冻结画面/}))
+ fireEvent.click(screen.getByRole('button',{name:'保存布防'}))
+ expect(await screen.findByText(/当前画面核对未生效/)).toBeVisible()
+ expect(f.saved).not.toHaveBeenCalled()
+ expect(screen.getByRole('button',{name:'保存布防'})).toBeDisabled()
+ expect(screen.queryByRole('checkbox',{name:/已核对本次冻结画面/})).not.toBeInTheDocument()
+})
+it.each([['preset',true],['current',false],['current',undefined]] as const)('does not offer ordinary confirmation for %s with guard %s',(binding_mode,guardBlocked)=>{
+ mount({...frame,guardBlocked,frame:{...frame.frame,binding_mode}})
+ expect(screen.queryByRole('checkbox',{name:/已核对本次冻结画面/})).not.toBeInTheDocument()
+ expect(screen.getByRole('button',{name:'保存布防'})).toBeDisabled()
+})
 it('opts in one zone explicitly and sends a frozen scene CAS only on Save',async()=>{
  const f=mount();fireEvent.click(screen.getByRole('button',{name:'选择热区 门'}))
  const check=screen.getByRole('checkbox',{name:'仅在此预置位布防'});expect(check).not.toBeChecked()

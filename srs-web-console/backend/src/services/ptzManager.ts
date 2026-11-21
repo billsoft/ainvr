@@ -5,6 +5,7 @@ import type { Channel } from '../types/channel.js';
 import { resolvePtzSource, ptzCameraKey, localRtmpStreamPath, type AiSourceLink } from './ptzSources.js';
 import type { PtzAdapter } from './ptzAdapter.js';
 import type {PresetHome,PresetSelection} from './presetHome.js';
+import {assertCurrentViewConfirmations,type CurrentViewSource} from '../store/armingViewConfirmation.js';
 export interface PtzVector {
   pan: number;
   tilt: number;
@@ -781,6 +782,7 @@ export class PtzManager {
     keepAlive = false,
     center?: {x:number; y:number},
     follower?: FrameFollower,
+    expectedPresetFingerprint?: string,
   ) {
     const l = this.find(id, session, actor);
     if (l.follow !== follower) throw new PtzError('ptz_follow_session_required',409);
@@ -790,6 +792,8 @@ export class PtzManager {
     const intent = sequence;
     if(!keepAlive)l.presetProof=undefined;
     const home=preset&&this.deps.presetBindings?await this.presetHome(id,preset).catch(()=>null):null;
+    if(expectedPresetFingerprint!==undefined&&home?.preset_fingerprint!==expectedPresetFingerprint)
+      throw new PtzError('ptz_preset_changed',409);
     const {global, camera} = await this.commandSettings(l, intent);
     if (center && (!l.adapter.caps.pointCenter || camera.settings.panTilt === false)) throw new PtzError('ptz_operation_unsupported',422);
     if (!keepAlive && !preset && !center && !vector.pan && !vector.tilt && !vector.zoom)
@@ -1300,24 +1304,48 @@ export class PtzManager {
           restoredBaseline = current;
           if (!samePtzPosition(guard.baseline, current))
             throw new PtzError('ptz_view_not_restored');
-        } else {
-          // Acknowledging a dialog is insufficient: all existing arming documents on
-          // the affected sources must actually have been saved after this movement.
-          const { rows } = await this.store.pool.query(
-            `SELECT updated_at FROM alarm_arming_sources WHERE source_id=ANY($1::text[]) UNION ALL SELECT updated_at FROM alarm_monitors WHERE channel_id=ANY($1::text[])`,
-            [guard.source_ids],
-          );
-          if (rows.some((r) => Date.parse(r.updated_at) < Date.parse(guard.changed_at)))
-            throw new PtzError('ptz_view_rearming_required');
         }
+        await this.deps.resetProcessors(s.processorIds);
+        let poseCheckedAt=0;
         if (mode === 'rearmed' && a.caps.position) {
           try {
             const reported = await a.call('status');
-            if (stationaryPtzPosition(reported)) restoredBaseline = reported;
+            if (stationaryPtzPosition(reported)){restoredBaseline = reported;poseCheckedAt=Date.now();}
           } catch {}
         }
-        await this.deps.resetProcessors(s.processorIds);
-        await this.store.restore(a.resource, revision, actor, restoredBaseline);
+        const current=await this.resolve(id,a.videoSources);
+        if(current.fingerprint!==s.fingerprint)throw new PtzError('ptz_source_changed');
+          const sources:CurrentViewSource[]=[];
+          if(mode==='rearmed'){
+            const ai=await this.deps.ai();
+            // Main/sub aliases share a motor, but their frame identities include
+            // the root/profile. Never compare every receipt to the entry alias.
+            for(const sourceId of current.sourceIds){
+              const {source,adapter}=await this.target(sourceId);
+              if(source.root.id!==sourceId||!source.displayedEnabled||source.root.inputEnabled===false)continue;
+              const processors=ai.filter(p=>localRtmpStreamPath(p.config.stream.url)===`/${source.root.app||'live'}/${source.root.streamName}`).map(p=>p.id);
+              if(!processors.length)continue;
+              if(!adapter||this.motor(adapter.resource)!==this.motor(a.resource))throw new PtzError('ptz_source_changed');
+              await adapter.verify?.();
+              let pose:unknown=null,at=Date.now();
+              if(adapter===a){pose=restoredBaseline;at=poseCheckedAt||at;}
+              else if(adapter.caps.position){
+                try{const status=await adapter.call('status');if(stationaryPtzPosition(status))pose=status;}catch{}
+                at=Date.now();
+              }
+              if((await this.resolve(sourceId,adapter.videoSources)).fingerprint!==source.fingerprint)throw new PtzError('ptz_source_changed');
+              sources.push({source:sourceId,processors,resource:adapter.resource,
+                identity:calibrationDigest([source.fingerprint,adapter.resource,adapter.identity]),pose,at,
+                requirePose:adapter.protocol==='onvif'&&!!adapter.caps.position&&!!adapter.caps.moveStatus});
+            }
+            if((await this.resolve(id,a.videoSources)).fingerprint!==current.fingerprint)throw new PtzError('ptz_source_changed');
+          }
+        const validate=mode==='rearmed'?async(c:import('pg').PoolClient)=>{
+          if(restoredBaseline&&Date.now()-poseCheckedAt>5000)throw new PtzError('ptz_view_rearming_required');
+          await assertCurrentViewConfirmations(
+            c,a.resource,current.sourceIds,current.processorIds,sources);
+        }:undefined;
+        await this.store.restore(a.resource, revision, actor, restoredBaseline,validate);
         const result = await this.deps.synchronize();
         if (result.state !== 'applied') throw new PtzError('ptz_arming_restore_pending', 503);
         return { restored: true };

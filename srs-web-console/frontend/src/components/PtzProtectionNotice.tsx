@@ -53,15 +53,13 @@ export function PtzProtectionNotice({sourceId}: {sourceId: string}) {
           <AlertTriangle size={16} className="shrink-0" />
           <span>
             <strong>{item.source?.name ?? '摄像头'}</strong> ·{' '}
-            {item.reason === 'external_motion'
-              ? '检测到外部视角变化，视角保护中。'
-              : '摄像头视角保护中。'}
-            {' 未绑定或未匹配区域的关联告警与计数仍暂停；已匹配的绑定区域按场景核验状态恢复。'}
+            {item.reason === 'external_motion' ? '检测到外部视角变化，' : '转动后'}
+            {'普通区域已暂停，请核对当前画面并保存；绑定区域按核验状态恢复。'}
             {item.stopPending ? ' 停止尚未确认。' : ''}
           </span>
-          <span>在实时监看打开对应 AI 输出的云台，展开视频下方的「布防待核对」即可核对并恢复。</span>
         </div>
       ))}
+      <span className="text-xs">保存后到云台「布防待核对」恢复普通区域。</span>
       {stale && <p className="text-xs">保护状态暂未更新，请检查服务连接；上次记录仍保留。</p>}
     </div>
   );

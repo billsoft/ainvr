@@ -85,6 +85,11 @@ it('preset invokes Goto once and a later update renews rather than replays Goto'
   }
 });
 
+it('pins the expected definition on the actual goto request for protected returns',async()=>{
+ const {result}=renderHook(()=>usePtzControl('camera','identity',()=>{}))
+ act(()=>result.current.begin({pan:0,tilt:0,zoom:0},{id:'gate',fingerprint:'expected'}))
+ await waitFor(()=>expect(api.goto).toHaveBeenCalledWith('camera','gate','lease',1,'expected'))
+})
 it('reports preset timeout only after confirmed Stop even with a renewal in flight', async () => {
   vi.useFakeTimers();
   try {

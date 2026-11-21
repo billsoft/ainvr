@@ -13,6 +13,16 @@ it('sends scene revisions and the trusted frozen frame in the atomic existing ar
  expect(JSON.parse(String(vi.mocked(request).mock.calls[0]![1]!.body))).toMatchObject({expected_revision:7,
   arming:{processor_id:'processor',scene_edits:edits,source_id:'source',geometry_revision:'g'}})
 })
+it('sends explicit current-view confirmation independently of scene edits',async()=>{
+ const doc={sourceId:'cam',geometryRevision:'g',expectedRevision:1,zones:[],assignments:[],counterBindings:[],
+  removedZoneIds:[],removedAssignmentIds:[],removedCounterBindingIds:[]}
+ await alarmArmingService.save(doc,'edit','ai')
+ await alarmArmingService.save({...doc,currentViewConfirmation:{frame_id:'current-frame'}},'review','ai')
+ const docs=vi.mocked(request).mock.calls.map(c=>JSON.parse(String(c[1]!.body)).arming)
+ expect(docs[0]).not.toHaveProperty('current_view_confirmation')
+ expect(docs[1].current_view_confirmation).toEqual({frame_id:'current-frame'})
+ expect(docs[1]).not.toHaveProperty('scene_edits')
+})
 it('reads and freezes in the input source plus processor scope without browser matcher results',async()=>{
  const timeout=vi.spyOn(AbortSignal,'timeout')
  await armingSceneService.read('source','processor')

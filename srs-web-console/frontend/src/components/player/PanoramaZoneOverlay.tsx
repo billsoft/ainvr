@@ -1,9 +1,9 @@
 import {useEffect,useRef,type RefObject} from 'react'
-import type {AlarmZone} from '@/api/alarmZoneService'
+import type {OverlayZone} from '@/features/zoneOverlaySubscriptions'
 import {projectErpSegment,type PanoramaCamera} from './panoramaDetection'
 
 /** Presentation only: uses the very same camera as the video and detection boxes. */
-export function PanoramaZoneOverlay({video,zones,camera,compact}:{video:HTMLVideoElement;zones:AlarmZone[];camera:RefObject<PanoramaCamera|null>;compact:boolean}){
+export function PanoramaZoneOverlay({video,zones,camera,compact}:{video:HTMLVideoElement;zones:OverlayZone[];camera:RefObject<PanoramaCamera|null>;compact:boolean}){
  const ref=useRef<HTMLCanvasElement>(null)
  useEffect(()=>{
   const canvas=ref.current,ctx=canvas?.getContext('2d');if(!canvas||!ctx)return
@@ -19,6 +19,7 @@ export function PanoramaZoneOverlay({video,zones,camera,compact}:{video:HTMLVide
    ctx.save();ctx.beginPath();ctx.rect(0,0,rect.width,rect.height);ctx.clip()
    ctx.lineWidth=2;ctx.strokeStyle='#22d3ee';ctx.font='13px sans-serif'
    for(const zone of zones){
+    ctx.setLineDash(zone.protection?[6,4]:[]);ctx.strokeStyle=zone.protection?'#fbbf24':'#22d3ee'
     let label:[number,number]|undefined;ctx.beginPath()
     for(let i=0;i<zone.points.length;i++){
      const a=zone.points[i]!,b=zone.points[(i+1)%zone.points.length]!

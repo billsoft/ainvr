@@ -25,7 +25,7 @@ it('shows the reason for suspension when editing the affected source', async () 
 });
 it('matches AI outputs and keeps arming drafts in place without a navigation link', async () => {
   render(<PtzProtectionNotice sourceId="output" />);
-  expect(await screen.findByText(/视频下方的「布防待核对」/)).toBeInTheDocument();
+  expect(await screen.findByText(/云台「布防待核对」/)).toBeInTheDocument();
   expect(screen.queryByRole('link')).not.toBeInTheDocument();
 });
 it('does not show unrelated-camera protection inside another source editor', async () => {
@@ -37,8 +37,8 @@ it.each(['external_motion','camera_control'])('distinguishes matched scene bindi
  call.mockResolvedValue({items:[{source:{id:'input',name:'入口摄像头'},channels:[],blocked:true,stopPending:true,reason}]});
  render(<PtzProtectionNotice sourceId="input"/>);
  const notice=await screen.findByRole('status',{name:'摄像头视角保护提示'});
- expect(notice).toHaveTextContent('未绑定或未匹配区域的关联告警与计数仍暂停');
- expect(notice).toHaveTextContent('已匹配的绑定区域按场景核验状态恢复');
+ expect(notice).toHaveTextContent('普通区域已暂停，请核对当前画面并保存');
+ expect(notice).toHaveTextContent('绑定区域按核验状态恢复');
  expect(notice).toHaveTextContent('停止尚未确认');
  expect(notice).not.toHaveTextContent('已暂停关联告警与计数');
  expect(screen.queryByRole('button')).not.toBeInTheDocument();

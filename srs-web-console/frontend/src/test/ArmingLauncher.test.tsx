@@ -13,7 +13,7 @@ vi.mock('@/api/armingSceneService',()=>({armingSceneService:{read:vi.fn(),freeze
 vi.mock('@/api/alarmDefinitionService',()=>({alarmDefinitionService:{list:vi.fn()}}))
 vi.mock('@/api/alarmZoneService',()=>({alarmZoneService:{list:vi.fn()}}))
 vi.mock('@/api/aiChannelService',()=>({aiChannelService:{list:vi.fn()}}))
-vi.mock('@/pages/AlarmCenter/PresetArmingEntry',()=>({PresetArmingEntry:({onSelect}:{onSelect:(x:unknown)=>void})=><button onClick={()=>onSelect({binding_mode:'preset',preset_id:'32',preset_fingerprint:'a'.repeat(64)})}>选择并确认到位</button>}))
+vi.mock('@/pages/AlarmCenter/PresetArmingEntry',()=>({PresetArmingEntry:({onSelect,hasOrdinary}:{onSelect:(x:unknown)=>void;hasOrdinary?:boolean})=><>{hasOrdinary&&<button onClick={()=>onSelect(null)}>核对当前普通区域</button>}<button onClick={()=>onSelect({binding_mode:'preset',preset_id:'32',preset_fingerprint:'a'.repeat(64)})}>选择并确认到位</button></> }))
 vi.mock('@/pages/AlarmCenter/ArmingModal',()=>({ArmingModal:(props:unknown)=><div data-testid="arming-props">{JSON.stringify(props)}</div>}))
 const channel=mockChannels[0]!
 let video:HTMLVideoElement
@@ -94,6 +94,22 @@ it('requires explicit redraw for mismatched legacy zones and never silently impo
  expect(props.resetGeometry).toBe(false)
 })
 
+it('finds whole-frame ordinary arming alongside preset zones and freezes without calling a preset',async()=>{
+ const geometry=zoneSourceGeometry(channel,1920,1080)!
+ const preset={zone_id:'z',processor_id:'ai',reference_frame_id:'ref',revision:2,reference_points:[],current_points:null,
+  binding_mode:'preset' as const,preset_id:'32',state:'pending' as const}
+ vi.mocked(armingSceneService.read).mockResolvedValue({eligible:true,identity:'camera',guard_blocked:true,epoch:'e',items:[preset],presetBindingAvailable:true})
+ vi.mocked(alarmArmingService.read).mockResolvedValue({arming:{source_id:channel.id,revision:1,geometry_revision:geometry,zones:[],
+  assignments:[{assignment_id:'a',processor_id:'ai',input_stream_id:channel.id,trigger_id:'t',zone_id:null,zone_version:null,
+   label_map_version:'v',geometry_revision:geometry,entry_edges:[],exit_edges:[]}]}})
+ vi.mocked(armingSceneService.freeze).mockResolvedValue({frame_id:'f1',image_url:'/api/frozen',width:1280,height:720,captured_at:'t',
+  geometry_revision:geometry,epoch:'e',identity:'camera',items:[preset],binding_mode:'current'})
+ vi.mocked(armingSceneService.image).mockResolvedValue(new Blob(['frame']))
+ render(<ArmingLauncher channel={channel} processorId="ai" video={video} onClose={vi.fn()} onSaved={vi.fn()}/>)
+ fireEvent.click(await screen.findByRole('button',{name:'核对当前普通区域'}))
+ expect(await screen.findByTestId('arming-props')).toHaveTextContent('f1')
+ expect(armingSceneService.freeze).toHaveBeenCalledWith(channel.id,'ai',undefined)
+})
 it('waits for explicit preset selection and refuses a different frozen home',async()=>{
  vi.mocked(armingSceneService.read).mockResolvedValue({eligible:true,presetBindingAvailable:true,identity:'camera',epoch:'e1',items:[]})
  vi.mocked(armingSceneService.freeze).mockResolvedValue({frame_id:'f1',image_url:'/api/frozen-frame',identity:'camera',epoch:'e1',width:1920,height:1080,geometry_revision:zoneSourceGeometry(channel,1920,1080)!,captured_at:'now',items:[],binding_mode:'preset',preset_id:'other',preset_fingerprint:'a'.repeat(64)})

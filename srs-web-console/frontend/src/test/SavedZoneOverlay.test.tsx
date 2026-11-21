@@ -1,5 +1,6 @@
-import {render,screen,fireEvent,waitFor} from '@testing-library/react'
+import {act,render,screen,fireEvent,waitFor} from '@testing-library/react'
 import {beforeEach,it,expect,vi} from 'vitest'
+import {subscribeLiveCounts} from '@/features/flowLiveCounts'
 import {SavedZoneOverlay} from '@/components/player/SavedZoneOverlay'
 import {alarmZoneService,type AlarmZone} from '@/api/alarmZoneService'
 import {alarmArmingService} from '@/api/alarmArmingService'
@@ -117,6 +118,36 @@ it('uses projected points for both saved polygons and counting markers, hiding b
  await screen.findByText(/警戒区读取失败/)
  expect(screen.queryByLabelText('已保存警戒区')).not.toBeInTheDocument()
  expect(zone.points).toEqual([[.1,.1],[.8,.1],[.8,.8]])
+})
+it('shows ordinary guard pauses on the polygon and counter badge while preserving historical totals',async()=>{
+ const scoped={...source,processorId:'ai'}
+ vi.mocked(alarmArmingService.read).mockResolvedValue({arming:{source_id:source.id,geometry_revision:zone.geometry_revision,revision:1,
+  zones:[{...zone,state:'active',edge_ids:['a','b','c']}],assignments:[],counter_bindings:[{
+   binding_id:'count',counter_id:'counter',input_stream_id:source.id,processor_id:'ai',zone_id:'zone',zone_version:2,
+   geometry_revision:zone.geometry_revision,label_map_version:'labels',direction:{kind:'line',edge:'a',in_side:'inward'}}]}})
+ const state={eligible:true,identity:'cam',epoch:'e',items:[]}
+ vi.mocked(armingSceneService.read).mockResolvedValue({...state,guard_blocked:true})
+ let publishCounts!:()=>void
+ vi.mocked(subscribeLiveCounts).mockImplementation((_,listener)=>{
+  publishCounts=()=>listener([{binding_id:'count',name:'门口',counter_id:'counter',zone_id:'zone',counting:true,outputs:'both',occupancy:false,
+   direction:{kind:'line',edge:'a',in_side:'inward'},in:17,out:9,names:{in:'进',out:'出'}}],{stale:false,updatedAt:Date.now()})
+  return ()=>{}
+ })
+ render(<SavedZoneOverlay video={video} source={scoped}/>)
+ const emptyBadge=await screen.findByText('统计已暂停')
+ expect(emptyBadge).not.toHaveTextContent(/0|今日累计/)
+ await act(async()=>publishCounts())
+ const badge=await screen.findByText(/统计已暂停.*今日累计.*进 17.*出 9/)
+ const polygon=screen.getByLabelText('已保存警戒区').querySelector('polygon')!
+ expect(polygon).toHaveAttribute('stroke-dasharray')
+ vi.mocked(armingSceneService.read).mockResolvedValue(state)
+ fireEvent(window,new Event('ainvr-arming-saved'))
+ await waitFor(()=>expect(badge).toHaveTextContent(/保护状态待核对.*进 17/))
+ vi.mocked(armingSceneService.read).mockResolvedValue({...state,guard_blocked:true,items:[scene]})
+ fireEvent(window,new Event('ainvr-arming-saved'))
+ await waitFor(()=>expect(polygon).not.toHaveAttribute('stroke-dasharray'))
+ expect(badge).toHaveTextContent('进 17 · 出 9')
+ expect(badge).not.toHaveTextContent(/暂停|待核对/)
 })
 it('rejects null, malformed, stale-reference and ambiguous projections without mutating the saved base',()=>{
  for(const invalid of [{...scene,current_points:null},{...scene,state:'pending' as const},

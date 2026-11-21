@@ -7,7 +7,7 @@ export interface ArmingScene {
  binding_mode?:'preset'|'experimental_projection';preset_id?:string|null;preset_name?:string|null;preset_fingerprint?:string|null
 }
 export interface PresetArmingSelection {binding_mode:'preset';preset_id:string;preset_fingerprint:string}
-export interface ArmingScenes {eligible:boolean;identity:string|null;epoch:string;items:ArmingScene[];presetBindingAvailable?:boolean;presetBindingReason?:string;experimentalProjectionEnabled?:boolean}
+export interface ArmingScenes {guard_blocked?:boolean;eligible:boolean;identity:string|null;epoch:string;items:ArmingScene[];presetBindingAvailable?:boolean;presetBindingReason?:string;experimentalProjectionEnabled?:boolean}
 export interface ArmingSceneFrame {
  frame_id:string;image_url:string;width:number;height:number;captured_at:string;
  geometry_revision:string;identity:string;epoch:string;items:ArmingScene[]

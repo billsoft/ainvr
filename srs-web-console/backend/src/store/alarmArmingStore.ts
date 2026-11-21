@@ -1,4 +1,5 @@
 import {editSchema,stale,type SceneProof} from './armingScenes.js';
+import {recordCurrentViewConfirmation,type CurrentViewProof} from './armingViewConfirmation.js';
 import type {ArmingSceneRuntime} from '../services/armingSceneRuntime.js';
 import {compileBinding,parseCounterDefinition,recountAllowed,validateBindingSet,type BindingVersion,type CounterBinding,type CounterDefinition} from './flowCounters.js';
 import {unwrapErp} from './erpGeometry.js';
@@ -18,6 +19,7 @@ const zoneSchema=z.object({
   erp_wrap:z.boolean().optional(),name:z.string().trim().min(1).max(128),points:z.array(point).min(3).max(32),edge_ids:z.array(identifier).min(3).max(32),
 }).strict();
 const armingSchema=z.object({
+  current_view_confirmation:z.object({frame_id:z.string().uuid()}).strict().optional(),
   scene_edits:z.array(editSchema).max(1000).optional(),
   processor_id:identifier.optional(),coordinate_space:z.enum(['planar','erp']).optional(),source_id:identifier,geometry_revision:identifier,zones:z.array(zoneSchema).max(1000),assignments:z.array(z.unknown()).max(1000),
   counter_bindings:z.array(z.unknown()).max(1000).optional(),
@@ -385,7 +387,7 @@ export class AlarmArmingStore {
   async saveArming(input:unknown,expected:number,actor:string,key:string,lookup:Lookup,sourceGeometry:(id:string)=>Promise<string|null>){
     const parsed=armingSchema.safeParse(input);
     if(!parsed.success)fail('invalid_arming','布防参数无效');
-    const {processor_id:processorId,scene_edits:edits,...parsedDocument}=parsed.data;
+    const {processor_id:processorId,scene_edits:edits,current_view_confirmation:confirmation,...parsedDocument}=parsed.data;
     const bindingInputs=validateBindingSet(parsed.data.counter_bindings??[]);
     // "Recount history" is an instruction for this save only; the stored selection never carries it.
     const recount=new Set(bindingInputs.filter(b=>b.reclassify_history).map(b=>b.binding_id));
@@ -408,12 +410,18 @@ export class AlarmArmingStore {
     }
     const scenes=this.sceneRuntime?.();
     let proof:SceneProof|null=null;
+    let currentProof:CurrentViewProof|null=null;
+    if(confirmation){
+      if(!scenes||!processorId||edits?.length)throw new AlarmConfigError('current_view_confirmation_invalid','当前画面核对需要独立的普通视角冻结画面',409);
+      const replay=await this.pool.query('SELECT 1 FROM alarm_config_operations WHERE actor=$1 AND operation_key=$2',[actor,key]);
+      if(!replay.rowCount)currentProof=await scenes.confirmCurrentView(doc.source_id,processorId,actor,expected,confirmation.frame_id);
+    }
     if(edits?.length){
       if(!scenes||!processorId)throw stale();
       const replay=await this.pool.query('SELECT 1 FROM alarm_config_operations WHERE actor=$1 AND operation_key=$2',[actor,key]);
       if(!replay.rowCount)proof=await scenes.prove(doc.source_id,processorId,actor,expected,edits,doc.zones);
     }
-    return this.operation('arming',processorId?{...doc,processor_id:processorId,...(edits?.length?{scene_edits:edits}:{})}:doc,expected,actor,key,async c=>{
+    return this.operation('arming',processorId?{...doc,processor_id:processorId,...(edits?.length?{scene_edits:edits}:{}),...(confirmation?{current_view_confirmation:confirmation}:{})}:doc,expected,actor,key,async c=>{
       // One live query per AI output for the whole save, however many selections it carries.
       const asked=new Map<string,Promise<AssignmentSource|null>>();
       const live=(id:string)=>{let answer=asked.get(id);if(!answer){answer=lookup(id);asked.set(id,answer);}return answer;};
@@ -435,6 +443,18 @@ export class AlarmArmingStore {
         const changed=previous&&!isDeepStrictEqual({...previous,processor_id:undefined,legacy_processor_ids:undefined,version:0},{...z,processor_id:undefined,legacy_processor_ids:undefined,version:0});
         const required=previous?previous.version+(changed?1:0):1;
         if(z.version!==required)fail('version_conflict','区域版本无效');
+      }
+      if(confirmation&&scenes){
+        // Current-view confirmation cannot silently modify/delete formal bindings.
+        for(const bound of await scenes.store.rows(doc.source_id,processorId,c)){
+          const before=old?.document.zones.find((z:any)=>z.zone_id===bound.zone_id),after=doc.zones.find(z=>z.zone_id===bound.zone_id);
+          if(!before||!after||!isDeepStrictEqual(before,after))throw stale();
+          const associated=(rows:any[]|undefined,key:string)=>(rows??[]).filter(r=>r.zone_id===bound.zone_id)
+            .sort((a,b)=>String(a[key]).localeCompare(String(b[key])));
+          if(!isDeepStrictEqual(associated(old?.document.assignments,'assignment_id'),associated(doc.assignments,'assignment_id'))||
+             !isDeepStrictEqual(associated(old?.document.counter_bindings,'binding_id'),associated(doc.counter_bindings,'binding_id'))||
+             doc.counter_bindings.some(b=>b.zone_id===bound.zone_id&&recount.has(b.binding_id)))throw stale();
+        }
       }
       if(scenes)await scenes.store.save(c,doc,old?.document,processorId,edits??[],actor,expected,proof);
       await this.writeSource(c,doc,expected+1,actor);
@@ -481,6 +501,10 @@ export class AlarmArmingStore {
         await this.recordLine(c,b,recount.has(b.binding_id),actor);
       }
       await c.query('UPDATE flow_counter_bindings SET active=FALSE,compiled_rule=NULL,updated_at=now() WHERE active=TRUE AND source_id=$1 AND NOT (binding_id=ANY($2::text[]))',[doc.source_id,doc.counter_bindings.map(b=>b.binding_id)]);
+      if(confirmation){
+        if(!currentProof||!processorId)throw stale();
+        await recordCurrentViewConfirmation(c,doc,processorId,actor,expected,currentProof);
+      }
       return {saved:true as const,sourceId:doc.source_id,revision:expected+1,application:{state:'pending' as const,desired_revision:await this.bump(c)}};
     });
   }

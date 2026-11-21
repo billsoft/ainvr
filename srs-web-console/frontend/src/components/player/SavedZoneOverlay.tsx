@@ -2,8 +2,7 @@ import {erpDisplayPolygons} from '@/features/erpGeometry'
 import {useEffect,useState,type RefObject} from 'react'
 import {PanoramaZoneOverlay} from './PanoramaZoneOverlay'
 import type {PanoramaCamera} from './panoramaDetection'
-import type {AlarmZone} from '@/api/alarmZoneService'
-import {subscribeZoneOverlay} from '@/features/zoneOverlaySubscriptions'
+import {subscribeZoneOverlay,type OverlayZone} from '@/features/zoneOverlaySubscriptions'
 import {zoneSourceGeometry,type ZonePreviewSource} from '@/features/zoneSourceGeometry'
 import {computeContainLayout} from './overlayGeometry'
 import {subscribeLiveCounts} from '@/features/flowLiveCounts'
@@ -12,7 +11,7 @@ import type {LiveCount} from '@/api/flowService'
 import type {ArmingCounterBindingDocument} from '@/features/armingDocument'
 interface Props {video:HTMLVideoElement|null;source:ZonePreviewSource;transformed?:boolean;resetKey?:number;compact?:boolean;camera?:RefObject<PanoramaCamera|null>}
 export function SavedZoneOverlay({video,source,transformed=false,resetKey,compact=false,camera}:Props){
- const [zones,setZones]=useState<(AlarmZone&{edge_ids?:string[]})[]>([]),[bindings,setBindings]=useState<ArmingCounterBindingDocument[]>([])
+ const [zones,setZones]=useState<OverlayZone[]>([]),[bindings,setBindings]=useState<ArmingCounterBindingDocument[]>([])
  const [counts,setCounts]=useState<Record<string,LiveCount>>({}),[flash,setFlash]=useState<Record<string,number>>({})
  const [countStale,setCountStale]=useState(true)
  const [loaded,setLoaded]=useState(false),[failed,setFailed]=useState(false)
@@ -58,7 +57,7 @@ export function SavedZoneOverlay({video,source,transformed=false,resetKey,compac
     const points=poly.map(([x,y])=>[x*layout.dispW,y*layout.dispH])
     const left=Math.max(4,Math.min(layout.dispW-4,Math.min(...points.map(p=>p[0]!))))
     const top=Math.max(16,Math.min(layout.dispH-4,Math.min(...points.map(p=>p[1]!))-5))
-    return <g key={`${zone.zone_id}:${index}`}><polygon points={points.map(p=>p.join(',')).join(' ')} fill="rgba(34,211,238,0.12)" stroke="#22d3ee" strokeWidth="2" vectorEffect="non-scaling-stroke"/>{!compact&&<text x={left} y={top} fill="white" stroke="black" strokeWidth="3" paintOrder="stroke" fontSize="13">{zone.name}</text>}</g>
+    return <g key={`${zone.zone_id}:${index}`}><polygon points={points.map(p=>p.join(',')).join(' ')} fill={zone.protection?'none':'rgba(34,211,238,0.12)'} stroke={zone.protection?'#fbbf24':'#22d3ee'} strokeDasharray={zone.protection?'6 4':undefined} strokeWidth="2" vectorEffect="non-scaling-stroke"/>{!compact&&<text x={left} y={top} fill="white" stroke="black" strokeWidth="3" paintOrder="stroke" fontSize="13">{zone.name}</text>}</g>
    }))}
    {compatible.flatMap(zone=>bindings.filter(b=>b.zone_id===zone.zone_id&&b.zone_version===zone.version&&zone.edge_ids&&!zone.erp_wrap).map(b=>{
     const W=layout.dispW,H=layout.dispH,d=countingDrawing(b.direction,zone.points as [number,number][],zone.edge_ids!,size.width,size.height)
@@ -66,8 +65,11 @@ export function SavedZoneOverlay({video,source,transformed=false,resetKey,compac
     if(!anchor)return null
     const from:[number,number]=[anchor.from[0]*W,anchor.from[1]*H],to:[number,number]=[anchor.to[0]*W,anchor.to[1]*H],c=counts[b.binding_id]
     // The small grid tile shows only the numbers; a larger player adds the counter name.
-    const numbers=!c?'':countStale?'计数待更新':!c.counting?'已暂停':`${c.names.in} ${c.in}${c.out!==undefined?` · ${c.names.out} ${c.out}`:''}`,text=c?(compact?numbers:`${c.name} ${numbers}`):''
-    return <g key={b.binding_id} aria-label={text||'计数线'} opacity={c&&!c.counting?.55:1}>
+    const totals=c?`${c.names.in} ${c.in}${c.out!==undefined?` · ${c.names.out} ${c.out}`:''}`:''
+    const status=zone.protection==='paused'?'统计已暂停':zone.protection==='unknown'?'保护状态待核对':countStale?'计数待更新':c&&!c.counting?'统计已暂停':''
+    const numbers=[status,status&&totals?'今日累计 '+totals:totals].filter(Boolean).join(' · ')
+    const text=c&&!compact?c.name+' '+numbers:(zone.protection||c)?numbers:''
+    return <g key={b.binding_id} aria-label={text||'计数线'} opacity={(zone.protection||(c&&!c.counting))?0.65:1}>
      {d.edges.map((e,i)=><line key={i} x1={e.p[0]*W} y1={e.p[1]*H} x2={e.q[0]*W} y2={e.q[1]*H} stroke={countingColors[e.role]} strokeWidth="4"/>)}
      {arrows.map((arrow,i)=>{const a:[number,number]=[arrow.from[0]*W,arrow.from[1]*H],b:[number,number]=[arrow.to[0]*W,arrow.to[1]*H],color=arrow.role?countingColors[arrow.role]:countingColors.arrow;return <g key={i}><line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke={countingColors.outline} strokeWidth="6" strokeLinecap="round"/><line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke={color} strokeWidth="3" strokeLinecap="round"/><polygon points={arrowHead(a,b,Math.min(10,Math.hypot(b[0]-a[0],b[1]-a[1])*.4)).map(p=>p.join(',')).join(' ')} fill={color} stroke={countingColors.outline} strokeWidth="1.5"/></g>})}
      {text&&(()=>{
@@ -79,7 +81,7 @@ export function SavedZoneOverlay({video,source,transformed=false,resetKey,compac
       return <g>
        <rect x={x} y={y} width={width} height={height} rx="4" fill="rgba(15,23,42,.82)" stroke={countingColors.arrow} strokeWidth="1"/>
        <text x={x+6} y={y+height/2+size*.36} fill="white" fontSize={size} fontWeight="600">{text}</text>
-       {flash[b.binding_id]&&<text x={x+width+4} y={y+height/2+size*.36} fill={countingColors.arrow} stroke="black" strokeWidth="3" paintOrder="stroke" fontSize={size+2} fontWeight="700">+{flash[b.binding_id]}</text>}
+       {!status&&flash[b.binding_id]&&<text x={x+width+4} y={y+height/2+size*.36} fill={countingColors.arrow} stroke="black" strokeWidth="3" paintOrder="stroke" fontSize={size+2} fontWeight="700">+{flash[b.binding_id]}</text>}
       </g>
      })()}
     </g>

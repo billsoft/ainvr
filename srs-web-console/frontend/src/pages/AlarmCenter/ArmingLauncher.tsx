@@ -24,7 +24,7 @@ export function ArmingLauncher({channel,processorId,outputName,video,onClose,onS
  const [error,setError]=useState(''),[retry,setRetry]=useState(0)
  const [resetGeometry,setResetGeometry]=useState(false)
  const [selection,setSelection]=useState<{scope:string;value:PresetArmingSelection|null}>()
- const [entry,setEntry]=useState<ArmingScenes|null>(null)
+ const [entry,setEntry]=useState<{status:ArmingScenes;ordinary:boolean}|null>(null)
  const scope=JSON.stringify([channel.id,processorId,channel.inputGeneration,channel.createdAt])
  const choice=selection?.scope===scope?selection.value:undefined
  useEffect(()=>{
@@ -37,14 +37,21 @@ export function ArmingLauncher({channel,processorId,outputName,video,onClose,onS
     if(!geometryRevision)throw Error('接入来源尚未确认，请刷新通道。')
     const sceneStatus=await armingSceneService.read(channel.id,processorId)
     if(typeof sceneStatus.eligible!=='boolean'||!Array.isArray(sceneStatus.items))throw Error('无法确认场景绑定状态，请重试。')
-    if(sceneStatus.eligible&&sceneStatus.presetBindingAvailable&&choice===undefined){if(alive)setEntry(sceneStatus);return}
+    if(sceneStatus.eligible&&sceneStatus.presetBindingAvailable&&choice===undefined){
+     const bound=new Set(sceneStatus.items.map(s=>s.zone_id))
+     const scoped=bound.size?(await alarmArmingService.read(channel.id,processorId)).arming:null
+     const ordinary=!!scoped&&(scoped.zones.some(z=>!bound.has(z.zone_id))||scoped.assignments.some(a=>a.zone_id===null))
+     if(alive)setEntry({status:sceneStatus,ordinary})
+     return
+    }
     let sceneContext:SceneEditingContext|undefined,blob:Blob,width:number,height:number,capturedAt:string
     if(sceneStatus.eligible&&processorId){
      const frozen=await armingSceneService.freeze(channel.id,processorId,choice??undefined)
      if(choice&&(frozen.binding_mode!=='preset'||frozen.preset_id!==choice.preset_id||frozen.preset_fingerprint!==choice.preset_fingerprint))throw Error('布防预置位已变化，请退出后重新选择；原配置未改变。')
+     if(choice===null&&frozen.binding_mode!=='current')throw Error('未取得普通区域核对画面，请退出后重试。')
      if(!frozen.frame_id||!frozen.identity||!frozen.epoch||frozen.geometry_revision!==geometryRevision||
        !Number.isSafeInteger(frozen.width)||!Number.isSafeInteger(frozen.height)||frozen.width<=0||frozen.height<=0||!Array.isArray(frozen.items))throw Error('冻结参考与当前来源不一致，请重试。')
-     sceneContext={processorId,frame:frozen};blob=await armingSceneService.image(frozen.image_url)
+     sceneContext={processorId,frame:frozen,guardBlocked:sceneStatus.guard_blocked};blob=await armingSceneService.image(frozen.image_url)
      width=frozen.width;height=frozen.height;capturedAt=frozen.captured_at
     }else{
      if(sceneStatus.items.length)throw Error('此来源有场景绑定，请从对应 AI 输出视频下方的布防入口编辑。')
@@ -55,6 +62,7 @@ export function ArmingLauncher({channel,processorId,outputName,video,onClose,onS
      width=canvas.width;height=canvas.height;capturedAt=new Date().toLocaleString()
     }
     const [arming,definitions,channels,counters]=await Promise.all([alarmArmingService.read(channel.id,processorId),alarmDefinitionService.list(),aiChannelService.list(),flowService.list().then(r=>r.items).catch(()=>[] as Counter[])])
+    if(sceneContext?.frame.binding_mode==='current'&&sceneContext.frame.items.length&&arming.arming?.geometry_revision!==geometryRevision)throw Error('画面规格已变化，请先从布防预置位核对已有绑定区域。')
     if(arming.arming&&arming.arming.source_id!==channel.id)throw Error('已保存布防来源不匹配，请重新确认来源；原配置未改变。')
     const legacyZones=arming.arming||processorId?[]:(await alarmZoneService.list(channel.id)).items.filter(z=>z.state==='active')
     if(legacyZones.some(z=>z.channel_id!==channel.id))throw Error('历史热区来源不匹配，未覆盖原区域。')
@@ -71,7 +79,7 @@ export function ArmingLauncher({channel,processorId,outputName,video,onClose,onS
   })()
   return()=>{alive=false;if(url)URL.revokeObjectURL(url)}
  },[channel.id,processorId,channel.inputGeneration,channel.createdAt,video,retry,choice])
- if(entry)return createPortal(<PresetArmingEntry key={scope} sourceId={channel.id} status={entry} onSelect={value=>setSelection({scope,value})} onClose={onClose}/>,portalHost)
+ if(entry)return createPortal(<PresetArmingEntry key={scope} sourceId={channel.id} status={entry.status} hasOrdinary={entry.ordinary} onSelect={value=>setSelection({scope,value})} onClose={onClose}/>,portalHost)
  const legacyMismatch=!!data&&!data.base&&data.legacyZones.some(z=>z.geometry_revision!==data.reference.geometryRevision)
  if(data&&((data.base&&data.base.geometry_revision!==data.reference.geometryRevision)||legacyMismatch)&&!resetGeometry)return createPortal(
   <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"><div role="dialog" aria-modal="true" aria-label="画面规格已变化" className="relative max-w-lg rounded-panel bg-surface p-5 text-sm text-ink shadow-modal">

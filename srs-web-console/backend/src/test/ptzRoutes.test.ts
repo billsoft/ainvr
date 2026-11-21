@@ -40,6 +40,18 @@ function fixture(auth = true) {
   });
   return { app, manager, store, flow };
 }
+it('preset goto forwards an optional expected fingerprint and rejects malformed values',async()=>{
+  const f=fixture(),url=`/channels/${id}/ptz/presets/native-1/goto`;
+  try{
+    for(const expectedPresetFingerprint of ['a'.repeat(64),'bad']){
+      const response=await f.app.inject({method:'POST',url,payload:{sessionId:session,sequence:1,expectedPresetFingerprint}});
+      expect(response.statusCode).toBe(expectedPresetFingerprint==='bad'?400:200);
+    }
+    expect(f.manager.command).toHaveBeenCalledTimes(1);
+    expect(f.manager.command).toHaveBeenCalledWith(id,session,'operator',1,{pan:0,tilt:0,zoom:0},'native-1',false,undefined,undefined,'a'.repeat(64));
+    expect((await f.app.inject({method:'POST',url,payload:{sessionId:session,sequence:2}})).statusCode).toBe(200);
+  }finally{await f.app.close();}
+});
 it('authenticates patrol reads and accepts only a channel and binding digest', async () => {
   const identity = '1'.repeat(64);
   for (const auth of [false, true]) {

@@ -235,7 +235,7 @@ export async function ptzRoutes(app: FastifyInstance, opts: Options) {
     ),
   );
   app.post('/channels/:id/ptz/presets/:presetId/goto', (req) => {
-    const b = z.object({ sessionId: session, sequence: seq }).strict().parse(req.body);
+    const b = z.object({ sessionId: session, sequence: seq, expectedPresetFingerprint:z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict().parse(req.body);
     return opts.manager!.command(
       id(req),
       b.sessionId,
@@ -243,6 +243,7 @@ export async function ptzRoutes(app: FastifyInstance, opts: Options) {
       b.sequence,
       { pan: 0, tilt: 0, zoom: 0 },
       native.parse((req.params as any).presetId),
+      false, undefined, undefined, b.expectedPresetFingerprint,
     );
   });
   app.post('/channels/:id/ptz/restore-view', (req) => {

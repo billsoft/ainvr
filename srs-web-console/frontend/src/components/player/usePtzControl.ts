@@ -276,7 +276,7 @@ export function usePtzControl(channelId: string, identity: string | undefined, o
     void finish(g);
   }
 
-  function begin(vector: PtzVector, presetId?: string, completed?: Gesture['completed'], point?: Point, wheel = false) {
+  function begin(vector: PtzVector, presetId?: string | {id:string;fingerprint:string}, completed?: Gesture['completed'], point?: Point, wheel = false) {
     const kind = point ? 'point' : presetId ? 'preset' : wheel ? 'wheel' : 'manual';
     const previous = active.current;
     if (previous?.kind === 'point' && (kind === 'manual' || kind === 'wheel')) {
@@ -307,7 +307,10 @@ export function usePtzControl(channelId: string, identity: string | undefined, o
         if (Date.now() - started >= 30000) { await finish(g, false, positioning); return; }
         const n = ++sequence;
         if (point && n === 1) await ptzService.center(g.channel, session.sessionId, n, point.x, point.y);
-        else if (presetId && n === 1) await ptzService.goto(g.channel, presetId, session.sessionId, n);
+        else if (presetId && n === 1) {
+          if (typeof presetId === 'string') await ptzService.goto(g.channel, presetId, session.sessionId, n);
+          else await ptzService.goto(g.channel, presetId.id, session.sessionId, n, presetId.fingerprint);
+        }
         else {
           const result = await ptzService.command(g.channel, session.sessionId, n, positioning ? zero : g.vector, positioning);
           if (signal.aborted) return;

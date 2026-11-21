@@ -289,10 +289,10 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
   }, [patrol.active, queueRefresh]);
 
   // Calling a stored position ends any active image-directed movement first.
-  const gotoPreset = async (id: string) => {
+  const gotoPreset = async (id: string, expectedFingerprint?:string) => {
     setNotice('');
     if (mode === 'manual' || await changeMode('manual')) {
-      control.begin({ pan: 0, tilt: 0, zoom: 0 }, id);
+      control.begin({ pan: 0, tilt: 0, zoom: 0 }, expectedFingerprint?{id,fingerprint:expectedFingerprint}:id);
     }
   };
   useEffect(() => {
@@ -762,11 +762,11 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
         </section>
       )}
       {isAiOutput && info?.supported && info.enabled !== false && info.source?.id && followProcessor &&
-        <PtzSceneStatus sourceId={info.source.id} processorId={followProcessor} disabled={!presetReady} onReturn={id=>void gotoPreset(id)}/>}
+        <PtzSceneStatus sourceId={info.source.id} processorId={followProcessor} presets={presetError?undefined:presets} disabled={!presetReady} onReturn={gotoPreset}/>}
       {isAiOutput && armingHost && info?.guard?.blocked && createPortal(
         <details className="ptz-section text-xs text-amber-200">
           <summary className="cursor-pointer"><ShieldCheck size={14} className="mr-1 inline"/>布防待核对</summary>
-          <p>转动已暂停关联告警与计数。请先核对视角或重新保存布防。</p>
+          <p>普通区域需人工核对。请打开对应 AI 输出的布防编辑器，核对当前画面并保存，再返回此处恢复。绑定预置位的区域回位核验后单独恢复。</p>
           {!!info.guard.baseline && <button className={button} disabled={!screenReady}
             onClick={() => void action(() => ptzService.restore(channelId, Number(info.guard!.revision), 'position'))}>
             <ShieldCheck size={15}/>已回原视角，恢复</button>}

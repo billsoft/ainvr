@@ -1,4 +1,5 @@
 export interface ArmingSaveRequest {
+  currentViewConfirmation?:{frame_id:string}
   sceneEdits?:import('@/api/armingSceneService').ArmingSceneEdit[]
   coordinateSpace?:'planar'|'erp'
   sourceId:string

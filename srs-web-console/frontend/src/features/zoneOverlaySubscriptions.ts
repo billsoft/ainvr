@@ -3,13 +3,14 @@ import {alarmArmingService} from '@/api/alarmArmingService'
 import {armingSceneService,type ArmingScene} from '@/api/armingSceneService'
 import {validScenePoints} from './armingSceneDraft'
 import type {ArmingCounterBindingDocument} from './armingDocument'
-export interface ZoneOverlayState {zones:(AlarmZone&{edge_ids?:string[]})[];bindings:ArmingCounterBindingDocument[];loaded:boolean;failed:boolean}
+export type OverlayZone=AlarmZone&{edge_ids?:string[];protection?:'paused'|'unknown'}
+export interface ZoneOverlayState {zones:OverlayZone[];bindings:ArmingCounterBindingDocument[];loaded:boolean;failed:boolean}
 type Listener=(state:ZoneOverlayState)=>void
 /** Display-only projection. The arming document remains canonical for CAS saves. */
-export function projectOverlayZones(zones:ZoneOverlayState['zones'],scenes:ArmingScene[],processorId?:string){
+export function projectOverlayZones(zones:ZoneOverlayState['zones'],scenes:ArmingScene[],processorId?:string,ordinaryProtection?:OverlayZone['protection']){
  return zones.flatMap(zone=>{
   const rows=scenes.filter(s=>s.zone_id===zone.zone_id&&(!processorId||s.processor_id===processorId))
-  if(!rows.length)return [zone]
+  if(!rows.length)return [ordinaryProtection?{...zone,protection:ordinaryProtection}:zone]
   // An unscoped viewer cannot choose between multiple processor bindings.
   const scene=rows[0]!
   if(rows.length!==1||scene.state!=='matched'||JSON.stringify(scene.reference_points)!==JSON.stringify(zone.points)||!validScenePoints(scene.current_points,zone.points.length))return []
@@ -34,7 +35,8 @@ export function subscribeZoneOverlay(sourceId:string,listener:Listener,processor
      const [{arming},scenes]=await Promise.all([alarmArmingService.read(sourceId,processorId),armingSceneService.read(sourceId,processorId)])
      if(!scenes||!Array.isArray(scenes.items))throw Error('invalid scene status')
      const zones=arming?arming.zones:processorId?[]:(await alarmZoneService.list(sourceId)).items
-     const projected=projectOverlayZones(zones,scenes.items,processorId)
+     const protection=scenes.guard_blocked===true?'paused':scenes.guard_blocked===false?undefined:'unknown'
+     const projected=projectOverlayZones(zones,scenes.items,processorId,protection)
      const visible=new Set(projected.map(z=>z.zone_id))
      if(!closed){state={zones:projected,bindings:(arming?.counter_bindings??[]).filter(b=>visible.has(b.zone_id)),loaded:true,failed:false};publish()}
     }
