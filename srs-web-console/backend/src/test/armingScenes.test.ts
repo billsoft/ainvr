@@ -87,6 +87,61 @@ async function isolated(run:(db:Pool)=>Promise<void>){
  try{await runMigrations(db);await run(db);}
  finally{await db.end();await admin.query('DROP SCHEMA '+name+' CASCADE');await admin.end();}
 }
+it.skipIf(!enabled)('publishes the latest durable unbind boundary only for the deleted scene key', async () => isolated(async db => {
+ const scenes = new ArmingScenes(db), ptz = new PtzStore(db), frame = randomUUID();
+ const counter = { id:'counter', input_stream_id:'cam', channel_id:'ai', zone_id:'zone', zone_version:1,
+  version:4, state:'enabled', geometry_revision:'g', points, source_binding:{not_before:'2020-01-01T00:00:00.000Z'} };
+ const authored = [counter, {...counter,id:'duplicate'}, {...counter,id:'other-source',input_stream_id:'other'},
+  {...counter,id:'other-processor',channel_id:'other'}, {...counter,id:'other-zone',zone_id:'other'}];
+ const source = {snapshot: async () => ({schema_version:'1.0',
+  revision:(await db.query('SELECT revision::text FROM alarm_configuration_revision WHERE singleton')).rows[0].revision,
+  rules:authored})};
+ const snapshot = async () => (await new PtzGuardedSnapshot(source,db,undefined,scenes).snapshot()).rules as any[];
+ const projected = points.map(([x,y]) => [x+.01,y]);
+ await db.query(`INSERT INTO arming_scene_frames(frame_id,source_id,processor_id,actor,identity,resource,epoch,
+  geometry_revision,captured_at,image,manual_revision,items) VALUES($1,'cam','ai','op','device','motor',
+  arming_scene_epoch('cam'),'g',now(),'{}',0,'[]')`,[frame]);
+ const bind = () => db.query(`INSERT INTO arming_scene_zones(source_id,processor_id,zone_id,zone_version,
+  reference_frame_id,reference_points,identity,resource,geometry_revision,epoch,state,reason,current_points,binding_mode)
+  VALUES('cam','ai','zone',1,$1,$2,'device','motor','g',arming_scene_epoch('cam'),'matched','',$3,'preset')`,
+  [frame,JSON.stringify(points),JSON.stringify(projected)]);
+ const unbind = async () => {
+  await db.query("DELETE FROM arming_scene_zones WHERE source_id='cam' AND processor_id='ai' AND zone_id='zone'");
+  return (await db.query("SELECT id,recorded_at FROM arming_scene_history WHERE operation='DELETE' ORDER BY id DESC LIMIT 1")).rows[0];
+ };
+ expect(await snapshot()).toEqual(authored);
+ await bind();
+ const bound = (await snapshot())[0];
+ expect(bound.points).toEqual(projected);
+ const firstDelete = await unbind();
+ const first = await snapshot();
+ expect(first[0]).toMatchObject({...counter, view_not_before:firstDelete.recorded_at.toISOString(),
+  source_binding:{not_before:firstDelete.recorded_at.toISOString()}});
+ expect(first[0].view_epoch).not.toBe(bound.view_epoch);
+ expect(first[1].view_epoch).toBe(first[0].view_epoch);
+ expect(first.slice(2)).toEqual(authored.slice(2));
+ expect(await snapshot()).toEqual(first);
+ await bind();
+ expect((await snapshot())[0].points).toEqual(projected);
+ const secondDelete = await unbind();
+ // Tie the journal timestamps: id must select the second deletion and change the evidence epoch.
+ await db.query("UPDATE arming_scene_history SET recorded_at=$1 WHERE operation='DELETE'",[firstDelete.recorded_at]);
+ const second = (await snapshot())[0];
+ expect(secondDelete.id).not.toBe(firstDelete.id);
+ expect(second.view_epoch).not.toBe(first[0].view_epoch);
+ expect(second.view_not_before).toBe(first[0].view_not_before);
+ const rev = await ptz.block('motor',['cam'],'op',null,false);
+ const blocked = (await snapshot())[0];
+ const guard = (await db.query("SELECT changed_at FROM ptz_view_guards WHERE resource_key='motor'")).rows[0];
+ expect(blocked).toMatchObject({state:'paused',points,version:4,view_not_before:guard.changed_at.toISOString(),
+  source_binding:{not_before:guard.changed_at.toISOString()}});
+ await ptz.restore('motor',rev,'op');
+ const restored = (await snapshot())[0];
+ const restore = (await db.query("SELECT restored_at FROM ptz_view_guards WHERE resource_key='motor'")).rows[0];
+ expect(restored).toMatchObject({state:'enabled',points,version:4,view_not_before:restore.restored_at.toISOString(),
+  source_binding:{not_before:restore.restored_at.toISOString()}});
+ expect(counter.source_binding.not_before).toBe('2020-01-01T00:00:00.000Z');
+}));
 it.skipIf(!enabled)('retries moving and busy scenes after three seconds without epoch churn, but backs off a visual mismatch',async()=>isolated(async db=>{
  const store=new ArmingScenes(db),ptz=new PtzStore(db),frame=randomUUID();
  const camera={identity:'dev',resource:'motor',app:'live',stream:'cam',idle:true,pose:null};

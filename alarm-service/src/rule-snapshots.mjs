@@ -6,6 +6,27 @@ const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof v
   Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
 // A rule the current code cannot read (an earlier behavior) is simply a different rule.
 const normalized=rule=>{try{return digest(canonical(validateRule(rule)));}catch{return null;}};
+// The authenticated PG publisher owns view protection. Its execution overlay
+// changes independently of the authored rule version. Only a NEW view epoch in
+// a newer snapshot may replace that overlay; every authored field still compares
+// exactly after validation/default normalization. Same-revision replay remains strict.
+function sameAuthoredRuleAcrossViews(previous,next){
+  let old;try{old=validateRule(previous);}catch{return false;}
+  if(!/^[a-f0-9]{64}$/.test(next.view_epoch??'')||old.view_epoch===next.view_epoch||
+    !['enabled','paused'].includes(old.state))return false;
+  for(const [before,after] of [[old.view_not_before,next.view_not_before],
+    [old.source_binding?.not_before,next.source_binding?.not_before]]){
+    if(before!==undefined&&(after===undefined||Date.parse(after)<Date.parse(before)))return false;
+  }
+  const authored=r=>{
+    // Formal preset recovery retains canonical points. Geometry is authored data,
+    // never an overlay exception, even when a new epoch accompanies the edit.
+    const {state,view_epoch,view_not_before,...rest}=r;
+    if(rest.source_binding){const {not_before,...binding}=rest.source_binding;rest.source_binding=binding;}
+    return digest(canonical(rest));
+  };
+  return authored(old)===authored(next);
+}
 // One Mongo document makes replacement atomic on standalone Mongo as well as replicas.
 // PostgreSQL remains the authority; this is only the durable execution snapshot.
 export class RuleSnapshots {
@@ -24,7 +45,7 @@ export class RuleSnapshots {
     const rules=input.rules.map(rule=>{
       if(!rule||typeof rule!=='object'||Array.isArray(rule))fail('invalid_rule','Rule must be an object');
       const parsed=validateRule(rule);
-      if(parsed.state!=='enabled')fail('unsupported_rule','Snapshot requires enabled rules without VLM execution');
+      if(!['enabled','paused'].includes(parsed.state))fail('unsupported_rule','Snapshot requires enabled or paused execution rules');
       if(ids.has(parsed.id))fail('duplicate_rule','Duplicate rule identity');
       ids.add(parsed.id);return parsed;
     }).sort((a,b)=>a.id.localeCompare(b.id));
@@ -40,9 +61,10 @@ export class RuleSnapshots {
           if(!same)fail('revision_conflict','Same revision has different content',409);
           return {applied:true,revision:previous.revision,digest:previous.digest,applied_at:previous.applied_at};
         }
-        // A rule's version must change when its execution semantics change.
+        // Authored edits require a new rule version. Runtime view overlays use
+        // the strictly increasing global revision plus a changed view epoch.
         const oldRules=new Map(previous.rules.map(r=>[r.id,r]));
-        for(const rule of rules){const oldRule=oldRules.get(rule.id);if(oldRule&&(rule.version<oldRule.version||(rule.version===oldRule.version&&digest(canonical(rule))!==normalized(oldRule))))fail('rule_version_conflict','Changed rules require a newer rule version',409);}
+        for(const rule of rules){const oldRule=oldRules.get(rule.id);if(oldRule&&(rule.version<oldRule.version||(rule.version===oldRule.version&&digest(canonical(rule))!==normalized(oldRule)&&!sameAuthoredRuleAcrossViews(oldRule,rule))))fail('rule_version_conflict','Changed rules require a newer rule version',409);}
       }
       const next={_id:'active',schema_version:'1.0',revision:input.revision,digest:fingerprint,rules,applied_at:this.clock(),actor};
       if(previous){

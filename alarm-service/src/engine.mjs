@@ -401,7 +401,9 @@ export function evaluate(checkpoint,input,rules) {
     if(rule)cp.passage_diagnostics.push({rule_id:rule.id,reason:prefix,at:f.captured_at,frame_id:f.frame_id,track_id:issue.slice(prefix.length+rule.id.length+2)});
   }
   cp.passage_diagnostics=cp.passage_diagnostics.slice(-64);
-  const coverage=coverageStep(cp,f,eligible.values(),sessionChanged||seqGap||ptsReset||timeGap||f.gap===true||(interval!==null&&cp.intervals?.length===1&&interval>1500));
+  // A view change is also an observation-coverage break, even when no paused
+  // frame arrived. Flush the old measured tail; never bridge camera movement.
+  const coverage=coverageStep(cp,f,eligible.values(),sessionChanged||seqGap||ptsReset||timeGap||f.gap===true||issues.includes('view_changed')||(interval!==null&&cp.intervals?.length===1&&interval>1500));
   const incidents=conditionIncidents(cp,f,rules.filter(r=>r.channel_id===f.channel_id).map(preparedRule),periods,out.concat(grouped),{discontinuity:sessionChanged||ptsReset||timeGap||seqGap||f.gap===true||issues.includes('view_changed')});
   const regions=evaluateRegionStates(cp,f,regionRules,{discontinuity:sessionChanged||ptsReset||timeGap||seqGap||f.gap===true});
   return {checkpoint:cp,events:incidents.events.concat(regions.events),active_episodes:incidents.active.concat(regions.active),ended_episodes:ended.concat(incidents.ended,regions.ended),issues:issues.concat(regions.issues),coverage,capture_intents:captureIntents.concat(regions.captureIntents).slice(0,128)};

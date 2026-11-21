@@ -5,6 +5,9 @@ export interface RuleApplication {
   state:'applied'|'pending'|'unavailable';desired_revision:string|null;applied_revision:string|null
   checked_at:string;reason?:string
 }
+class RuleExchangeError extends Error {
+  constructor(readonly status:number){super('Rule application not confirmed');}
+}
 type Reconcile=()=>Promise<{updated:number;blocked:number}>;
 // The live service is queried every time: cached success is not evidence after restart.
 export class AlarmRuleSync {
@@ -25,7 +28,10 @@ export class AlarmRuleSync {
       headers:{authorization:`Bearer ${config.apiToken}`,...(body?{'content-type':'application/json','x-ainvr-actor':'console-configuration'}:{})},
       body:body?JSON.stringify(body):undefined,
     });
-    if(!response.ok)throw Error('Rule application not confirmed');
+    if(!response.ok){
+      await response.body?.cancel().catch(()=>undefined);
+      throw new RuleExchangeError(response.status);
+    }
     return await limitedJson(response) as {state?:string;applied?:boolean;revision?:string;digest?:string};
   }
   private async apply():Promise<RuleApplication>{
@@ -48,7 +54,14 @@ export class AlarmRuleSync {
           status('applied',`${this.blocked} 项布防或计数的来源已变化，请重新选择目标并布防`):status('applied');
       }
       return status('pending','配置正在变化，等待下一次同步');
-    }catch{return status('pending','规则保存后尚未确认应用，将在服务恢复后重试');}
+    }catch(error){
+      if(error instanceof RuleExchangeError){
+        if(error.status===401||error.status===403)return status('pending','计数与告警规则同步认证失败，请检查服务连接');
+        if(error.status>=400&&error.status<500)return status('pending',
+          error.status===409?'计数与告警规则版本冲突，等待重新同步':'计数与告警规则未被服务接受，请检查服务日志');
+      }
+      return status('pending','计数与告警规则暂未同步成功，正在重试');
+    }
   }
   private async repair(){
     const now=(this.options.now??Date.now)();

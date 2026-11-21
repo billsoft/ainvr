@@ -60,3 +60,13 @@ it('concurrent requests share one bounded synchronization instead of racing old 
   const [a,b]=await Promise.all([sync.synchronize(),sync.synchronize()]);
   expect(a).toEqual(b);expect(fetcher).toHaveBeenCalledTimes(2);
 });
+
+it.each([
+ [400,'未被服务接受'],[409,'版本冲突'],[401,'认证失败'],[403,'认证失败'],[503,'暂未同步成功'],
+])('reports a safe actionable reason for HTTP %s without leaking response data',async(code,reason)=>{
+ vi.stubGlobal('fetch',vi.fn(async()=>Response.json({error:{message:'private-secret',rule:'private-zone'}},{status:code})));
+ const sync=new AlarmRuleSync({snapshot:async()=>({schema_version:'1.0',revision:'4',rules:[]})},async()=>connection);
+ const result=await sync.synchronize();
+ expect(result).toMatchObject({state:'pending',desired_revision:'4',reason:expect.stringContaining(reason)});
+ expect(JSON.stringify(result)).not.toMatch(/private-secret|private-zone/);
+});

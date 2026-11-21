@@ -171,12 +171,12 @@ const reasons: Record<string, string> = {
   ptz_stop_unconfirmed: '停止尚未确认。请检查摄像头连接，并重试停止。',
   ptz_session_expired: '本次云台控制已结束，可重新操作。',
   ptz_arming_pause_pending:
-    '原布防已进入暂停保护，等待告警服务确认；摄像头尚未移动。处理后请核对恢复。',
+    '计数与告警的暂停尚未同步，暂不能转动；请稍后重试。无需添加告警规则。',
   ptz_tracking_reset_pending:
     '原布防已暂停，但轨迹重置尚未完成；摄像头尚未移动。请处理后核对恢复。',
   ptz_tracking_reset_unsupported:
     '此 AI 处理器不支持不中断视频的轨迹重置，未暂停布防，也未移动摄像头。',
-  ptz_arming_restore_pending: '摄像头已停止，正在等待告警服务确认布防恢复。',
+  ptz_arming_restore_pending: '摄像头已停止，正在同步计数与告警的恢复状态。',
   ptz_device_offline: '摄像头尚未注册或已离线。',
   ptz_not_supported: '此摄像头未提供云台控制能力。',
   ptz_view_rearming_required: '请先在各关联 AI 输出中核对并重新保存布防。',
