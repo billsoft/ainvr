@@ -46,6 +46,25 @@ function fixture(initiallyReady: boolean) {
   });
   return {host,video,play: () => { ready = true; fireEvent.loadedData(video); fireEvent.playing(video); }};
 }
+it('explains GB patrol on click without switching modes or issuing a motion command', async () => {
+  mock.inspect.mockResolvedValue({supported:true, enabled:true, protocol:'gb28181', identity:'gb',
+    capabilities:{panTilt:true, position:true}});
+  const {host,video} = fixture(true);
+  try {
+    render(<PtzPanel channelId="gb" video={video} onClose={() => {}}/>);
+    const hint = '水平巡航目前仅支持可回报云台位置的 ONVIF 通道。';
+    const patrol = await screen.findByTitle(hint);
+    fireEvent.click(patrol);
+    expect(screen.getByText(hint)).toBeVisible();
+    expect(screen.getByRole('button',{name:'手动控制'})).toHaveAttribute('aria-pressed','true');
+    expect(screen.queryByRole('region',{name:'巡航设置'})).toBeNull();
+    expect(mock.stopConfirmed).not.toHaveBeenCalled();
+    expect(mock.begin).not.toHaveBeenCalled();
+    fireEvent.blur(patrol);
+    expect(screen.queryByText(hint)).toBeNull();
+  } finally { host.remove(); }
+});
+
 async function enterAim() {
   const aim = screen.getByRole('button',{name:'点击居中'});
   await waitFor(() => expect(aim).toBeEnabled());
@@ -61,10 +80,8 @@ it('reads calibration once when video becomes ready and starts only on explicit 
     await screen.findByRole('button',{name:/门口/});
     expect(screen.queryByRole('region',{name:'点击居中标定'})).toBeNull();
     await enterAim();
-    expect(screen.getByText('当前倍率标定')).toBeVisible();
-    expect(screen.getByText('标定后定位 · 滚轮变焦')).toBeVisible();
-    expect(screen.getByText('已标定 0/4方向')).toBeVisible();
-    expect(screen.getByText(/视角可能改变/)).toBeVisible();
+    expect(screen.getByRole('region',{name:'点击居中标定'})).toBeVisible();
+    expect(screen.queryByText('标定后定位 · 滚轮变焦')).toBeNull();
     const start = screen.getByRole('button',{name:'开始标定'});
     expect(start).toBeDisabled();
     expect(screen.getByText('等待视频就绪')).toBeVisible();
@@ -73,7 +90,7 @@ it('reads calibration once when video becomes ready and starts only on explicit 
     expect(mock.refresh).toHaveBeenCalledExactlyOnceWith(video);
     mock.calibration.message = '请先完成当前倍率标定';
     view.rerender(panel());
-    expect(screen.getByText('请先完成当前倍率标定')).toBeVisible();
+    expect(screen.getByText('已标定 0/4 方向')).toBeVisible();
     expect(start).toBeEnabled();
     expect(screen.queryByText('等待视频就绪')).toBeNull();
     expect(mock.start).not.toHaveBeenCalled();
@@ -82,8 +99,7 @@ it('reads calibration once when video becomes ready and starts only on explicit 
 
     Object.assign(mock.calibration, {running:true, progress:3, ready:1, message:'待标定方向：左、上、下'});
     view.rerender(panel());
-    expect(screen.getByText('已标定 1/4方向 · 已测 3/24 段')).toBeVisible();
-    expect(screen.getByText('待标定方向：左、上、下')).toBeVisible();
+    expect(screen.getByText('标定中 3/24')).toHaveAttribute('title','待标定方向：左、上、下');
     expect(screen.queryByRole('button',{name:'选择要居中的画面位置'})).toBeNull();
     for (const name of ['拉近', '拉远', '手动控制', /门口/]) {
       expect(screen.getByRole('button',{name})).toBeDisabled();
@@ -96,8 +112,8 @@ it('reads calibration once when video becomes ready and starts only on explicit 
 
     Object.assign(mock.calibration, {running:false, progress:8, ready:4, message:''});
     view.rerender(panel());
-    expect(screen.getByText('已标定 4/4方向')).toBeVisible();
-    expect(screen.queryByText(/已测/)).toBeNull();
+    expect(screen.getByText('已标定 · 滚轮变焦')).toBeVisible();
+    expect(screen.queryByText(/标定中/)).toBeNull();
     fireEvent.click(screen.getByRole('button',{name:'重新标定'}));
     expect(mock.start).toHaveBeenCalledTimes(2);
     expect(mock.refresh).toHaveBeenCalledTimes(1);

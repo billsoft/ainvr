@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { ptzError, ptzService } from '@/api/ptzService';
 import type { ReadDisplayedTracks } from './AiDetectionOverlay';
+import { largestPatrolTarget, type PatrolLabel } from './ptzPatrol';
 
 interface Options {
   camera: string;
@@ -8,6 +9,7 @@ interface Options {
   identity?: string;
   enabled: boolean;
   displayedTracks?: { current: ReadDisplayedTracks | null };
+  automatic?: { label: PatrolLabel; ended: (resume: boolean, message: string) => void };
 }
 
 interface State {
@@ -17,7 +19,7 @@ interface State {
   statusText: string;
 }
 
-type Source = { camera: string; processor: string; identity: string };
+type Source = { camera: string; processor: string; identity: string; automatic?: Options['automatic'] };
 const idle: State = { selectedId: null, pickReady: false, ownsLease: false, statusText: '' };
 const idleMs = 20_000;
 const trackingPeriodMs = 125;
@@ -123,15 +125,24 @@ class FollowControl {
     }
   };
 
-  private async start({camera, processor, identity}: Source, initialId: string | null) {
+  private async start({camera, processor, identity, automatic}: Source, initialId: string | null) {
     const generation = ++this.generation;
+    const end = (message: string, resume = false) => {
+      if (generation !== this.generation) return;
+      const release = this.release(message);
+      const releasingGeneration = this.generation;
+      if (automatic) void release.then(confirmed => {
+        if (releasingGeneration === this.generation)
+          automatic.ended(confirmed && resume, confirmed ? message : ptzError(Error('ptz_stop_unconfirmed')));
+      });
+    };
     this.update({ ...idle, selectedId: initialId, ownsLease: true, statusText: '正在准备跟踪…' });
     try {
       this.lease = ptzService.followSession(camera, identity, processor)
         .then(({ sessionId }) => ({ camera, sessionId }));
       const { sessionId } = await this.lease;
       if (generation !== this.generation) return;
-      this.expiry = setTimeout(() => { void this.release(expired); }, idleMs);
+      this.expiry = setTimeout(() => end(expired, true), automatic ? 3500 : idleMs);
       let active: string | null = null;
       let displayEpoch = 0;
       let held = false;
@@ -139,13 +150,14 @@ class FollowControl {
       let gapUntil = 0;
       let forgetting = false;
       const current = () => generation === this.generation;
-      const lost = () => { void this.release(ptzError(Error('ptz_follow_target_lost'))); };
+      const lost = () => end(ptzError(Error('ptz_follow_target_lost')), true);
       const schedule = (delay:number) => {
         if (!current() || this.busy || braking) return;
         clearTimeout(this.timer);
         this.timer = setTimeout(tick, delay);
       };
       const chooseAgain = (epoch:number) => {
+        if (automatic) { lost(); return; }
         displayEpoch = epoch;
         active = null;
         held = braking = forgetting = false;
@@ -191,7 +203,7 @@ class FollowControl {
             if (!current() || epoch!==displayEpoch) return;
             if (error instanceof Error && error.message==='ptz_busy' && performance.now()<retryUntil) {
               this.timer = setTimeout(() => { void send(); }, 75);
-            } else void this.release(ptzError(error));
+            } else end(ptzError(error));
           }
         };
         void send();
@@ -220,7 +232,7 @@ class FollowControl {
         this.animation = undefined;
         if (!current()) return;
         try { checkDisplay(); }
-        catch (error) { void this.release(ptzError(error)); }
+        catch (error) { end(ptzError(error)); }
         if (current()) this.animation = requestAnimationFrame(watch);
       };
       const tick = async () => {
@@ -252,8 +264,17 @@ class FollowControl {
           checkDisplay();
           if (!current() || epoch !== displayEpoch) return;
           const {choices,waiting:serverWaiting} = reply;
-          const visible = uniqueIds(this.read().filter(d => !d.predicted && !d.lowConfidence).map(d => d.track_id));
+          const tracks = this.read();
+          const visible = uniqueIds(tracks.filter(d => !d.predicted && !d.lowConfidence).map(d => d.track_id));
           this.candidates = uniqueIds(choices.filter(c => visible.has(c.id)).map(c => c.id));
+          if (automatic && !this.state.selectedId) {
+            const id = largestPatrolTarget(automatic.label, tracks, this.candidates);
+            if (id) {
+              this.update({ ...this.state, selectedId: id, statusText: '正在确认巡航目标…' });
+              delay = 0;
+            }
+            return;
+          }
           const wanted = this.state.selectedId;
           let statusText = this.state.statusText;
           let selectedId = wanted;
@@ -289,7 +310,7 @@ class FollowControl {
           }
           const timeout = !sent && error instanceof Error &&
             ['ptz_follow_ended', 'ptz_session_expired'].includes(error.message);
-          void this.release(timeout ? expired : ptzError(error));
+          end(timeout ? expired : ptzError(error), timeout);
         } finally {
           if (current()) {
             this.busy = false;
@@ -300,19 +321,19 @@ class FollowControl {
       this.poll = tick;
       await tick();
     } catch (error) {
-      if (generation === this.generation) void this.release(ptzError(error));
+      end(ptzError(error));
     }
   }
 }
 
-export function usePtzFollow({ enabled, camera, processor, identity, displayedTracks }: Options) {
+export function usePtzFollow({ enabled, camera, processor, identity, displayedTracks, automatic }: Options) {
   const tracks = useRef(displayedTracks);
   useLayoutEffect(() => { tracks.current = displayedTracks; }, [displayedTracks]);
   const [control] = useState(() => new FollowControl(() => tracks.current?.current?.() ?? []));
   const [state, setState] = useState(idle);
   useLayoutEffect(() => {
     control.publish = setState;
-    control.source = enabled && camera && processor && identity ? {camera, processor, identity} : undefined;
+    control.source = enabled && camera && processor && identity ? {camera, processor, identity, automatic} : undefined;
     void control.prepare();
     const leave = () => { void control.stop(); };
     const hidden = () => { if (document.hidden) leave(); };
@@ -327,6 +348,6 @@ export function usePtzFollow({ enabled, camera, processor, identity, displayedTr
       document.removeEventListener('visibilitychange', hidden);
       leave();
     };
-  }, [camera, processor, identity, enabled, control]);
+  }, [camera, processor, identity, enabled, control, automatic]);
   return { ...state, pick: control.pick, stop: control.stop };
 }

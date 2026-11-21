@@ -9,6 +9,7 @@ const id = '11111111-1111-4111-8111-111111111111',
 function fixture(auth = true) {
   const flow = {measure:vi.fn(async (_frames, check) => { await check(); return {dx:1}; })};
   const manager = {
+    patrolPosition: vi.fn(async () => ({pan: 0, tilt: -1, zoom: 0, wrap: false})),
     checkFlowContext: vi.fn(async () => undefined),
     close: vi.fn(),
     readCalibration: vi.fn(async () => ({scope:'b'.repeat(64), epoch:0, revision:0, zoomEvidence:'unknown', snapshot:null})),
@@ -39,6 +40,30 @@ function fixture(auth = true) {
   });
   return { app, manager, store, flow };
 }
+it('authenticates patrol reads and accepts only a channel and binding digest', async () => {
+  const identity = '1'.repeat(64);
+  for (const auth of [false, true]) {
+    const f = fixture(auth);
+    try {
+      const path = `/channels/${id}/ptz/patrol-position`;
+      const url = path + '?identity=' + identity;
+      if (!auth) {
+        expect((await f.app.inject(url)).statusCode).toBe(401);
+        expect(f.manager.patrolPosition).not.toHaveBeenCalled();
+        continue;
+      }
+      for (const bad of [path, path + '?identity=bad', url + '&wrap=true', url.replace(id, 'invalid')])
+        expect((await f.app.inject(bad)).statusCode).toBe(400);
+      expect(f.manager.patrolPosition).not.toHaveBeenCalled();
+      const r = await f.app.inject(url);
+      expect(r.statusCode).toBe(200);
+      expect(r.headers['cache-control']).toBe('no-store');
+      expect(r.json()).toEqual({pan: 0, tilt: -1, zoom: 0, wrap: false});
+      expect(f.manager.patrolPosition).toHaveBeenCalledWith(id, identity);
+      expect(f.manager.acquire).not.toHaveBeenCalled();
+    } finally { await f.app.close(); }
+  }
+});
 it('authenticates and validates both fixed-size JPEGs and forwards only a bounded pair', async () => {
   const header = Buffer.from('ffd8ffc00011080180020003011100021100031100','hex');
   const jpeg = (size: number) => Buffer.concat([header,Buffer.alloc(size-header.length-2),Buffer.from([255,217])]).toString('base64');

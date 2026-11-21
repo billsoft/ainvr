@@ -81,6 +81,92 @@ function fixture() {
   };
   return { manager: new PtzManager(store, deps), store, adapter, deps, root, log };
 }
+function patrolFixture() {
+  const f = fixture();
+  const base = 'http://www.onvif.org/ver10/tptz/';
+  const position = {
+    Pan: -1, Tilt: 1, Zoom: 0,
+    PanTiltSpace: base + 'PanTiltSpaces/PositionGenericSpace',
+    ZoomSpace: base + 'ZoomSpaces/PositionGenericSpace',
+  };
+  f.adapter.identity = JSON.stringify(f.root.onvif);
+  f.adapter.verify = vi.fn(async () => undefined);
+  f.adapter.caps.position = true;
+  f.adapter.caps.continuousPanTilt = true;
+  const call = vi.mocked(f.adapter.call);
+  call.mockImplementation(async () => ({position, panTilt: 'MOVING'}));
+  return {...f, base, position, call};
+}
+it('reads each native status afresh, normalizes angular units, and never claims mechanical wrap', async () => {
+  const f = patrolFixture();
+  try {
+    const identity = (await f.manager.inspect('root')).identity!;
+    const read = () => f.manager.patrolPosition('root', identity);
+    expect(await read()).toEqual({pan: -1, tilt: 1, zoom: 0, wrap: false});
+    Object.assign(f.position, {PanTiltSpace: f.base + 'PanTiltSpaces/SphericalPositionSpaceDegrees',
+      Pan: 90, Tilt: -135, Zoom: 1});
+    expect(await read()).toEqual({pan: 0.5, tilt: -0.75, zoom: 1, wrap: false});
+    expect(f.call.mock.calls).toEqual([['status'], ['status']]);
+    expect(f.deps.resetProcessors).not.toHaveBeenCalled();
+    expect(f.store.block).not.toHaveBeenCalled();
+  } finally { await f.manager.close(); }
+});
+it('rejects incomplete, nonfinite, out-of-range and unknown-space positions without guessing units', async () => {
+  const f = patrolFixture();
+  try {
+    const identity = (await f.manager.inspect('root')).identity!;
+    for (const patch of [{Pan: NaN}, {Tilt: Infinity}, {Zoom: null}, {Pan: '0'}, {Pan: 1.01},
+      {Tilt: -1.01}, {Zoom: -0.01}, {Zoom: 1.01}, {ZoomSpace: ''}, {PanTiltSpace: undefined},
+      {PanTiltSpace: f.base + 'PanTiltSpaces/VelocityGenericSpace'},
+      {PanTiltSpace: f.base + 'PanTiltSpaces/SphericalPositionSpaceDegrees', Pan: 181}]) {
+      f.call.mockResolvedValueOnce({position: {...f.position, ...patch}});
+      await expect(f.manager.patrolPosition('root', identity)).rejects.toThrow('ptz_position_unavailable');
+    }
+    for (const status of [{}, {position: null}]) {
+      f.call.mockResolvedValueOnce(status);
+      await expect(f.manager.patrolPosition('root', identity)).rejects.toThrow('ptz_position_unavailable');
+    }
+  } finally { await f.manager.close(); }
+});
+it('fences prior and in-flight binding changes and rejects delayed status', async () => {
+  const f = patrolFixture();
+  try {
+    const identity = (await f.manager.inspect('root')).identity!;
+    await expect(f.manager.patrolPosition('root', 'old')).rejects.toThrow('ptz_source_changed');
+    f.adapter.identity = 'different prepared profile';
+    await expect(f.manager.patrolPosition('root', identity)).rejects.toThrow('ptz_source_changed');
+    expect(f.call).not.toHaveBeenCalled();
+    f.adapter.identity = JSON.stringify(f.root.onvif);
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(5);
+    try {
+      f.call.mockImplementationOnce(async () => {
+        clock.mockReturnValue(1006);
+        return {position: f.position};
+      });
+      await expect(f.manager.patrolPosition('root', identity)).rejects.toThrow('ptz_position_stale');
+    } finally { clock.mockRestore(); }
+    f.call.mockImplementationOnce(async () => {
+      f.root.inputGeneration = 'rebound';
+      return {position: f.position};
+    });
+    await expect(f.manager.patrolPosition('root', identity)).rejects.toThrow('ptz_source_changed');
+  } finally { await f.manager.close(); }
+});
+it('rejects disabled reads, missing native status and GB raw units before querying the device', async () => {
+  const f = patrolFixture();
+  try {
+    const identity = (await f.manager.inspect('root')).identity!;
+    const read = () => f.manager.patrolPosition('root', identity);
+    vi.mocked(f.store.settings).mockResolvedValueOnce({settings: {enabled: false}} as any);
+    await expect(read()).rejects.toThrow('ptz_disabled');
+    f.adapter.caps.position = false;
+    await expect(read()).rejects.toThrow('ptz_position_unavailable');
+    f.adapter.caps.position = true;
+    f.adapter.protocol = 'gb28181';
+    await expect(read()).rejects.toThrow('ptz_position_unavailable');
+    expect(f.call).not.toHaveBeenCalled();
+  } finally { await f.manager.close(); }
+});
 it('isolates NeuFlow and legacy records on the same motor epoch', async () => {
   const f = fixture();
   try {

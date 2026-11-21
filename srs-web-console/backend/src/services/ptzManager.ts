@@ -10,6 +10,14 @@ export interface PtzVector {
   zoom: number;
 }
 type Resolved = ReturnType<typeof resolvePtzSource>;
+const onvifSpaces = 'http://www.onvif.org/ver10/tptz/';
+const patrolSampleMaxAgeMs = 1000;
+
+function patrolAxis(value: unknown, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max)
+    throw new PtzError('ptz_position_unavailable', 422);
+  return value;
+}
 interface CalibrationView { identity: string; width: number; height: number; estimator?: 'neuflow-v1' }
 function calibrationDigest(parts: unknown[]) {
   return createHash('sha256').update(JSON.stringify(parts)).digest('hex');
@@ -290,6 +298,44 @@ export class PtzManager {
     const lease = this.leases.get(this.motor(resource));
     if (lease?.changesCalibration && (!lease.stopped || lease.stopPending || lease.uncertain))
       throw new PtzError('ptz_calibration_busy');
+  }
+  async patrolPosition(id: string, identity: string) {
+    const { source, adapter } = await this.target(id);
+    const checkSource = (current: typeof source) => {
+      if (current.fingerprint !== identity || !current.displayedEnabled || current.root.inputEnabled === false)
+        throw new PtzError('ptz_source_changed');
+      if (adapter?.protocol === 'onvif' && JSON.stringify(current.root.onvif) !== adapter.identity)
+        throw new PtzError('ptz_source_changed');
+    };
+    checkSource(source);
+    // GB PTZPosition currently exposes raw vendor units without verified axis ranges.
+    if (adapter?.protocol !== 'onvif' || !adapter.caps.position)
+      throw new PtzError('ptz_position_unavailable', 422);
+    await adapter.verify?.();
+    const [global, camera] = await Promise.all([this.store.settings(), this.camera(source, adapter)]);
+    if (!global.settings.enabled || !camera.settings.enabled) throw new PtzError('ptz_disabled');
+
+    // Each status call performs a fresh SOAP GetStatus. Bound its age through the final binding check.
+    const started = performance.now();
+    const status = await adapter.call('status');
+    await adapter.verify?.();
+    checkSource(await this.resolve(id, adapter.videoSources));
+    if (performance.now() - started > patrolSampleMaxAgeMs) throw new PtzError('ptz_position_stale', 503);
+
+    const p = status?.position;
+    if (p?.ZoomSpace !== onvifSpaces + 'ZoomSpaces/PositionGenericSpace')
+      throw new PtzError('ptz_position_unavailable', 422);
+    const degrees = p.PanTiltSpace === onvifSpaces + 'PanTiltSpaces/SphericalPositionSpaceDegrees';
+    if (!degrees && p.PanTiltSpace !== onvifSpaces + 'PanTiltSpaces/PositionGenericSpace')
+      throw new PtzError('ptz_position_unavailable', 422);
+    const scale = degrees ? 180 : 1;
+    return {
+      pan: patrolAxis(p.Pan, -scale, scale) / scale,
+      tilt: patrolAxis(p.Tilt, -scale, scale) / scale,
+      zoom: patrolAxis(p.Zoom, 0, 1),
+      // Neither a velocity space nor these position URIs prove mechanical travel across the seam.
+      wrap: false,
+    };
   }
   async checkFlowContext(id: string, identity: string, epoch: number) {
     const {source, adapter} = await this.target(id);

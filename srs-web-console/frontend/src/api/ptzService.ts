@@ -64,6 +64,10 @@ const path = (id: string) => `/channels/${encodeURIComponent(id)}/ptz`;
 const send = <T>(url: string, body: unknown, method = 'POST') =>
   request<T>(url, { method, body: JSON.stringify(body), signal: AbortSignal.timeout(12000) });
 export const ptzService = {
+  patrolPosition: (id: string, identity: string): Promise<PtzVector & { wrap: boolean }> =>
+    request(`${path(id)}/patrol-position?identity=${encodeURIComponent(identity)}`, {
+      cache: 'no-store', signal: AbortSignal.timeout(12000),
+    }),
   visualCalibration: (id: string, identity: string, width: number, height: number, signal: AbortSignal, estimator?: 'neuflow-v1') =>
     request<VisualCalibrationContext>(path(id) + '/center-calibration/read', {
       method: 'POST', body: JSON.stringify({ identity, width, height, estimator }),
@@ -134,6 +138,8 @@ export const ptzService = {
     send(`${path(id)}/restore-view`, { expectedRevision, mode }),
 };
 const reasons: Record<string, string> = {
+  ptz_position_unavailable: '设备未提供可核验的巡航坐标。',
+  ptz_position_stale: '读取设备坐标超时，请重新读取。',
   ptz_calibration_stale: '当前倍率标定已失效，请先标定。',
   ptz_flow_busy: '光流标定服务繁忙，请稍后重试。',
   ptz_flow_unavailable: '光流标定服务暂不可用，请稍后重试。',

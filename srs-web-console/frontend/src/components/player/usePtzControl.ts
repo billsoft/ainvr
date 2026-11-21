@@ -34,9 +34,17 @@ function acquireLease(channel: string, identity: string, calibrationEpoch?: numb
     if (!result.stopConfirmed) throw Error('ptz_stop_unconfirmed');
     return true;
   }
-  function release() {
-    return releasing ??= sessionId ? sendStop(sessionId) :
-      ready.then(session => sendStop(session.sessionId), () => false);
+  let releaseFailed = false;
+  function release(retryFailed = false) {
+    if (retryFailed && releaseFailed) {
+      releasing = undefined;
+      releaseFailed = false;
+    }
+    return releasing ??= (sessionId ? sendStop(sessionId) :
+      ready.then(session => sendStop(session.sessionId), () => false)).catch(error => {
+        releaseFailed = true;
+        throw error;
+      });
   }
   return { ready, release };
 }
@@ -223,10 +231,19 @@ export function usePtzControl(channelId: string, identity: string | undefined, o
     })();
     return g.stopping;
   }, []);
-  const stopConfirmed = useCallback(() => {
+  const stopConfirmed = useCallback((retryFailed = false) => {
     ++generation.current;
     pendingPoint.current = null;
-    return active.current ? finish(active.current) : Promise.resolve(!failedStop.current);
+    if (active.current) return finish(active.current);
+    const failed = failedStop.current;
+    if (!retryFailed || !failed?.lease) return Promise.resolve(!failed);
+    return failed.lease.release(true).then(ok => {
+      if (ok && failedStop.current === failed) {
+        failedStop.current = null;
+        if (live.current) setError('');
+      }
+      return ok;
+    }, () => false);
   }, [finish]);
   const stop = useCallback(async () => { await stopConfirmed(); }, [stopConfirmed]);
 
@@ -307,6 +324,37 @@ export function usePtzControl(channelId: string, identity: string | undefined, o
       };
       await tick();
     }).catch(e => fail(g, e));
+  }
+
+  function drive(steer: () => PtzVector | null, budgetMs: number,
+    prepare: (signal: AbortSignal, brake: () => void) => Promise<void>) {
+    return new Promise<boolean>(resolve => {
+      const g = start('manual', zero, resolve);
+      if (!g) return;
+      const deadline = performance.now() + budgetMs;
+      const brake = () => { void finish(g, true); };
+      const limit = setTimeout(() => void finish(g), budgetMs);
+      g.abort.signal.addEventListener('abort', () => clearTimeout(limit), {once:true});
+      const lease = g.lease = acquireLease(g.channel, g.identity);
+      void lease.ready.then(async session => {
+        if (g.abort.signal.aborted) return;
+        await prepare(g.abort.signal, brake);
+        if (g.abort.signal.aborted) return;
+        let sequence = 0;
+        const tick = async (): Promise<void> => {
+          if (g.abort.signal.aborted) return;
+          if (performance.now() >= deadline) { await finish(g); return; }
+          const vector = steer();
+          if (!vector) { await finish(g, true); return; }
+          await ptzService.command(g.channel, session.sessionId, ++sequence, vector);
+          if (g.abort.signal.aborted) return;
+          setState('moving');
+          g.timer = setTimeout(() => void tick().catch(e => fail(g,e)), Math.min(180, session.leaseMs / 3));
+        };
+        current.current.onChanged();
+        await tick();
+      }).catch(e => fail(g,e));
+    });
   }
 
   function centerPoint(x: number, y: number, video: HTMLVideoElement | null | undefined,
@@ -405,7 +453,7 @@ export function usePtzControl(channelId: string, identity: string | undefined, o
   }, [channelId, identity, stopConfirmed]);
 
   return {
-    state, error, notice, begin, centerPoint, stop, stopConfirmed, priorityStop, calibration, calibrate, refreshCalibration,
+    state, error, notice, begin, drive, centerPoint, stop, stopConfirmed, priorityStop, calibration, calibrate, refreshCalibration,
     clearFeedback: () => { if (!failedStop.current) { setError(''); setNotice(''); } },
     zoomStep: async (zoom: number) => {
       lastWheel.current = Date.now();

@@ -1,8 +1,13 @@
 import type { ReadDisplayedTracks, TrackPicking } from './AiDetectionOverlay';
 import { createPortal } from 'react-dom';
 import { usePtzFollow } from './usePtzFollow';
+import { alarmTriggerService } from '@/api/alarmTriggerService';
+import { labelDisplay } from '@/features/labelNames';
+import { patrolLabelGroups, type PatrolLabel } from './ptzPatrol';
+import { minPatrolSpeed, maxPatrolSpeed, preferredPatrolSpeed, rememberPatrolSpeed } from './horizontalPatrol';
+import { usePtzPatrol } from './usePtzPatrol';
 import { usePtzModeZoom } from './usePtzModeZoom';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PtzAimSurface } from './PtzAimSurface';
 import { X, Move, Minus, Plus, Square, MapPin, Save, Trash2, RefreshCw, Focus, ShieldCheck, Crosshair, ScanEye, Lightbulb, LightbulbOff, Droplets, Scan, ScanLine, ListRestart, Pencil, ChevronLeft, ChevronRight, Check, type LucideIcon } from 'lucide-react';
 import { ptzService, ptzError, type PtzInfo, type PtzPreset } from '@/api/ptzService';
@@ -41,7 +46,7 @@ const keyDirections: Record<string, [number, number, number]> = {
   '=': [0, 0, 1],
   '-': [0, 0, -1],
 };
-type PtzMode = 'manual' | 'aim' | 'follow';
+type PtzMode = 'manual' | 'aim' | 'follow' | 'patrol';
 interface Props {
   channelId: string;
   onClose: () => void;
@@ -65,9 +70,39 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
     [notice, setNotice] = useState(''),
     [overwrite, setOverwrite] = useState(false);
   const [mode, setMode] = useState<PtzMode>('manual');
+  const [showPatrolHint, setShowPatrolHint] = useState(false);
   const [changingMode, setChangingMode] = useState(false);
   const modeIntent = useRef(0);
   const aim = mode === 'aim';
+  const patrolling = mode === 'patrol';
+  const [chosen, setChosen] = useState<PatrolLabel | null>(null);
+  const [catalog, setCatalog] = useState<{processor: string; labels: PatrolLabel[]; failed: boolean}>();
+  useEffect(() => {
+    setCatalog(undefined);
+    if (!patrolling || !followProcessor) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh(processor: string) {
+      try {
+        const source = await alarmTriggerService.source(processor);
+        if (source.channel_id !== processor) throw Error('channel mismatch');
+        if (!disposed) setCatalog({processor, labels: source.labels, failed: false});
+      } catch {
+        if (!disposed) setCatalog({processor, labels: [], failed: true});
+      } finally {
+        if (!disposed) timer = setTimeout(() => void refresh(processor), 15000);
+      }
+    }
+    void refresh(followProcessor);
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [patrolling, followProcessor]);
+  const currentCatalog = catalog?.processor === followProcessor ? catalog : undefined;
+  const groups = useMemo(() => patrolLabelGroups(currentCatalog?.labels ?? []), [currentCatalog]);
+  const patrolLabel = chosen && currentCatalog?.labels.find(label =>
+    label.label_id === chosen.label_id && label.name === chosen.name);
+  const missingSelection = !!chosen && !patrolLabel;
+  const [patrolSpeed, setPatrolSpeed] = useState(0.2);
+  const [routeType,setRouteType] = useState<'range'|'circle'>('range');
   const [filter, setFilter] = useState('');
   const [presetError, setPresetError] = useState('');
   const [tourStep, setTourStep] = useState('');
@@ -176,11 +211,23 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
     return () => events.forEach(event => video.removeEventListener(event, checkVideo));
   }, [showCalibration, video, channelId, info?.identity]);
   const canFollow = isAiOutput && !!followProcessor && !!video && !!caps?.panTilt && !!onTrackPickingChange;
+  const patrolTargetUnavailable = isAiOutput && !!chosen && (!canFollow || missingSelection);
+  const gbPatrolHint = '水平巡航目前仅支持可回报云台位置的 ONVIF 通道。';
+  const gbChannel = info?.protocol === 'gb28181';
+  const canPatrol = info?.protocol === 'onvif' && !!video && !!caps?.panTilt && caps.position === true;
+  const patrol = usePtzPatrol({camera: channelId, processor: canFollow ? followProcessor : undefined,
+    identity: info?.identity, enabled: patrolling && canPatrol && info?.enabled !== false && !info?.stopUnconfirmed,
+    positionAvailable: caps?.position === true, video, displayedTracks, control});
+  useEffect(() => {
+    if (patrol.active && chosen && currentCatalog && !currentCatalog.failed && missingSelection) void patrol.stop();
+  }, [patrol.active, patrol.stop, chosen, currentCatalog, missingSelection]);
+  const labelPatrol = isAiOutput && canPatrol;
+  useEffect(() => { setPatrolSpeed(preferredPatrolSpeed(info?.identity)); setRouteType('range'); }, [channelId,info?.identity]);
   const enabled = !!info?.supported && info.enabled !== false && !changingMode && !calibration.running &&
-    !busy && !tourStep && (!info.busy || control.moving || control.preparing || follow.ownsLease);
-  const screenReady = enabled && control.state === 'idle' && !info?.stopUnconfirmed;
+    !busy && !tourStep && (!info.busy || control.moving || control.preparing || follow.ownsLease || patrol.ownsLease);
+  const screenReady = enabled && !patrol.active && control.state === 'idle' && !info?.stopUnconfirmed;
   const zoomDisabled = !enabled || !caps?.zoom || !!info?.stopUnconfirmed;
-  const modeZoom = usePtzModeZoom({ mode, channelId, identity: info?.identity, protocol: info?.protocol,
+  const modeZoom = usePtzModeZoom({ mode: patrolling ? 'manual' : mode, channelId, identity: info?.identity, protocol: info?.protocol,
     permitted: !!info?.supported && info.enabled !== false && !!caps?.zoom && !info.stopUnconfirmed,
     speed, follow, control, disabled: zoomDisabled });
   useEffect(() => {
@@ -209,6 +256,7 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
     try {
       if (!(await modeZoom.cancel())) return false;
       if (mode === 'follow' && !(await follow.stop())) return false;
+      if (mode === 'patrol' && !(await patrol.stop())) return false;
       if (!(await control.stopConfirmed())) return false;
       if (modeIntent.current !== intent) return false;
       control.clearFeedback();
@@ -221,14 +269,24 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
   };
   useEffect(() => () => { ++modeIntent.current; }, []);
   useEffect(() => {
-    if ((mode === 'follow' && !canFollow) || (mode === 'aim' && !canAim)) setMode('manual');
-  }, [mode, canFollow, canAim]);
+    if ((mode === 'follow' && !canFollow) || (mode === 'aim' && !canAim) || (patrolling && !canPatrol)) setMode('manual');
+  }, [mode, canFollow, canAim, patrolling, canPatrol]);
   useEffect(() => {
     if (mode === 'follow' && canFollow && !changingMode && !modeZoom.busy && (follow.pickReady || follow.selectedId)) {
       onTrackPickingChange?.({ selectedId: follow.selectedId, pickEnabled: follow.pickReady, onPick: follow.pick });
       return () => onTrackPickingChange?.(null);
     }
   }, [mode, canFollow, changingMode, modeZoom.busy, follow.pickReady, follow.selectedId, follow.pick, onTrackPickingChange]);
+  useEffect(() => {
+    if (!patrolling || !patrol.selectedId) return;
+    onTrackPickingChange?.({selectedId: patrol.selectedId, pickEnabled: false, onPick: () => {}});
+    return () => onTrackPickingChange?.(null);
+  }, [patrolling, patrol.selectedId, onTrackPickingChange]);
+  const wasPatrolling = useRef(false);
+  useEffect(() => {
+    if (wasPatrolling.current && !patrol.active) queueRefresh();
+    wasPatrolling.current = patrol.active;
+  }, [patrol.active, queueRefresh]);
 
   // Calling a stored position ends any active image-directed movement first.
   const gotoPreset = async (id: string) => {
@@ -332,12 +390,24 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
       });
       showSaved(saved.id, name.trim(), '预置点已保存');
     });
+  const closing = useRef(false);
   const close = async () => {
+    if (closing.current) return;
+    closing.current = true;
     cancelTour();
     keys.current.clear();
     ++modeIntent.current;
-    await Promise.all([modeZoom.cancel(), control.stop(), follow.stop()]);
-    onClose();
+    setChangingMode(true);
+    try {
+      const stopped = await Promise.all([modeZoom.cancel(), control.stopConfirmed(true), follow.stop(), patrol.stop()]);
+      if (!stopped.every(Boolean)) throw Error('ptz_stop_unconfirmed');
+      onClose();
+    } catch {
+      setNotice('停止尚未确认，再次关闭可重试停转。');
+    } finally {
+      closing.current = false;
+      setChangingMode(false);
+    }
   };
   const held = (pan: number, tilt: number, zoom = 0) => ({
     onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
@@ -377,7 +447,7 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
     setBusy(true);
     setNotice('');
     try {
-      if (mode === 'follow' && !(await changeMode('manual'))) return;
+      if ((mode === 'follow' || patrolling) && !(await changeMode('manual'))) return;
       await fn();
       await refresh();
       await loadPresets();
@@ -394,6 +464,7 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
     setChangingMode(false);
     void modeZoom.cancel();
     void follow.stop();
+    void patrol.stop();
     emergency.current = control.priorityStop()
       .then(() => setNotice('已请求停转'))
       .catch((e) => setNotice(ptzError(e)))
@@ -478,7 +549,13 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
           ['manual', '手动控制', Move, true, '用方向键控制云台'],
           ['aim', '点击居中', Crosshair, canAim, !video ? '等待可用的视频画面' : canAim ? (caps?.pointCenter ? '使用摄像头原生定位，滚轮变焦' : '使用当前倍率标定定位，滚轮变焦') : '设备不支持转动'],
           ['follow', 'AI 跟踪', ScanEye, canFollow, !isAiOutput ? '仅 AI 输出通道可用' : canFollow ? '点选画面中的识别框' : '等待可跟踪的实时画面'],
-        ] as const).map(([value, label, Icon, available, hint]) => (
+          ['patrol', '巡航', ScanLine, canPatrol, !caps?.position ? '此通道无法回读云台位置，自动巡航不可用' : canPatrol ? '沿当前高度水平巡航' : '等待实时画面'],
+        ] as const).map(([value, label, Icon, available, hint]) => value === 'patrol' && gbChannel ? (
+          <button key={value} type="button" aria-label={label} aria-description={gbPatrolHint} title={gbPatrolHint}
+            style={{color: '#94a3b8'}} onClick={() => setShowPatrolHint(true)} onBlur={() => setShowPatrolHint(false)}>
+            <Icon size={15} aria-hidden="true"/>{label}
+          </button>
+        ) : (
           <button key={value} type="button" aria-pressed={mode === value} aria-label={label} title={hint}
             disabled={changingMode || calibration.running || (!available && mode !== value) ||
               (value !== 'manual' && mode !== value && (!info?.supported || info.enabled === false || info.stopUnconfirmed))}
@@ -487,6 +564,8 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
           </button>
         ))}
       </div>
+      {gbChannel && showPatrolHint && <p role="status" className="my-1 text-xs text-slate-300">{gbPatrolHint}</p>}
+      {!patrolling && (!showCalibration || !!info?.stopUnconfirmed || (!!info?.busy && !control.moving && !control.preparing && control.state === 'idle')) &&
       <p role="status" data-idle={mode === 'manual' && control.state === 'idle' && info?.supported && !info?.busy && info.enabled !== false && !info.stopUnconfirmed} className="my-1 text-xs leading-4 text-slate-300">
         {modeZoom.busy ? '正在调节镜头…' : control.state === 'preparing'
           ? '正在准备控制…'
@@ -503,9 +582,9 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
                     : info?.enabled === false
                       ? '云台控制已关闭'
                       : info?.supported
-                        ? mode === 'follow' ? (follow.statusText || '点选识别框开始跟踪') : aim ? (caps?.pointCenter ? (caps?.zoom ? '点画面任意位置居中 · 滚轮变焦' : '点画面任意位置居中') : (caps?.zoom ? '标定后定位 · 滚轮变焦' : '标定后定位')) : '按住转动，松开停止'
+                        ? mode === 'follow' ? (follow.statusText || '点选识别框开始跟踪') : aim ? (caps?.zoom ? '点画面任意位置居中 · 滚轮变焦' : '点画面任意位置居中') : '按住转动，松开停止'
                         : '能力尚未确认或不支持'}
-      </p>
+      </p>}
       {caps?.reason && (
         <p className="mb-3 rounded-lg bg-amber-950/40 p-2 text-xs leading-5 text-amber-200">
           {ptzError(Error(caps.reason))}
@@ -517,24 +596,76 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
         </p>
       )}
       {showCalibration && video && (
-        <section aria-label="点击居中标定" className="col-span-full min-w-0 text-xs">
-          <div className="flex items-center justify-between gap-1">
-            <strong>当前倍率标定</strong>
+        <section aria-label="点击居中标定" className="ptz-calibration-row">
             <button type="button" className={button + ' whitespace-nowrap px-2 text-xs'}
+              title="标定会向四个方向短动，可随时停止"
               disabled={!calibration.running && (!calibrationVideoReady || !screenReady || modeZoom.busy)}
               onClick={() => {
                 if (calibration.running) void control.stop();
                 else void control.calibrate(video);
               }}>{calibration.running ? '停止标定' : calibration.ready ? '重新标定' : '开始标定'}</button>
-          </div>
-          <p role="status">已标定 {calibration.ready}/4方向{calibration.running && ` · 已测 ${calibration.progress}/${calibration.total} 段`}</p>
-          <p className="text-slate-300">四向短动，可停止，视角可能改变</p>
-          {!calibrationVideoReady && !calibration.running
-            ? <p role="status">等待视频就绪</p>
-            : calibration.message && <p role="status" className="break-words">{calibration.message}</p>}
+          <span role="status" title={calibration.message}>
+            {calibration.running ? `标定中 ${calibration.progress}/${calibration.total}`
+              : !calibrationVideoReady ? '等待视频就绪'
+              : calibration.ready === 4 ? (caps?.zoom ? '已标定 · 滚轮变焦' : '已标定 · 点击定位')
+              : (calibration.message && !calibration.message.startsWith('请先完成') && calibration.message !== '尚未读取标定'
+                ? calibration.message : `已标定 ${calibration.ready}/4 方向`)}
+          </span>
         </section>
       )}
-      {mode !== 'manual' && <div role="group" aria-label="镜头控制" className="ptz-lens-actions flex gap-1">
+      {patrolling && (
+        <section aria-label="巡航设置" className="ptz-section ptz-patrol">
+          {labelPatrol && <label>目标标签
+            <select disabled={patrol.active} value={missingSelection ? '$unavailable' : chosen?.label_id ?? ''}
+              onChange={e => setChosen(currentCatalog?.labels.find(l => l.label_id === e.target.value) ?? null)}>
+              <option value="">仅扫描（不跟踪）</option>
+              {missingSelection && <option value="$unavailable" disabled>{labelDisplay(chosen.name)} · 待核验</option>}
+              {groups.map(group => <optgroup key={group.title} label={group.title}>
+                {group.items.map(l => <option key={l.label_id} value={l.label_id}>
+                  {labelDisplay(l.name)}{currentCatalog!.labels.some(other => other.label_id !== l.label_id &&
+                    labelDisplay(other.name) === labelDisplay(l.name)) ? ' · ' + l.label_id : ''}
+                </option>)}
+              </optgroup>)}
+            </select>
+            {(!followProcessor || !currentCatalog || currentCatalog.failed) &&
+              <small role="status">{!followProcessor ? '等待实时画面' : currentCatalog?.failed ? '标签暂不可用，将自动重试' : '正在读取通道标签…'}</small>}
+          </label>}
+          <label className="ptz-patrol-speed">扫描速度 <input type="range" min={minPatrolSpeed} max={maxPatrolSpeed} step="0.05"
+            disabled={patrol.active} value={patrolSpeed}
+            onChange={event => {
+              const value = Number(event.target.value);
+              setPatrolSpeed(value);
+              if (info?.identity) rememberPatrolSpeed(info.identity,value);
+            }}/>
+            <span>{Math.round(patrolSpeed * 100)}%</span></label>
+          {patrol.route && !patrol.teaching && <button type="button" className={button}
+            disabled={!patrol.active && (!screenReady || patrol.ownsLease || (labelPatrol && patrolTargetUnavailable))}
+            onClick={() => { if(patrol.active) void patrol.stop(); else patrol.start(patrolSpeed,labelPatrol ? patrolLabel ?? null : null); }}>
+            {patrol.active ? '停止巡航' : '开始巡航'}</button>}
+          <p role="status" className="m-0 text-slate-300">{info?.stopUnconfirmed ? '停止尚未确认' :
+            patrol.status || (info?.busy && !patrol.active ? '其他窗口正在控制' :
+              patrol.route ? '沿当前高度水平扫描' :
+              '先对准扫描起点，再设置范围')}</p>
+          <details key={patrol.route ? 'configured' : 'unconfigured'} open={patrol.teaching || !patrol.route ? true : undefined}>
+            <summary className="cursor-pointer" onClick={event => { if (patrol.teaching) event.preventDefault(); }}>设置范围</summary>
+            <div className="ptz-patrol-options">
+              <label>路线 <select disabled={patrol.active} value={routeType}
+                onChange={event => setRouteType(event.target.value === 'circle' ? 'circle' : 'range')}>
+                <option value="range">左右端点往返</option>
+                <option value="circle">整圈往返</option>
+              </select></label>
+              {!patrol.teaching && <button type="button" className={button} disabled={!screenReady}
+                onClick={() => patrol.teach(patrolSpeed,routeType==='circle')}>记下起点并向右低速试扫</button>}
+              {patrol.teaching && <div className="flex gap-1">
+                {patrol.confirmRequired && <button type="button" className={button+' flex-1'} disabled={!patrol.canFinish}
+                  onClick={patrol.confirmEnd}>{routeType==='circle' ? '已回到起点' : '记下右端'}</button>}
+                <button type="button" className={button} onClick={()=>void patrol.stop()}>取消</button>
+              </div>}
+            </div>
+          </details>
+        </section>
+      )}
+      {(aim || mode === 'follow') && <div role="group" aria-label="镜头控制" className="ptz-lens-actions flex gap-1">
         {caps?.zoom && <button type="button" className={button + ' min-w-0 flex-1 flex-col gap-0 px-0 text-xs'}
           disabled={zoomDisabled || modeZoom.busy} onClick={() => zoomButton(-1)}>
           <Minus size={15} aria-hidden="true"/>拉远
@@ -585,7 +716,7 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
         </div>
       )}
       </div>}
-      {mode !== 'follow' && (aim ? caps?.zoom : (caps?.panTilt || caps?.zoom)) && (
+      {(aim ? caps?.zoom : mode === 'manual' && (caps?.panTilt || caps?.zoom)) && (
         <label className="flex items-center gap-2 text-xs">
           {aim ? '变焦速度' : '速度'}
           <input

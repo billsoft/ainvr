@@ -149,6 +149,11 @@ export async function ptzRoutes(app: FastifyInstance, opts: Options) {
   });
   app.get('/channels/:id/ptz', (req) => opts.manager!.inspect(id(req)));
   const digest = z.string().regex(/^[a-f0-9]{64}$/);
+  app.get('/channels/:id/ptz/patrol-position', async (req, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const { identity } = z.object({ identity: digest }).strict().parse(req.query);
+    return opts.manager!.patrolPosition(id(req), identity);
+  });
   const dimension = z.number().int().min(1).max(16384);
   const counter = z.number().int().nonnegative().safe();
   const calibrationView = z.object({identity: digest, width: dimension, height: dimension,

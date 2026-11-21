@@ -9,6 +9,7 @@
 #include "api/search_reencode_http_contract.hpp"
 #include "output/search_sampling_owner.hpp"
 #include "pipeline/unavailable_worker.hpp"
+#include "platform/byte_budget.hpp"
 using nlohmann::json;
 namespace cfg = ai_service::config;
 namespace api = ai_service::api;
@@ -146,9 +147,12 @@ class SnapshotPatchWorker : public ai_service::pipeline::ChannelWorker {
  public:
   explicit SnapshotPatchWorker(cfg::ChannelConfig c,bool running)
     :config_(std::make_shared<const cfg::ChannelConfig>(std::move(c))),
-     state_(running?ai_service::pipeline::ChannelState::kRunning:ai_service::pipeline::ChannelState::kIdle){}
-  void Start() override {++starts;state_=ai_service::pipeline::ChannelState::kRunning;}
-  void Stop() override {++stops;state_=ai_service::pipeline::ChannelState::kIdle;}
+     state_(running?ai_service::pipeline::ChannelState::kRunning:ai_service::pipeline::ChannelState::kIdle){
+    if(running)slot_=ainvr::AcquireChannelSlot(config_->id);
+  }
+  void Start() override {slot_=ainvr::AcquireChannelSlot(config_->id);++starts;state_=ai_service::pipeline::ChannelState::kRunning;}
+  void Stop() override {++stops;slot_.reset();state_=ai_service::pipeline::ChannelState::kIdle;}
+  void Fail() {state_=ai_service::pipeline::ChannelState::kError;}
   ai_service::pipeline::ChannelState State() const override {return state_;}
   void SetLicenseCheck(std::function<bool()>) override {}
   void SetSearchProducerLeaseReader(cfg::SearchProducerLeaseReader reader) override {
@@ -179,6 +183,7 @@ class SnapshotPatchWorker : public ai_service::pipeline::ChannelWorker {
   std::shared_ptr<const cfg::ChannelConfig> config_;
   ai_service::pipeline::ChannelState state_;
   ai_service::ResultBuffer results_{30};
+  std::shared_ptr<ainvr::ByteBudget::Ticket> slot_;
 };
 struct SnapshotPatchFixture {
   fs::path directory;
@@ -188,11 +193,12 @@ struct SnapshotPatchFixture {
   std::shared_ptr<api::ChannelManager> manager;
   bool licensed=false;
   explicit SnapshotPatchFixture(bool running, cfg::SearchProducerLeaseReader reader = {},
-    std::shared_ptr<ai_service::output::SearchSamplingOwner> owner = {}) {
+    std::shared_ptr<ai_service::output::SearchSamplingOwner> owner = {}, bool enabled = true) {
     directory=fs::temp_directory_path()/("ainvr-snapshot-patch-"+std::to_string(getpid()));
     fs::create_directory(directory);
     cfg::ChannelConfig c;c.id="isolated-snapshot-patch";c.name="TEST ONLY";
     c.manually_stopped=!running;c.stream.url="rtmp://127.0.0.1:1935/live/never-open";
+    c.enabled=enabled;
     c.snapshot.enabled=false;c.model.adapter="yoloface_bpu";c.model.provider="bpu";
     c.model.name="face_detector";c.model.path="missing-test-only.hbm";
     std::ofstream(directory/"base.json")<<json{
@@ -202,13 +208,77 @@ struct SnapshotPatchFixture {
     store=std::make_shared<cfg::ConfigStore>(directory/"base.json",directory/"overlay.json");
     manager=std::make_shared<api::ChannelManager>(store->Load(),store,
       [this,running](const cfg::ChannelConfig& ch,const cfg::SnapshotStoreConfig&){
-        worker=std::make_shared<SnapshotPatchWorker>(ch,running);created_workers.push_back(worker);return worker;
+        worker=std::make_shared<SnapshotPatchWorker>(ch,running && created_workers.empty());created_workers.push_back(worker);return worker;
       },[this]{return licensed;},
       std::function<void(const cfg::SnapshotStoreConfig&, const std::string&)>{},std::move(reader),std::move(owner));
     licensed=true; // Keep this control-only fixture from constructing a real archive.
   }
   ~SnapshotPatchFixture(){manager.reset();worker.reset();fs::remove_all(directory);}
 };
+}
+TEST(ChannelEnabledLifecycle, DisablingRunningWorkerStopsWithoutRestartOrScheduledStart) {
+  SnapshotPatchFixture f(true);auto old=f.worker;
+  f.manager->UpdateChannelConfig("isolated-snapshot-patch",{{"enabled",false}});
+  EXPECT_EQ(old->stops,1);EXPECT_EQ(f.worker->starts,0);
+  EXPECT_EQ(f.worker->State(),ai_service::pipeline::ChannelState::kIdle);
+  EXPECT_FALSE(f.worker->Config()->enabled);
+  EXPECT_FALSE(f.store->Load().channels.at(0).manually_stopped);
+  f.manager->StartAllEnabled();f.manager->ScheduleAllEnabled();f.manager->StopAll();
+  EXPECT_EQ(f.worker->starts,0);
+}
+TEST(ChannelEnabledLifecycle, DisablingErrorWorkerReapsAndSuppressesRetries) {
+  SnapshotPatchFixture f(true);auto old=f.worker;old->Fail();
+  f.manager->UpdateChannelConfig("isolated-snapshot-patch",{{"enabled",false}});
+  EXPECT_EQ(old->stops,1);
+  f.worker->Fail(); // Even a stale error state must not bypass the enabled gate.
+  f.manager->StartAllEnabled();f.manager->ScheduleAllEnabled();f.manager->StopAll();
+  EXPECT_EQ(f.worker->starts,0);
+}
+TEST(ChannelEnabledLifecycle, ReenableAutomaticallyStartsUnlessManuallyStopped) {
+  SnapshotPatchFixture f(true);
+  f.manager->UpdateChannelConfig("isolated-snapshot-patch",{{"enabled",false}});
+  f.manager->UpdateChannelConfig("isolated-snapshot-patch",{{"enabled",true}});
+  f.manager->StartAllEnabled();EXPECT_EQ(f.worker->starts,1);
+}
+TEST(ChannelEnabledLifecycle, ReenablePreservesManualStopUntilExplicitStart) {
+  SnapshotPatchFixture f(false);
+  f.manager->UpdateChannelConfig("isolated-snapshot-patch",{{"enabled",false}});
+  try {f.manager->StartChannel("isolated-snapshot-patch");FAIL()<<"disabled start accepted";}
+  catch(const api::ApiError& e){EXPECT_EQ(e.status_code(),409);}
+  EXPECT_TRUE(f.store->Load().channels.at(0).manually_stopped);
+  f.manager->UpdateChannelConfig("isolated-snapshot-patch",{{"enabled",true}});
+  f.manager->StartAllEnabled();EXPECT_EQ(f.worker->starts,0);
+  f.manager->StartChannel("isolated-snapshot-patch");EXPECT_EQ(f.worker->starts,1);
+  EXPECT_FALSE(f.store->Load().channels.at(0).manually_stopped);
+}
+TEST(ChannelEnabledLifecycle, ManualStopReapsErrorAndIsIdempotent) {
+  SnapshotPatchFixture f(true);f.worker->Fail();
+  EXPECT_EQ(ainvr::ActiveChannels().Snapshot().reserved,1u);
+  f.manager->StopChannel("isolated-snapshot-patch");EXPECT_EQ(f.worker->stops,1);
+  EXPECT_EQ(ainvr::ActiveChannels().Snapshot().reserved,0u);
+  f.manager->StopChannel("isolated-snapshot-patch");EXPECT_EQ(f.worker->stops,2);
+  f.manager->StartAllEnabled();EXPECT_EQ(f.worker->starts,0);
+  EXPECT_TRUE(f.store->Load().channels.at(0).manually_stopped);
+}
+TEST(ChannelEnabledLifecycle, DisablingReturnsSlotWithoutIncreasingCapacity) {
+  SnapshotPatchFixture f(true);auto old=f.worker;
+  const auto limit=ainvr::ActiveChannelLimit();
+  std::vector<std::shared_ptr<ainvr::ByteBudget::Ticket>> remaining;
+  for(uint64_t i=1;i<limit;++i)remaining.push_back(ainvr::AcquireChannelSlot("test-only"));
+  EXPECT_THROW(ainvr::AcquireChannelSlot("over-cap"),ainvr::MemoryBudgetExceeded);
+  f.manager->UpdateChannelConfig("isolated-snapshot-patch",{{"enabled",false}});
+  EXPECT_EQ(ainvr::ActiveChannels().Snapshot().reserved,limit-1);
+  EXPECT_NO_THROW(remaining.push_back(ainvr::AcquireChannelSlot("replacement")));
+  EXPECT_EQ(ainvr::ActiveChannels().Snapshot().limit,limit);
+  EXPECT_EQ(old->stops,1);EXPECT_EQ(f.worker->starts,0);
+}
+TEST(ChannelEnabledLifecycle, DisabledAtBootRemainsAddressableAndCannotStart) {
+  SnapshotPatchFixture f(false,{}, {},false);
+  ASSERT_NE(f.worker,nullptr);
+  f.manager->StartAllEnabled();EXPECT_EQ(f.worker->starts,0);
+  EXPECT_THROW(f.manager->StartChannel("isolated-snapshot-patch"),api::ApiError);
+  f.manager->UpdateChannelConfig("isolated-snapshot-patch",{{"enabled",true}});
+  f.manager->StartChannel("isolated-snapshot-patch");EXPECT_EQ(f.worker->starts,1);
 }
 TEST(SnapshotPatchPreflight, RunningFailurePreservesPersistedAndLiveConfig) {
   SnapshotPatchFixture f(true);const auto before=f.store->LoadRawMerged();

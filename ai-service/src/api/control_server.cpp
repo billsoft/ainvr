@@ -306,7 +306,7 @@ ChannelManager::ChannelManager(config::AppConfig config, std::shared_ptr<config:
       worker_factory_(std::move(worker_factory)), boot_cfg_(config),
       boot_api_key_(config.server.api_key), store_(std::move(store)), start_time_(NowWall()) {
   for (auto&& ch_cfg : config.channels) {
-    if (!ch_cfg.enabled && !ch_cfg.deletion_pending) continue;
+    // Keep disabled channels addressable so they can be enabled after a restart.
     if (ch_cfg.deletion_pending) deletion_pending_.insert(ch_cfg.id);
     if (ch_cfg.manually_stopped) manually_stopped_.insert(ch_cfg.id);
     // 与运行时一致:阻塞的归档器启动(Mongo ping/增强预加载)在锁外做
@@ -481,7 +481,7 @@ void ChannelManager::StartEnabled(const std::string& id) {
   {
     std::lock_guard<std::mutex> lock(lock_);
     auto it=channels_.find(id);
-    if(it==channels_.end() || manually_stopped_.count(id) || deletion_pending_.count(id) ||
+    if(it==channels_.end() || !it->second->Config()->enabled || manually_stopped_.count(id) || deletion_pending_.count(id) ||
        retries_[id].after>NowMono())return;
     worker=it->second;
   }
@@ -547,7 +547,7 @@ void ChannelManager::ScheduleAllEnabled() {
   {std::lock_guard<std::mutex> lock(lock_);
     for (auto& [id, w] : channels_) {
       const bool missing_archive = !snapshot_stores_.count(id);
-      const bool startable = !manually_stopped_.count(id) &&
+      const bool startable = w->Config()->enabled && !manually_stopped_.count(id) &&
           (w->State() == pipeline::ChannelState::kIdle || w->State() == pipeline::ChannelState::kError);
       if ((missing_archive || startable) && !deletion_pending_.count(id) &&
           retries_[id].after <= NowMono()) ids.push_back(id);
@@ -619,6 +619,9 @@ void ChannelManager::StartChannel(const std::string& channel_id) {
   std::lock_guard<std::mutex> op_guard(*op);
   auto worker = Get(channel_id);
   RequireNotDeleting(channel_id);
+  if (!worker->Config()->enabled) {
+    throw ApiError(409, "channel_disabled", "通道已禁用，请先启用通道");
+  }
   // 只有 idle/error 能启动:重连中/启动中/停止中的 worker 线程还在跑,
   // Start() 会去 join 一个不会退出的捕获线程,把本通道的操作锁永久占住。
   auto s = worker->State();
@@ -666,8 +669,8 @@ void ChannelManager::StopChannel(const std::string& channel_id) {
   { std::lock_guard<std::mutex> lock(lock_); manually_stopped_.insert(channel_id); }
   auto worker = Get(channel_id);
   // Idempotent: stopping an idle channel or one in a failure/retry loop is valid.
-  auto s = worker->State();
-  if (s != pipeline::ChannelState::kIdle && s != pipeline::ChannelState::kError) worker->Stop();
+  // ERROR can still own joinable threads and an active-channel ticket.
+  worker->Stop();
   try {
     PersistOperatorStop(channel_id, true);
   } catch (const std::exception&) {
@@ -1038,9 +1041,14 @@ nlohmann::json ChannelManager::UpdateChannelConfig(const std::string& channel_id
     {
       std::lock_guard<std::mutex> lock(lock_);
       old_store = InstallLocked(channel_id, new_worker, std::move(snapshot_store));
+      // A new worker must not inherit an old failure's retry deadline.
+      retries_.erase(channel_id);
     }
     old_store.reset();
-    if (was_running && LicenseAllowed()) {
+    bool operator_stopped;
+    { std::lock_guard<std::mutex> lock(lock_); operator_stopped = manually_stopped_.count(channel_id); }
+    if (was_running && new_ch_it->enabled && !operator_stopped &&
+        !cancelling_starts_.load() && LicenseAllowed()) {
       RequireLicense();
       new_worker->Start();
       restart_info = json{{"reason", reason}, {"status", WaitForRestart(*new_worker)}};
