@@ -116,8 +116,8 @@ it.skipIf(!enabled)('PG 无通道创建定义，多区域选用，重复保存�
   expect(await store.saveArming(arming(),0,'operator','a1',lookup,async()=>'g')).toEqual(result);
   expect((await store.snapshot()).rules.map((r:any)=>r.id).sort()).toEqual(['a','b']);
   expect((await store.listDefinitions())[0].usages).toEqual([
-    {assignment_id:'a',source_id:'camera',processor_id:'ai',zone_name:'one',label_map_version:'lm',geometry_revision:'g'},
-    {assignment_id:'b',source_id:'camera',processor_id:'ai',zone_name:'two',label_map_version:'lm',geometry_revision:'g'},
+    {assignment_id:'a',source_id:'camera',processor_id:'ai',zone_id:'one',zone_name:'one',label_map_version:'lm',geometry_revision:'g'},
+    {assignment_id:'b',source_id:'camera',processor_id:'ai',zone_id:'two',zone_name:'two',label_map_version:'lm',geometry_revision:'g'},
   ]);
   expect((await store.readArming('camera'))?.revision).toBe(1);
 }));

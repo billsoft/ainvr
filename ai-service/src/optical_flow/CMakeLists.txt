@@ -1,4 +1,4 @@
-# Copyright AINVR. Calibration-only flow; no autonomous observation loop.
+# Copyright AINVR. Shared demand-loaded flow and scene matching hardware.
 if(AINVR_S100P)
   add_library(ainvr_optical_flow hardware.cpp filters.cpp)
   target_include_directories(ainvr_optical_flow PUBLIC ${PROJECT_SOURCE_DIR}/src)
@@ -16,7 +16,7 @@ if(AINVR_S100P)
   endif()
 endif()
 if(BUILD_TESTING)
-  add_executable(optical_flow_test test.cpp)
+  add_executable(optical_flow_test test.cpp scene_match_test.cpp)
   target_include_directories(optical_flow_test PRIVATE ${PROJECT_SOURCE_DIR}/src)
   target_link_libraries(optical_flow_test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto Threads::Threads PkgConfig::HTTP GTest::gtest_main)
   add_test(NAME optical_flow COMMAND optical_flow_test)

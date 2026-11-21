@@ -1,7 +1,6 @@
 import {AlarmInputNotice} from './AlarmInputNotice'
 import {automaticReviewBanner} from '@/features/alarmReview'
 import {alarmBusinessKinds,alarmBusinessKindOf,alarmBusinessName} from '@/features/alarmBusinessKind'
-import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
 import {useLocation,useNavigate} from 'react-router-dom'
 import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react'
 import {alarmEventService,type AlarmEvent,type AckDisposition,type AlarmFilters,type AckItem,type AlarmLocation} from '@/api/alarmEventService'
@@ -284,7 +283,6 @@ export default function AlarmListPage({rule=null,ruleName='',onShowAll,compact=f
   </aside>}
   <main className="alarm-workspace flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-panel border border-line bg-surface" style={{containerType:'inline-size'}}>
    <AlarmInputNotice/>
-   <PtzProtectionNotice/>
    <div className={`border-b border-line ${compact?'space-y-2 px-3 py-2':'space-y-3 px-4 py-3 [@container(min-width:40rem)]:px-5'}`}>
     {ruleMode&&<div role="status" className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-base bg-primary-50 px-3 text-sm text-ink ${compact?'py-1':'py-2'}`}>
      <span>只看规则「{ruleName||'所选规则'}」的告警{(period?!pagePeriod:range==='all')?(compact?'（未审核按规则最多查看近 30 天）':'（按规则最多查看近 30 天，更早的未审核告警请在全部规则中查看）'):''}。</span>

@@ -4,6 +4,7 @@ import { PtzError, PtzStore, type CalibrationSnapshot } from '../store/ptzStore.
 import type { Channel } from '../types/channel.js';
 import { resolvePtzSource, ptzCameraKey, localRtmpStreamPath, type AiSourceLink } from './ptzSources.js';
 import type { PtzAdapter } from './ptzAdapter.js';
+import type {PresetHome,PresetSelection} from './presetHome.js';
 export interface PtzVector {
   pan: number;
   tilt: number;
@@ -39,6 +40,7 @@ interface Lease {
   presetIdleSamples?: number;
   presetCheckedAt?: number;
   guardRevision?: number;
+  presetProof?: {home:PresetHome;arrived:boolean;at:number};
   // Only undo our own successful preparation when no command was issued.
   unissuedBaseline?: { value: unknown };
   follow?: FrameFollower;
@@ -46,6 +48,7 @@ interface Lease {
   stopPending?: Promise<any>;
 }
 export interface PtzDependencies {
+  presetBindings?:boolean;
   channels: () => Promise<Channel[]>;
   ai: () => Promise<AiSourceLink[]>;
   prepare: (root: Channel) => Promise<PtzAdapter | null>;
@@ -256,6 +259,66 @@ export class PtzManager {
       adapter = await this.adapter(base);
     const source = adapter?.videoSources ? await this.resolve(id, adapter.videoSources) : base;
     return { source, adapter };
+  }
+  async sceneSource(id:string,processor?:string,observe=false) {
+    const {source,adapter}=await this.target(id);
+    if(!adapter || !(adapter.caps.panTilt||adapter.caps.zoom||adapter.caps.presets) || adapter.resource.startsWith('onvif-fixed:') || !source.displayedEnabled || source.root.id!==id || source.root.inputEnabled===false ||
+       processor && !source.processorIds.includes(processor))return null;
+    await adapter.verify?.();
+    const motor=this.motor(adapter.resource);
+    const idle=()=>{const l=this.leases.get(motor);return !this.closing && !this.acquiring.has(motor) &&
+      !this.emergency.has(motor) && !(l && (!l.stopped || l.stopPending || l.uncertain));};
+    let pose=null;
+    if(observe && adapter.protocol==='onvif' && adapter.caps.moveStatus && adapter.caps.position){
+      const status=await adapter.call('status');
+      if(status?.panTilt==='MOVING'||status?.zoom==='MOVING')throw new PtzError('ptz_busy');
+      if(stationaryPtzPosition(status) && status.panTilt==='IDLE' && status.zoom==='IDLE' &&
+         Number.isFinite(status.position.Zoom)&&Number.isFinite(status.position.Pan)&&Number.isFinite(status.position.Tilt)&&
+         typeof status.position.PanTiltSpace==='string'&&status.position.PanTiltSpace&&typeof status.position.ZoomSpace==='string'&&status.position.ZoomSpace)
+        pose={position:status.position,panTilt:'IDLE',zoom:'IDLE',protocol:'onvif'};
+    }
+    return {identity:calibrationDigest([source.fingerprint,adapter.resource,adapter.identity]),resource:adapter.resource,
+      app:source.root.app||'live',stream:source.root.streamName,idle:idle(),pose};
+  }
+  async presetBindingCapability(id:string){
+    const {adapter:a}=await this.target(id);
+    const available=!!this.deps.presetBindings&&!!a&&a.protocol==='onvif'&&a.caps.presets&&a.caps.position&&a.caps.moveStatus;
+    return {presetBindingAvailable:available,presetBindingReason:available?'':'正式预置位布防需要已验证的 ONVIF 位置与停止反馈；当前来源暂不支持',experimentalProjectionEnabled:false};
+  }
+  private async presetHome(id:string,preset:string):Promise<PresetHome>{
+    if(!(await this.presetBindingCapability(id)).presetBindingAvailable)throw new PtzError('ptz_preset_binding_unavailable',422);
+    const {source,adapter:a}=await this.target(id);
+    if(!a)throw new PtzError('ptz_not_supported',422);
+    await a.verify?.();
+    const list=await this.presets(id),entry=list.items.find(p=>p.id===preset);
+    if(list.reason||!entry||entry.deviceState!=='device_reported'||!entry.fingerprint)throw new PtzError('ptz_preset_position_required',422);
+    return {resource:a.resource,motor:this.motor(a.resource),identity:calibrationDigest([source.fingerprint,a.resource,a.identity]),
+      preset_id:preset,preset_name:entry.name,preset_fingerprint:entry.fingerprint,definition_version:entry.definition_version,pose:entry.position};
+  }
+  async scenePreset(id:string,selection:PresetSelection,actor?:string):Promise<PresetHome>{
+    const home=await this.presetHome(id,selection.preset_id);
+    if(home.preset_fingerprint!==selection.preset_fingerprint)throw new PtzError('ptz_preset_changed',409);
+    const ctx=await this.sceneSource(id,undefined,true),lease=this.leases.get(home.motor);
+    if(!ctx?.idle||!ctx.pose||!samePtzPosition(home.pose,ctx.pose))throw new PtzError('ptz_preset_not_arrived',409);
+    if(actor!==undefined){
+      const proof=lease?.presetProof,guard=await this.store.guard(home.resource);
+      if(!lease||lease.actor!==actor||lease.channel!==id||!lease.stopped||lease.stopPending||lease.uncertain||
+        !proof?.arrived||Date.now()-proof.at>300000||proof.home.preset_fingerprint!==home.preset_fingerprint||
+        proof.home.identity!==home.identity||Number(guard?.revision)!==lease.guardRevision||guard?.stop_pending)
+        throw new PtzError('ptz_preset_goto_required',409);
+    }
+    return home;
+  }
+  private async presetMutation<T>(resource:string,preset:string,fn:()=>Promise<T>){
+    if(!this.deps.presetBindings)return fn();
+    const c=await this.store.pool.connect();let held=false;
+    try{
+      await c.query("SELECT pg_advisory_lock(hashtextextended('arming-preset-definition',0))");held=true;
+      const bound=await c.query("SELECT 1 FROM arming_scene_zones WHERE binding_mode='preset' AND preset_home->>'motor'=$1 AND preset_home->>'preset_id'=$2 LIMIT 1",[this.motor(resource),preset]);
+      if(bound.rowCount)throw new PtzError('ptz_preset_bound_unbind_first',409);
+      if(preset)await c.query('INSERT INTO arming_preset_definitions(resource,preset_id,version) VALUES($1,$2,$3) ON CONFLICT(resource,preset_id) DO UPDATE SET version=excluded.version',[resource,preset,randomUUID()]);
+      return await fn();
+    }finally{try{if(held)await c.query("SELECT pg_advisory_unlock(hashtextextended('arming-preset-definition',0))");}finally{c.release();}}
   }
   private async exclusive<T>(
     id: string,
@@ -725,6 +788,8 @@ export class PtzManager {
     if (sequence <= l.sequence) throw new PtzError('ptz_stale_command');
     l.sequence = sequence;
     const intent = sequence;
+    if(!keepAlive)l.presetProof=undefined;
+    const home=preset&&this.deps.presetBindings?await this.presetHome(id,preset).catch(()=>null):null;
     const {global, camera} = await this.commandSettings(l, intent);
     if (center && (!l.adapter.caps.pointCenter || camera.settings.panTilt === false)) throw new PtzError('ptz_operation_unsupported',422);
     if (!keepAlive && !preset && !center && !vector.pan && !vector.tilt && !vector.zoom)
@@ -778,6 +843,7 @@ export class PtzManager {
       if (preset || center) {
         l.presetStarted = Date.now();
         l.presetIdleSamples = 0;
+        if(home&&l.sequence===intent&&!l.stopped)l.presetProof={home,arrived:false,at:Date.now()};
       }
       if (
         keepAlive &&
@@ -799,11 +865,13 @@ export class PtzManager {
           (!caps.panTilt || status?.panTilt === 'IDLE') &&
           (!caps.zoom || status?.zoom === 'IDLE') &&
           (caps.panTilt || caps.zoom);
-        l.presetIdleSamples = idle ? (l.presetIdleSamples ?? 0) + 1 : 0;
+        const targetAgrees=!l.presetProof||samePtzPosition(l.presetProof.home.pose,status);
+        l.presetIdleSamples = idle&&targetAgrees ? (l.presetIdleSamples ?? 0) + 1 : 0;
         if (l.stopped || l.sequence !== intent) throw new PtzError('ptz_stale_command');
         if (l.presetIdleSamples >= 2) {
           const stopped = await this.stopLease(l);
           if (!stopped.stopConfirmed) throw new PtzError('ptz_stop_unconfirmed');
+          if(l.presetProof){l.presetProof.arrived=true;l.presetProof.at=Date.now();}
           return { ...result, motionFinished: true };
         }
       }
@@ -1015,7 +1083,8 @@ export class PtzManager {
     } catch {
       reason = 'ptz_preset_query_unavailable';
     }
-    if (!Array.isArray(device) || device.length > (a.protocol === 'onvif' ? 1024 : 255))
+    if (!Array.isArray(device) || device.length > (a.protocol === 'onvif' ? 1024 : 255)||
+      device.some(p=>!p||typeof p.id!=='string'||!p.id||typeof p.name!=='string')||new Set(device.map(p=>p.id)).size!==device.length)
       throw new PtzError('ptz_invalid_response', 503);
     const items = new Map(
       device
@@ -1033,6 +1102,43 @@ export class PtzManager {
             ? 'device_reported'
             : 'missing_on_device',
       });
+    if(this.deps.presetBindings&&a.protocol==='onvif'&&a.caps.position&&a.caps.moveStatus){
+      const identity=calibrationDigest([s.fingerprint,a.resource,a.identity]);
+      const versions=new Map<string,string>();
+      if(!reason){
+        const c=await this.store.pool.connect();
+        try{
+          await c.query('BEGIN');
+          // Match scene-save lock order: configuration first, definition second.
+          await c.query('SELECT revision FROM alarm_configuration_revision WHERE singleton FOR UPDATE');
+          await c.query("SELECT pg_advisory_xact_lock(hashtextextended('arming-preset-definition',0))");
+          // A complete successful device list is evidence of deletion. Rotate
+          // once on that edge; failures never tombstone and reappearance cannot
+          // restore a previous definition fingerprint.
+          const missing=await c.query('UPDATE arming_preset_definitions SET version=gen_random_uuid(),present=false WHERE resource=$1 AND present AND NOT(preset_id=ANY($2::text[])) RETURNING preset_id',[a.resource,device.map(p=>p.id)]);
+          if(missing.rowCount){
+            const invalidated=await c.query("UPDATE arming_scene_zones SET state='pending',current_points=NULL,visual_checked_at=NULL,reason='布防预置位不可用：设备已确认预置位缺失',revision=nextval('arming_scene_revision'),changed_at=clock_timestamp(),checked_at=clock_timestamp() WHERE binding_mode='preset' AND resource=$1 AND preset_home->>'preset_id'=ANY($2::text[])",[a.resource,missing.rows.map(r=>r.preset_id)]);
+            if(invalidated.rowCount)await c.query('UPDATE alarm_configuration_revision SET revision=revision+1 WHERE singleton');
+          }
+          const ids=device.map(p=>p.id);
+          await c.query('INSERT INTO arming_preset_definitions(resource,preset_id,version,present) SELECT $1,id,gen_random_uuid(),true FROM unnest($2::text[]) AS ids(id) ON CONFLICT(resource,preset_id) DO UPDATE SET present=true WHERE NOT arming_preset_definitions.present',[a.resource,ids]);
+          const definitions=await c.query('SELECT preset_id,version FROM arming_preset_definitions WHERE resource=$1 AND preset_id=ANY($2::text[])',[a.resource,ids]);
+          for(const definition of definitions.rows)versions.set(definition.preset_id,definition.version);
+          await c.query('COMMIT');
+        }catch(error){await c.query('ROLLBACK');throw error;}finally{c.release();}
+      }
+      for(const [key,value] of items){
+        const p=value as any;
+        const pose=p.position;
+        if(reason||p.deviceState!=='device_reported'||!stationaryPtzPosition(pose)||pose.panTilt!=='IDLE'||pose.zoom!=='IDLE'||
+          !Number.isFinite(pose?.position?.Pan)||!Number.isFinite(pose?.position?.Tilt)||!Number.isFinite(pose?.position?.Zoom)||
+          typeof pose.position.PanTiltSpace!=='string'||!pose.position.PanTiltSpace||typeof pose.position.ZoomSpace!=='string'||!pose.position.ZoomSpace){
+          p.bindingReason='需要设备确认且具有已保存目标位置的预置位';continue;
+        }
+        p.definition_version=versions.get(key);
+        p.fingerprint=calibrationDigest([identity,a.resource,key,p.definition_version,pose.position]);
+      }
+    }
     return { items: [...items.values()], supported: true, reason };
   }
   async savePreset(
@@ -1054,6 +1160,7 @@ export class PtzManager {
           Array.from({ length: 255 }, (_, i) => String(i + 1)).find((n) => !used.has(n)) ?? '';
         if (!native) throw new PtzError('ptz_preset_capacity');
       }
+      return this.presetMutation(a.resource,native,async()=>{
       const result = await a.call('preset-save', { presetId: native, name: input.name });
       const nativeId = result.id;
       if (typeof nativeId !== 'string' || !nativeId || nativeId.length > 256)
@@ -1081,11 +1188,13 @@ export class PtzManager {
         id: nativeId,
         deviceState: a.protocol === 'gb28181' ? 'delivery_accepted' : 'device_accepted',
       };
+      });
     });
   }
   async removePreset(id: string, actor: string, preset: string) {
     return this.exclusive(id, actor, async (_s, a) => {
       if (!a.caps.presetWrite) throw new PtzError('ptz_presets_unsupported', 422);
+      return this.presetMutation(a.resource,preset,async()=>{
       await a.call('preset-remove', { presetId: preset });
       try {
         await this.store.removePreset(a.resource, preset, actor);
@@ -1093,6 +1202,7 @@ export class PtzManager {
         throw new PtzError('ptz_preset_device_removed_metadata_failed', 503);
       }
       return { removed: true };
+      });
     });
   }
   private presetGroup(resource: string) {

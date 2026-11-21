@@ -1,6 +1,7 @@
 // Copyright AINVR. JPU -> PYM/GLES resize -> median -> BPU -> Gaussian -> mean.
 #include "runtime.hpp"
 #include "filters.hpp"
+#include "scene_match.hpp"
 #include "platform/bpu.hpp"
 #include "platform/bpu_image_input.hpp"
 #include "platform/image_preprocessor.hpp"
@@ -82,6 +83,33 @@ class Hardware:public Backend {
     result["inferenceMs"]=std::chrono::duration<double,std::milli>(inferred-inference).count();
     result["processingMs"]=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
     return result;
+  }
+  Json Match(const std::vector<uint8_t>& a,const std::vector<uint8_t>& b,const Current& current)override{
+    Check(current);
+    const auto [aw,ah]=ai_service::analytics::JpegDimensions(a);
+    const auto [bw,bh]=ai_service::analytics::JpegDimensions(b);
+    if(int64_t(aw)*bh!=int64_t(bw)*ah)throw Error(422,"scene_aspect_changed");
+    auto first=Prepare(a,current),second=Prepare(b,current);
+    auto infer=[&](const std::vector<float>& left,const std::vector<float>& right){
+      Check(current);
+      if(!BpuRuntimeHealthy())throw Error(503,"flow_bpu_fault");
+      auto raw=model_->Run({PackBpuFloatNchw(left,desc_["inputs"][0]),PackBpuFloatNchw(right,desc_["inputs"][1])});
+      Check(current);
+      if(raw.size()!=1)throw Error(503,"flow_output_contract");
+      return filters_->Gaussian(DecodeTensor(raw[0],desc_["outputs"][0]));
+    };
+    auto forward=infer(first.chw,second.chw),backward=infer(second.chw,first.chw);
+    auto result=MatchScene(forward,backward,first.chw,second.chw);
+    if(result.at("matched")==true){
+      Check(current);
+      const auto ref=filters_->SceneDescriptors(first.chw);
+      Check(current);
+      const auto target=filters_->SceneDescriptors(second.chw);
+      Check(current);
+      result["localEvidence"]=SceneEvidence(result.at("homography").get<Homography>(),
+          forward,backward,ref,target);
+    }
+    Check(current);return result;
   }
  private:
   PreprocessedImage Prepare(const std::vector<uint8_t>& jpeg,const Current& current){

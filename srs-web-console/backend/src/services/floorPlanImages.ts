@@ -1,13 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open, mkdir, unlink, rename, opendir, lstat } from 'node:fs/promises';
+import { open, mkdir, unlink, rename, opendir, lstat, statfs } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { AlarmConfigError } from '../store/alarmZones.js';
 
 export interface ImageRef { ref: string; w: number; h: number; sha256: string; generation: string }
 export const invalidImage = () => new AlarmConfigError('invalid_image', '底图须先在浏览器解码并转为 JPEG；上传结构或尺寸无效');
-const unavailable = () => new AlarmConfigError('storage_unavailable', '底图存储不可用，请检查选定磁盘及目录权限', 503);
 
 // Structural validation only: pixels are never decoded here. The UI must
 // successfully decode and normalize a source image before sending its JPEG.
@@ -139,36 +138,49 @@ export function selectedFloorPlanDirectory(volumes: unknown, expectedGeneration?
 // Work relative to an open mount fd. If unmounted after validation, operations
 // cannot fall through to a directory on the system disk.
 export class FloorPlanImages {
-  constructor(private readonly directory: (generation?:string) => Promise<Directory | null>) {}
+  constructor(private readonly directory: (generation?:string) => Promise<Directory | null>,
+    private readonly namespace:'ainvr-floor-plans'|'ainvr-arming-scenes'='ainvr-floor-plans') {}
+  private unavailable() {
+    const label = this.namespace === 'ainvr-arming-scenes' ? '场景参考图' : '底图';
+    return new AlarmConfigError('storage_unavailable', label + '存储不可用，请检查选定磁盘及目录权限', 503);
+  }
   private async withDirectory<T>(fn: (dir: string, generation: string) => Promise<T>, expectedGeneration?:string): Promise<T> {
     let rootHandle: Awaited<ReturnType<typeof open>> | undefined;
     let dirHandle: Awaited<ReturnType<typeof open>> | undefined;
     try {
       const selected = await this.directory(expectedGeneration);
-      if (!selected) throw unavailable();
+      if (!selected) throw this.unavailable();
       rootHandle = await open(selected.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
       const stat = await rootHandle.stat(), system = await (await import('node:fs/promises')).stat('/');
-      if (stat.dev === system.dev) throw unavailable();
+      if (stat.dev === system.dev) throw this.unavailable();
       const device = await (await import('node:fs/promises')).stat(selected.device);
-      if (!device.isBlockDevice() || device.rdev !== stat.dev) throw unavailable();
-      const relative = '/proc/self/fd/' + rootHandle.fd + '/ainvr-floor-plans';
+      if (!device.isBlockDevice() || device.rdev !== stat.dev) throw this.unavailable();
+      const relative = '/proc/self/fd/' + rootHandle.fd + '/' + this.namespace;
       await mkdir(relative, { mode: 0o700 }).catch((e: NodeJS.ErrnoException) => { if (e.code !== 'EEXIST') throw e; });
       dirHandle = await open(relative, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      if ((await dirHandle.stat()).dev !== stat.dev) throw unavailable();
+      if ((await dirHandle.stat()).dev !== stat.dev) throw this.unavailable();
       return await fn('/proc/self/fd/' + dirHandle.fd, selected.generation);
     } catch (e) {
       if (e instanceof AlarmConfigError) throw e;
-      throw unavailable();
+      throw this.unavailable();
     } finally { await dirHandle?.close(); await rootHandle?.close(); }
   }
   async publish(bytes: Buffer, w: number, h: number): Promise<ImageRef> {
     return this.withDirectory(async (dir, generation) => {
       // Cap files even if writes fail after publication and no transaction commits.
-      const entries = await opendir(dir);
-      let count = 0;
-      for await (const entry of entries) {
+      if(this.namespace==='ainvr-arming-scenes'){
+        // Historical references survive unbind/re-anchor. Limit by available
+        // storage, since a lifetime file-count limit would lock out every edit.
+        const disk=await statfs(dir,{bigint:true});
+        if(disk.bavail*disk.bsize-BigInt(bytes.length)<256n*1024n*1024n)
+          throw new AlarmConfigError('storage_capacity','场景参考图磁盘剩余空间不足',503);
+      }else{
+       const entries = await opendir(dir);
+       let count = 0;
+       for await (const entry of entries) {
         if (/^(?:[0-9a-f-]{36}\.jpg|\.[0-9a-f-]{36}\.tmp)$/.test(entry.name) && ++count >= 512)
           throw new AlarmConfigError('storage_capacity','平面图底图存储已满',503);
+       }
       }
       const ref = randomUUID(), temp = path.join(dir, '.' + ref + '.tmp'), final = path.join(dir, ref + '.jpg');
       const file = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
@@ -179,13 +191,13 @@ export class FloorPlanImages {
   }
   async read(image: ImageRef): Promise<Buffer> {
     return this.withDirectory(async (dir, generation) => {
-      if (generation !== image.generation || !/^[0-9a-f-]{36}$/.test(image.ref)) throw unavailable();
+      if (generation !== image.generation || !/^[0-9a-f-]{36}$/.test(image.ref)) throw this.unavailable();
       const file = await open(path.join(dir, image.ref + '.jpg'), constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const info = await file.stat();
-        if (!info.isFile() || info.size > 1875000) throw unavailable();
+        if (!info.isFile() || info.size > 1875000) throw this.unavailable();
         const bytes = await file.readFile();
-        if (createHash('sha256').update(bytes).digest('hex') !== image.sha256) throw unavailable();
+        if (createHash('sha256').update(bytes).digest('hex') !== image.sha256) throw this.unavailable();
         return bytes;
       } finally { await file.close(); }
     }, image.generation);
@@ -197,11 +209,11 @@ export class FloorPlanImages {
       const entries = await opendir(dir);
       let examined = 0, removed = 0;
       for await (const entry of entries) {
-        if (++examined > 1024 || removed >= 32) break;
+        if (this.namespace==='ainvr-floor-plans' ? ++examined>1024 || removed>=32 : removed>=256) break;
         const match = /^(?:([0-9a-f-]{36})\.jpg|\.([0-9a-f-]{36})\.tmp)$/.exec(entry.name);
         if (!match || live.has(match[1] || match[2]!)) continue;
         const target = path.join(dir,entry.name), stat = await lstat(target);
-        if (stat.isFile() && now - stat.mtimeMs >= 86400000) { await unlink(target); removed++; }
+        if (stat.isFile() && now - stat.mtimeMs >= (this.namespace==='ainvr-arming-scenes'?900000:86400000)) { await unlink(target); removed++; }
       }
     });
   }

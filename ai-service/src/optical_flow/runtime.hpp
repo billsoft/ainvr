@@ -11,6 +11,7 @@
 namespace ainvr::flow {
 class Backend {
  public: virtual ~Backend()=default;
+  virtual Json Match(const std::vector<uint8_t>&,const std::vector<uint8_t>&,const Current&){throw Error(503,"scene_match_unavailable");}
   virtual Json Run(const std::vector<uint8_t>& a,const std::vector<uint8_t>& b,const Current& current)=0;
 };
 using Factory=std::function<std::unique_ptr<Backend>()>;
@@ -29,9 +30,9 @@ class Runtime {
     changed_.notify_all();worker_.join();
   });}
   void RequireAccess(const Peer& peer)const{if(!Access(peer))throw Error(403,"flow_not_authorized");}
-  Json Call(const std::string& body,const Peer& peer){
+  Json Call(const std::string& body,const Peer& peer,bool scene=false){
     RequireAccess(peer);
-    auto job=std::make_shared<Job>();job->peer=peer;job->deadline=Clock::now()+timeout_;
+    auto job=std::make_shared<Job>();job->peer=peer;job->scene=scene;job->deadline=Clock::now()+timeout_;
     auto future=job->done.get_future();
     {
       std::lock_guard lock(mutex_);
@@ -54,7 +55,7 @@ class Runtime {
  private:
   using Clock=std::chrono::steady_clock;
   struct Job{std::vector<uint8_t>a,b;Peer peer;Clock::time_point deadline;
-    std::promise<Json>done;std::atomic<bool>cancelled{false};};
+    bool scene=false;std::promise<Json>done;std::atomic<bool>cancelled{false};};
   bool Access(const Peer& peer)const{try{return Authorized(peer,token_())&&allowed_();}catch(...){return false;}}
   bool CurrentJob(const Job& job)const{
     if(job.cancelled||Clock::now()>=job.deadline||!Access(job.peer))return false;
@@ -76,7 +77,7 @@ class Runtime {
       try{
         Current current=[this,job]{return CurrentJob(*job);};Check(current);
         if(!hardware)hardware=factory_();Check(current);
-        result=hardware->Run(job->a,job->b,current);Check(current);
+        result=job->scene?hardware->Match(job->a,job->b,current):hardware->Run(job->a,job->b,current);Check(current);
       }catch(...){
         error=std::current_exception();hardware.reset();
         {std::lock_guard lock(mutex_);retry_=Clock::now()+std::chrono::seconds(2);}

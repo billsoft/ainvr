@@ -21,6 +21,7 @@ std::string Body(){
 Peer Local(){return {"127.0.0.1",std::string(32,'t')};}
 struct Fake:Backend{
   std::function<void(const Current&)> work;
+  Json Match(const std::vector<uint8_t>&,const std::vector<uint8_t>&,const Current&)override{return Json{{"matched",false},{"schema","ainvr.scene-match.v2"}};}
   Json Run(const std::vector<uint8_t>&,const std::vector<uint8_t>&,const Current& c)override{
     if(work)work(c);return Reduce(std::vector<float>(2*kPixels,0));
   }
@@ -70,6 +71,7 @@ TEST(Flow,BusyAndDeadlineKeepWorkerOccupied){
     p->work=[&](const Current& c){started.set_value();gate.wait();Check(c);};return p;},std::chrono::milliseconds(80));
   auto first=std::async(std::launch::async,[&]{try{runtime.Call(Body(),Local());return 0;}catch(const Error& e){return e.status;}});
   started.get_future().wait();
+  try{runtime.Call(Body(),Local(),true);FAIL();}catch(const Error& e){EXPECT_EQ(e.status,429);}
   try{runtime.Call(Body(),Local());FAIL();}catch(const Error& e){EXPECT_EQ(e.status,429);}
   EXPECT_EQ(first.get(),504);
   try{runtime.Call(Body(),Local());FAIL();}catch(const Error& e){EXPECT_EQ(e.status,429);}
@@ -93,5 +95,13 @@ TEST(Flow,HttpRouteAuthAndPair){
   auto result=client.Post("/internal/ptz/flow",{{"x-service-token",Local().token}},Body(),"application/json");
   EXPECT_TRUE(result&&result->status==200);
   if(result&&result->status==200){auto j=Json::parse(result->body);for(auto key:{"dx","dy","width","height","inliers","validRatio","spread"})EXPECT_TRUE(std::isfinite(j[key].get<double>()));}
+  auto sceneDenied=client.Post("/internal/ptz/scene-match","garbage","application/json");
+  EXPECT_TRUE(sceneDenied&&sceneDenied->status==403);
+  auto scene=client.Post("/internal/ptz/scene-match",{{"x-service-token",Local().token}},Body(),"application/json");
+  EXPECT_TRUE(scene&&scene->status==200);
+  if(scene&&scene->status==200){
+  EXPECT_EQ(Json::parse(scene->body)["schema"],"ainvr.scene-match.v2");
+  EXPECT_FALSE(Json::parse(scene->body)["matched"]);
+  }
   server.stop();listener.join();
 }

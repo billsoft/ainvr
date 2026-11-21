@@ -2,6 +2,7 @@ import {zoneGeometryError,type ZonePoint} from './alarmGeometry'
 import type {BindingDirection} from '@/api/flowService'
 
 export interface DraftZone {
+  sceneIntent?:'bind'|'edit'|'unbind'
   id:string
   name:string
   points:ZonePoint[]
@@ -149,6 +150,7 @@ export function createArmingDraft(input:ArmingSnapshotInput){
     addZone:(zone:DraftZone)=>edit(s=>{s.zones.push(copy(zone))}),
     setCoordinateSpace:(space:'planar'|'erp')=>edit(s=>{if(space!=='erp'&&s.zones.some(z=>z.erpWrap))throw Error('请先移除全景环绕区域');s.coordinateSpace=space}),
     renameZone:(id:string,name:string)=>edit(s=>{findZone(s,id).name=name.trim()}),
+    setSceneIntent:(id:string,mode:DraftZone['sceneIntent'])=>edit(s=>{const zone=findZone(s,id);if(mode)zone.sceneIntent=mode;else delete zone.sceneIntent}),
     reshapeZone:(id:string,points:ZonePoint[],edgeIds:string[])=>edit(s=>{
       const zone=findZone(s,id)
       if(same(zone.points,points)&&same(zone.edgeIds,edgeIds))return

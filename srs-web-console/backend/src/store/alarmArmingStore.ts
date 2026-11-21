@@ -1,3 +1,5 @@
+import {editSchema,stale,type SceneProof} from './armingScenes.js';
+import type {ArmingSceneRuntime} from '../services/armingSceneRuntime.js';
 import {compileBinding,parseCounterDefinition,recountAllowed,validateBindingSet,type BindingVersion,type CounterBinding,type CounterDefinition} from './flowCounters.js';
 import {unwrapErp} from './erpGeometry.js';
 import {catalogRebindAllowed} from '../services/alarmCatalogRebind.js';
@@ -16,6 +18,7 @@ const zoneSchema=z.object({
   erp_wrap:z.boolean().optional(),name:z.string().trim().min(1).max(128),points:z.array(point).min(3).max(32),edge_ids:z.array(identifier).min(3).max(32),
 }).strict();
 const armingSchema=z.object({
+  scene_edits:z.array(editSchema).max(1000).optional(),
   processor_id:identifier.optional(),coordinate_space:z.enum(['planar','erp']).optional(),source_id:identifier,geometry_revision:identifier,zones:z.array(zoneSchema).max(1000),assignments:z.array(z.unknown()).max(1000),
   counter_bindings:z.array(z.unknown()).max(1000).optional(),
 }).strict();
@@ -91,7 +94,7 @@ function mergeProcessorArming(previous:Arming|undefined,draft:Arming,processorId
   return result;
 }
 export class AlarmArmingStore {
-  constructor(private pool:Pool){}
+  constructor(private pool:Pool,private sceneRuntime?:()=>ArmingSceneRuntime|null){}
   /** Refresh unchanged selected labels after a model catalog change. Network reads
    * stay outside PG locks; the global revision protects against concurrent edits. */
   async reconcileCatalogs(lookup:Lookup):Promise<{updated:number;blocked:number}>{
@@ -382,7 +385,7 @@ export class AlarmArmingStore {
   async saveArming(input:unknown,expected:number,actor:string,key:string,lookup:Lookup,sourceGeometry:(id:string)=>Promise<string|null>){
     const parsed=armingSchema.safeParse(input);
     if(!parsed.success)fail('invalid_arming','布防参数无效');
-    const {processor_id:processorId,...parsedDocument}=parsed.data;
+    const {processor_id:processorId,scene_edits:edits,...parsedDocument}=parsed.data;
     const bindingInputs=validateBindingSet(parsed.data.counter_bindings??[]);
     // "Recount history" is an instruction for this save only; the stored selection never carries it.
     const recount=new Set(bindingInputs.filter(b=>b.reclassify_history).map(b=>b.binding_id));
@@ -403,7 +406,14 @@ export class AlarmArmingStore {
       if(b.input_stream_id!==doc.source_id||b.geometry_revision!==doc.geometry_revision)fail('source_changed','计数选用来源不匹配');
       if(!zoneIds.has(b.zone_id))fail('zone_required','删除区域时必须解除计数选用');
     }
-    return this.operation('arming',processorId?{...doc,processor_id:processorId}:doc,expected,actor,key,async c=>{
+    const scenes=this.sceneRuntime?.();
+    let proof:SceneProof|null=null;
+    if(edits?.length){
+      if(!scenes||!processorId)throw stale();
+      const replay=await this.pool.query('SELECT 1 FROM alarm_config_operations WHERE actor=$1 AND operation_key=$2',[actor,key]);
+      if(!replay.rowCount)proof=await scenes.prove(doc.source_id,processorId,actor,expected,edits,doc.zones);
+    }
+    return this.operation('arming',processorId?{...doc,processor_id:processorId,...(edits?.length?{scene_edits:edits}:{})}:doc,expected,actor,key,async c=>{
       // One live query per AI output for the whole save, however many selections it carries.
       const asked=new Map<string,Promise<AssignmentSource|null>>();
       const live=(id:string)=>{let answer=asked.get(id);if(!answer){answer=lookup(id);asked.set(id,answer);}return answer;};
@@ -426,6 +436,7 @@ export class AlarmArmingStore {
         const required=previous?previous.version+(changed?1:0):1;
         if(z.version!==required)fail('version_conflict','区域版本无效');
       }
+      if(scenes)await scenes.store.save(c,doc,old?.document,processorId,edits??[],actor,expected,proof);
       await this.writeSource(c,doc,expected+1,actor);
       for(const a of doc.assignments){
         if(processorId&&a.processor_id!==processorId)continue;

@@ -3,14 +3,20 @@ import {beforeEach,it,expect,vi} from 'vitest'
 import {SavedZoneOverlay} from '@/components/player/SavedZoneOverlay'
 import {alarmZoneService,type AlarmZone} from '@/api/alarmZoneService'
 import {alarmArmingService} from '@/api/alarmArmingService'
+import {armingSceneService} from '@/api/armingSceneService'
 import {zoneSourceGeometry} from '@/features/zoneSourceGeometry'
+import {projectOverlayZones} from '@/features/zoneOverlaySubscriptions'
+import type {ArmingScene} from '@/api/armingSceneService'
+vi.mock('@/features/flowLiveCounts',()=>({subscribeLiveCounts:vi.fn(()=>()=>{})}))
 vi.mock('@/api/alarmArmingService',()=>({alarmArmingService:{read:vi.fn()}}))
+vi.mock('@/api/armingSceneService',()=>({armingSceneService:{read:vi.fn()}}))
 vi.mock('@/api/alarmZoneService',()=>({alarmZoneService:{list:vi.fn()}}))
 const source={id:'gate',createdAt:'2026-10-19T01:00:00Z',updatedAt:'2026-10-19T01:00:00Z'}
 const zone:AlarmZone={zone_id:'zone',channel_id:'gate',name:'入口',geometry_revision:'source-frame-v2:gate:2026-10-19T01:00:00.000Z:1920x1080',version:2,state:'active',points:[[.1,.1],[.8,.1],[.8,.8]]}
 let video:HTMLVideoElement
 beforeEach(()=>{
  vi.resetAllMocks();vi.mocked(alarmArmingService.read).mockResolvedValue({arming:null});vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}})
+ vi.mocked(armingSceneService.read).mockResolvedValue({eligible:false,identity:null,epoch:'e',items:[]})
  video=document.createElement('video')
  Object.defineProperties(video,{videoWidth:{value:1920,configurable:true},videoHeight:{value:1080,configurable:true},clientWidth:{value:1000,configurable:true},clientHeight:{value:1000,configurable:true}})
 })
@@ -86,4 +92,39 @@ it('uses a separate projected canvas in panorama instead of hiding compatible zo
   expect(screen.queryByLabelText('已保存警戒区')).not.toBeInTheDocument()
   expect(screen.queryByText(/请切回原始画面/)).not.toBeInTheDocument()
  }finally{get.mockRestore()}
+})
+
+const scene:ArmingScene={zone_id:'zone',processor_id:'ai',revision:3,reference_frame_id:'f',
+ reference_points:zone.points,current_points:[[.2,.2],[.9,.2],[.9,.9]],state:'matched'}
+it('uses projected points for both saved polygons and counting markers, hiding both on pending or failed reads',async()=>{
+ const scoped={...source,processorId:'ai'}
+ vi.mocked(alarmArmingService.read).mockResolvedValue({arming:{source_id:source.id,geometry_revision:zone.geometry_revision,revision:1,
+  zones:[{...zone,state:'active',edge_ids:['a','b','c']}],assignments:[],counter_bindings:[{
+   binding_id:'count',counter_id:'counter',input_stream_id:source.id,processor_id:'ai',zone_id:'zone',zone_version:2,
+   geometry_revision:zone.geometry_revision,label_map_version:'labels',direction:{kind:'line',edge:'a',in_side:'inward'}}]}})
+ vi.mocked(armingSceneService.read).mockResolvedValue({eligible:true,identity:'camera',epoch:'e',items:[scene]})
+ render(<SavedZoneOverlay video={video} source={scoped}/>)
+ const svg=await screen.findByLabelText('已保存警戒区')
+ expect(svg.querySelector('polygon')).toHaveAttribute('points','200,112.5 900,112.5 900,506.25')
+ expect(screen.getByLabelText('计数线').querySelector('line')).toHaveAttribute('x1','200')
+ expect(screen.getByLabelText('计数线').querySelector('line')).toHaveAttribute('y1','112.5')
+ vi.mocked(armingSceneService.read).mockResolvedValue({eligible:true,identity:'camera',epoch:'new',items:[{...scene,state:'pending',current_points:null}]})
+ fireEvent(window,new Event('ainvr-arming-saved'))
+ await waitFor(()=>expect(svg.querySelectorAll('polygon')).toHaveLength(0))
+ expect(screen.queryByLabelText('计数线')).not.toBeInTheDocument()
+ vi.mocked(armingSceneService.read).mockRejectedValue(Error('offline'))
+ fireEvent(window,new Event('ainvr-arming-saved'))
+ await screen.findByText(/警戒区读取失败/)
+ expect(screen.queryByLabelText('已保存警戒区')).not.toBeInTheDocument()
+ expect(zone.points).toEqual([[.1,.1],[.8,.1],[.8,.8]])
+})
+it('rejects null, malformed, stale-reference and ambiguous projections without mutating the saved base',()=>{
+ for(const invalid of [{...scene,current_points:null},{...scene,state:'pending' as const},
+  {...scene,current_points:[[NaN,.1],[.4,.1],[.4,.4]] as [number,number][]},
+  {...scene,reference_points:[[.2,.2],[.4,.2],[.4,.4]] as [number,number][]}]){
+  expect(projectOverlayZones([zone],[invalid],'ai')).toEqual([])
+ }
+ expect(projectOverlayZones([zone],[scene,{...scene,processor_id:'other'}])).toEqual([])
+ expect(projectOverlayZones([zone],[scene],'other')).toEqual([zone])
+ expect(projectOverlayZones([zone],[])).toEqual([zone])
 })

@@ -10,10 +10,7 @@ type Item = {
   changedAt: string;
 };
 /** Read-only persistent protection status. Never silently clears warnings on a failed poll. */
-export function PtzProtectionNotice({
-  sourceId,
-  allowNavigation = true,
-}: { sourceId?: string; allowNavigation?: boolean }) {
+export function PtzProtectionNotice({sourceId}: {sourceId: string}) {
   const [items, setItems] = useState<Item[]>([]),
     [stale, setStale] = useState(false);
   useEffect(() => {
@@ -42,40 +39,30 @@ export function PtzProtectionNotice({
       clearTimeout(timer);
     };
   }, []);
-  const visible = sourceId
-    ? items.filter((i) => i.source?.id === sourceId || i.channels.some((c) => c.id === sourceId))
-    : items;
+  const visible = items.filter(i => i.blocked && (i.source?.id === sourceId || i.channels.some(c => c.id === sourceId)));
   if (!visible.length) return null;
   return (
     <div
       role="status"
-      aria-label="摄像头布防暂停提示"
+      aria-label="摄像头视角保护提示"
       className="max-h-44 shrink-0 space-y-2 overflow-y-auto rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950"
     >
-      {visible.length > 1 && <p className="text-xs font-semibold">{visible.length} 处摄像头布防处于暂停保护</p>}
+      {visible.length > 1 && <p className="text-xs font-semibold">{visible.length} 处摄像头处于视角保护</p>}
       {visible.map((item, index) => (
         <div key={item.source?.id ?? index} className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <AlertTriangle size={16} className="shrink-0" />
           <span>
             <strong>{item.source?.name ?? '摄像头'}</strong> ·{' '}
             {item.reason === 'external_motion'
-              ? '检测到外部视角变化，已暂停关联告警与计数。'
-              : '摄像头视角保护已暂停关联告警与计数。'}
+              ? '检测到外部视角变化，视角保护中。'
+              : '摄像头视角保护中。'}
+            {' 未绑定或未匹配区域的关联告警与计数仍暂停；已匹配的绑定区域按场景核验状态恢复。'}
             {item.stopPending ? ' 停止尚未确认。' : ''}
           </span>
-          {allowNavigation && item.source ? (
-            <a
-              className="min-h-11 inline-flex items-center font-medium text-blue-700 underline underline-offset-2"
-              href={`/monitor?ptz=${encodeURIComponent(item.source.id)}`}
-            >
-              核对视角并恢复
-            </a>
-          ) : (
-            <span>请保存布防后，在实时监看的云台面板核对恢复。</span>
-          )}
+          <span>在实时监看打开对应 AI 输出的云台，展开视频下方的「布防待核对」即可核对并恢复。</span>
         </div>
       ))}
-      {stale && <p className="text-xs">暂停状态暂未更新，请检查服务连接；上次记录仍保留。</p>}
+      {stale && <p className="text-xs">保护状态暂未更新，请检查服务连接；上次记录仍保留。</p>}
     </div>
   );
 }

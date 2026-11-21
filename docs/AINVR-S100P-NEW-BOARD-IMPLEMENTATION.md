@@ -246,6 +246,18 @@ sudo python3 deploy-package/prepare-s100p.py
 
 `install-s100p.sh --prepare` / `--start` 生成基础 systemd 单元，但会调用旧 `harden-storage-s100p.py`，该脚本仍用 `SSD/migration-backups` 且有旧状态目录改名行为，不符合当前统一每服务 3 份备份要求。**不能在未核对/调整该存储步骤前当作无人值守新板安装命令。** 新板先落实第 3 节目录和挂载，再由实施人员按脚本单元模板完成安装并核验权限；不运行旧数据迁移来创建空板状态。
 
+### PTZ 布防场景参考图存储
+
+安装 `ainvr-backend.service`、挂载业务盘并生成本板 backend.env 后，运行：
+
+```bash
+sudo python3 deploy-package/prepare-scene-storage.py
+```
+
+脚本按后端 OS helper 返回的唯一可选卷定位挂载点，再用本机块设备清单复核。若 helper 尚未启动，可显式指定已挂载的业务盘，例如 `sudo python3 deploy-package/prepare-scene-storage.py --mount /mnt/ainvr-ssd`。显式准备目录不改变后端选盘配置。更换磁盘后需在新卷重新执行。
+
+脚本仅在卷根创建 `ainvr-arming-scenes`，使用实际 backend 服务用户及组，权限为 `0700`。已有目录必须具有相同属主和权限。标准 PTZ 发布的 `--apply` 在停服务之前执行此步骤；未配置或没有唯一可选业务盘时跳过。验收时用后台服务账号检查目录可读写，并在浏览器冻结一帧。
+
 基础配置生成后确认：
 
 - 后端以 sunrise 运行，能读 PG 应用密码及自己的主密钥；root-only 的父目录不应阻断正常服务访问。

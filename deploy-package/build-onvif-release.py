@@ -12,16 +12,24 @@ import time
 ROOT=Path(__file__).resolve().parents[1]
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def tree(path):return {p.relative_to(path).as_posix():sha(p) for p in sorted(path.rglob('*')) if p.is_file() and '__pycache__' not in p.parts}
-TOOLS=['deploy_ptz_release.py','release_common.py','ptz-production-state.mjs','ptz_rollback_guard.py','ptz-rollback-state.mjs','search_release_profile.py','search-production-state.mjs','search_seed_migration_proof.mjs','prepare-ptz-components.py','build-onvif-release.py','ainvr-large-models.tmpfiles.conf']
+TOOLS=['deploy_ptz_release.py','release_common.py','ptz-production-state.mjs','ptz_rollback_guard.py','ptz-rollback-state.mjs','search_release_profile.py','search-production-state.mjs','search_seed_migration_proof.mjs','prepare-ptz-components.py','prepare-scene-storage.py','validate_console_env.py','build-onvif-release.py','ainvr-large-models.tmpfiles.conf']
+RELEASE_TOOL_PATHS = [Path('deploy-package')/name for name in TOOLS] + [Path('shared/os-helper/storage.py')]
+
+def copy_release_tools(output):
+    for relative in RELEASE_TOOL_PATHS:
+        target = output/relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT/relative, target)
+
 def sources(profile='ptz'):
     files=[]
-    roots=['srs-web-console/backend/src','srs-web-console/frontend/src','shared/host-restart-helper','shared/python']
+    roots=['srs-web-console/backend/src','srs-web-console/backend/helpers','srs-web-console/frontend/src','shared/host-restart-helper','shared/python']
     roots+=['ai-service/src','ai-service/cmake','search-service/src','search-service/cmake','llm-service/src','llm-service/cmake','shared/cpp']if profile=='search' else ['onvif-service','shared/ptzcontrol','ingest-service']
     for name in roots:
-        files.extend(p for p in (ROOT/name).rglob('*') if p.is_file() and not p.is_relative_to(ROOT/'shared/host-restart-helper/data') and '__pycache__' not in p.parts and 'node_modules' not in p.parts and '.git' not in p.parts)
+        files.extend(p for p in (ROOT/name).rglob('*') if p.is_file() and not p.is_relative_to(ROOT/'shared/host-restart-helper/data') and '__pycache__' not in p.parts and '.pytest_cache' not in p.parts and 'node_modules' not in p.parts and '.git' not in p.parts)
     for name in ['srs-web-console/backend','srs-web-console/frontend']:
         files.extend(p for p in (ROOT/name).iterdir() if p.is_file() and (p.suffix in ['.json','.ts','.js','.cjs'] or p.name=='index.html'))
-    files.extend(ROOT/'deploy-package'/name for name in TOOLS)
+    files.extend(ROOT/path for path in RELEASE_TOOL_PATHS)
     if profile=='search':files.extend(ROOT/name/'CMakeLists.txt' for name in ['ai-service','search-service','llm-service'])
     return {p.relative_to(ROOT).as_posix():sha(p) for p in sorted(set(files))}
 def main():
@@ -40,11 +48,11 @@ def main():
         backend=ROOT/'srs-web-console/backend';frontend=ROOT/'srs-web-console/frontend'
         run(['node','node_modules/typescript/bin/tsc','-p','tsconfig.json','--outDir',str(output/'backend')],backend,'backend-build')
         shutil.copytree(backend/'src/store/migrations',output/'backend/store/migrations',dirs_exist_ok=True)
-        (output/'backend/ptz-compatibility.json').write_text(json.dumps({'schema':1,'viewGuardVersion':1})+'\n')
+        shutil.copytree(backend/'helpers',output/'backend/helpers',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+        (output/'backend/ptz-compatibility.json').write_text(json.dumps({'schema':1,'viewGuardVersion':1,'sceneBindingVersion':1,'presetBindingVersion':1})+'\n')
         run(['node','node_modules/typescript/bin/tsc','-b','--noEmit'],frontend,'frontend-typecheck')
         run(['node','node_modules/vite/bin/vite.js','build','--outDir',str(output/'frontend')],frontend,'frontend-build')
-        (output/'deploy-package').mkdir()
-        for name in TOOLS:shutil.copy2(ROOT/'deploy-package'/name,output/'deploy-package'/name)
+        copy_release_tools(output)
         (output/'helper').mkdir()
         for name in ['observability.py','restart_helper.py']:shutil.copy2(ROOT/'shared/host-restart-helper'/name,output/'helper'/name)
         shutil.copytree(ROOT/'shared/python',output/'shared/python',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))

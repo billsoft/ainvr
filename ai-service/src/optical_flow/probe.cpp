@@ -4,6 +4,8 @@
 #include <fstream>
 #include <iostream>
 #include <cmath>
+#include <ctime>
+#include <sys/resource.h>
 #include <openssl/evp.h>
 using namespace ainvr::flow;
 namespace {
@@ -42,7 +44,7 @@ void FiltersTest(){
 }
 int main(int argc,char** argv){try{
   if(argc==2&&std::string(argv[1])=="--filters"){FiltersTest();return 0;}
-  if(argc!=4)throw std::runtime_error("usage: optical_flow_probe MODEL_ROOT FRAME0.jpg FRAME1.jpg | --filters");
+  if(argc!=4&&argc!=5)throw std::runtime_error("usage: optical_flow_probe MODEL_ROOT FRAME0.jpg FRAME1.jpg [--scene] | --filters");
   auto a=Read(argv[2]),b=Read(argv[3]);
   auto encode=[](const std::vector<uint8_t>& v){std::string s(4*((v.size()+2)/3)+1,'\0');
     int n=EVP_EncodeBlock(reinterpret_cast<unsigned char*>(s.data()),v.data(),v.size());s.resize(n);return s;};
@@ -52,6 +54,22 @@ int main(int argc,char** argv){try{
   auto factory=NativeFactory(argv[1]);
   Runtime runtime([&]{return token;},[]{return true;},[&]{auto t=std::chrono::steady_clock::now();
     auto backend=factory();load_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t).count();return backend;});
+  if(argc==5){
+    if(std::string(argv[4])=="--scene-timing"){
+      for(int n=0;n<4;++n){
+        auto t=std::chrono::steady_clock::now();auto cpu=std::clock();
+        auto result=runtime.Call(pair,peer,true);
+        rusage usage{};getrusage(RUSAGE_SELF,&usage);
+        std::cout<<Json{{"iteration",n},{"peakRssKiB",usage.ru_maxrss},{"modelLoadMs",load_ms},{"matched",result.at("matched")},
+          {"wallMs",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t).count()},
+          {"processCpuMs",1000.0*(std::clock()-cpu)/CLOCKS_PER_SEC}}.dump()<<'\n';
+        if(n==3)std::cout<<Json{{"timingEvidence",result}}.dump()<<'\n';
+      }
+      return 0;
+    }
+    if(std::string(argv[4])!="--scene")throw std::runtime_error("unknown probe option");
+    std::cout<<runtime.Call(pair,peer,true).dump()<<'\n';return 0;
+  }
   auto start=std::chrono::steady_clock::now();
   auto cold=runtime.Call(pair,peer);
   cold["loadMs"]=load_ms;

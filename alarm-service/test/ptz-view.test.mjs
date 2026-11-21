@@ -24,3 +24,26 @@ test('pre-movement journal backlog cannot count after rearming, including legacy
  for(const [i,x]of[.2,.5,.8].entries()){const out=evaluate(cp,frame(i+1,x),[r]);cp=out.checkpoint;assert.equal(out.events.length,0)}
  for(const [i,x]of[.2,.5,.8].entries()){const out=evaluate(cp,frame(i+5,x),[r]);cp=out.checkpoint;if(i<2)assert.equal(out.events.length,0);else assert.equal(out.events.length,1)}
 });
+
+test('scene reprojection uses the new polygon without inventing a crossing during movement',()=>{
+ const initial={...rule(),view_epoch:'a'.repeat(64)};
+ let cp=evaluate(null,frame(1,.2),[initial]).checkpoint;
+ cp=evaluate(cp,frame(2,.5),[initial]).checkpoint;
+ const projected={...initial,points:[[.5,.3],[.8,.3],[.8,.7],[.5,.7]],view_epoch:'b'.repeat(64),view_not_before:frame(3,.4).captured_at};
+ let out=evaluate(cp,frame(3,.4),[projected]);
+ assert.equal(out.events.length,0);assert.ok(out.issues.includes('view_changed'));cp=out.checkpoint;
+ out=evaluate(cp,frame(4,.65),[projected]);assert.equal(out.events.length,0);cp=out.checkpoint;
+ out=evaluate(cp,frame(5,.9),[projected]);assert.equal(out.events.length,1);
+});
+test('rechecking an unchanged scene epoch preserves continuous dwell',()=>{
+ const r={...rule('appearance'),view_epoch:'a'.repeat(64)};
+ let cp=null,result;
+ for(let i=1;i<=3;i++){result=evaluate(cp,frame(i,.5),structuredClone([r]));cp=result.checkpoint;}
+ assert.equal(result.events.length,1);assert.ok(!result.issues.includes('view_changed'));
+});
+test('an unmatched scene stays paused even with detections across its previous boundary',()=>{
+ const r={...rule(),state:'paused',view_epoch:'b'.repeat(64)};let cp=null;
+ for(const [i,x]of[.2,.5,.8].entries()){
+  const out=evaluate(cp,frame(i+1,x),[r]);cp=out.checkpoint;assert.equal(out.events.length,0);
+ }
+});

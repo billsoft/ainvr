@@ -761,6 +761,8 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
           </div>
         </section>
       )}
+      {isAiOutput && info?.supported && info.enabled !== false && info.source?.id && followProcessor &&
+        <PtzSceneStatus sourceId={info.source.id} processorId={followProcessor} disabled={!presetReady} onReturn={id=>void gotoPreset(id)}/>}
       {isAiOutput && armingHost && info?.guard?.blocked && createPortal(
         <details className="ptz-section text-xs text-amber-200">
           <summary className="cursor-pointer"><ShieldCheck size={14} className="mr-1 inline"/>布防待核对</summary>
@@ -848,3 +850,4 @@ export function PtzPanel({ channelId, onClose, video, isAiOutput = false, follow
     </aside>
   );
 }
+import {PtzSceneStatus} from './PtzSceneStatus';

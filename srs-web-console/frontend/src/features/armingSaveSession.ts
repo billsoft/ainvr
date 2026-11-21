@@ -1,4 +1,5 @@
 export interface ArmingSaveRequest {
+  sceneEdits?:import('@/api/armingSceneService').ArmingSceneEdit[]
   coordinateSpace?:'planar'|'erp'
   sourceId:string
   geometryRevision:string

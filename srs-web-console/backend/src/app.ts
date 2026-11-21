@@ -30,6 +30,9 @@ import {PtzFlow, ptzFlowTimeoutMs} from './services/ptzFlow.js';
 import {PtzStore} from './store/ptzStore.js';
 import {PtzManager} from './services/ptzManager.js';
 import {preparePtzAdapter} from './services/ptzAdapter.js';
+import {ArmingScenes} from './store/armingScenes.js';
+import {ArmingSceneRuntime} from './services/armingSceneRuntime.js';
+import {captureScene,matchScene,sceneCaptureAvailable} from './services/sceneCapture.js';
 import {PtzGuardedSnapshot} from './services/ptzGuardedSnapshot.js';
 import {ptzAi} from './services/ptzAi.js';
 import {OnvifStore} from './store/onvifStore.js';
@@ -479,8 +482,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     });
     const alarmConfigurationReady=pgStore?await prepareAlarmConfiguration(instance,()=>migrateLegacyAlarms(pgStore.pool),alarmPrincipal):false;
     const triggerStore=pgStore&&alarmConfigurationReady?new AlarmTriggerStore(pgStore.pool):null;
-    const armingStore=pgStore&&alarmConfigurationReady?new AlarmArmingStore(pgStore.pool):null;
-    const ruleSync=triggerStore&&armingStore&&pgStore?new AlarmRuleSync(new PtzGuardedSnapshot(new AlarmCombinedSnapshot(triggerStore,armingStore),pgStore.pool,async()=>({channels:(await channelStore.read()).channels,ai:await ptzAI!.list()})),alarmConnection,
+    let sceneRuntime:ArmingSceneRuntime|null=null;
+    const sceneStore=pgStore&&alarmConfigurationReady?new ArmingScenes(pgStore.pool):null;
+    if(sceneStore)await sceneStore.invalidate(true);
+    const armingStore=pgStore&&alarmConfigurationReady?new AlarmArmingStore(pgStore.pool,()=>sceneRuntime):null;
+    const ruleSync=triggerStore&&armingStore&&pgStore?new AlarmRuleSync(new PtzGuardedSnapshot(new AlarmCombinedSnapshot(triggerStore,armingStore),pgStore.pool,async()=>({channels:(await channelStore.read()).channels,ai:await ptzAI!.list()}),sceneStore??undefined,async()=>{await sceneRuntime?.checkBindings();}),alarmConnection,
       async()=>armingStore.reconcileCatalogs(async id=>readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore))):null;
     const gbStore=pgStore?new GB28181Store(pgStore,async()=>new Set((await channelStore.read()).channels.map(c=>c.id))):null;
     gbSync=gbStore?new GB28181Sync(gbStore,channelService):null;
@@ -490,6 +496,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     const ptzStore=pgStore&&alarmConfigurationReady?new PtzStore(pgStore.pool):null;
     const ptzAI=pgStore?ptzAi(()=>settingsStore.read(),pgStore,aiServiceBaseUrl):null;
     const ptzManager=ptzStore&&ptzAI?new PtzManager(ptzStore,{
+      presetBindings:true,
       channels:async()=>(await channelStore.read()).channels,
       latestFrame:id=>ptzAI.latestFrame(id),ai:()=>ptzAI.list(),prepare:root=>preparePtzAdapter(root,ptzStore,onvifManager,gbSync),
       synchronize:()=>ruleSync?.synchronize()??Promise.resolve({state:'unavailable'}),
@@ -724,11 +731,46 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         return { retentionDays: source.retention_days };
       },
     });
-    const floorPlanImages = new FloorPlanImages(async generation => {
+    const imageDirectory = async (generation?:string) => {
       const helper = osHelperConfigFromEnv();
       if (!helper) return null;
       return selectedFloorPlanDirectory(await storageRequest(helper, '/storage/volumes'), generation);
-    });
+    };
+    const floorPlanImages=new FloorPlanImages(imageDirectory);
+    if(sceneStore&&ptzManager){
+      sceneRuntime=new ArmingSceneRuntime(sceneStore,{
+        presetCapability:id=>ptzManager.presetBindingCapability(id),
+        preset:(id,selection,actor)=>ptzManager.scenePreset(id,selection,actor),
+        images:new FloorPlanImages(imageDirectory,'ainvr-arming-scenes'),capture:captureScene,
+        eligibleGeometry:async id=>{
+          if(!await sceneCaptureAvailable())return false;
+          const input=(await channelStore.read()).channels.find(c=>c.id===id);
+          if(!input)return false;
+          const live=(await srsClient.listStreams()).filter(s=>s.publish?.active&&s.app===(input.app||'live')&&s.name===input.streamName);
+          const w=live[0]?.video?.width??0,h=live[0]?.video?.height??0;
+          return live.length===1&&w>0&&h>0&&w<=4096&&h<=4096&&w*h<=8*1024*1024;
+        },
+        source:async(id,p,observe)=>{
+          const input=(await channelStore.read()).channels.find(c=>c.id===id);
+          if(!input||input.inputEnabled===false)return null;
+          if(!input.onvif && (input.upstreamProtocol!=='rtmp'||(input.app||'live')!=='live'||
+            !(await pgStore!.pool.query('SELECT 1 FROM gb28181_bindings WHERE input_id=$1 AND stream_name=$2 AND enabled',
+              [id,input.streamName])).rowCount))return null;
+          return ptzManager.sceneSource(id,p,observe);
+        },
+        geometry:async(id,p)=>{
+          const settings=await settingsStore.read(),inputs=(await channelStore.read()).channels;
+          const [catalog,geometry]=await Promise.all([readAlarmSourceCatalog(p,settings,inputs,aiServiceBaseUrl,pgStore),
+            readArmingGeometry(id,settings,inputs,aiServiceBaseUrl,pgStore,()=>srsClient.listStreams())]);
+          return catalog&&catalog.input_stream_id===id&&catalog.geometry_revision===geometry?catalog:null;
+        },
+        match:async(ref,current,timeoutMs=17000)=>{
+          const settings=await settingsStore.read();
+          return matchScene({baseUrl:settings.aiService.baseUrl||aiServiceBaseUrl,apiToken:await resolveAiApiKey(settings,pgStore),timeoutMs},ref,current);
+        },
+      });
+      instance.addHook('onClose',async()=>{await sceneRuntime?.close();});
+    }
     await instance.register(floorPlanRoutes,{store:pgStore ? new FloorPlans(pgStore.pool,floorPlanImages) : null,principal:alarmPrincipal});
     const vehicleStore=pgStore?new VehiclePreparation(pgStore.pool):null;
     const vehicleChannelExists=async(id:string)=>{const raw=await readSearchAiProcessors(await settingsStore.read(),pgStore,aiServiceBaseUrl);return Array.isArray(raw)&&raw.some(p=>p?.id===id);};
@@ -752,6 +794,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       catalog:async id=>readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore),
     });
     await instance.register(alarmArmingRoutes,{
+      scenes:sceneRuntime,
       store:armingStore,synchronization:ruleSync,principal:alarmPrincipal,
       catalog:async id=>readAlarmSourceCatalog(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore),
       sourceGeometry:async id=>readArmingGeometry(id,await settingsStore.read(),(await channelStore.read()).channels,aiServiceBaseUrl,pgStore,()=>srsClient.listStreams()),
@@ -768,7 +811,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
         try { await ruleSync.synchronize(); } catch { /* next bounded poll retries */ }
         if (!stopped) { timer = setTimeout(sync, 5000); timer.unref(); }
       };
-      instance.addHook('onReady', async () => { void sync(); });
+      instance.addHook('onReady', async () => {
+        await ruleSync.synchronize().catch(error=>instance.log.warn({err:error},'initial alarm synchronization failed'));
+        sceneRuntime?.start(error=>instance.log.warn({err:error},'scene reconciliation failed'));
+        void sync();
+      });
       instance.addHook('onClose', async () => { stopped = true; clearTimeout(timer); });
     }
     await instance.register(alarmZoneRoutes, {

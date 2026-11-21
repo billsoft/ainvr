@@ -1,4 +1,6 @@
 import {PtzProtectionNotice} from '@/components/PtzProtectionNotice'
+import {sceneStateLabel} from '@/api/armingSceneService'
+import {sceneEditorDocument,sceneFor,sceneViewPoints,withSceneEdits,type SceneEditingContext,type SceneIntents} from '@/features/armingSceneDraft'
 import {ZoneHandles} from './ZoneHandles'
 import {ZoneDrawing} from './ZoneDrawing'
 import {zoneGeometryError,type ZonePoint} from '@/features/alarmGeometry'
@@ -34,6 +36,7 @@ import {FitFrame} from './FitFrame'
 const FRAME='*'
 import {useFullscreenPortalHost} from '@/hooks/useFullscreenPortalHost'
 interface Props {
+ sceneContext?:SceneEditingContext
  sourceId:string;sourceName:string;base:ArmingDocument|null;legacyZones?:AlarmZone[];warning?:string;resetGeometry?:boolean;resetLegacyGeometry?:boolean;
  reference:{url:string;width:number;height:number;geometryRevision:string;capturedAt:string};
  definitions:TriggerDefinition[];sources:AlarmSource[];counters?:Counter[];
@@ -42,11 +45,13 @@ interface Props {
  onClose:()=>void;onSaved:(result:ArmingSaveResult)=>void;
  send?:typeof alarmArmingService.save
 }
-export function ArmingModal({sourceId,sourceName,base,reference,definitions:initialDefinitions,sources,counters:initialCounters=[],onClose,onSaved,send=alarmArmingService.save,legacyZones=[],warning,resetGeometry=false,resetLegacyGeometry=false,panoramic=false}:Props){
+export function ArmingModal({sourceId,sourceName,base:incomingBase,reference:incomingReference,sceneContext:incomingScene,definitions:initialDefinitions,sources,counters:initialCounters=[],onClose,onSaved,send=alarmArmingService.save,legacyZones=[],warning,resetGeometry=false,resetLegacyGeometry=false,panoramic=false}:Props){
+ const [frozen]=useState(()=>({scene:incomingScene?structuredClone(incomingScene):undefined,reference:{...incomingReference},base:incomingBase?structuredClone(incomingBase):null}))
+ const sceneContext=frozen.scene,reference=sceneContext?frozen.reference:incomingReference,base=sceneContext?frozen.base:incomingBase
  const portalHost=useFullscreenPortalHost()
  const replacingGeometry=resetGeometry||resetLegacyGeometry
  const [draft]=useState(()=>{
-  const snapshot=resetGeometry&&base?resetArmingForGeometry(sourceId,reference.geometryRevision,base):readArmingSnapshot(sourceId,reference.geometryRevision,base)
+  const snapshot=resetGeometry&&base?resetArmingForGeometry(sourceId,reference.geometryRevision,base):readArmingSnapshot(sourceId,reference.geometryRevision,sceneEditorDocument(base,sceneContext))
   // A panoramic source starts wrap-around; existing planar zones keep their meaning.
   if(panoramic&&!snapshot.coordinateSpace&&!snapshot.zones.length)snapshot.coordinateSpace='erp'
   const value=createArmingDraft(snapshot)
@@ -77,6 +82,8 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
  const [zonePreview,setZonePreview]=useState<{id:string;points:ZonePoint[]}|null>(null)
  const [nameDraft,setNameDraft]=useState<{id:string;value:string}|null>(null)
  const current=draft.read(),locked=busy||session.hasPending()
+ const hiddenZones=new Set(current.zones.filter(z=>sceneViewPoints(sceneContext,z.id)===null&&z.sceneIntent!=='edit').map(z=>z.id))
+ const visibleZones=current.zones.filter(z=>!hiddenZones.has(z.id))
  if(zonePreview){const z=current.zones.find(z=>z.id===zonePreview.id);if(z)z.points=zonePreview.points}
  const flushName=()=>{if(!nameDraft)return true;try{draft.renameZone(nameDraft.id,nameDraft.value);setNameDraft(null);refresh(n=>n+1);setError('');return true}catch(e){setError((e as Error).message);return false}}
  const nameDirty=()=>!!nameDraft&&nameDraft.value!==draft.read().zones.find(z=>z.id===nameDraft.id)?.name
@@ -124,9 +131,9 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
   if(!session.hasPending()&&(snapshot.assignments.some(a=>a.needsDirectionConfirmation)||snapshot.counterBindings.some(b=>b.needsConfirmation))){setError('请先处理标记为需重新确认的方向或计数线。');return}
   setBusy(true);setError('')
   try{
-   const result=session.hasPending()?await session.retry():await session.save(buildArmingRequest(draft.read(),base,{...currentLabelVersions(draft.read(),sources,id=>definitions.find(d=>d.trigger_id===id)?.labels.map(l=>l.label_id),id=>counters.find(c=>c.counter_id===id)?.labels.map(l=>l.label_id)),...Object.fromEntries(draft.read().assignments.flatMap(a=>labels.current[labelKey(a)]?[[a.id,labels.current[labelKey(a)]!]]:[])),...bindingLabels.current},resetGeometry))
+   const result=session.hasPending()?await session.retry():await session.save(withSceneEdits(buildArmingRequest(draft.read(),base,{...currentLabelVersions(draft.read(),sources,id=>definitions.find(d=>d.trigger_id===id)?.labels.map(l=>l.label_id),id=>counters.find(c=>c.counter_id===id)?.labels.map(l=>l.label_id)),...Object.fromEntries(draft.read().assignments.flatMap(a=>labels.current[labelKey(a)]?[[a.id,labels.current[labelKey(a)]!]]:[])),...bindingLabels.current},resetGeometry),base,sceneContext,Object.fromEntries(draft.read().zones.filter(z=>z.sceneIntent).map(z=>[z.id,z.sceneIntent])) as SceneIntents))
    onSaved(result)
-  }catch(e){setError(e instanceof Error?e.message:'保存结果未确认，请保留草稿后重试')}
+  }catch(e){setError((e as {status?:number})?.status===409?'场景或布防版本已改变，未覆盖服务端配置。冻结参考与全部草稿已保留；请回到原场景核对，或取消后重新打开并绘制。':e instanceof Error?e.message:'保存结果未确认，请保留草稿后重试')}
   finally{setBusy(false)}
  }
  const editing=editZone?current.zones.find(z=>z.id===editZone):undefined
@@ -148,7 +155,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
   </g>
  }
  const commitZone=(value:ZoneDraft)=>{
-  if(editing){setActiveZone(editing.id);draft.replaceZone({...editing,name:value.name,points:value.points,erpWrap:value.erpWrap,edgeIds:edgeIdsAfterEdit(editing.points,editing.edgeIds,value.points,!!value.redrawn,newAlarmOperationId)})}
+  if(editing){setActiveZone(editing.id);draft.replaceZone({...editing,name:value.name,points:value.points,erpWrap:value.erpWrap,edgeIds:edgeIdsAfterEdit(editing.points,editing.edgeIds,value.points,!!value.redrawn,newAlarmOperationId)});if(hiddenZones.has(editing.id))draft.setSceneIntent(editing.id,'edit')}
   else{const id=newAlarmOperationId();draft.addZone({id,name:value.name,points:value.points,erpWrap:value.erpWrap,edgeIds:value.points.map(()=>newAlarmOperationId()),version:0});setActiveZone(id)}
   changed()
  }
@@ -163,7 +170,7 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
  const newZoneName=()=>{let n=current.zones.length+1;while(current.zones.some(z=>z.name===`热区 ${n}`))n++;return `热区 ${n}`}
  const title=<h2 className="hidden lg:block max-w-[12rem] shrink-0 truncate text-base font-semibold text-ink" title={`布防 · ${sourceName}`}>布防 · {sourceName}</h2>
  const selectedTarget=targets.find(t=>t.id===activeZone)
- const hint=drawing?(drawing==='rectangle'?'拖出矩形，松手后即可改名和关联。':'逐点绘制多边形，点“完成绘制”后即可关联。'):counting?(pick?'在画面上点热区的边设置计数线，箭头为“进”的方向。':'先在右侧选用统计，再在画面上设置计数线。'):select?'直接编辑设置；返回或切换对象会保留有效修改，最后统一保存布防。':activeZone?'直接拖动选中热区；右侧修改名称和关联；所有修改统一保存。':'点画面中的热区或它的标记选中；不画热区可点“整个画面”直接关联告警规则。所有修改在“保存布防”后统一生效。'
+ const hint=drawing?(drawing==='rectangle'?'拖出矩形，松手后即可改名和关联。':'逐点绘制多边形，点“完成绘制”后即可关联。'):counting?(pick?'在画面上点热区的边设置计数线，箭头为“进”的方向。':'先在右侧选用统计，再在画面上设置计数线。'):select?'直接编辑设置；返回或切换对象会保留有效修改，最后统一保存布防。':activeZone?'直接拖动选中热区；在编辑面板修改名称和关联；所有修改统一保存。':'点画面中的热区或它的标记选中；不画热区可点“整个画面”直接关联告警规则。所有修改在“保存布防”后统一生效。'
  return createPortal(<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-2 sm:p-4">
   <div role="dialog" aria-modal="true" aria-label={`布防 · ${sourceName}`} tabIndex={-1} ref={dialog} className="alarm-workspace relative flex h-full w-full flex-col overflow-hidden rounded-panel bg-surface shadow-modal outline-none" onKeyDown={e=>{
    if(e.key==='Escape'){
@@ -203,33 +210,37 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
     {editZone?<button type="button" className="btn-primary shrink-0" disabled={locked} onClick={()=>leaveEditor(false)}>完成编辑</button>:<button type="button" className="btn-primary shrink-0" disabled={busy||!!drawing||!!removeZone||(!replacingGeometry&&!draft.dirty()&&!nameDirty()&&!session.hasPending()&&!editZone&&!busyPanel)} onClick={()=>void save()}><Save size={16} aria-hidden="true"/>{busy?'正在保存…':session.hasPending()?'重试确认保存':'保存布防'}</button>}
     <button type="button" aria-label="关闭" title="取消并关闭" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-base text-ink-subtle hover:bg-surface-hover" disabled={locked||!!removeZone} onClick={close}><X size={20} aria-hidden="true"/></button>
    </div>
-   <PtzProtectionNotice sourceId={sourceId} allowNavigation={false}/>
+   {sceneContext?.frame.binding_mode!=='preset'&&<PtzProtectionNotice sourceId={sourceId}/>}
+   {sceneContext&&<div className="shrink-0 border-b border-line px-4 py-2 text-xs text-ink-subtle" role="status">
+    {sceneContext.frame.binding_mode==='preset'?`布防视角：${sceneContext.frame.preset_name||'预置位 '+sceneContext.frame.preset_id}。绑定区域离开后暂停，回位核验后恢复；未绑定区域仍需人工核对。`:'当前画面布防：转动后需核对视角或重新布防。'}
+    {hiddenZones.size>0&&<div className="mt-1 flex flex-wrap items-center gap-2"><span>以下区域尚未匹配，旧坐标不叠加到当前画面：</span>{current.zones.filter(z=>hiddenZones.has(z.id)).map(z=><button type="button" className="btn-secondary" disabled={locked} key={z.id} onClick={()=>chooseTarget(z.id)}>{z.name}</button>)}</div>}
+   </div>}
    {(replacingGeometry||warning)&&<div className="shrink-0 space-y-1 border-b border-line px-4 py-2 text-sm">
     {replacingGeometry&&<p role="alert" className="text-amber-800">正在按当前画面重新布防。保存后以本次热区与选用为准，旧记录保留；取消则保留原配置。</p>}
     {warning&&<p role="status" className="text-ink-subtle">{warning}</p>}
    </div>}
-   {editZone?<ZoneEditor referenceZones={current.zones.filter(z=>z.id!==editing?.id)} workspace={editor} onCommit={commitZone} panoramaAllowed={current.coordinateSpace==='erp'} key={editZone} reference={reference} toolbarHost={toolbarHost} defaultName={editZone==='new'?newZoneName():''} initial={editing?{name:editing.name,points:editing.points,geometryRevision:reference.geometryRevision,erpWrap:editing.erpWrap}:undefined} onCancel={()=>leaveEditor()} onEscape={discardEditor}/>:<div className="flex min-h-0 flex-1 portrait:flex-col">
+   {editZone?<ZoneEditor referenceZones={visibleZones.filter(z=>z.id!==editing?.id)} workspace={editor} onCommit={commitZone} panoramaAllowed={current.coordinateSpace==='erp'} key={editZone} reference={reference} toolbarHost={toolbarHost} defaultName={editZone==='new'?newZoneName():hiddenZones.has(editZone??'')?editing?.name??'':''} initial={editing&&!hiddenZones.has(editing.id)?{name:editing.name,points:editing.points,geometryRevision:reference.geometryRevision,erpWrap:editing.erpWrap}:undefined} onCancel={()=>leaveEditor()} onEscape={discardEditor}/>:<div className="flex min-h-0 flex-1 portrait:flex-col">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-page p-3">
      <FitFrame frameRef={frame} width={reference.width} height={reference.height}>
       <img src={reference.url} alt="布防参考画面" draggable={false} className="absolute inset-0 h-full w-full" onLoad={e=>{const ok=e.currentTarget.naturalWidth===reference.width&&e.currentTarget.naturalHeight===reference.height;setFrameReady(ok);if(!ok)setError('参考图尺寸不匹配，暂时不能调整形状。')}} onError={()=>{setFrameReady(false);setError('参考画面加载失败，暂时不能调整形状。')}}/>
       <svg className="absolute inset-0 h-full w-full" viewBox={`0 0 ${reference.width} ${reference.height}`} preserveAspectRatio="none" onClick={e=>{if(e.target===e.currentTarget&&!locked)chooseTarget(null)}}>
-       {current.zones.map(z=><g key={z.id}>
+       {visibleZones.map(z=><g key={z.id}>
         {erpDisplayPolygons(z.points,z.erpWrap).map((poly,copy)=><polygon key={copy} role="button" aria-label={`选择热区 ${z.name}`} aria-pressed={activeZone===z.id} tabIndex={locked?-1:0}
          onClick={()=>{if(!locked)chooseTarget(z.id)}} onKeyDown={e=>{if((e.key==='Enter'||e.key===' ')&&!locked){e.preventDefault();chooseTarget(z.id)}}}
          points={poly.map(([x,y])=>`${x*reference.width},${y*reference.height}`).join(' ')} fill={activeZone===z.id?'rgba(22,119,255,.32)':'rgba(22,119,255,.12)'} stroke={activeZone===z.id?'#facc15':'#60a5fa'} strokeWidth={activeZone===z.id?3:2} vectorEffect="non-scaling-stroke" className="cursor-pointer"/>)}
         {erpDisplayPolygons(z.points,z.erpWrap).flatMap((poly,copy)=>poly.map((p,i)=>{const q=poly[(i+1)%poly.length]!,id=z.edgeIds[i]!,isEntry=select?.zoneId===z.id&&highlight.entry.includes(id),isExit=select?.zoneId===z.id&&highlight.exit.includes(id);return (isEntry||isExit)?<line key={`${id}:${copy}`} className="pointer-events-none" x1={p[0]*reference.width} y1={p[1]*reference.height} x2={q[0]*reference.width} y2={q[1]*reference.height} stroke={isEntry?'#4ade80':'#fb923c'} strokeWidth="5" vectorEffect="non-scaling-stroke"/>:null}))}
        </g>)}
        {select&&selectedZone&&!selectedZone.erpWrap&&approach&&<ApproachBand points={selectedZone.points} width={reference.width} height={reference.height} percent={approach.value} onChange={value=>{setApproach({...approach,value});setApproachEdit({id:approach.id,value,revision:Date.now()})}}/>}
-       {current.counterBindings.filter(b=>b.id!==counting?.initial?.id&&!b.needsConfirmation).flatMap(b=>{const z=current.zones.find(z=>z.id===b.zoneId);return z?[drawCounting(b.id,b.direction,z,true)]:[]})}
+       {current.counterBindings.filter(b=>b.id!==counting?.initial?.id&&!b.needsConfirmation&&!hiddenZones.has(b.zoneId)).flatMap(b=>{const z=current.zones.find(z=>z.id===b.zoneId);return z?[drawCounting(b.id,b.direction,z,true)]:[]})}
        {countingZone&&pickDrawing&&drawCounting('pick',pickDrawing,countingZone)}
        {countingZone&&pick&&!countingZone.erpWrap&&countingZone.points.map((p,i)=>{const q=countingZone.points[(i+1)%countingZone.points.length]!,id=countingZone.edgeIds[i]!;return <line key={`tap-${id}`} role="button" tabIndex={0} aria-label={`设置计数线：边 ${i+1}`} aria-disabled={locked}
         x1={p[0]*reference.width} y1={p[1]*reference.height} x2={q[0]*reference.width} y2={q[1]*reference.height} stroke="transparent" strokeWidth="44" vectorEffect="non-scaling-stroke" className="cursor-pointer outline-none"
         onClick={()=>{if(!locked)setPick(tapEdge(pick,id))}} onKeyDown={e=>{if(!locked&&(e.key==='Enter'||e.key===' ')){e.preventDefault();setPick(tapEdge(pick,id))}}}/>})}
       </svg>
       {current.zones.filter(z=>z.id===(select?.zoneId??counting?.zoneId)).map(z=><ZoneEdgeLabels key={z.id} points={z.points} wrap={z.erpWrap} entry={z.edgeIds.flatMap((id,i)=>highlight.entry.includes(id)&&select?.zoneId===z.id?[i]:[])} exit={z.edgeIds.flatMap((id,i)=>highlight.exit.includes(id)&&select?.zoneId===z.id?[i]:[])}/>)}
-      {!drawing&&!busyPanel&&activeZone&&current.zones.filter(z=>z.id===activeZone).map(z=><ZoneHandles key={z.id} zone={z} frame={frame} width={reference.width} height={reference.height} disabled={locked||!frameReady} onPreview={points=>setZonePreview(points?{id:z.id,points}:null)} onChange={points=>reshape(z.id,points)}/>)}
+      {!drawing&&!busyPanel&&activeZone&&visibleZones.filter(z=>z.id===activeZone).map(z=><ZoneHandles key={z.id} zone={z} frame={frame} width={reference.width} height={reference.height} disabled={locked||!frameReady} onPreview={points=>setZonePreview(points?{id:z.id,points}:null)} onChange={points=>reshape(z.id,points)}/>)}
       {drawing&&<ZoneDrawing mode={drawing} points={drawingPoints} frame={frame} width={reference.width} height={reference.height} onPoints={setDrawingPoints} onComplete={finishDrawing}/>}
-      {!drawing&&!busyPanel&&<ArmingMarkers targets={targets} selected={activeZone} disabled={locked} onSelect={chooseTarget}
+      {!drawing&&!busyPanel&&<ArmingMarkers targets={targets.filter(t=>!hiddenZones.has(t.id))} selected={activeZone} disabled={locked} onSelect={chooseTarget}
        onGroup={(t,kind)=>{if(!leaveEditor())return;setActiveZone(t.id);const items=kind==='trigger'?t.triggers:t.counters;if(items.length===1){if(kind==='trigger'){const a=current.assignments.find(a=>a.id===items[0]!.id);if(a)openTrigger(a)}else{const b=current.counterBindings.find(b=>b.id===items[0]!.id);if(b)startCounting(t.id,b)}}else if(!items.length){if(kind==='trigger')setSelect({zoneId:t.frame?null:t.id});else if(!t.noCounting)startCounting(t.id)}}}/> }
      </FitFrame>
     </div>
@@ -240,7 +251,17 @@ export function ArmingModal({sourceId,sourceName,base,reference,definitions:init
      </div>
      <div data-scroll-region className="min-h-0 flex-1 space-y-3 overflow-y-auto">
      {!busyPanel&&selectedTarget&&!selectedTarget.frame&&<div className="space-y-2"><label className="block text-xs font-medium text-ink-subtle" htmlFor="arming-zone-name">热区名称</label><input id="arming-zone-name" aria-label="热区名称" maxLength={128} className="form-input w-full" disabled={locked} value={nameDraft?.id===selectedTarget.id?nameDraft.value:selectedTarget.name} onChange={e=>setNameDraft({id:selectedTarget.id,value:e.target.value})} onBlur={flushName}/><p className="text-xs text-ink-faint">拖内部平移；矩形拖旋转柄旋转、角点等比缩放、边中点调整宽高。</p>{selectedTarget.noCounting&&<button className="btn-secondary" type="button" disabled={locked} onClick={()=>{if(leaveEditor())setEditZone(selectedTarget.id)}}>360° 视角调整</button>}</div>}
-     {!busyPanel&&selectedTarget&&<ArmingSelection target={selectedTarget} disabled={locked}
+     {!busyPanel&&selectedTarget&&!selectedTarget.frame&&sceneContext&&(sceneContext.frame.binding_mode==='preset'||sceneFor(sceneContext,selectedTarget.id))&&<section className="space-y-2 border-t border-line pt-2" aria-label="热区布防视角">
+      {sceneContext.frame.binding_mode==='preset'?<label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" aria-label="仅在此预置位布防" disabled={locked||hiddenZones.has(selectedTarget.id)||current.coordinateSpace==='erp'||current.counterBindings.some(b=>b.zoneId===selectedTarget.id&&b.direction.kind==='angle')}
+       checked={current.zones.find(z=>z.id===selectedTarget.id)?.sceneIntent==='unbind'?false:!!sceneFor(sceneContext,selectedTarget.id)||['bind','edit'].includes(current.zones.find(z=>z.id===selectedTarget.id)?.sceneIntent??'')}
+       onChange={e=>{draft.setSceneIntent(selectedTarget.id,e.target.checked?(sceneFor(sceneContext,selectedTarget.id)?'edit':'bind'):(sceneFor(sceneContext,selectedTarget.id)?'unbind':undefined));changed()}}/>仅在此预置位布防</label>:<p className="text-sm text-amber-700">旧版自动附着为试验能力，当前已暂停。请在已保存的预置位重新配置。</p>}
+      <p className="text-xs text-ink-subtle">仅此热区生效。未确认回位时不产生相关告警和计数；修改在“保存布防”后生效。</p>
+      {current.counterBindings.some(b=>b.zoneId===selectedTarget.id&&b.direction.kind==='angle')&&<p className="text-xs text-ink-subtle">此区域含角度计数方向，暂不支持场景绑定。</p>}
+      {sceneFor(sceneContext,selectedTarget.id)&&<p className="text-xs" role="status">{sceneStateLabel(sceneFor(sceneContext,selectedTarget.id)!.state,sceneFor(sceneContext,selectedTarget.id)!.binding_mode)} · {current.zones.find(z=>z.id===selectedTarget.id)?.sceneIntent?'本次修改尚未保存':'配置已保存'}</p>}
+      {hiddenZones.has(selectedTarget.id)&&sceneContext.frame.binding_mode==='preset'&&<button type="button" className="btn-secondary min-h-11" disabled={locked} onClick={()=>{if(leaveEditor())setEditZone(selectedTarget.id)}}>重新绘制并绑定此预置位</button>}
+      {current.coordinateSpace==='erp'&&<p className="text-xs text-ink-subtle">全景环绕区域暂不支持场景绑定。</p>}
+     </section>}
+     {!busyPanel&&selectedTarget&&<ArmingSelection target={selectedTarget} disabled={locked||hiddenZones.has(selectedTarget.id)}
        onTrigger={id=>{const a=current.assignments.find(x=>x.id===id);if(a)openTrigger(a)}}
        onCounter={id=>{const b=current.counterBindings.find(x=>x.id===id);if(b)startCounting(b.zoneId,b)}}
        onAddTrigger={()=>{if(!leaveEditor())return;setHighlight({entry:[],exit:[]});setSelect({zoneId:selectedTarget.frame?null:selectedTarget.id})}}

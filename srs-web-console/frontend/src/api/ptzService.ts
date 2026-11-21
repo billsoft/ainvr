@@ -48,6 +48,7 @@ export interface PtzInfo {
 }
 export interface PtzPreset {
   id: string;
+  fingerprint?: string;
   name: string;
   shortcut?: number | null;
   deviceState?: string;

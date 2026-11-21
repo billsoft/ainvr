@@ -192,6 +192,8 @@ def rollback(backup):
 
 def apply(candidate):
  candidate=validate(candidate);require_ssd();backend_ready()
+ subprocess.run([sys.executable, '-I', '-B', candidate/'deploy-package/prepare-scene-storage.py',
+                 '--backend-env', ROOT/'deploy/s100p/runtime/backend.env', '--if-configured'], check=True, timeout=40)
  if shutil.disk_usage(ROOT).free<1<<30:raise RuntimeError('Keep at least 1GiB free on system disk')
  if shutil.disk_usage(SSD).free<256<<20:raise RuntimeError('Insufficient SSD rollback space')
  for service in SERVICES:
